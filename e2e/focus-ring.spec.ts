@@ -650,7 +650,13 @@ for (const theme of ["light", "dark"] as Theme[]) {
         last: () => lastIn(page, ".modal"),
         trapped: true,
       });
+      // Nothing copied, so Esc holds the value (§4.11); Done, from the
+      // keyboard, is the way out.
+      const shown = page.getByRole("dialog", { name: "Token created" });
       await page.keyboard.press("Escape");
+      await expect(shown).toBeVisible();
+      await tabTo(page, shown.getByRole("button", { name: "Done" }));
+      await page.keyboard.press("Enter");
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await expectFocusBack(page, create, { ring: true });
     });

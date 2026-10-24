@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type CopyState = "idle" | "copied" | "failed";
 
@@ -32,9 +32,17 @@ export function writeClipboard(value: string): Promise<void> {
  * confirmation costs them the search. And a *failed* write may not stay silent
  * either — silence makes the click indistinguishable from a dead control, so
  * the failure gets its own answer rather than none.
+ *
+ * `onCopied` hears every write that reached the clipboard and no other — for
+ * a caller whose state outlives the two seconds, as the access token's one
+ * showing does: it stops holding `Esc` once its value has been copied (§5.9).
  */
-export function useCopied(): [CopyState, (value: string) => void] {
+export function useCopied(onCopied?: () => void): [CopyState, (value: string) => void] {
   const [state, setState] = useState<CopyState>("idle");
+  const onCopiedRef = useRef(onCopied);
+  useEffect(() => {
+    onCopiedRef.current = onCopied;
+  });
 
   useEffect(() => {
     if (state === "idle") return;
@@ -44,7 +52,10 @@ export function useCopied(): [CopyState, (value: string) => void] {
 
   const copy = useCallback((value: string) => {
     writeClipboard(value).then(
-      () => setState("copied"),
+      () => {
+        setState("copied");
+        onCopiedRef.current?.();
+      },
       () => setState("failed"),
     );
   }, []);

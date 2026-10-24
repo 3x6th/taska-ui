@@ -3,7 +3,8 @@ import { ACCESS_TOKEN_EXPIRY_DAYS, ACCESS_TOKEN_NAME_MAX_LENGTH } from "../acces
 import type { CreateAccessTokenInput } from "../TaskaApi";
 
 const DAY = 24 * 60 * 60 * 1000;
-const failure = (code: string, message: string) => Object.assign(new Error(message), { code });
+const failure = (code: string, message: string, details: Record<string, string> | null = null) =>
+  Object.assign(new Error(message), { code, details });
 
 /** What a secret looks like: the proposal's `tsk_pat_` and 32 characters of base62. */
 const SECRET_PREFIX = "tsk_pat_";
@@ -45,7 +46,10 @@ function randomSecret(): string {
  * are assumptions**, borrowed from the gateway's flat `{code, message}` codes
  * this build already knows, and no backend story states any of them yet:
  * `INVALID_ARGUMENT` for a name, scope or lifetime off the list, `NOT_FOUND`
- * for an id never issued to this account, `RESOURCE_EXHAUSTED` for the 429.
+ * for an id never issued to this account, `RESOURCE_EXHAUSTED` for the 429 —
+ * with the wait until this mock's window lets the next create through in
+ * `details.retryAfterSeconds`, a string, the shape the gateway gives the
+ * invitation resend's 429.
  * The session here is always a signed-in one, so the `insufficient_scope` 403
  * is not reachable.
  */
@@ -104,7 +108,12 @@ export class MockAccessTokens {
     const now = Date.now();
     const recent = (this.createdAt.get(userId) ?? []).filter((at) => now - at < 60_000);
     if (recent.length >= CREATES_PER_MINUTE) {
-      throw failure("RESOURCE_EXHAUSTED", "Too many access tokens created; try again later");
+      // Until the oldest create in the window is a minute old, in whole
+      // seconds rounded up, so never more than the window and never under 1.
+      const seconds = Math.max(1, Math.ceil((recent[0] + 60_000 - now) / 1000));
+      throw failure("RESOURCE_EXHAUSTED", "Too many access tokens created; try again later", {
+        retryAfterSeconds: String(seconds),
+      });
     }
     this.createdAt.set(userId, [...recent, now]);
 

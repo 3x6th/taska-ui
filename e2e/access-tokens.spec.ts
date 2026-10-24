@@ -49,6 +49,12 @@ test("creates a token, shows it once, and revokes one through its question", asy
   await expect(page.locator(".mcp-snippet-code")).toHaveText(
     `claude mcp add --transport http --scope user taska ${MCP_URL} --header "Authorization: Bearer YOUR_TOKEN"`,
   );
+  // In the product's mono, not the browser's `code` default (Courier).
+  const snippetType = await page.locator(".mcp-snippet-code code").evaluate((code) => {
+    const style = getComputedStyle(code);
+    return { family: style.fontFamily, size: style.fontSize };
+  });
+  expect(snippetType).toEqual({ family: '"IBM Plex Mono", ui-monospace, monospace', size: "12px" });
 
   await page.getByRole("button", { name: "Create token" }).click();
   const form = page.getByRole("dialog", { name: "New access token" });
@@ -89,7 +95,7 @@ test("creates a token, shows it once, and revokes one through its question", asy
   await expect(list.getByRole("listitem")).toHaveCount(2);
 });
 
-test("Esc closes the token's one showing as Done does, and the value goes with it", async ({ page }) => {
+test("Esc holds the token's one showing until it is copied, then closes it, and the value goes with it", async ({ page }) => {
   await signIn(page);
   await page.goto("/settings/tokens");
   await page.getByRole("button", { name: "Create token" }).click();
@@ -99,6 +105,17 @@ test("Esc closes the token's one showing as Done does, and the value goes with i
   const shown = page.getByRole("dialog", { name: "Token created" });
   const secret = await shown.getByLabel("Script").inputValue();
   expect(secret).not.toBe("");
+
+  // Not copied yet: Esc keeps it (§4.11), with the value where it was.
+  await page.keyboard.press("Escape");
+  await expect(shown).toBeVisible();
+  await expect(shown.getByLabel("Script")).toHaveValue(secret);
+
+  // Copied by the snippet that carries it, Esc closes.
+  await shown.getByRole("button", { name: "Copy the Claude Code command" }).click();
+  await expect(shown.getByText("Command copied.")).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(`Bearer ${secret}`);
+  await shown.getByLabel("Script").focus();
   await page.keyboard.press("Escape");
 
   await expect(page.getByRole("dialog")).toHaveCount(0);

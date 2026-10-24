@@ -7186,7 +7186,14 @@ describe("the channel mark on history and comments (TAS-412)", () => {
     window.localStorage.clear();
   });
 
-  it("says after the actor's name which channel a change came through, with the token's name when there is one", async () => {
+  /** Each event's sentence and its meta line, in the feed's order. */
+  const feed = () =>
+    [...document.querySelectorAll(".activity-item")].map((item) => ({
+      sentence: item.querySelector("p")?.textContent,
+      meta: item.querySelector("p")?.nextElementSibling ?? null,
+    }));
+
+  it("says which channel a change came through on its meta line and a comment's after the author, with the token's name when there is one", async () => {
     seedHistory([
       event({ id: "history-1", via: { channel: "MCP", tokenName: "Cursor on laptop" } }),
       event({
@@ -7208,12 +7215,30 @@ describe("the channel mark on history and comments (TAS-412)", () => {
     expect(head.querySelector("em")).toBeNull();
 
     // The feed names an actor it has no member row for "Someone" — what this
-    // fixture gives it; the mark's place is the point.
-    const lines = [...document.querySelectorAll(".activity-item p")].map((line) => line.textContent);
-    expect(lines).toEqual([
-      "Someone via API token moved To Do to In Progress",
-      "Someone via MCP (Cursor on laptop) created this issue",
+    // fixture gives it; the mark's place is the point. The sentence stays
+    // whole, and the mark follows the time on the meta line (§4.26).
+    const events = feed();
+    expect(events.map((item) => item.sentence)).toEqual([
+      "Someone moved To Do to In Progress",
+      "Someone created this issue",
     ]);
+    expect(document.querySelector(".activity-item p .via-mark")).toBeNull();
+    for (const [index, mark] of ["via API token", "via MCP (Cursor on laptop)"].entries()) {
+      const meta = events[index].meta as HTMLElement;
+      expect(meta).toHaveClass("activity-meta");
+      // The time, a dot only the eye gets, then the mark — and a plain space
+      // between the two for a screen reader, which skips the dot.
+      expect(meta.children[0].tagName).toBe("TIME");
+      expect(meta.children[1]).toHaveAttribute("aria-hidden", "true");
+      expect(meta.children[1]).toHaveTextContent("·");
+      expect(meta.children[2]).toHaveClass("via-mark");
+      expect(meta.children[2]).toHaveTextContent(mark);
+      const spoken = [...meta.childNodes]
+        .filter((node) => !(node instanceof Element && node.getAttribute("aria-hidden") === "true"))
+        .map((node) => node.textContent)
+        .join("");
+      expect(spoken).toBe(`${meta.children[0].textContent} ${mark}`);
+    }
   });
 
   it("draws a change with no channel, or one this build cannot read, exactly as before", async () => {
@@ -7232,7 +7257,10 @@ describe("the channel mark on history and comments (TAS-412)", () => {
 
     await panel.findByText("Retry guard is in review.");
     expect(document.querySelectorAll(".via-mark")).toHaveLength(0);
-    const lines = [...document.querySelectorAll(".activity-item p")].map((line) => line.textContent);
-    expect(lines).toEqual(Array(3).fill("Someone created this issue"));
+    expect(document.querySelectorAll(".activity-meta")).toHaveLength(0);
+    // The sentence, then the bare <time> as the event's meta line: as before.
+    const events = feed();
+    expect(events.map((item) => item.sentence)).toEqual(Array(3).fill("Someone created this issue"));
+    for (const item of events) expect(item.meta?.tagName).toBe("TIME");
   });
 });

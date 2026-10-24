@@ -2476,6 +2476,20 @@ h1 {
   margin: 10px 0 0;
 }
 
+/* A token whose create answered after its dialog was closed (§5.9): a fact
+   about the reader's own data, so `--fg` rather than meta — the precedent is
+   "Your photo could not be loaded." — and not an `ErrorNote`: nothing was
+   refused and there is no request id. */
+.token-unseen {
+  grid-column: 1 / -1;
+  margin: 10px 0 0;
+  color: var(--fg);
+  font-size: 11.5px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
 .tokens-empty,
 .tokens-unavailable,
 .mcp-unavailable {
@@ -2584,8 +2598,11 @@ h1 {
   flex-direction: column;
 }
 
+/* `--fg-2`, not `.field-note`'s `--fg-3`: the one place the date itself is
+   shown, so it is read rather than skimmed (§5.9). The Name hint stays meta. */
 .token-expiry .field-note {
   margin-top: 6px;
+  color: var(--fg-2);
 }
 
 /* A field that is wrong says so in `--fg`, the work log's recipe; the field
@@ -2747,6 +2764,13 @@ h1 {
   line-height: 1.5;
   overflow-wrap: break-word;
   white-space: pre-wrap;
+}
+
+/* The browser's own `code { font-family: monospace }` beats the `<pre>`'s
+   family on the element inside it and drew the snippet in Courier; the code
+   takes the block's mono, size and line height whole (§5.9). */
+.mcp-snippet-code code {
+  font: inherit;
 }
 
 .mcp-note {
@@ -7586,9 +7610,10 @@ button.attachment-open:hover:not(:disabled) {
   font-style: normal;
 }
 
-/* The channel mark after an actor's name (TAS-412): "via MCP (Cursor on
-   laptop)". §2.3's meta — 11 `--fg-3`, the comment head's time and "edited" —
-   in a comment's head and inline in an Activity line alike; on the panel's
+/* The channel mark (TAS-412): "via MCP (Cursor on laptop)". §2.3's meta — 11
+   `--fg-3`, the comment head's time and "edited" — after the author's name in
+   a comment's head, and after the time in an Activity event's meta line (never
+   inside the event's sentence, §4.26); on the panel's
    `--surface` that is 3.14:1 light / 3.05:1 dark, §7's floor for meta. A token
    name is the reader's own text and may be long, so it wraps rather than
    pushing the head wider than the column. */
@@ -7725,11 +7750,24 @@ button.attachment-open:hover:not(:disabled) {
   font-weight: 650;
 }
 
-.activity-item time {
+.activity-item time,
+.activity-meta {
   display: block;
   margin-top: 1px;
   color: var(--fg-3);
   font-size: 11px;
+}
+
+/* The time and an event's channel mark on one meta line (§4.26, TAS-412):
+   the time's recipe, wrapping anywhere, so a long token name never widens
+   the panel; the sentence above stays whole. */
+.activity-meta {
+  overflow-wrap: anywhere;
+}
+
+.activity-meta time {
+  display: inline;
+  margin-top: 0;
 }
 
 .panel-loading {

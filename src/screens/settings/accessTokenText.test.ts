@@ -3,7 +3,6 @@ import type { AccessToken } from "../../domain/types";
 import {
   SESSION_ONLY_CREATE_TEXT,
   SESSION_ONLY_REVOKE_TEXT,
-  TOO_MANY_TOKENS_TEXT,
   accessTokenAccessLabel,
   accessTokenDatesText,
   accessTokenExpired,
@@ -55,8 +54,22 @@ describe("the words of Settings → Access tokens", () => {
 
   it("says the 429 and the token-scope 403 in plain words, and anything else in the server's", () => {
     const failure = (fields: object) => Object.assign(new Error("Server words"), fields);
-    expect(createRefusalText(failure({ status: 429, code: "RESOURCE_EXHAUSTED" }))).toBe(TOO_MANY_TOKENS_TEXT);
-    expect(createRefusalText(failure({ code: "RESOURCE_EXHAUSTED" }))).toBe(TOO_MANY_TOKENS_TEXT);
+    // The wait the server stated in `details.retryAfterSeconds`, in the
+    // invitation resend's unit words; without one, no number of our own.
+    expect(createRefusalText(failure({ status: 429, details: { retryAfterSeconds: "42" } }))).toBe(
+      "Too many tokens were created just now. Try again in 42 seconds.",
+    );
+    expect(createRefusalText(failure({ code: "RESOURCE_EXHAUSTED", details: { retryAfterSeconds: "1" } }))).toBe(
+      "Too many tokens were created just now. Try again in 1 second.",
+    );
+    for (const details of [null, {}, { retryAfterSeconds: "0" }, { retryAfterSeconds: "soon" }]) {
+      expect(createRefusalText(failure({ status: 429, code: "RESOURCE_EXHAUSTED", details }))).toBe(
+        "Too many tokens were created just now. Try again later.",
+      );
+    }
+    expect(createRefusalText(failure({ code: "RESOURCE_EXHAUSTED" }))).toBe(
+      "Too many tokens were created just now. Try again later.",
+    );
     expect(createRefusalText(failure({ status: 403, code: "insufficient_scope" }))).toBe(SESSION_ONLY_CREATE_TEXT);
     expect(createRefusalText(failure({ status: 400, code: "INVALID_ARGUMENT" }))).toBe("Server words");
     expect(createRefusalText(failure({ status: 403, code: "PERMISSION_DENIED" }))).toBe("Server words");

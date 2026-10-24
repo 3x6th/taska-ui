@@ -46,7 +46,8 @@ export function isInsufficientScope(error: unknown): boolean {
  * Whether creating a token was refused for being too frequent: HTTP 429, or
  * the gRPC code the gateway names a 429 with. The pair is the invitation
  * resend's (`src/screens/admin/users.ts`), the one rate limit this build
- * already reads; the mock carries only the code.
+ * already reads; the mock carries the code and no status. The wait it states
+ * is read by `retryAfterSeconds`, as the resend's is.
  */
 export function isRateLimited(error: unknown): boolean {
   const { status, code } = apiErrorFacts(error);

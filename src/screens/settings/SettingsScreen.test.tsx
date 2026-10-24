@@ -136,6 +136,31 @@ describe("the Settings area", () => {
 
     await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Appearance/ })).toHaveFocus());
   });
+
+  it("brings the current link into the rail's strip on arrival and on each move, at once and without taking focus (§5.8)", async () => {
+    // jsdom lays nothing out, so where the strip ends up is measured in the
+    // browser; here, which element is asked to scroll, how, and that focus
+    // still lands on the heading.
+    const scrolls = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      renderAt("/settings/appearance");
+      const rail = await screen.findByRole("navigation", { name: "Settings" });
+      const appearance = within(rail).getByRole("link", { name: "Appearance" });
+      await waitFor(() => expect(scrolls.mock.contexts).toContain(appearance));
+      expect(screen.getByRole("heading", { level: 1 })).not.toHaveFocus();
+
+      scrolls.mockClear();
+      fireEvent.click(within(rail).getByRole("link", { name: "Access tokens" }));
+
+      const tokens = within(rail).getByRole("link", { name: "Access tokens" });
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Access tokens/ })).toHaveFocus());
+      const railCalls = scrolls.mock.calls.filter((_, index) => rail.contains(scrolls.mock.contexts[index] as Node));
+      expect(railCalls).toEqual([[{ inline: "nearest", block: "nearest" }]]);
+      expect(scrolls.mock.contexts).toContain(tokens);
+    } finally {
+      scrolls.mockRestore();
+    }
+  });
 });
 
 describe("Settings → Appearance", () => {

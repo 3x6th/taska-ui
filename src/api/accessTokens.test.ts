@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { INSUFFICIENT_SCOPE_CODE, isAccessTokenGone, isInsufficientScope, isRateLimited } from "./accessTokens";
-import { isUndeployedRoute } from "./errors";
+import { apiErrorFacts, isUndeployedRoute } from "./errors";
 import { MockAccessTokens } from "./mock/MockAccessTokens";
 import { MockTaskaApi } from "./mock/MockTaskaApi";
 import { RestTaskaApi } from "./rest/RestTaskaApi";
@@ -130,12 +130,17 @@ describe("the REST transport for access tokens", () => {
     expect(isInsufficientScope(scope)).toBe(true);
     expect(isRateLimited(scope)).toBe(false);
 
-    vi.stubGlobal("fetch", refuse(429, { code: "RESOURCE_EXHAUSTED", message: "Too many requests" }));
+    vi.stubGlobal(
+      "fetch",
+      refuse(429, { code: "RESOURCE_EXHAUSTED", message: "Too many requests", details: { retryAfterSeconds: "42" } }),
+    );
     const limited = await new RestTaskaApi()
       .createAccessToken({ name: "x", scopes: ["read"], expiresInDays: 7 })
       .catch((error: unknown) => error);
     expect(limited).toMatchObject({ status: 429, requestId: "request-429" });
     expect(isRateLimited(limited)).toBe(true);
+    // The wait reaches the section as the mock's does, in `details`.
+    expect(apiErrorFacts(limited).details?.retryAfterSeconds).toBe("42");
     expect(isInsufficientScope(limited)).toBe(false);
   });
 
@@ -267,7 +272,7 @@ describe("the mock's access tokens", () => {
     expect(refusal({ name: "x", scopes: ["read"], expiresInDays: 14 as unknown as 30 })).toBe("INVALID_ARGUMENT");
   });
 
-  it("answers the 429's code after five creates in a minute (a mock-only number)", () => {
+  it("answers the 429's code after five creates in a minute (a mock-only number), with the wait as a string in details", () => {
     const store = new MockAccessTokens();
     for (let index = 0; index < 5; index += 1) store.create("anna", { name: `t${index}`, scopes: ["read"], expiresInDays: 7 });
     let caught: unknown;
@@ -277,6 +282,10 @@ describe("the mock's access tokens", () => {
       caught = error;
     }
     expect(isRateLimited(caught)).toBe(true);
+    // The invitation resend's shape: whole seconds, as a string, within the window.
+    const wait = apiErrorFacts(caught).details?.retryAfterSeconds;
+    expect(wait).toMatch(/^[1-9][0-9]*$/);
+    expect(Number(wait)).toBeLessThanOrEqual(60);
   });
 
   it("takes a revoked token out at once, answers a repeated revoke as the first (TAS-401), and refuses an id never issued", () => {

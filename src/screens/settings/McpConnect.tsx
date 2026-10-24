@@ -20,8 +20,20 @@ import {
  * The address comes from the build (`VITE_TASKA_MCP_URL`); without one there is
  * nothing to connect to, and the block says so in one line instead of offering
  * a snippet that points nowhere.
+ *
+ * `onSecretCopied` hears a snippet copy that reached the clipboard while the
+ * snippet carried a real value — never the page's `YOUR_TOKEN` — so the
+ * dialog knows the value is saved somewhere and stops holding `Esc` (§5.9).
  */
-export function McpConnect({ token, headingLevel }: { token: string | null; headingLevel: 2 | 3 }) {
+export function McpConnect({
+  token,
+  headingLevel,
+  onSecretCopied,
+}: {
+  token: string | null;
+  headingLevel: 2 | 3;
+  onSecretCopied?: () => void;
+}) {
   const url = mcpServerUrl();
   const [client, setClient] = useState<McpClient>("claude-code");
   const headingId = useId();
@@ -58,7 +70,12 @@ export function McpConnect({ token, headingLevel }: { token: string | null; head
           </div>
           {/* Keyed by the client, so a "Copied" said about one snippet is not
               left standing under the other. */}
-          <McpSnippet client={client} key={client} text={mcpSnippet(client, url, token ?? TOKEN_PLACEHOLDER)} />
+          <McpSnippet
+            client={client}
+            key={client}
+            onCopied={token ? onSecretCopied : undefined}
+            text={mcpSnippet(client, url, token ?? TOKEN_PLACEHOLDER)}
+          />
           <p className="mcp-note">Keep tokens out of project files that are shared or committed.</p>
         </>
       ) : (
@@ -75,8 +92,8 @@ export function McpConnect({ token, headingLevel }: { token: string | null; head
  * A refused clipboard selects the text, so the reader's own copy is one key
  * away (the honesty rule `useCopied` states).
  */
-function McpSnippet({ client, text }: { client: McpClient; text: string }) {
-  const [copyState, copy] = useCopied();
+function McpSnippet({ client, text, onCopied }: { client: McpClient; text: string; onCopied?: () => void }) {
+  const [copyState, copy] = useCopied(onCopied);
   const codeRef = useRef<HTMLPreElement>(null);
   const placeId = useId();
   const what = client === "claude-code" ? "command" : "configuration";

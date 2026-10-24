@@ -21,6 +21,8 @@ const { api } = vi.hoisted(() => ({
 vi.mock("../../api/client", () => ({ taskaApi: api }));
 
 const SECRET = "tsk_pat_Zq8RkW2mNcY4pLx7Hs1Jd9Vt6Bf3Ga0E";
+/** What the row of a token whose create outlived its dialog says (§5.9). */
+const UNSEEN_LINE = "Its value was never shown. Revoke this token and create another.";
 const MCP_URL = "http://localhost:8087/mcp";
 const DAY = 24 * 60 * 60 * 1000;
 const iso = (offset: number) => new Date(Date.now() + offset).toISOString();
@@ -315,31 +317,123 @@ describe("creating a token", () => {
     for (const spy of logs) spy.mockRestore();
   });
 
-  it("drops the value on Esc as on Done", async () => {
-    draw();
+  /** Create "Cursor on laptop" and land on its one showing. */
+  const createAndShow = async () => {
     const dialog = await openDialog();
     fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Cursor on laptop" } });
     fireEvent.click(dialog.getByRole("button", { name: "Create token" }));
-    await screen.findByRole("dialog", { name: "Token created" });
+    return within(await screen.findByRole("dialog", { name: "Token created" }));
+  };
+  const pressEscape = () => fireEvent.keyDown(window, { key: "Escape" });
 
-    fireEvent.keyDown(window, { key: "Escape" });
+  it("keeps the value on Esc until it has been copied (§4.11)", async () => {
+    draw();
+    const shown = await createAndShow();
+    const field = shown.getByLabelText("Cursor on laptop");
+    expect(field).toHaveAttribute("data-unsaved-text", "true");
+
+    pressEscape();
+
+    expect(screen.getByRole("dialog", { name: "Token created" })).toBeInTheDocument();
+    expect(field).toHaveValue(SECRET);
+    expect(field).toHaveAttribute("data-unsaved-text", "true");
+  });
+
+  it("closes on Esc, and drops the value, once Copy token has reached the clipboard", async () => {
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    draw();
+    const shown = await createAndShow();
+    fireEvent.click(shown.getByRole("button", { name: "Copy token" }));
+    expect(await shown.findByText("Token copied.")).toBeVisible();
+    expect(shown.getByLabelText("Cursor on laptop")).not.toHaveAttribute("data-unsaved-text");
+
+    pressEscape();
 
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.documentElement.outerHTML).not.toContain(SECRET);
   });
 
-  it("names the value's field Token when the token's name came back blank", async () => {
-    api.createAccessToken.mockResolvedValueOnce({ token: { ...seeded()[0], id: "token-new", name: "" }, secret: SECRET });
+  it("closes on Esc once a snippet carrying the value has reached the clipboard", async () => {
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     draw();
-    const dialog = await openDialog();
-    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Cursor on laptop" } });
-    fireEvent.click(dialog.getByRole("button", { name: "Create token" }));
-    const shown = await screen.findByRole("dialog", { name: "Token created" });
-    expect(within(shown).getByRole("textbox", { name: "Token" })).toHaveValue(SECRET);
+    const shown = await createAndShow();
+    fireEvent.click(shown.getByRole("button", { name: "Copy the Claude Code command" }));
+    expect(await shown.findByText("Command copied.")).toBeVisible();
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining(`Bearer ${SECRET}`));
+    expect(shown.getByLabelText("Cursor on laptop")).not.toHaveAttribute("data-unsaved-text");
+
+    pressEscape();
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.documentElement.outerHTML).not.toContain(SECRET);
+  });
+
+  it("keeps holding Esc when the clipboard refuses either copy", async () => {
+    const writeText = vi.fn(async () => {
+      throw new Error("Write permission denied");
+    });
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    draw();
+    const shown = await createAndShow();
+    fireEvent.click(shown.getByRole("button", { name: "Copy token" }));
+    expect(await shown.findByText(/Couldn’t copy the token automatically/)).toBeVisible();
+    fireEvent.click(shown.getByRole("button", { name: "Copy the Claude Code command" }));
+    expect(await shown.findByText(/Couldn’t copy the command automatically/)).toBeVisible();
+    expect(writeText).toHaveBeenCalledTimes(2);
+
+    pressEscape();
+
+    expect(screen.getByRole("dialog", { name: "Token created" })).toBeInTheDocument();
+    expect(shown.getByLabelText("Cursor on laptop")).toHaveAttribute("data-unsaved-text", "true");
   });
 
   it.each([
-    ["429", refusal("Too many requests", { status: 429, code: "RESOURCE_EXHAUSTED", requestId: "req-1" }), "Too many tokens were created just now. Try again in a minute."],
+    ["Done", "Done"],
+    ["✕", "Close"],
+    ["the scrim", "Close modal"],
+  ])("closes by %s without a copy, and asks nothing", async (_way, control) => {
+    draw();
+    await createAndShow();
+    fireEvent.click(screen.getByRole("button", { name: control }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.documentElement.outerHTML).not.toContain(SECRET);
+  });
+
+  it("names the value's field as the list names a token whose name came back blank", async () => {
+    api.createAccessToken.mockResolvedValueOnce({ token: { ...seeded()[0], id: "token-new", name: "  " }, secret: SECRET });
+    draw();
+    const shown = await createAndShow();
+    expect(shown.getByRole("textbox", { name: "Unnamed token" })).toHaveValue(SECRET);
+  });
+
+  it("says a created token whose value did not come back, by the same stand-in name, never in empty quotes", async () => {
+    api.createAccessToken.mockResolvedValueOnce({ token: { ...seeded()[0], id: "token-new", name: "" }, secret: "" });
+    draw();
+    const shown = await createAndShow();
+    expect(
+      shown.getByText("Taska created “Unnamed token” but did not send its value. Revoke it and create another."),
+    ).toBeVisible();
+    expect(shown.queryByRole("textbox")).toBeNull();
+  });
+
+  it.each([
+    [
+      "the 429 with the server's wait",
+      refusal("Too many requests", {
+        status: 429,
+        code: "RESOURCE_EXHAUSTED",
+        requestId: "req-1",
+        details: { retryAfterSeconds: "42" },
+      }),
+      "Too many tokens were created just now. Try again in 42 seconds.",
+    ],
+    [
+      "the 429 without one",
+      refusal("Too many requests", { status: 429, code: "RESOURCE_EXHAUSTED", requestId: "req-1" }),
+      "Too many tokens were created just now. Try again later.",
+    ],
     [
       "the token-scope 403",
       refusal("insufficient_scope", { status: 403, code: "insufficient_scope", requestId: "req-1" }),
@@ -441,6 +535,11 @@ describe("creating a token", () => {
       expect(await screen.findByText("Cursor on laptop")).toBeVisible();
       expect(rows()).toHaveLength(3);
 
+      // And the row says it in sight, under its own content, and no other row does.
+      expect(within(rowOf("Cursor on laptop")).getByText(UNSEEN_LINE)).toHaveClass("token-unseen");
+      expect(screen.getAllByText(UNSEEN_LINE)).toHaveLength(1);
+      expect(rowOf("Cursor on laptop").querySelector(".token-row-text + .token-revoke + .token-unseen")).not.toBeNull();
+
       expect(document.documentElement.outerHTML).not.toContain(SECRET);
       expect(cached()).not.toContain(SECRET);
       expect(JSON.stringify({ ...window.localStorage })).not.toContain(SECRET);
@@ -448,8 +547,76 @@ describe("creating a token", () => {
       expect(window.location.href).not.toContain(SECRET);
       for (const spy of logs) expect(JSON.stringify(spy.mock.calls)).not.toContain(SECRET);
       for (const spy of logs) spy.mockRestore();
+
+      // It leaves with the row.
+      fireEvent.click(screen.getByRole("button", { name: "Revoke Cursor on laptop" }));
+      fireEvent.click(screen.getByRole("button", { name: "Revoke token" }));
+      expect(await screen.findByText("The token “Cursor on laptop” was revoked.")).toBeInTheDocument();
+      await waitFor(() => expect(rows()).toHaveLength(2));
+      expect(screen.queryByText(UNSEEN_LINE)).toBeNull();
     },
   );
+
+  /** A create answered after ✕: "Cursor on laptop" is listed, its value never shown. */
+  const createUnseen = async () => {
+    let answer: (value: IssuedAccessToken) => void = () => {};
+    api.createAccessToken.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    draw();
+    const dialog = await openDialog();
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Cursor on laptop" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Create token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const token: AccessToken = {
+      id: "token-new",
+      name: "Cursor on laptop",
+      tokenPrefix: SECRET.slice(0, 12),
+      scopes: ["read"],
+      createdAt: new Date().toISOString(),
+      expiresAt: iso(30 * DAY),
+      lastUsedAt: null,
+    };
+    tokens = [...tokens, token];
+    await act(async () => answer({ token, secret: SECRET }));
+    const line = await screen.findByText(UNSEEN_LINE);
+    return within(line.closest("li") as HTMLElement);
+  };
+
+  it("keeps the unseen line on a row whose revoke was refused: the token still exists", async () => {
+    api.revokeAccessToken.mockRejectedValueOnce(
+      refusal("Revocation is unavailable", { status: 503, code: "UNAVAILABLE", requestId: "req-9" }),
+    );
+    const row = await createUnseen();
+    expect(row.getByText("Cursor on laptop")).toBeVisible();
+    // The re-read never answers, so only the rollback can bring the row back.
+    hangReads();
+    fireEvent.click(row.getByRole("button", { name: "Revoke Cursor on laptop" }));
+    fireEvent.click(row.getByRole("button", { name: "Revoke token" }));
+
+    const back = (await screen.findAllByText("The token “Cursor on laptop” was not revoked.")).find((node) =>
+      node.closest("li"),
+    ) as HTMLElement;
+    expect(within(back.closest("li") as HTMLElement).getByText(UNSEEN_LINE)).toBeVisible();
+  });
+
+  it("forgets the unseen line once a re-read no longer lists the token", async () => {
+    await createUnseen();
+    // Gone elsewhere: the next read does not list it.
+    tokens = tokens.filter((token) => token.id !== "token-new");
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["access-tokens"] });
+    });
+    await waitFor(() => expect(screen.queryByText("Cursor on laptop")).toBeNull());
+    expect(screen.queryByText(UNSEEN_LINE)).toBeNull();
+
+    // And it does not come back if the same id is listed again: the memory went with the row.
+    tokens = [...tokens, { ...seeded()[1], id: "token-new", name: "Cursor on laptop" }];
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["access-tokens"] });
+    });
+    expect(await screen.findByText("Cursor on laptop")).toBeVisible();
+    expect(screen.queryByText(UNSEEN_LINE)).toBeNull();
+  });
 });
 
 describe("revoking a token", () => {

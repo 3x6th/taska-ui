@@ -4199,3 +4199,18 @@ roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fix
 - **TAS-414 is not started:** it waits for ADR TAS-400 to say who serves the OAuth consent
   screen. GitHub Pages cannot send `frame-ancestors` / `X-Frame-Options`, so "consent cannot
   be framed" is unmeetable from this repository as hosted (comment on TAS-414, 2026-10-24).
+- **`isAccessTokenGone` reads every revoke 404 but the static-resource one as "already
+  gone".** Re-check it against TAS-402's real refusal codes when the routes deploy
+  (release-reviewer, round 2).
+- **At 390 the Claude Code snippet breaks inside `--header`** ("--" / "header"): `pre-wrap` breaks
+  after a hyphen. Copy is exact, so only the reading suffers (art-director).
+- **The Revoke label sits 6.6px below the token name's centre**: a 32 box top-aligned to an 18.8
+  line (art-director).
+- **Contract tails from api-contract-guard (TAS-412):** `isInsufficientScope` reads only `code` —
+  read `details.reason` if TAS-402 takes the `PERMISSION_DENIED` proposal; `actionViaText` draws
+  nothing for an unknown channel (a UI change, while unknown scopes print as they came) — decide when
+  TAS-411 is mapped; `toAccessToken` turns a missing `id` into `""` (a revoke would hit the bare
+  collection path, rows would share a key); the mock allows duplicate names and has no cap — follow
+  TAS-400/401; the "already gone" status drops the 404's request id; `ScreenRequests.test.tsx` does
+  not pin Settings → Access tokens' request count; the vendored `openapi.yml` is at `562d84de`, develop
+  at `92a00dbc` — refresh.

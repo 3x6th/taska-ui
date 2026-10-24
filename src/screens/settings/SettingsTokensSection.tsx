@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import {
   ACCESS_TOKEN_EXPIRY_DAYS,
   ACCESS_TOKEN_NAME_MAX_LENGTH,
@@ -33,8 +33,8 @@ import { McpConnect } from "./McpConnect";
 
 type Access = "read" | "read-write";
 
-/** A token's name, or what stands for one the answer left blank. */
-const tokenLabel = (token: Pick<AccessToken, "name">) => token.name || "Unnamed token";
+/** A token's name, or what stands for one the answer left blank — so no sentence prints empty quotes. */
+const tokenLabel = (token: Pick<AccessToken, "name">) => (token.name.trim() ? token.name : "Unnamed token");
 
 const ACCESS_OPTIONS: readonly { value: Access; label: string; description: string; scopes: AccessTokenScopes }[] = [
   { value: "read", label: "Read", description: "See projects, issues, comments and work logs.", scopes: ["read"] },
@@ -62,10 +62,14 @@ const ACCESS_OPTIONS: readonly { value: Access; label: string; description: stri
  * state; the list is re-read afterwards and carries no value. Closing the
  * dialog, by Done, ✕, `Esc` or the scrim, unmounts that state with it: no
  * cache, no browser storage, no address, no log, no node left in the page.
+ * `Esc` is the one way out that waits: until the value or a snippet carrying it
+ * has been copied, the field holds it as text-work (§4.11), and Done, ✕ and the
+ * scrim are how to leave without copying.
  * Closed by ✕ or the scrim while the create is still out (Cancel and `Esc`
  * wait for it, §4.1 and §4.11), the answer finds no dialog: the value is
- * dropped unseen, and the section's status says the token exists and how to
- * be rid of it.
+ * dropped unseen, the section's status says the token exists and how to be rid
+ * of it, and its row says the same for as long as it is listed — the id is
+ * kept in memory here, never stored.
  *
  * Ships ahead of the gateway, against the mock (AGENTS.md): no gateway serves
  * these routes yet, and there every one answers the static-resource 404, which
@@ -81,6 +85,22 @@ export function SettingsTokensSection() {
   /** The last sentence for the section's one persistent status region (§5.6): a revoke's, or a create nobody saw. */
   const [said, setSaid] = useState<{ text: string; seq: number } | null>(null);
   const say = (text: string) => setSaid((current) => ({ text, seq: (current?.seq ?? 0) + 1 }));
+  /**
+   * The tokens whose create answered after the dialog was closed, by id: their
+   * value was never shown, and their rows say so. Memory only — gone on a
+   * reload — and each id leaves once its token has left the list.
+   */
+  const [unseen, setUnseen] = useState<ReadonlySet<string>>(() => new Set());
+  const forgetUnseen = useCallback(
+    (ids: readonly string[]) =>
+      setUnseen((current) => {
+        if (!ids.some((id) => current.has(id))) return current;
+        const next = new Set(current);
+        for (const id of ids) next.delete(id);
+        return next;
+      }),
+    [],
+  );
 
   return (
     <>
@@ -92,7 +112,14 @@ export function SettingsTokensSection() {
           </p>
           {user ? (
             // Keyed by account: one account's tokens are never drawn under another's.
-            <AccessTokens key={user.id} onCreate={() => setCreating(true)} say={say} userId={user.id} />
+            <AccessTokens
+              key={user.id}
+              onCreate={() => setCreating(true)}
+              onUnseenGone={forgetUnseen}
+              say={say}
+              unseen={unseen}
+              userId={user.id}
+            />
           ) : meQuery.isError ? (
             <ReadFailure error={meQuery.error} onRetry={() => void meQuery.refetch()} retrying={meQuery.isFetching} />
           ) : (
@@ -115,11 +142,12 @@ export function SettingsTokensSection() {
       {creating && user ? (
         <CreateTokenModal
           onClose={() => setCreating(false)}
-          onCreatedUnseen={(token) =>
+          onCreatedUnseen={(token) => {
+            setUnseen((current) => new Set(current).add(token.id));
             say(
               `The token “${tokenLabel(token)}” was created, but the dialog closed before its value was shown. Revoke it and create another.`,
-            )
-          }
+            );
+          }}
           userId={user.id}
         />
       ) : null}
@@ -165,13 +193,45 @@ function ReadFailure({ error, retrying, onRetry }: { error: unknown; retrying: b
 }
 
 /** The list and its revoke, for one account; creating is the dialog's, opened from here. */
-function AccessTokens({ userId, onCreate, say }: { userId: string; onCreate: () => void; say: (text: string) => void }) {
+function AccessTokens({
+  userId,
+  unseen,
+  onCreate,
+  onUnseenGone,
+  say,
+}: {
+  userId: string;
+  /** Tokens whose value was never shown: their rows say so. */
+  unseen: ReadonlySet<string>;
+  onCreate: () => void;
+  /** Those of `unseen` that have left the list. */
+  onUnseenGone: (ids: readonly string[]) => void;
+  say: (text: string) => void;
+}) {
   const queryClient = useQueryClient();
   const read = accessTokensOptions(userId);
   const query = useQuery(read);
   const undeployed = query.isError && isUndeployedRoute(query.error, UNDEPLOYED_ROUTE_MESSAGE);
   const tokens = useMemo(() => sortAccessTokens(query.data ?? []), [query.data]);
   const confirmPrefix = useId();
+  const revokeKey = ["access-tokens", "revoke", userId] as const;
+  const revoking = useIsMutating({ mutationKey: revokeKey }) > 0;
+
+  /**
+   * An unseen token's id goes once its token has left the list: revoked, or
+   * gone from a re-read. Not on the optimistic removal of a revoke still out —
+   * a refusal brings the row back, and the token still exists unseen — and not
+   * before its row was ever drawn: the create answers before the list is read
+   * again.
+   */
+  const listed = useRef(new Set<string>());
+  useEffect(() => {
+    const present = new Set(tokens.map((token) => token.id));
+    for (const id of present) listed.current.add(id);
+    if (revoking) return;
+    const gone = [...unseen].filter((id) => listed.current.has(id) && !present.has(id));
+    if (gone.length) onUnseenGone(gone);
+  });
 
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   /** A revoke the server refused, by token: the note under the row that came back. */
@@ -193,7 +253,6 @@ function AccessTokens({ userId, onCreate, say }: { userId: string; onCreate: () 
     (target === "create" ? createButton.current : revokeButtons.current.get(target))?.focus();
   });
 
-  const revokeKey = ["access-tokens", "revoke", userId] as const;
   const revoke = useMutation({
     mutationKey: revokeKey,
     mutationFn: (token: AccessToken) => taskaApi.revokeAccessToken(token.id),
@@ -295,6 +354,7 @@ function AccessTokens({ userId, onCreate, say }: { userId: string; onCreate: () 
                 else revokeButtons.current.delete(token.id);
               }}
               token={token}
+              unseen={unseen.has(token.id)}
             />
           ))}
         </ul>
@@ -305,6 +365,7 @@ function AccessTokens({ userId, onCreate, say }: { userId: string; onCreate: () 
 
 function TokenRow({
   token,
+  unseen,
   confirming,
   confirmId,
   refusal,
@@ -314,6 +375,7 @@ function TokenRow({
   onAccept,
 }: {
   token: AccessToken;
+  unseen: boolean;
   confirming: boolean;
   confirmId: string;
   refusal: unknown;
@@ -362,6 +424,9 @@ function TokenRow({
       >
         Revoke
       </button>
+      {/* Its create answered after the dialog was closed (§5.9): a fact about
+          this token, under the row's own content, for as long as it is listed. */}
+      {unseen ? <p className="token-unseen">Its value was never shown. Revoke this token and create another.</p> : null}
       {confirming ? (
         // §4.22's inline confirmation, the one recipe for a destructive action
         // in a row: the sentence, Cancel first and focused, and the answer
@@ -611,12 +676,21 @@ function CreateTokenModal({
  * The value, once: the warning, the value in a read-only mono field with Copy,
  * and the snippets with the value in place of `YOUR_TOKEN`. A refused clipboard
  * selects the field, so the reader's own copy is one key away.
+ *
+ * Until "Copy token" or a snippet's Copy has reached the clipboard, the field
+ * marks itself `data-unsaved-text`, and `Modal` does not close on `Esc` (§4.11):
+ * the one showing of a value nobody can get back is text-work too. A refused
+ * write keeps the hold. Done, ✕ and the scrim close whatever was copied.
  */
 function TokenSecret({ issued }: { issued: IssuedAccessToken }) {
   const fieldId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [copyState, copy] = useCopied();
+  /** Whether the value has reached the clipboard once, by either copy. */
+  const [taken, setTaken] = useState(false);
+  const markTaken = useCallback(() => setTaken(true), []);
+  const [copyState, copy] = useCopied(markTaken);
   const { token, secret } = issued;
+  const name = tokenLabel(token);
 
   useEffect(() => {
     if (copyState !== "failed") return;
@@ -639,7 +713,7 @@ function TokenSecret({ issued }: { issued: IssuedAccessToken }) {
     // and the token exists, so the way out is to revoke it.
     return (
       <p className="token-secret-warning">
-        Taska created “{token.name}” but did not send its value. Revoke it and create another.
+        Taska created “{name}” but did not send its value. Revoke it and create another.
       </p>
     );
   }
@@ -648,11 +722,12 @@ function TokenSecret({ issued }: { issued: IssuedAccessToken }) {
     <div className="token-secret">
       <p className="token-secret-warning">Copy this token now. Taska shows it only once.</p>
       <div className="token-secret-field">
-        <label htmlFor={fieldId}>{token.name.trim() ? token.name : "Token"}</label>
+        <label htmlFor={fieldId}>{name}</label>
         <div className="token-secret-row">
           <input
             autoComplete="off"
             className="token-secret-input"
+            data-unsaved-text={taken ? undefined : "true"}
             id={fieldId}
             readOnly
             ref={inputRef}
@@ -672,7 +747,7 @@ function TokenSecret({ issued }: { issued: IssuedAccessToken }) {
           {status}
         </p>
       </div>
-      <McpConnect headingLevel={3} token={secret} />
+      <McpConnect headingLevel={3} onSecretCopied={markTaken} token={secret} />
     </div>
   );
 }

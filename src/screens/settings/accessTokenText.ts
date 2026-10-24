@@ -2,13 +2,14 @@ import { isInsufficientScope, isRateLimited, type AccessTokenExpiryDays } from "
 import { apiErrorFacts } from "../../api/errors";
 import type { AccessToken } from "../../domain/types";
 import { formatDayWithYearIfOther } from "../../lib/format";
+import { retryAfterSeconds } from "../admin/users";
 
 /**
  * The words of Settings → Access tokens (TAS-412) that depend on a value: a
  * token's access, its dates, a lifetime, and the refusals said in plain text.
  */
 
-export const TOO_MANY_TOKENS_TEXT = "Too many tokens were created just now. Try again in a minute.";
+export const TOO_MANY_TOKENS_TEXT = "Too many tokens were created just now.";
 export const SESSION_ONLY_CREATE_TEXT = "Tokens can be created only from a signed-in session, not with another token.";
 export const SESSION_ONLY_REVOKE_TEXT = "Tokens can be revoked only from a signed-in session, not with another token.";
 
@@ -71,13 +72,27 @@ export function expiryDayFromNow(days: AccessTokenExpiryDays, now: Date = new Da
 }
 
 /**
+ * The 429's sentence, with the wait the server stated in
+ * `details.retryAfterSeconds` — the invitation resend's reading and its unit
+ * words (`src/screens/admin/users.ts`), no countdown — or "later" when it
+ * stated none: the gateway's window is not specified (TAS-402), so no number
+ * of this build's own stands in for it.
+ */
+export function tooManyTokensText(error: unknown): string {
+  const seconds = retryAfterSeconds(error);
+  const wait =
+    seconds === null ? "Try again later." : `Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+  return `${TOO_MANY_TOKENS_TEXT} ${wait}`;
+}
+
+/**
  * Why a token was not created: the two refusals the story names in plain
  * words — creating too often (429), and asking with a token rather than a
  * signed-in session (403 `insufficient_scope`) — and otherwise the server's
  * own words, which is what every other refusal in the product shows.
  */
 export function createRefusalText(error: unknown): string {
-  if (isRateLimited(error)) return TOO_MANY_TOKENS_TEXT;
+  if (isRateLimited(error)) return tooManyTokensText(error);
   if (isInsufficientScope(error)) return SESSION_ONLY_CREATE_TEXT;
   return apiErrorFacts(error).message ?? "The token was not created.";
 }

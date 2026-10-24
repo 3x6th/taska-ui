@@ -5960,24 +5960,28 @@ function ActivityItem({
   names: HistoryNames;
   isLast: boolean;
 }) {
-  // The channel mark after the name (TAS-412): "Sofia Ivanova via MCP (Cursor
-  // on laptop) moved To Do to In Progress". An event without one reads as before.
+  // The channel mark (TAS-412) is meta, so it rides on the time's line —
+  // "Aug 1, 12:00 · via MCP (Cursor on laptop)" — and the sentence stays whole
+  // (§4.26). The plain space before the hidden dot is what a screen reader
+  // keeps between the two. An event without one draws exactly as before.
   const via = actionViaText(event.via);
+  const time = <time>{formatDateTime(event.occurredAt)}</time>;
   return (
     <div className="activity-item">
       {!isLast ? <span className="activity-line" /> : null}
       <Avatar user={user} size="sm" />
       <div>
         <p>
-          <strong>{user?.displayName ?? "Someone"}</strong>{" "}
-          {via ? (
-            <>
-              <span className="via-mark">{via}</span>{" "}
-            </>
-          ) : null}
-          {historyText(event, userById, names)}
+          <strong>{user?.displayName ?? "Someone"}</strong> {historyText(event, userById, names)}
         </p>
-        <time>{formatDateTime(event.occurredAt)}</time>
+        {via ? (
+          <div className="activity-meta">
+            {time} <span aria-hidden="true"> · </span>
+            <span className="via-mark">{via}</span>
+          </div>
+        ) : (
+          time
+        )}
       </div>
     </div>
   );
