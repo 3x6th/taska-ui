@@ -4023,6 +4023,25 @@ Frontend notes:
   the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
   ("Access denied" / "Not allowed role") and 404, contract text only.
 
+### Left by TAS-209 (hybrid removed, the TAS-396/397 tails, 2026-10-24)
+
+- **Admin refusal blocks announce the request id**: `role="alert"` is on the whole box in
+  `AdminError.tsx:28`, `AdminUserActionModal.tsx:233`, `AdminOutboxRetryModal.tsx:321` — put it
+  on a wrapper around the sentence and the server's words, with the id line outside (§5.6,
+  `art-director`, TAS-209 post-build). `AdminError` deliberately keeps the server's words in the
+  alert, so this is a restructure.
+- **Panel Esc from a non-text control drops an unsent comment or work-log draft** — §4.10 holds
+  only the focused field; align with §4.11's dialog-wide hold (`art-director`, TAS-209
+  post-build; pre-existing since TAS-380).
+- **Nothing guards `src/main.tsx`'s `useTransitions={false}`** (`api-contract-guard`): the
+  rail-race regression test sets the flag on its own router. A two-line assertion in the style
+  of `src/styles.test.ts` would.
+- **Pre-existing, seen in the TAS-209 review** (`release-reviewer`): opening the Labels rename
+  editor leaves focus on `<body>`; in New issue a `<label>` wraps the Priority buttons, so «Low»'s
+  accessible name is «Priority Medium High URGENT».
+- **The MVP two-account stand run and the archive smoke are pending** (TAS-209, TAS-397) —
+  checklist in the TAS-209 comment; request ids go to API-DIVERGENCE.
+
 ### Left by TAS-202 (projects from /project-stats, board from /board, 2026-10-24)
 
 - **The board's types are a constant, the context's come from the registry** — **graduated to [TAS-393](https://jira.ozero.dev/browse/TAS-393)** (2026-10-24)
