@@ -107,6 +107,7 @@ import type {
   WorkflowTransition,
 } from "../domain/types";
 import {
+  actionViaText,
   commentWasEdited,
   formatDateTime,
   formatDay,
@@ -5697,6 +5698,8 @@ function CommentItem({
   };
   const when = formatDateTime(comment.createdAt);
   const asking = canManage && confirming && !editing;
+  // "via MCP (Cursor on laptop)" — nothing for a comment written in the UI (TAS-412).
+  const via = actionViaText(comment.via);
 
   return (
     <article className="comment-item">
@@ -5718,6 +5721,7 @@ function CommentItem({
       >
         <p className="comment-head">
           <strong>{author?.displayName ?? "Unknown"}</strong>
+          {via ? <span className="via-mark">{via}</span> : null}
           <time>{when}</time>
           {/* Not `comment.updatedAt &&`: the server stamps that field on insert
               too, so the presence of a value says only that the row exists
@@ -5956,13 +5960,22 @@ function ActivityItem({
   names: HistoryNames;
   isLast: boolean;
 }) {
+  // The channel mark after the name (TAS-412): "Sofia Ivanova via MCP (Cursor
+  // on laptop) moved To Do to In Progress". An event without one reads as before.
+  const via = actionViaText(event.via);
   return (
     <div className="activity-item">
       {!isLast ? <span className="activity-line" /> : null}
       <Avatar user={user} size="sm" />
       <div>
         <p>
-          <strong>{user?.displayName ?? "Someone"}</strong> {historyText(event, userById, names)}
+          <strong>{user?.displayName ?? "Someone"}</strong>{" "}
+          {via ? (
+            <>
+              <span className="via-mark">{via}</span>{" "}
+            </>
+          ) : null}
+          {historyText(event, userById, names)}
         </p>
         <time>{formatDateTime(event.occurredAt)}</time>
       </div>

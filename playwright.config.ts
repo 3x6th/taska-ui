@@ -68,6 +68,9 @@ export default defineConfig({
         VITE_TASKA_API_PROXY_TARGET: "",
         VITE_BASE_PATH: "/",
         VITE_ROUTER_MODE: "browser",
+        // Any address will do: the suite never calls it, it only checks that
+        // Settings → Access tokens puts it into the snippets (TAS-412).
+        VITE_TASKA_MCP_URL: "http://localhost:8087/mcp",
       },
     },
     {
@@ -79,6 +82,7 @@ export default defineConfig({
         VITE_TASKA_API_PROXY_TARGET: "",
         VITE_BASE_PATH: HASH_BASE,
         VITE_ROUTER_MODE: "hash",
+        VITE_TASKA_MCP_URL: "http://localhost:8087/mcp",
       },
     },
   ],

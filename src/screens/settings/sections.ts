@@ -1,13 +1,15 @@
-import { Palette, UserRound } from "lucide-react";
+import { KeyRound, Palette, UserRound } from "lucide-react";
 import type { AreaSection } from "../../components/SectionArea";
 import type { Theme } from "../../hooks/useTheme";
 
 /**
  * The sections of Settings (TAS-380, DESIGN.md §5.9). One list feeds the rail
- * and the heading; the routes in `App` name the same two paths.
+ * and the heading; the routes in `App` name the same three paths. Access
+ * tokens (TAS-412) sits second, beside the profile it belongs with.
  */
 export const settingsSections: readonly AreaSection[] = [
   { id: "profile", label: "My profile", path: "/settings/profile", icon: UserRound },
+  { id: "tokens", label: "Access tokens", path: "/settings/tokens", icon: KeyRound },
   { id: "appearance", label: "Appearance", path: "/settings/appearance", icon: Palette },
 ];
 

@@ -2209,7 +2209,8 @@ h1 {
 
 /* `fit-content`: the §7 ring round the focused heading (after Confirm and
    Disconnect) circles the word, not the 560 column. */
-.settings-notifications-title {
+.settings-notifications-title,
+.mcp-connect-title {
   width: fit-content;
   margin: 0 0 6px;
   color: var(--fg);
@@ -2323,7 +2324,8 @@ h1 {
   text-decoration: none;
 }
 
-.settings-telegram-disconnect {
+.settings-telegram-disconnect,
+.token-revoke {
   min-height: 32px;
   border-radius: 9px;
   padding: 0 9px;
@@ -2333,7 +2335,8 @@ h1 {
   cursor: pointer;
 }
 
-.settings-telegram-disconnect:hover:not([aria-disabled="true"]) {
+.settings-telegram-disconnect:hover:not([aria-disabled="true"]),
+.token-revoke:hover {
   background: var(--surface-2);
   color: var(--danger);
 }
@@ -2390,6 +2393,383 @@ h1 {
   .settings-telegram-actions > *,
   .settings-notifications .secondary-button,
   .settings-notifications .request-id {
+    min-height: 44px;
+  }
+}
+
+/* ---------- Settings → Access tokens (TAS-412) ---------- */
+
+/* Every line of meta on this page is `--fg-2`, not `--fg-3`: on the `--bg`
+   plane `--fg-3` measures 2.91:1 in light, under §7's 3:1 floor even for
+   meta, where `--fg-2` holds 6.73 / 7.35. */
+.tokens-actions {
+  margin-top: 14px;
+}
+
+.token-list {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The Settings row (§5.9): text on the left, the row's one action on the
+   right, a hairline only between rows. The question strip and a refusal take
+   the whole width under both. */
+.token-row {
+  display: grid;
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 22px;
+  padding: 14px 0;
+}
+
+.token-row + .token-row {
+  border-top: 1px solid var(--border);
+}
+
+.token-row:first-child {
+  padding-top: 0;
+}
+
+.token-name {
+  margin: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.token-meta,
+.token-dates {
+  margin: 3px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+/* §2.3's mono for a token, `--fg-2` like every meta line here. */
+.token-prefix {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+/* The ghost-destructive Revoke (§4.1, the Telegram Disconnect's recipe above)
+   keeps the hover's ground while its question is open, so the control that
+   asked is still marked; `--danger` stays a hover colour, as text it measures
+   under 4.5:1 on this plane. */
+.token-revoke[aria-expanded="true"] {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+/* §4.22's strip and §5.6's refusal box under a row: from the row's own left
+   edge, which is the edge of its text — there is no avatar column here. */
+.member-confirm.token-confirm {
+  grid-column: 1 / -1;
+  margin: 10px 0 0;
+}
+
+.token-row .error-note {
+  grid-column: 1 / -1;
+  margin: 10px 0 0;
+}
+
+.tokens-empty,
+.tokens-unavailable,
+.mcp-unavailable {
+  margin: 14px 0 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  text-wrap: pretty;
+}
+
+/* §5.6's skeleton, shaped like two rows; `.value-skeleton` brings the pulse
+   and its reduced-motion entry. */
+.token-list-loading {
+  margin-top: 14px;
+}
+
+.token-skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px 0;
+}
+
+.token-skeleton-row:first-of-type {
+  padding-top: 0;
+}
+
+.token-skeleton-row + .token-skeleton-row {
+  border-top: 1px solid var(--border);
+}
+
+.token-skeleton-name {
+  width: 140px;
+  height: 13px;
+}
+
+.token-skeleton-meta {
+  width: 220px;
+  height: 11px;
+}
+
+.token-read-failure {
+  margin-top: 14px;
+}
+
+.token-read-failure .secondary-button {
+  margin-top: 8px;
+}
+
+/* The creating dialog. Access is a radio pair with its descriptions; the
+   legend and the Expires caption take the field label's recipe (§4.3). */
+.token-access {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.token-access legend,
+.token-expiry-label {
+  margin: 0 0 6px;
+  padding: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.token-access-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.token-access-option {
+  display: grid;
+  align-items: start;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 9px;
+  border-radius: 8px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+
+.token-access-option input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.token-access-title {
+  display: block;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.token-access-description {
+  display: block;
+  margin-top: 2px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  text-wrap: pretty;
+}
+
+.token-expiry {
+  display: flex;
+  flex-direction: column;
+}
+
+.token-expiry .field-note {
+  margin-top: 6px;
+}
+
+/* A field that is wrong says so in `--fg`, the work log's recipe; the field
+   itself takes the `--danger` edge from `aria-invalid`. */
+.token-name-problem {
+  margin: 0;
+  color: var(--fg);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+/* §4.1's two kinds of `aria-disabled` on one button: in flight is the
+   progress cursor alone, steadily unavailable (no name yet) is dimmed. */
+.token-create-submit[aria-disabled="true"] {
+  cursor: progress;
+}
+
+.token-create-submit[aria-disabled="true"]:not([data-busy]) {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+/* The token's one showing. */
+.token-secret {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.token-secret-warning {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.token-secret-field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.token-secret-field label {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+
+.token-secret-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The share field's recipe (§4.23) in mono: compact beside its button. */
+.token-secret-input {
+  flex: 1;
+  min-width: 0;
+  height: 29px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.token-secret-row .compact-button,
+.mcp-snippet .compact-button {
+  flex: none;
+}
+
+.token-secret-meta,
+.token-copy-status,
+.mcp-copy-status,
+.mcp-snippet-place,
+.mcp-note {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  text-wrap: pretty;
+}
+
+/* A failed copy is an instruction to follow, not meta (§4.23). */
+.token-copy-status[data-outcome="failed"],
+.mcp-copy-status[data-outcome="failed"] {
+  color: var(--fg);
+}
+
+/* Empty, the region leaves the flow and adds no gap; it stays mounted so a
+   screen reader is watching it before the first answer (§7). */
+.token-copy-status:empty,
+.mcp-copy-status:empty {
+  position: absolute;
+}
+
+/* Connect an AI agent: on the page under its own divider, in the dialog under
+   the token, separated by one hairline. */
+.mcp-connect {
+  position: relative;
+}
+
+.token-secret .mcp-connect {
+  border-top: 1px solid var(--border);
+  padding-top: 13px;
+}
+
+.modal .mcp-connect-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mcp-clients {
+  margin-top: 14px;
+}
+
+.mcp-snippet-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 11px;
+}
+
+/* The snippet wraps rather than scrolls: a scroller is a Tab stop of its own,
+   and Copy takes the exact text either way. `--surface` on the page's `--bg`,
+   `--surface-2` in the dialog's `--surface` — two grounds per plane (§1). */
+.mcp-snippet {
+  display: grid;
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 8px 8px 11px;
+  background: var(--surface);
+}
+
+.modal .mcp-snippet {
+  background: var(--surface-2);
+}
+
+/* `break-word`, not `anywhere`: a word breaks only when it cannot fit a line
+   of its own, so an address or a token stays whole wherever it can. */
+.mcp-snippet-code {
+  min-width: 0;
+  margin: 4px 0 0;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.mcp-note {
+  margin-top: 9px;
+}
+
+/* Below 560 Copy goes under the snippet, so the text has the box's whole
+   width: beside it, the Cursor JSON broke inside its address at 390. */
+@media (max-width: 559px) {
+  .mcp-snippet {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mcp-snippet .compact-button {
+    justify-self: start;
+  }
+}
+
+@media (max-width: 820px) {
+  .token-revoke,
+  .tokens-actions .primary-button,
+  .token-read-failure .secondary-button,
+  .token-confirm .compact-button,
+  .token-secret-row .compact-button,
+  .mcp-snippet .compact-button {
     min-height: 44px;
   }
 }
@@ -7197,10 +7577,21 @@ button.attachment-open:hover:not(:disabled) {
 }
 
 .comment-head time,
-.comment-head em {
+.comment-head em,
+.via-mark {
   color: var(--fg-3);
   font-size: 11px;
   font-style: normal;
+}
+
+/* The channel mark after an actor's name (TAS-412): "via MCP (Cursor on
+   laptop)". §2.3's meta — 11 `--fg-3`, the comment head's time and "edited" —
+   in a comment's head and inline in an Activity line alike; on the panel's
+   `--surface` that is 3.14:1 light / 3.05:1 dark, §7's floor for meta. A token
+   name is the reader's own text and may be long, so it wraps rather than
+   pushing the head wider than the column. */
+.via-mark {
+  overflow-wrap: anywhere;
 }
 
 .comment-text {

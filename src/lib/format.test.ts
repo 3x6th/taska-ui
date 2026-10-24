@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DictionaryEntry } from "../domain/types";
 import {
+  actionViaText,
   formatDayWithYearIfOther,
   avatarColor,
   avatarColorChoices,
@@ -538,5 +539,20 @@ describe("formatDayWithYearIfOther", () => {
 
   it("names the year of a date in another year", () => {
     expect(formatDayWithYearIfOther("2025-03-05T12:00:00", now)).toBe("Mar 5, 2025");
+  });
+});
+
+describe("actionViaText (TAS-412)", () => {
+  it("names the channel, and the token when the server names it", () => {
+    expect(actionViaText({ channel: "MCP", tokenName: "Cursor on laptop" })).toBe("via MCP (Cursor on laptop)");
+    expect(actionViaText({ channel: "API_TOKEN", tokenName: "Release script" })).toBe("via API token (Release script)");
+    expect(actionViaText({ channel: "MCP", tokenName: null })).toBe("via MCP");
+    expect(actionViaText({ channel: "API_TOKEN", tokenName: "   " })).toBe("via API token");
+  });
+
+  it("says nothing for a change made in the UI, or a channel this build has no word for", () => {
+    expect(actionViaText(undefined)).toBeNull();
+    expect(actionViaText(null)).toBeNull();
+    expect(actionViaText({ channel: "FAX", tokenName: "x" } as unknown as Parameters<typeof actionViaText>[0])).toBeNull();
   });
 });

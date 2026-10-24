@@ -615,6 +615,46 @@ for (const theme of ["light", "dark"] as Theme[]) {
       await walkBoth(page, "/settings, Appearance");
     });
 
+    test("settings: Access tokens, its question and its dialog", async ({ page }) => {
+      await signIn(page, "anna@example.com");
+      await page.goto("/settings/tokens");
+      // The list answered, so the walk meets the rows' Revoke and the snippets.
+      const revoke = page.getByRole("button", { name: "Revoke Weekly report script" });
+      await expect(revoke).toBeVisible();
+      await walkBoth(page, "/settings, Access tokens");
+
+      // The inline question, opened from the keyboard: its Cancel and answer.
+      await pressOpen(page, revoke);
+      await expect(page.getByRole("button", { name: "Revoke token" })).toBeVisible();
+      await walkBoth(page, "/settings, Access tokens with a question open");
+      await page.getByRole("button", { name: "Cancel" }).click();
+
+      const create = page.getByRole("button", { name: "Create token" });
+      await pressOpen(page, create);
+      const dialog = page.getByRole("dialog", { name: "New access token" });
+      await expect(dialog).toBeVisible();
+      await walkBoth(page, "New access token dialog", {
+        scope: ".modal",
+        first: () => firstIn(page, ".modal"),
+        last: () => lastIn(page, ".modal"),
+        trapped: true,
+      });
+
+      // The token's one showing: its field, Copy, the agent choice and Done.
+      await dialog.getByLabel("Name").fill("Focus walk");
+      await dialog.getByLabel("Name").press("Enter");
+      await expect(page.getByRole("dialog", { name: "Token created" })).toBeVisible();
+      await walkBoth(page, "Token created dialog", {
+        scope: ".modal",
+        first: () => firstIn(page, ".modal"),
+        last: () => lastIn(page, ".modal"),
+        trapped: true,
+      });
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expectFocusBack(page, create, { ring: true });
+    });
+
     test("a key that resolves to nothing, and a page that is not there", async ({ page }) => {
       await signIn(page, "anna@example.com");
       await page.goto("/browse/NOPE-1");

@@ -2,6 +2,7 @@ import type {
   AcceptInvitationInput,
   AddIssueWorklogInput,
   AuthTokens,
+  CreateAccessTokenInput,
   BoardParams,
   ConfirmAttachmentUploadInput,
   ConfirmAvatarUploadInput,
@@ -63,6 +64,7 @@ import {
 } from "../planningFields";
 import { SessionExpiredSignal } from "../session";
 import type {
+  AccessToken,
   AdminCatalog,
   AdminPagination,
   AdminRow,
@@ -98,6 +100,7 @@ import type {
   IssueWorklog,
   IssueDetails,
   IssueDetailsWithHistory,
+  IssuedAccessToken,
   InvitationResult,
   LinkedIssue,
   UserSummary,
@@ -433,7 +436,11 @@ interface RestListIssueLabelsResponse {
   totalCount?: number;
 }
 
-type RestIssueHistoryEvent = Omit<IssueHistoryEvent, "issueId">;
+/**
+ * `IssueHistoryResponseDto` without `via`: the channel mark (TAS-411) is not on
+ * the wire, and a wire type that declared it would say it is.
+ */
+type RestIssueHistoryEvent = Omit<IssueHistoryEvent, "issueId" | "via">;
 
 interface RestIssueWithHistory {
   issue: RestIssue;
@@ -760,7 +767,8 @@ interface RestUserAvatar {
   downloadUrl?: string;
 }
 
-type RestComment = Omit<IssueComment, "updatedAt" | "author"> & {
+/** `CommentResponseDto`. No `via`: the channel mark (TAS-411) is not on the wire. */
+type RestComment = Omit<IssueComment, "updatedAt" | "author" | "via"> & {
   updatedAt?: string | null;
   /** Since backend TAS-214. */
   author?: RestUserSummary | null;
@@ -976,6 +984,43 @@ export class RestTaskaApi implements TaskaApi {
     return toNotificationPreferences(
       await this.request<RestNotificationPreferences>("/users/me/telegram", { method: "DELETE" }),
     );
+  }
+
+  /*
+   * Personal access tokens (TAS-412). **PROVISIONAL — not the contract.** The
+   * three paths are backend TAS-402's; nothing else here is specified anywhere
+   * yet, and backend develop `92a00dbc` serves none of them, so on the stand
+   * each answers the static-resource 404 the section reads as "not on this
+   * gateway yet". The bodies are the frontend's proposal on TAS-402:
+   *
+   *   POST   /users/me/access-tokens  {name, scopes, expiresInDays}
+   *          → 201 {token: AccessTokenDto, secret}
+   *   GET    /users/me/access-tokens  → 200 {items: AccessTokenDto[]}
+   *   DELETE /users/me/access-tokens/{tokenId} → 204
+   *
+   * `AccessTokenDto` is {id, name, tokenPrefix, scopes, createdAt, expiresAt,
+   * lastUsedAt|null}; refusals are the gateway's flat {code, message}, 403
+   * `insufficient_scope` for a request made with a token and 429 for creating
+   * too often. The list takes `GET /projects`' shape (`listMyProjects`: the
+   * caller's own collection, unpaginated, `{items}`) — the nearest precedent.
+   * Recorded with what removes it in docs/ai/API-DIVERGENCE.md, "TAS-412".
+   */
+  async listAccessTokens(): Promise<AccessToken[]> {
+    const response = await this.request<{ items?: unknown }>("/users/me/access-tokens");
+    return Array.isArray(response?.items) ? response.items.map(toAccessToken) : [];
+  }
+
+  async createAccessToken(input: CreateAccessTokenInput): Promise<IssuedAccessToken> {
+    const response = await this.request<{ token?: unknown; secret?: unknown }>("/users/me/access-tokens", {
+      method: "POST",
+      body: { name: input.name, scopes: input.scopes, expiresInDays: input.expiresInDays },
+    });
+    // The secret is handed straight to the caller and kept nowhere here.
+    return { token: toAccessToken(response?.token), secret: typeof response?.secret === "string" ? response.secret : "" };
+  }
+
+  async revokeAccessToken(tokenId: string): Promise<void> {
+    await this.request<void>(`/users/me/access-tokens/${this.segment(tokenId)}`, { method: "DELETE" });
   }
 
   hasSession(): boolean {
@@ -2725,6 +2770,10 @@ export class RestTaskaApi implements TaskaApi {
       history: (response.history ?? []).map((event) => ({
         ...event,
         issueId,
+        // No channel mark from this gateway: TAS-411 has not said what the
+        // field is called or what it holds, so whatever a key of that name
+        // might carry is not read (docs/ai/API-DIVERGENCE.md, "TAS-412").
+        via: null,
       })),
     };
   }
@@ -2849,6 +2898,8 @@ export class RestTaskaApi implements TaskaApi {
       ...comment,
       updatedAt: comment.updatedAt ?? null,
       author: comment.author ? toUserSummary(comment.author, comment.authorUserId) : null,
+      // No channel mark from this gateway yet (TAS-411), as in `getIssue`'s history.
+      via: null,
     };
   }
 
@@ -2996,6 +3047,26 @@ function toTelegramStatus(value: unknown): TelegramStatus | null {
 
 function toNotificationPreferences(wire: RestNotificationPreferences): NotificationPreferences {
   return { ...wire, telegramStatus: toTelegramStatus(wire.telegramStatus) };
+}
+
+/**
+ * One `AccessTokenDto` of the provisional shape (see `listAccessTokens`), field
+ * by field, so nothing else the body carries rides into the domain object — a
+ * secret least of all. A field that is not what the proposal says arrives as
+ * the empty string, `[]` or `null`, never as whatever it was.
+ */
+function toAccessToken(value: unknown): AccessToken {
+  const wire = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+  const text = (key: string) => (typeof wire[key] === "string" ? (wire[key] as string) : "");
+  return {
+    id: text("id"),
+    name: text("name"),
+    tokenPrefix: text("tokenPrefix"),
+    scopes: Array.isArray(wire.scopes) ? wire.scopes.filter((scope): scope is string => typeof scope === "string") : [],
+    createdAt: text("createdAt"),
+    expiresAt: text("expiresAt"),
+    lastUsedAt: typeof wire.lastUsedAt === "string" ? wire.lastUsedAt : null,
+  };
 }
 
 /**

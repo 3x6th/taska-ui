@@ -3,6 +3,7 @@ import type {
   AddIssueWorklogInput,
   AuthTokens,
   BoardParams,
+  CreateAccessTokenInput,
   ConfirmAttachmentUploadInput,
   ConfirmAvatarUploadInput,
   CreateAttachmentUploadUrlInput,
@@ -75,6 +76,8 @@ import {
 import type { PlanningFields, PlanningFieldsInput } from "../planningFields";
 import { emptyPlanningFields, planningFieldRefusal, resolvePlanningFields } from "../planningFields";
 import type {
+  AccessToken,
+  ActionVia,
   AdminCatalog,
   AdminFilterOperator,
   AdminRow,
@@ -110,6 +113,7 @@ import type {
   IssueWorklog,
   IssueDetails,
   IssueDetailsWithHistory,
+  IssuedAccessToken,
   Label,
   Notification,
   NotificationPage,
@@ -146,6 +150,7 @@ import { accountLockedMessage } from "../../lib/accountLock";
 import { addDays, localDateOnly } from "../../lib/worklog";
 import type { AdminColumnClass } from "../../lib/adminColumnTypes";
 import { classifyColumnType } from "../../lib/adminColumnTypes";
+import { MockAccessTokens } from "./MockAccessTokens";
 import { MockNotificationPreferences } from "./MockNotificationPreferences";
 
 /**
@@ -1676,6 +1681,8 @@ function outboxProblem(row: AdminRow, nowMs: number): keyof typeof OUTBOX_REASON
 
 export class MockTaskaStore {
   readonly notificationPreferences = new MockNotificationPreferences();
+  /** Personal access tokens (TAS-412); Anna, the account the suite signs in with, has two. */
+  readonly accessTokens = new MockAccessTokens(ANNA_ID);
   private users: StoredUser[];
   private projects: Project[];
   private membersByProject: Record<string, ProjectMember[]>;
@@ -2361,15 +2368,22 @@ export class MockTaskaStore {
     const tas107 = this.issues.find((item) => item.issueKey === "TAS-107");
     const tas101 = this.issues.find((item) => item.issueKey === "TAS-101");
     this.commentsByIssue = {};
+    // The channel mark (TAS-412, for TAS-411) — **mock only**: no gateway sends
+    // one yet. Sofia moved TAS-107 and commented on it through the MCP server
+    // with a named token; Mark set TAS-101's priority with a token the server
+    // does not name. Every other seeded event and comment has no mark, which
+    // is a change made in the UI.
+    const viaCursor: ActionVia = { channel: "MCP", tokenName: "Cursor on laptop" };
+    const viaToken: ActionVia = { channel: "API_TOKEN", tokenName: null };
     if (tas107) {
       this.pushHistory(tas107.id, "ASSIGNED", ANNA_ID, { to: SOFIA_ID }, ts(16, 43));
-      this.pushHistory(tas107.id, "TRANSITIONED", SOFIA_ID, { from: "TODO", to: "IN_PROGRESS" }, ts(17, 14));
-      this.comment(tas107, SOFIA_ID, "Picked this up — the token refresh path needs a retry guard first.", ts(17, 20));
+      this.pushHistory(tas107.id, "TRANSITIONED", SOFIA_ID, { from: "TODO", to: "IN_PROGRESS" }, ts(17, 14), viaCursor);
+      this.comment(tas107, SOFIA_ID, "Picked this up — the token refresh path needs a retry guard first.", ts(17, 20), viaCursor);
       this.comment(tas107, ANNA_ID, "Agreed. Ping me once the guard is in and I will review.", ts(18, 5));
     }
     if (tas101) {
       this.pushHistory(tas101.id, "TRANSITIONED", MARK_ID, { from: "TODO", to: "IN_PROGRESS" }, ts(13, 31));
-      this.pushHistory(tas101.id, "PRIORITY", MARK_ID, { to: "HIGH" }, ts(13, 44));
+      this.pushHistory(tas101.id, "PRIORITY", MARK_ID, { to: "HIGH" }, ts(13, 44), viaToken);
       this.comment(tas101, MARK_ID, "Bumped to high — this blocks the release checklist.", ts(13, 52));
     }
 
@@ -6829,7 +6843,7 @@ export class MockTaskaStore {
     return trimmed;
   }
 
-  private comment(issue: Issue, authorUserId: string, body: string, createdAt: string): StoredIssueComment {
+  private comment(issue: Issue, authorUserId: string, body: string, createdAt: string, via?: ActionVia): StoredIssueComment {
     const comment: StoredIssueComment = {
       id: makeId("comment"),
       issueId: issue.id,
@@ -6852,6 +6866,9 @@ export class MockTaskaStore {
       // does (`repository/IssueCommentRepository.java`). Nothing in the UI
       // reads it for that purpose — one field decides the badge.
       version: 1,
+      // Only on a seeded comment that has one (mock only, TAS-411); a comment
+      // written in the UI carries no mark.
+      ...(via ? { via } : {}),
     };
     this.commentsByIssue[issue.id] = [...(this.commentsByIssue[issue.id] ?? []), comment];
     return comment;
@@ -6863,6 +6880,7 @@ export class MockTaskaStore {
     actorUserId: string,
     payload: IssueHistoryEvent["payload"],
     occurredAt = now(),
+    via?: ActionVia,
   ) {
     const event: IssueHistoryEvent = {
       id: makeId("history"),
@@ -6871,6 +6889,8 @@ export class MockTaskaStore {
       actorUserId,
       occurredAt,
       payload,
+      // As on comments: seeded only, and only where the seed says so.
+      ...(via ? { via } : {}),
     };
     this.historyByIssue[issueId] = [...(this.historyByIssue[issueId] ?? []), event];
   }
@@ -6947,6 +6967,19 @@ export class MockTaskaApi implements TaskaApi {
 
   async disconnectTelegram(): Promise<NotificationPreferences> {
     return wait(this.store.notificationPreferences.disconnect(this.store.currentUser()));
+  }
+
+  async listAccessTokens(): Promise<AccessToken[]> {
+    return wait(this.store.accessTokens.list(this.store.currentUser().id));
+  }
+
+  async createAccessToken(input: CreateAccessTokenInput): Promise<IssuedAccessToken> {
+    return wait(this.store.accessTokens.create(this.store.currentUser().id, input));
+  }
+
+  async revokeAccessToken(tokenId: string): Promise<void> {
+    this.store.accessTokens.revoke(this.store.currentUser().id, tokenId);
+    await wait(null);
   }
 
   hasSession(): boolean {

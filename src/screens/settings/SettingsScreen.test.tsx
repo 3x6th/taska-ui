@@ -43,6 +43,7 @@ const { fakeApi, state } = vi.hoisted(() => {
       };
     },
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0, unreadCount: 0 }),
+    listAccessTokens: async () => [],
   };
   return { fakeApi: api as unknown as TaskaApi, state };
 });
@@ -89,9 +90,27 @@ describe("the Settings area", () => {
     expect(within(rail).getByRole("link", { name: "My profile" })).toHaveAttribute("aria-current", "page");
     expect(within(rail).getByRole("link", { name: "Appearance" })).not.toHaveAttribute("aria-current");
     expect(within(rail).getByRole("link", { name: "Back to projects" })).toHaveAttribute("href", "/projects");
+    // Access tokens (TAS-412) second, beside the profile it belongs with.
+    expect(within(rail).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "My profile",
+      "Access tokens",
+      "Appearance",
+      "Back to projects",
+    ]);
     // The app shell's own bar, with the theme toggle, as on /admin.
     expect(screen.getByRole("button", { name: "Switch to dark theme" })).toBeVisible();
     expect(await screen.findByText("tom@example.com")).toBeVisible();
+  });
+
+  it("opens Access tokens at /settings/tokens for any role, with no gate", async () => {
+    renderAt("/settings/tokens");
+
+    expect(await screen.findByRole("heading", { level: 1, name: /Settings.*Access tokens/ })).toBeVisible();
+    const rail = screen.getByRole("navigation", { name: "Settings" });
+    expect(within(rail).getByRole("link", { name: "Access tokens" })).toHaveAttribute("aria-current", "page");
+    // Tom is a plain USER here; the section is his own, as My profile is.
+    expect(await screen.findByText("No tokens yet.")).toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Connect an AI agent" })).toBeVisible();
   });
 
   it("answers an address inside /settings that is no section with the not-found screen", async () => {

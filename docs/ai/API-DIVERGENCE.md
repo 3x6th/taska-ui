@@ -1716,6 +1716,67 @@ Everything below is the entry as it stood, in the past tense.
   is **done** — narrow that story to whatever else it still carries. The UI half
   is ours and is what the backlog line names.
 
+### TAS-412: personal access tokens and the channel mark ship ahead of the gateway, on shapes nobody has specified
+
+- **Endpoints:** `GET /api/v1/users/me/access-tokens`,
+  `POST /api/v1/users/me/access-tokens`,
+  `DELETE /api/v1/users/me/access-tokens/{tokenId}` — the paths are backend
+  [TAS-402](https://jira.ozero.dev/browse/TAS-402)'s. Plus a channel field on
+  `IssueHistoryResponseDto` and `CommentResponseDto` for
+  [TAS-411](https://jira.ozero.dev/browse/TAS-411).
+- **Observed:** nothing. Backend develop `92a00dbc` has no personal access
+  tokens, no token routes and no channel field; `docs/contract/openapi.yml`
+  has none of them either. Not probed on the stand — there is nothing to probe;
+  an unmapped path there answers the static-resource 404 like any other.
+- **What the UI assumes — the frontend's proposal on TAS-402, not the
+  contract.** Written once, as a comment over the three methods in
+  `RestTaskaApi` (the only place that says so in code):
+  - `POST` takes `{name, scopes, expiresInDays}`: `name` trimmed, 1–100
+    characters; `scopes` exactly `["read"]` or `["read","write"]`;
+    `expiresInDays` one of 7, 30, 90, 365, the form defaulting to 30.
+    It answers **201** `{token, secret}`, the secret (`tsk_pat_…`) once.
+  - A token is `{id, name, tokenPrefix, scopes, createdAt, expiresAt,
+    lastUsedAt|null}`; `tokenPrefix` is the first characters shown, e.g.
+    `tsk_pat_3fA9`. The list never carries a secret.
+  - `GET` answers **200** `{items: [token]}` — the shape of
+    `GET /projects` (`listMyProjects`, the caller's own collection,
+    unpaginated), the nearest precedent. Order unspecified; the UI lists
+    newest first by `createdAt`.
+  - `DELETE` answers **204**.
+  - Refusals are the gateway's flat `{code, message}`: **403**
+    `code: "insufficient_scope"` for a request made with a token (managing
+    tokens is JWT-session only), **429** for creating too often (read as
+    status 429 or `RESOURCE_EXHAUSTED`, the invitation resend's pair).
+  - The expiry list, the 100-character name and the two grants are provisional
+    until ADR [TAS-400](https://jira.ozero.dev/browse/TAS-400).
+  - Channel: `via?: {channel: "API_TOKEN" | "MCP", tokenName: string | null} |
+    null` on a history event and a comment (`ActionVia`, `src/domain/types.ts`).
+    Absent or `null` is a change made in the UI. TAS-411 has been asked for the
+    token's name beside the channel (2026-10-24).
+- **What the UI does.** `mock`: everything, behaviourally — two seeded tokens
+  for Anna, a fresh random secret on create that the store does not keep, a
+  revoke that takes the token out, `INVALID_ARGUMENT` for a name, scope or
+  lifetime off the list, `NOT_FOUND` for an unknown id. Mock-only, and labelled
+  so in `MockAccessTokens`: the 429 after five creates in a minute, expired
+  tokens staying listed until revoked, and the seeded `via` marks on TAS-107
+  and TAS-101 (the `insufficient_scope` 403 is unreachable there — the mock
+  session is always a signed-in one). `rest`: calls the routes above; on the
+  stand the list read gets the static-resource 404 and Settings → Access tokens
+  says "Access tokens are not on this gateway yet, so they cannot be shown
+  here." with no Create token. `RestTaskaApi` sets `via: null` on every history
+  event and comment, whatever a key of that name might carry, so the stand
+  draws Activity and comments exactly as before.
+- **Compensation: none.** Nothing is synthesised for the stand; the section
+  says the routes are not there, and the channel mark is absent.
+- **Removal:** when TAS-402 deploys the routes and the contract states their
+  shapes — then `RestTaskaApi`'s provisional comment goes, the mapping follows
+  the contract wherever it differs from the above, and the "not on this gateway
+  yet" branch is deleted by hand (it goes quiet on its own; see
+  `UNDEPLOYED_ROUTE_MESSAGE`). When TAS-411 states the channel field, map it in
+  `getIssue` and `toComment` in place of `via: null`. The expiry list and the
+  name's ceiling follow ADR TAS-400.
+
+
 ### TAS-387: what the notification-channel Java says that the contract does not
 
 - **Endpoints:** `GET`/`PATCH /api/v1/users/me/notification-preferences`,

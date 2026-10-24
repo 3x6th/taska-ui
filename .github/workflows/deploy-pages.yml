@@ -40,6 +40,9 @@ jobs:
           VITE_ROUTER_MODE: ${{ vars.VITE_ROUTER_MODE || 'hash' }}
           VITE_TASKA_API_MODE: ${{ vars.VITE_TASKA_API_MODE }}
           VITE_TASKA_API_BASE_URL: ${{ vars.VITE_TASKA_API_BASE_URL }}
+          # Unset until mcp-server (TAS-403) has a public address; Settings →
+          # Access tokens then says the MCP server is not available yet.
+          VITE_TASKA_MCP_URL: ${{ vars.VITE_TASKA_MCP_URL }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v6
