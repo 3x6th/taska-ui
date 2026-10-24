@@ -4039,6 +4039,11 @@ Frontend notes:
 - **Pre-existing, seen in the TAS-209 review** (`release-reviewer`): opening the Labels rename
   editor leaves focus on `<body>`; in New issue a `<label>` wraps the Priority buttons, so «Low»'s
   accessible name is «Priority Medium High URGENT».
+- **The kept read-only comment composer and the comment editor still draw the editable recipe**
+  (`art-director`, TAS-209 round 2): fill, `--border-strong`, resize, text cursor, accent border
+  on focus with no §7 ring — and B2 now makes this box a focus target. Apply §4.3's read-only
+  recipe: narrow the focus rule to `:not(:read-only)`, add `background: transparent;
+  border-color: var(--border); resize: none; cursor: default` for `:read-only`.
 - **The MVP two-account stand run and the archive smoke are pending** (TAS-209, TAS-397) —
   checklist in the TAS-209 comment; request ids go to API-DIVERGENCE.
 
