@@ -1890,13 +1890,13 @@ Everything below is the entry as it stood, in the past tense.
 
 - **Endpoint:** `GET /api/v1/issues/{issueId}`.
 - **Contract:** each history item carries `actorUserId` and nothing else about the person; the
-  people named in an `ASSIGNEE_CHANGED` payload are ids too.
+  people named in an `ASSIGNED` payload are ids too.
 - **Client:** the issue panel's Activity (`BoardScreen.tsx`) names the actor, and the people in an
-  `ASSIGNEE_CHANGED` payload, by joining the ids against the `/context` members the screen
+  `ASSIGNED` payload, by joining the ids against the `/context` members the screen
   already holds. A former member is not in that list and reads "Someone".
 - **Compensation:** none worth the word — a join against data already on screen, no extra read.
 - **Removal:** [TAS-398](https://jira.ozero.dev/browse/TAS-398), the backend ask filed on
-  2026-10-24: an `actor` `UserSummary` on each history item. Then the join goes.
+  2026-10-24: an `actor` `UserSummary` on each history item. Then the actor join goes; the assignee ids inside an `ASSIGNED` payload (`assigneeId`, `previousAssigneeId`) stay joined against members unless TAS-398 takes its optional second half.
 
 ### `GET /project-stats`: what the yml does not say
 

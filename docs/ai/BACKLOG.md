@@ -30,8 +30,9 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 - **Seven `TaskaApi` reads have no screen caller since TAS-202:** `getMembership`,
   `getProject`, `listProjectLabels`, `listIssues`, `listIssueLinks`,
-  `listIssueLabels`, `listIssueWatchers` — delete together (64 test call sites,
-  51 of them fixture lookups in `MockTaskaApi.test.ts`). The first three were
+  `listIssueLabels`, `listIssueWatchers` — delete together (about 140 test call
+  sites: 112 in `MockTaskaApi.test.ts`, 22 in `RestTaskaApi.test.ts`, 6 in `members.test.ts`;
+  `api.listIssues(` alone is 51). The first three were
   kept after TAS-251 so that the switch to `/context` (backend #169, deployed
   2026-10-12) stayed reversible (`release-reviewer`, 2026-10-10; the board's
   confirming read on a context 403/404 was removed as a compensation). A
@@ -753,8 +754,10 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   reference*, so both sides are the same object and only the neighbouring
   `toMatchObject` lines actually pin anything.~~ **Closed by
   [TAS-209](https://jira.ozero.dev/browse/TAS-209), 2026-10-24.** The class and
-  its test file are deleted, and the seed's roles are pinned in the mock's own
-  test, `MockTaskaApi.test.ts:385-396` (`api-contract-guard`, pre-build sweep).
+  its test file are deleted. In the mock's own test only Anna's `USER` is asserted
+  (`MockTaskaApi.test.ts:385-396`); Mark's `GLOBAL_ADMIN` is pinned only indirectly by the
+  mock-backed admin e2e specs — one `toMatchObject({ globalRole: "GLOBAL_ADMIN" })` after
+  Mark's login there would pin it directly (`api-contract-guard`, TAS-209 post-build).
 - **Duplicate accessible name on the login screen** — the segmented mode toggle
   and the submit button are both named "Sign in", so a role locator matches two
   elements. `e2e/smoke.spec.ts` works around it with a CSS locator; the fix
