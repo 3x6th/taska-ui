@@ -28,14 +28,17 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
-- **Three `TaskaApi` reads no screen calls after TAS-251** — `getMembership`,
-  `listProjectLabels` and `getProject` (the board's confirming
-  read on a context 403/404 was removed as a compensation, 2026-10-12). Kept in
-  mock, rest and hybrid so the switch to `/context` (backend #169, merged and
-  deployed 2026-10-12) stays reversible; delete once the context has run there for a while (`release-reviewer`,
-  2026-10-10). Was four: [TAS-263](https://jira.ozero.dev/browse/TAS-263)
-  (`aac71ed`) deleted `getWorkflow` from `TaskaApi`, mock, rest and hybrid, and
-  `src/` has no caller left.
+- **Seven `TaskaApi` reads have no screen caller since TAS-202:** `getMembership`,
+  `getProject`, `listProjectLabels`, `listIssues`, `listIssueLinks`,
+  `listIssueLabels`, `listIssueWatchers` — delete together (about 140 test call
+  sites: 112 in `MockTaskaApi.test.ts`, 22 in `RestTaskaApi.test.ts`, 6 in `members.test.ts`;
+  `api.listIssues(` alone is 51). The first three were
+  kept after TAS-251 so that the switch to `/context` (backend #169, deployed
+  2026-10-12) stayed reversible (`release-reviewer`, 2026-10-10; the board's
+  confirming read on a context 403/404 was removed as a compensation). A
+  fourth, `getWorkflow`, went earlier:
+  [TAS-263](https://jira.ozero.dev/browse/TAS-263) (`aac71ed`) deleted it from
+  `TaskaApi`, the mock and rest.
 - **`AdminSectionPlaceholder` and its generic route are unused** since TAS-251
   replaced the Audit stand-in. Delete, or keep for the next section — a call
   for whoever adds one.
@@ -647,7 +650,9 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   `MockApiError` (no `status`), rest throws `ApiError`. First screen that
   branches on `error.status` behaves differently per mode.
 - **`getMembership` disagreement:** mock returns `projectExists: false`
-  shapes, hybrid hardcodes healthy, rest propagates 404 — pick one contract.
+  shapes, rest propagates 404 (hybrid, which hardcoded healthy, was deleted in
+  TAS-209) — pick one contract, or delete the read with the others that no
+  screen calls (top of this file).
 - ~~**Mock seed lacks a project where the viewer is a *member* with a read-only
   role.**~~ **Closed by [TAS-226](https://jira.ozero.dev/browse/TAS-226) and
   [TAS-251](https://jira.ozero.dev/browse/TAS-251)** (re-checked 2026-10-17 on
@@ -741,13 +746,18 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   (37684446678): one flaky test of 535, `notifications.spec.ts:66` — see
   *Left by TAS-247*. If flakes per run climb above the old 2–3, the cap is
   `workers: 3` under CI, not fewer shards.
-- **The mock seed has no test of its own** (found by `release-reviewer`,
+- ~~**The mock seed has no test of its own** (found by `release-reviewer`,
   2026-08-05). The only assertion that Mark is `GLOBAL_ADMIN` and Anna is
   `USER` lives in `HybridTaskaApi.test.ts` — a file about a different class, so
   a future seed change fails somewhere that does not explain itself. Related:
   two assertions there compare `toEqual` against a value the mock returns *by
   reference*, so both sides are the same object and only the neighbouring
-  `toMatchObject` lines actually pin anything.
+  `toMatchObject` lines actually pin anything.~~ **Closed by
+  [TAS-209](https://jira.ozero.dev/browse/TAS-209), 2026-10-24.** The class and
+  its test file are deleted. In the mock's own test only Anna's `USER` is asserted
+  (`MockTaskaApi.test.ts:385-396`); Mark's `GLOBAL_ADMIN` is pinned only indirectly by the
+  mock-backed admin e2e specs — one `toMatchObject({ globalRole: "GLOBAL_ADMIN" })` after
+  Mark's login there would pin it directly (`api-contract-guard`, TAS-209 post-build).
 - **Duplicate accessible name on the login screen** — the segmented mode toggle
   and the submit button are both named "Sign in", so a role locator matches two
   elements. `e2e/smoke.spec.ts` works around it with a CSS locator; the fix
@@ -1069,7 +1079,7 @@ time.
   **Two call sites now produce the query key `["issues", projectId, "ALL"]`
   with `queryFn` bodies that differ cosmetically.** The board passes
   `labelId: undefined` explicitly; `IssueLinksSection` omits the key entirely.
-  Identical across mock, rest and hybrid today, and deliberately the same cache
+  Identical across mock and rest, and deliberately the same cache
   entry so an unfiltered board costs the panel nothing. The hazard is later:
   add a parameter to the board's `listIssues` call without adding it here and
   the two observers disagree, silently, about what one cache entry holds. A
@@ -1121,9 +1131,9 @@ time.
   divergence entry becomes "computed, permanently".
 - ~~**"1 members"** on a freshly created project card — plural not handled.~~
   **Overtaken by [TAS-202](https://jira.ozero.dev/browse/TAS-202), 2026-09-09.**
-  It is not a plural bug on new projects: `hybrid` synthesises the member list
-  from the reader alone, so **every** card prints `1 members` whatever the truth,
-  and eighteen of that screen's twenty-seven requests exist to produce it. The
+  It was not a plural bug on new projects: `hybrid` synthesised the member list
+  from the reader alone, so **every** card printed `1 members` whatever the truth,
+  and eighteen of that screen's twenty-seven requests existed to produce it. The
   story removes the count until [TAS-137](https://jira.ozero.dev/browse/TAS-137)
   lands rather than making it cheaper or fixing its grammar.
   **TAS-137 landed, and since TAS-224 the count is real.** So `1 members` now
@@ -2179,7 +2189,8 @@ is what recurs.
   the one item that breaks the deployed board today.
 - [TAS-137](https://jira.ozero.dev/browse/TAS-137) — membership/member reads.
   **Done:** merged as backend PR #152 and deployed 2026-09-16. The synthesis and
-  the admin flag came out in TAS-224; `HybridTaskaApi` itself goes in TAS-209.
+  the admin flag came out in TAS-224; `HybridTaskaApi` itself was deleted in
+  TAS-209.
 - [TAS-141](https://jira.ozero.dev/browse/TAS-141) — contract gaps: read-all,
   nullable assignee, comment ordering, CORS-exposed `X-Request-Id`,
   404-on-empty-projects bug. **Closed in Jira 2026-09-04 with three clauses
@@ -2280,15 +2291,16 @@ is what recurs.
   `src/` reads `isMember` or `projectExists` at all. So deleting
   `membershipQuery` and taking `projectQuery.data?.currentUserRole` removes a
   read and sharpens the TAS-163 banner to what it now means.
-  **It must not be done yet.** On the stand the gateway sends no
-  `currentUserRole`, while `HybridTaskaApi.getMembership` short-circuits to
-  ADMIN through `VITE_TASKA_ASSUME_PROJECT_ADMIN`; making the swap today would
-  floor every user on the stand to VIEWER and take write access off the board.
-  It becomes correct the day PR #152 deploys, and it belongs to
+  **It must not be done yet.** On the stand the gateway sent no
+  `currentUserRole`, while `HybridTaskaApi.getMembership` short-circuited to
+  ADMIN through `VITE_TASKA_ASSUME_PROJECT_ADMIN`; making the swap then would
+  have floored every user on the stand to VIEWER and taken write access off the
+  board. It becomes correct the day PR #152 deploys, and it belongs to
   [TAS-202](https://jira.ozero.dev/browse/TAS-202) when it does.
   **That day was 2026-09-16.** PR #152 is deployed, and TAS-224 removed the
-  flag and made hybrid delegate, so the precondition holds. Hybrid now asks for
-  the project twice per paint too. The swap is still TAS-202's.
+  flag and made hybrid delegate, so the precondition holds. Hybrid then asked for
+  the project twice per paint too (the class was deleted in TAS-209). The swap
+  is still TAS-202's.
 - ~~**Two backend asks out of PR #152, raised on TAS-137 while the PR is open**
   (2026-09-12, found by `api-contract-guard`, both verified in the PR's Java).~~
   **Both fixed before the merge** — true at `1ad6ffa`, fixed in `7fa04ba`, and
@@ -2315,9 +2327,10 @@ is what recurs.
 - **Two record nits from TAS-219's release review**, both one clause and neither
   worth a commit of its own. `RestTaskaApi.getMembership` hardcodes `isMember`
   and `projectExists` exactly as the hybrid synthesis did (there is no synthesis
-  since TAS-224), but the divergence bullets attribute that hardcoding to hybrid alone — it is grounded there in
-  the 403-on-a-non-member behaviour and read by nothing, so it is a wording fix
-  for the next time that section is open. And `MockTaskaStore.createProject`
+  since TAS-224). It is grounded in the 403-on-a-non-member behaviour and read
+  by nothing, but the divergence record attributed the hardcoding to hybrid
+  alone (and TAS-209 cut those bullets to a paragraph that still does), so it is
+  a wording fix for the next time that entry is open. And `MockTaskaStore.createProject`
   returns the stored row without passing it through `withCurrentUserRole`, so a
   freshly created project is the one row in the mock's `listProjects` that
   states no role. The create *response* without a role is in parity: the
@@ -2337,13 +2350,14 @@ is what recurs.
   mode. And the checked-state ring on a swatch is `var(--fg)`, which on
   `#0052cc` reads as a dark disc rather than a ring — a TAS-169 recipe that this
   story made more visible without changing.
-- **Three comments still say the undeployed-route predicate cannot see a 405.**
-  TAS-148 widened it, and the `listMembers` comments in `TaskaApi.ts`,
-  `RestTaskaApi.ts` and `HybridTaskaApi.ts` describe backend PR #152's own 405
-  as unrecognisable. They are imprecise rather than wrong — the predicate would
-  match that signature, it is simply never called there — and they belong to a
-  different story's feature, which is why TAS-148 left them alone. Worth a pass
-  the next time that file is open for its own reasons.
+- **Two comments still say the undeployed-route predicate cannot see a 405.**
+  TAS-148 widened it, and the `listMembers` comments in `TaskaApi.ts` and
+  `RestTaskaApi.ts` (a third, in `HybridTaskaApi.ts`, went with the class in
+  TAS-209) describe backend PR #152's own 405 as unrecognisable. They are
+  imprecise rather than wrong — the predicate would match that signature, it is
+  simply never called there — and they belong to a different story's feature,
+  which is why TAS-148 left them alone. Worth a pass the next time that file is
+  open for its own reasons.
 - **Seven from TAS-148's second wave**, all recorded rather than taken, and none
   of them changes behaviour. `MockTaskaStore.updateProject`'s comment justifies
   checking existence before permission by §4.18's "must not tell apart", when
@@ -2393,13 +2407,14 @@ is what recurs.
   fallback is covered end to end.
 - **TAS-220's cache write has three edges `frontend-builder` named rather than
   closed** (2026-09-14).
-  - **The face flip-flops wherever member rows carry no avatar.** In hybrid once
-    PR #150 deploys, the write puts the reader's face on hybrid's synthesised
-    member row, and the next members refetch takes it off again. The menu keeps
-    the photo while the board shows initials until hybrid's `listMembers`
-    delegates. The same happens in rest against PR #152's head until its
-    missing avatar id is fixed (TAS-137). **Since TAS-224 hybrid delegates, and
-    the flip-flop is unchanged**, because PR #152 merged without the avatar id.
+  - **The face flip-flops wherever member rows carry no avatar.** In hybrid, once
+    PR #150 deployed, the write put the reader's face on hybrid's synthesised
+    member row, and the next members refetch took it off again. The menu kept
+    the photo while the board showed initials until hybrid's `listMembers`
+    delegated. The same happens in rest against PR #152's head until its
+    missing avatar id is fixed (TAS-137). **Since TAS-224 hybrid delegated, and
+    the flip-flop was unchanged** (TAS-209 then deleted the class), because
+    PR #152 merged without the avatar id.
     It lasts until auth-service selects `a.id AS avatar_id`
     ([TAS-225](https://jira.ozero.dev/browse/TAS-225)).
   - **Shape coupling:** the menu types the project-summary cache by shape alone.
@@ -2468,7 +2483,8 @@ is what recurs.
   - `.compact-button:hover` (`styles.css:4573`) sticks after a tap on touch,
     which is a product-wide `@media (hover: hover)` question.
   - Beside those: the undeployed-route state *can* be driven in Playwright
-    against the hybrid dev server, with every `/api` request answered inside the
+    against the dev server in `rest` mode (this was written against `hybrid`,
+    deleted in TAS-209), with every `/api` request answered inside the
     page and every external request aborted. The e2e suite is mock-only by
     design, so that would be a new kind of spec rather than one more case.
     Since TAS-263 that state is only the write refusal ("Profile photos are not
@@ -3494,8 +3510,9 @@ Frontend, recorded rather than taken:
   `ProjectMemberServiceImpl.java:142-146`). Only `getProjectContext` refuses the
   way the server does. This is documented in `API-DIVERGENCE.md`'s mock-parity
   bullets. Under "the mock follows the server" these reads should refuse the
-  way the context does, and no screen calls three of them (see the top of this
-  file). From the #186 skeptic.
+  way the context does, and no screen calls four of them (`getMembership`,
+  `getProject`, `listProjectLabels`, `listIssues`; see the top of this file).
+  From the #186 skeptic.
 - **A degraded `/users/me` 200 carries its request id only in `X-Request-Id`,
   and the client reads that header only on errors** (#193). #193 merged as
   `b88150f` and deployed 2026-10-19; a healthy read carries `avatar` and
@@ -4006,80 +4023,102 @@ Frontend notes:
   the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
   ("Access denied" / "Not allowed role") and 404, contract text only.
 
+### Left by TAS-209 (hybrid removed, the TAS-396/397 tails, 2026-10-24)
+
+- **Admin refusal blocks announce the request id**: `role="alert"` is on the whole box in
+  `AdminError.tsx:28`, `AdminUserActionModal.tsx:233`, `AdminOutboxRetryModal.tsx:321` — put it
+  on a wrapper around the sentence and the server's words, with the id line outside (§5.6,
+  `art-director`, TAS-209 post-build). `AdminError` deliberately keeps the server's words in the
+  alert, so this is a restructure.
+- **Panel Esc from a non-text control drops an unsent comment or work-log draft** — §4.10 holds
+  only the focused field; align with §4.11's dialog-wide hold (`art-director`, TAS-209
+  post-build; pre-existing since TAS-380).
+- **Nothing guards `src/main.tsx`'s `useTransitions={false}`** (`api-contract-guard`): the
+  rail-race regression test sets the flag on its own router. A two-line assertion in the style
+  of `src/styles.test.ts` would.
+- **Pre-existing, seen in the TAS-209 review** (`release-reviewer`): opening the Labels rename
+  editor leaves focus on `<body>`; in New issue a `<label>` wraps the Priority buttons, so «Low»'s
+  accessible name is «Priority Medium High URGENT».
+- **The kept read-only comment composer and the comment editor still draw the editable recipe**
+  (`art-director`, TAS-209 round 2): fill, `--border-strong`, resize, text cursor, accent border
+  on focus with no §7 ring — and B2 now makes this box a focus target. Apply §4.3's read-only
+  recipe: narrow the focus rule to `:not(:read-only)`, add `background: transparent;
+  border-color: var(--border); resize: none; cursor: default` for `:read-only`.
+- **The MVP two-account stand run and the archive smoke are pending** (TAS-209, TAS-397) —
+  checklist in the TAS-209 comment; request ids go to API-DIVERGENCE.
+
 ### Left by TAS-202 (projects from /project-stats, board from /board, 2026-10-24)
 
-- **The board's types are a constant, the context's come from the registry**
+- **The board's types are a constant, the context's come from the registry** — **graduated to [TAS-393](https://jira.ozero.dev/browse/TAS-393)** (2026-10-24)
   (`api-contract-guard`, A4): `BoardServiceImpl.java:48` iterates TASK, BUG, STORY while the
   context reads the project's type registry (TAS-385). Latent until custom types can hold issues
   (TAS-386); then an issue of a type outside the three is on no column and not in «Outside their workflow»
   — it is not on the board at all (the mock shows it: an Epic filter gives "0 of 4", a created
   Epic vanishes once its panel closes, the skeleton predicts EPIC's columns and jumps). Backend ask when TAS-386 lands.
-- **A project card counts issues the board does not draw** (`frontend-builder`, TAS-202):
+- **A project card counts issues the board does not draw** — **graduated to [TAS-393](https://jira.ozero.dev/browse/TAS-393)** (2026-10-24) (`frontend-builder`, TAS-202):
   `issueCount` counts every type, while the board reads only TASK, BUG and STORY (A4), so in
   the mock the Web App card says "5 issues" and its board "4 of 4" (WEB-15 is an EPIC). The
   stand cannot hold such an issue until TAS-386; same backend ask as A4.
-- **The project card's footer has no fixed height** (`art-director`, TAS-202 post-build N1):
+- **The project card's footer has no fixed height** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (`art-director`, TAS-202 post-build N1):
   without faces it is 16.7 tall, with faces 24, so every card grows 142 → 145 when stats
   arrive and a faceless card's title sits ~2px off its neighbours; «— members» keeps a 12px
   indent with no stack. Fix: `.project-card-foot { min-height: 24px }` and
   `.avatar-stack > .member-count:first-child { margin-left: 0 }`, plus the §4.8 line «Подвал
   держит `min-height:24`…».
-- **An admin rail click during the catalog load can be undone** (`frontend-builder`, TAS-202 CI
+- **An admin rail click during the catalog load can be undone** — **graduated to [TAS-396](https://jira.ozero.dev/browse/TAS-396)** (2026-10-24) (`frontend-builder`, TAS-202 CI
   diagnosis): `/admin` redirects to `/admin/data`, then into the first table once the catalog
   answers (`<Navigate replace>`); a click that pushed `/admin/users` before React Router commits
   it is replaced by that second redirect. A few ms in production; reproduced deterministically.
   Fix: guard the Data section's redirect, or `useTransitions={false}` on the router. The four
   admin e2e helpers now wait for the settled address.
-- **Labels' Add label is natively `disabled` while its write is in flight** (`art-director`,
+- **Labels' Add label is natively `disabled` while its write is in flight** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (`art-director`,
   TAS-202 narrow check): `disabled={!trimmed || createLabel.isPending}`, so after a mouse press
   or Enter on the button focus sits on `<body>` for about one round trip. Harmless in Chromium
   (a Tab lands inside the dialog), but §4.1 wants the in-flight case `aria-disabled` without
   dimming and `cursor:progress`: keep `disabled={!trimmed}`, add
   `aria-disabled={createLabel.isPending || undefined}`, refuse in the submit handler.
-- **The lost-focus check lives in three places** (board archive effect, `EditProjectModal`,
+- **The lost-focus check lives in three places** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (board archive effect, `EditProjectModal`,
   `ProjectLabelsModal`); a shared helper could replace them.
-- **Label chip order on a card is not stated**: `findLabelIdsByIssueIds`
+- **Label chip order on a card is not stated** — **graduated to [TAS-392](https://jira.ozero.dev/browse/TAS-392)** (2026-10-24): `findLabelIdsByIssueIds`
   (`IssueRepositoryImpl.java:338`) has no ORDER BY.
-- **`listIssues` has no screen caller any more** (board, projects and the link picker moved off
-  it). Keep or delete with TAS-209.
 
 ### Left by TAS-149 (archive and the read-only archived board, frontend for backend #155/#159, 2026-10-23)
 
-- **The last-admin refusal carries no reason** (`api-contract-guard`): 400
+- **The last-admin refusal carries no reason** — **graduated to [TAS-394](https://jira.ozero.dev/browse/TAS-394)** (2026-10-24) (`api-contract-guard`): 400
   `FAILED_PRECONDITION` "Can't modify last admin: …" without `details`, so the Members
   dialog tells it apart only as "FAILED_PRECONDITION and not `PROJECT_ARCHIVED`" — a set that
   can grow. Backend ask: `details.reason: "LAST_ADMIN"` (ProjectMemberValidatorImpl:107,
   precedent `ProjectArchived.error()`), and `RestErrorResponse.details` documenting its
   `reason` values. Not filed.
-- **Several write surfaces show a refusal without its request id** — comments, labels,
+- **Several write surfaces show a refusal without its request id** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) — comments, labels,
   links, attachment toasts, the create-issue form (`api-contract-guard`); predates TAS-149,
   but archived and rollout 503 refusals now land there too.
 - **Typing at the end of an issue's summary scrolls `.issue-panel-body` by 44–81px**
   (`art-director`, TAS-149 pass; measured 44px on main too, so not from TAS-149).
-- **A half-typed panel date (`badInput`) survives the archive** (`frontend-builder`,
+- **A half-typed panel date (`badInput`) survives the archive** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (`frontend-builder`,
   TAS-149 round 2): the planning reset puts story points and estimates back to the stored
   values, but a date box holding partial segments keeps them visible, read-only, until the
   panel closes — clearing it needs the DOM value written directly, as `commitDate` does.
-- **Read-only dialogs can only be left by Cancel or ✕** (`art-director`, TAS-149 round 3):
+- **Read-only dialogs can only be left by Cancel or ✕** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (`art-director`, TAS-149 round 3):
   `Modal` has no Esc handler at all — the TAS-142 gap DESIGN.md already lists; the archived
   read-only state of Edit project, New issue and Labels makes it more visible.
-- **Nothing has been archived on the stand.** The DELETE answer and the refusal shape are
+- **Nothing has been archived on the stand.** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) The DELETE answer and the refusal shape are
   read from the Java; the first smoke (archive a throwaway project, one write → 400 with
   `details.reason` and a request id) needs the owner's word.
 
 ### Left by TAS-389 (the user's login removed, frontend for backend #219, 2026-10-23)
 
-- **"Only this actor" beside the audit detail's actor id** (`art-director`, pre-build N1).
+- **"Only this actor" beside the audit detail's actor id** — **graduated to [TAS-396](https://jira.ozero.dev/browse/TAS-396)** (2026-10-24) (`art-director`, pre-build N1).
   One person shows as `mark` in historical rows and `Mark Lee` in new ones; a link applying
   `?actorUserId=` through the existing "Actor id is" filter is the real identification task.
-- **At 375 the Users person column scrolls fully out of view when a row's action has focus**
+- **At 375 the Users person column scrolls fully out of view when a row's action has focus** — **graduated to [TAS-396](https://jira.ozero.dev/browse/TAS-396)** (2026-10-24)
   (`art-director`, post-build N3): the container scrolls 127 against a 120-wide person
   column, so only the row tint marks the row (the dialog still names the account). Candidate:
   the Data table's frozen-column recipe (`.admin-cell-frozen`) for the person cell at narrow
   widths — a §5.8 change that needs its own ruling.
-- **No e2e covers the audit actor column or the email line under the profile name**
+- **No e2e covers the audit actor column or the email line under the profile name** — **graduated to [TAS-396](https://jira.ozero.dev/browse/TAS-396)** (2026-10-24)
   (`release-reviewer`): row height 30, the 180 cap and the 390 wrap rest on screenshots.
-- **Emails in the Data view are masked inconsistently** (`api-contract-guard`):
+- **Emails in the Data view are masked inconsistently** — **graduated to [TAS-395](https://jira.ozero.dev/browse/TAS-395)** (2026-10-24) (`api-contract-guard`):
   `auth.users.email` and `admin_audit_log.actor_email` are plain, while
   `notification_preferences.email`, `invitation_email_deliveries.email` and
   `email_delivery_attempts.to_email` are `MASK_PARTIAL` (admin-service
@@ -4090,7 +4129,7 @@ Frontend notes:
 The code came from the backend developer's Codex run (PR #101); this repository's three
 roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fixes.
 
-- **Connect Telegram costs two requests where #218 made it one** (`api-contract-guard`,
+- **Connect Telegram costs two requests where #218 made it one** — **graduated to [TAS-391](https://jira.ozero.dev/browse/TAS-391)** (2026-10-24) (`api-contract-guard`,
   TAS-389 pass, 2026-10-23). Backend #218 (develop `3a2644f7`) returns an optional
   `preferences` snapshot on `POST /users/me/telegram/link`; `TelegramLink`
   (`src/domain/types.ts`) has no such field and `RestTaskaApi` drops it, so the section

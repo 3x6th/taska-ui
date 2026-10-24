@@ -56,7 +56,11 @@ test("a notification opens the issue it names, in the same click", async ({ page
   // built from the notification, so it is already there. The read that used to
   // resolve the project took the mock's 140ms, and would fail this.
   expect(await page.evaluate(() => window.location.pathname)).toMatch(ISSUE_PATH);
-  await expect(page.getByText("TAS-107", { exact: true })).toBeVisible();
+  // The issue's own panel, by its name. Not the bare key: the board's card
+  // carries it too, and since the router commits a navigation in the frame it
+  // is made (TAS-396) the panel's key can be on screen beside the card on the
+  // first look, which made `getByText("TAS-107")` a strict-mode coin toss.
+  await expect(page.getByRole("dialog", { name: "TAS-107 issue" })).toBeVisible();
   await expect(page.getByRole("heading", { name: /not found/i })).toHaveCount(0);
   // The click closed the panel, and the row it pressed was still marked read.
   await expect(page.getByRole("button", BELL)).toHaveAccessibleName("Notifications, 2 unread");

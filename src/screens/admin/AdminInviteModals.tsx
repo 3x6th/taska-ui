@@ -10,22 +10,18 @@ import type { AdminUserTarget } from "./users";
 import { inviteFailure, personLabel, stillInvitedText, tooSoonText } from "./users";
 
 /**
- * §4.11's `Esc` and `Cmd/Ctrl+Enter`, bound in the dialog itself for the reason
- * `AdminUserActionModal` gives: `Modal` carries neither, and giving them to
- * every modal is §7's open item, not this story. Read through a ref so the
- * listener is bound once rather than per keystroke.
+ * §4.11's `Cmd/Ctrl+Enter`, bound in the dialog itself. `Esc` is `Modal`'s since
+ * TAS-397 — it closes, except while the invitation is out (`busy`); the address
+ * is a short value, not text-work, so it does not hold `Esc`. Read through a
+ * ref so the listener is bound once rather than per keystroke.
  */
-function useDialogKeys(submit: () => void, cancel: () => void) {
-  const keys = useRef({ submit, cancel });
+function useDialogKeys(submit: () => void) {
+  const keys = useRef({ submit });
   useEffect(() => {
-    keys.current = { submit, cancel };
+    keys.current = { submit };
   });
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        keys.current.cancel();
-        return;
-      }
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         keys.current.submit();
@@ -144,10 +140,10 @@ export function AdminInviteUserModal({
     if (!canSubmit || run.isPending) return;
     run.mutate({ email: email.trim(), address, displayName: displayName.trim(), resend: stillInvited !== null });
   };
-  useDialogKeys(submit, onClose);
+  useDialogKeys(submit);
 
   return (
-    <Modal onClose={onClose} title="Invite user">
+    <Modal busy={run.isPending} onClose={onClose} title="Invite user">
       <form
         className="form-stack admin-invite-form"
         // The server judges the address, in its own sentence (§5.8); the
@@ -274,10 +270,10 @@ export function AdminResendInviteModal({
     if (run.isPending || spent) return;
     run.mutate();
   };
-  useDialogKeys(submit, onClose);
+  useDialogKeys(submit);
 
   return (
-    <Modal onClose={onClose} title="Resend invitation">
+    <Modal busy={run.isPending} onClose={onClose} title="Resend invitation">
       <form
         className="form-stack"
         onSubmit={(event) => {

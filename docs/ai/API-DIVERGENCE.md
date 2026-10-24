@@ -133,9 +133,9 @@ outlived all of them.**
 - **TAS-263** (`aac71ed`) deleted `getWorkflow` from `TaskaApi` and from all
   three implementations, so no client code calls the route.
 
-**What is left, checked in `src` on 2026-10-17:** `HybridTaskaApi` and
-`MockTaskaApi` hold no workflow fallback. Hybrid has no workflow code at all,
-and the mock's transition id `55555555-…` is its own seed workflow, which it
+**What is left, checked in `src` on 2026-10-17:** `MockTaskaApi` holds no
+workflow fallback (`HybridTaskaApi`, which had none either, was deleted in
+TAS-209). The mock's transition id `55555555-…` is its own seed workflow, which it
 serves as its answer, not a substitute for a failed one. `BoardScreen` keeps
 `fallbackStatuses`: the contract's three status keys with the board's own
 labels and order, and no transitions. `mergeWorkflowStatuses` draws them
@@ -514,7 +514,7 @@ The entry as it stood:
 Same rule as above: "Closed by" is settled, the rest is live.
 
 
-### Closed by TAS-224: membership and member reads are deployed, and the synthesis came out
+### Closed by TAS-224 and TAS-209: membership and member reads are deployed, the synthesis came out, and hybrid is gone
 
 - **Closed 2026-09-16** in [TAS-224](https://jira.ozero.dev/browse/TAS-224).
   Backend PR #152 (TAS-137) merged into `develop` as `1cfe4d79f074` and deployed
@@ -522,11 +522,22 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `GET /projects/{uuid}/members` answers **401**, where on 2026-09-12 it answered
   405. `GET /projects/{uuid}/membership` still answers the static-resource 404
   and is not coming, because the role is `currentUserRole` on the project read.
-  `GET /users/me` answered 401 as the control. `HybridTaskaApi.getMembership`
-  and `listMembers` now delegate to `RestTaskaApi`.
-  `VITE_TASKA_ASSUME_PROJECT_ADMIN` is removed from all five places this entry
-  lists below. The class itself, and `rest` as the default, are
-  [TAS-209](https://jira.ozero.dev/browse/TAS-209)'s.
+  `GET /users/me` answered 401 as the control. From then on
+  `HybridTaskaApi.getMembership` and `listMembers` delegated to `RestTaskaApi`,
+  until [TAS-209](https://jira.ozero.dev/browse/TAS-209) deleted the class.
+  `VITE_TASKA_ASSUME_PROJECT_ADMIN` was removed from all five places it lived:
+  `src/api/client.ts`, `.github/workflows/deploy-pages.yml`, `.env.example`,
+  `README.md`, and the GitHub repository variable itself (`gh variable list`).
+  Deleting only the first is what makes a removal look finished when it is not.
+- **Hybrid is gone, 2026-10-24** ([TAS-209](https://jira.ozero.dev/browse/TAS-209),
+  epic TAS-210). TAS-209 deleted `HybridTaskaApi` (`src/api/HybridTaskaApi.ts`).
+  `rest` is the default `VITE_TASKA_API_MODE`, `mock` is the in-memory demo and
+  e2e mode, and any other value stops the dev server, the tests and the build
+  (`vite.config.ts`). The GitHub repository variable `VITE_TASKA_API_MODE` was
+  set to `rest` the same day. The request ids of the MVP's two-account stand run
+  will be recorded here: **pending**, the owner's run, nothing has been
+  measured yet. The one live sub-fact this closed entry still carries is the 401
+  bullet below, which that run's outsider probe answers.
 - **What the deploy settled, read at `1cfe4d7` by `api-contract-guard`** (read
   in the Java, not probed with a token):
   - **The 401 risk below is answered.** On this route a 401 comes only from the
@@ -544,100 +555,43 @@ Same rule as above: "Closed by" is settled, the rest is live.
     default that a 200 cannot reach. The only `null` is on the `POST /projects`
     response, which is mapped without a role.
   - **TAS-163's "your role could not be determined" state is reachable on the
-    stand again.** The flag made it unreachable there (see "What this costs"
-    below), and with the flag gone a failed project read shows it.
+    stand again.** The flag made it unreachable there (see the synthesis
+    paragraph below), and with the flag gone a failed project read shows it.
   - **The member row's `avatar` is declared and never filled.** That, and one
     unreadable avatar object failing the whole read, are the open entry
     "Member rows never carry an avatar", filed as
     [TAS-225](https://jira.ozero.dev/browse/TAS-225).
-- **The record below is kept as it stood before the deploy.** Its "Missing",
-  "Compensation", "User-visible effect" and "Risk while open" bullets describe
-  the stand up to 2026-09-16.
-
-- **Missing:** `GET /projects/{id}/membership`, `GET /projects/{id}/members`
-  (the contract has only `POST /members` and `PATCH/DELETE /members/{userId}`).
-- **Compensation:** `HybridTaskaApi` (`src/api/HybridTaskaApi.ts`) synthesises
-  both from `GET /projects/{id}` and `GET /users/me`. `getMembership` returns
-  `ADMIN` when `VITE_TASKA_ASSUME_PROJECT_ADMIN=true` or the caller created the
-  project, and `VIEWER` otherwise. `listMembers` returns a single-element list
-  containing only the current user.
-- **Narrowed 2026-08-12 (owner's call).** With the flag on, `getMembership` no
-  longer reads the project at all. It never used the value on that path — the
-  role is the flag, and `isMember`/`projectExists` are hardcoded — so the call
-  contributed nothing but a way to fail, and TAS-162's 500 was reaching through
-  it to revoke write access on the deployed stand. With the flag **off** the
-  behaviour is unchanged, failure included, because `createdBy` is genuinely
-  needed there. `listMembers` still reads the project (it needs `addedAt` and
-  `addedBy`) and still fails honestly while the gateway is broken: the assignee
-  row stays empty and the member count reads as unknown.
-- **What this costs, stated plainly:** with the flag on, `getMembership` can no
-  longer reject, so the "your role could not be determined" state added by
-  [TAS-163](https://jira.ozero.dev/browse/TAS-163) is unreachable in the
-  deployed configuration. It stays reachable in `rest` mode, with the flag off,
-  and in unit tests — which is where it is proven, deliberately, rather than by
-  a configuration nobody runs. This is the trade: the stand gets its board back
-  today, and the honesty path it just gained is exercised everywhere except the
-  stand.
-- **What it is not:** a workaround for the 500. The board still reports that the
-  project details failed, still shows no name or key, and still has no member
-  list. The only thing that changed is that a read the flag does not consult
-  stopped deciding whether the user may write.
-- **User-visible effect:** a project appears to have exactly one member; the
-  assignee filter and chips can only ever offer the current user.
-- **A third consumer, and the first that turns the synthesis into an assertion**
-  (`api-contract-guard`, 2026-09-09, TAS-193). The watcher picker draws from the
-  same list, which is the right reuse — but where the assignee chips merely
-  *offer fewer people*, the watcher section wanted to say "everyone on this
-  project is already watching" when the picker came back empty. Under the
-  synthesis that sentence is **false on the stand**, for the reader most likely
-  to act on it: the list succeeds with one element, so the §5.6 boundary — only
-  a successful read may claim there is nobody — cannot tell it from a real
-  answer. The boundary holds against a failed read and not against a
-  synthesised one, and no UI can close that, because the two are the same
-  response.
-
-  TAS-193 answered by narrowing the claim to what the client can see rather
-  than to the project. Worth carrying here because the lesson generalises past
-  watchers: **a synthesised read is safe to draw from and unsafe to conclude
-  from.** Anything built on this list may offer, and may not assert.
-
-  **And the nameless member is the contract's default, not its edge case**
-  (`frontend-builder`, 2026-09-09, TAS-193). `ProjectMemberResponseDto` states
-  `projectId`, `userId` and `role` and carries **no user summary at all**, and
-  there is no `GET /projects/{projectId}/members` in the contract whatsoever —
-  the client's member read is against a route the contract does not describe. So
-  if that read ever ships as the DTO is written, every name this map resolves
-  goes at once: every watcher row, every picker option, every assignee chip.
-  What today reads as a rare "Unknown" beside a real name would become the whole
-  column. Worth knowing before anyone treats the nameless case as an edge worth
-  little wording effort.
-
-  **The picker is the surface that fails first**, and it fails differently from
-  the rest: N identical "Unknown" options with only source order to tell them
-  apart, where a row at least sits beside a date and a control. The section
-  already owns the device for that state — `shortKey` (§5.8), which labels the
-  ✕ — so if this ever becomes the common case the answer is on hand rather than
-  to be invented. Recorded beside the prediction rather than in the backlog,
-  because it is a consequence of the contract's shape and not work anyone should
-  start today.
-- **Two further consequences** (found by `api-contract-guard`, 2026-08-03):
-  `isMember: true` and `projectExists: true` are hardcoded, so a non-member or
-  a deleted project reads as a healthy membership; and with the flag off, a
-  real `MEMBER` or a co-`ADMIN` who did not create the project is silently
-  demoted to `VIEWER`. The synthesis both over- and under-grants.
-- **Removal:** [TAS-137](https://jira.ozero.dev/browse/TAS-137), and on top of
-  it [TAS-212](https://jira.ozero.dev/browse/TAS-212), which puts the same
-  members with names into the project read so the board needs no separate
-  member call. When it
-  ships, delete `HybridTaskaApi`, drop `VITE_TASKA_ASSUME_PROJECT_ADMIN`, and
-  default `VITE_TASKA_API_MODE` to `rest`. The flag lives in five places, and
-  deleting only the first is what makes a removal look finished when it is
-  not: `src/api/client.ts`, `.github/workflows/deploy-pages.yml`,
-  `.env.example`, `README.md`, and the GitHub repository variable itself
-  (`gh variable list`).
-- **Risk while open:** with the flag on, every caller gets an `ADMIN` view of
-  the UI; role gating is unverifiable in this mode and a passing permission
-  check proves nothing.
+- **What `HybridTaskaApi` synthesised until TAS-224, in one paragraph.** The
+  detailed record is cut because the code it described is deleted, and the
+  Format rule allows that. The contract had no `GET /projects/{id}/membership`
+  and no `GET /projects/{id}/members` (only `POST /members` and
+  `PATCH/DELETE /members/{userId}`), so `getMembership` and `listMembers` were
+  built on the client from `GET /projects/{id}` and `GET /users/me`. The role
+  was `ADMIN` when `VITE_TASKA_ASSUME_PROJECT_ADMIN=true` or the caller created
+  the project, and `VIEWER` otherwise; `isMember` and `projectExists` were
+  hardcoded `true`; the member list had one element, the current user. That both
+  over- and under-granted (`api-contract-guard`, 2026-08-03): a non-member or a
+  deleted project read as a healthy membership, and with the flag off a real
+  `MEMBER` or a co-`ADMIN` who did not create the project was demoted to
+  `VIEWER`. With the flag on every caller got the `ADMIN` view, so role gating
+  was unverifiable and a passing permission check proved nothing. On
+  2026-08-12 (owner's call) the flag stopped `getMembership` reading the project
+  at all, so [TAS-162](https://jira.ozero.dev/browse/TAS-162)'s 500 stopped
+  revoking write access on the stand; the price was that
+  [TAS-163](https://jira.ozero.dev/browse/TAS-163)'s "your role could not be
+  determined" state became unreachable there and was proven in `rest` mode and
+  in unit tests only. The assignee filter, the chips and the watcher picker could
+  offer one person. TAS-193 (2026-09-09) left the lesson that outlives the code:
+  **a synthesised read is safe to draw from and unsafe to conclude from.** It
+  narrowed the watcher section's "everyone on this project is already watching"
+  to what the client can see, because a one-element synthesis and a real
+  one-member answer are the same response. The same story forecast that a shipped
+  member read would send a nameless row for everyone, reading
+  `ProjectMemberResponseDto`; that forecast is refuted below. Removal was
+  [TAS-137](https://jira.ozero.dev/browse/TAS-137) with
+  [TAS-212](https://jira.ozero.dev/browse/TAS-212) on top of it, carried out by
+  TAS-224 (the synthesis and the flag) and TAS-209 (the class, and `rest` as the
+  default).
 - **A 401 here signs the reader out, and nothing states when a 401 is the right
   answer.** Moved from the project-read entry when that one closed, because this
   risk did not close with it. Since TAS-150 the client treats **every** 401 on a
@@ -654,6 +608,14 @@ Same rule as above: "Closed by" is settled, the rest is live.
   requested. So the live half of this risk is `…/membership` plus whatever
   TAS-137 adds — a path that answers 405 unconditionally can never answer a 401
   for "not yours".
+
+  **Still open, and `rest` is the default now** (TAS-209, 2026-10-24). TAS-137
+  added the member read and `…/membership` is not coming (first bullet), so
+  what is left is the one question: what `GET …/members` and
+  `GET /projects/{id}` answer a signed-in non-member. The Java at `1cfe4d7`
+  says 403 ("What the deploy settled" above, read in code, not probed). The outsider probe of the
+  MVP stand run, a second account that is not in the project, is what measures
+  it: **pending**, the owner's run, no request id yet.
 
 - **Refuted, and the read has a shape now** ([TAS-219](https://jira.ozero.dev/browse/TAS-219),
   2026-09-12). The prediction above — that a shipped member read would send a
@@ -682,8 +644,9 @@ Same rule as above: "Closed by" is settled, the rest is live.
   box. The two arms are different evidence and the predicate says so in its own
   comment: a 404 is a path nobody mapped, a 405 is a path mapped for other
   methods, and only the second can be confused with a genuine client error. The
-  members route is not a caller of it — the stand runs `hybrid` and never reaches
-  that read — so nothing about this entry's behaviour moved with the widening.
+  members route was not a caller of it then — the deployed mode was `hybrid`,
+  which never reached that read — so nothing about this entry's behaviour moved
+  with the widening.
 - **The project *list* carries the role too** (same story, read at PR head
   `1ad6ffad815d`). This bullet first said the opposite, and it was wrong for the
   few hours between two commits on the same branch; `api-contract-guard` caught
@@ -706,10 +669,13 @@ Same rule as above: "Closed by" is settled, the rest is live.
   [TAS-211](https://jira.ozero.dev/browse/TAS-211): its role-per-card clause is
   already answered by PR #152, and what is left of it is `issueCount` and the
   members-per-card, which is what makes the projects screen cost 1 + 2N today.
-- **None of this reaches the stand yet.** The `rest` leg is unreachable in
-  `hybrid`, which is the deployed mode, so TAS-219 changes nothing a person can
-  see there. The compensation and the flag come out under TAS-137 when the route
-  answers on the stand, in the five places listed above.
+- **"None of this reaches the stand yet" was true on 2026-09-12 and stopped
+  being true on 2026-09-16.** The `rest` leg was unreachable in `hybrid`,
+  which was the deployed mode, so TAS-219 changed nothing a person could see
+  there. TAS-224 (2026-09-16) took the compensation and the flag out of the five
+  places (first bullet), and TAS-209 deleted `hybrid` and set the repository
+  variable that picks the deployed mode to `rest`, so no deployed mode skips the
+  `rest` leg any more.
 
 ### Backend PR #169 (TAS-212), merged: the board's frame in one read, and where the Java says more than the yml
 
@@ -732,8 +698,9 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `GET /users/me` since backend PR #193 deployed on 2026-10-19 (see "The
   current user's avatar" below); the same test asserts that path is not
   requested.
-  `HybridTaskaApi` passes it through; the members dialog and the projects
-  screen still read `…/members`.
+  `HybridTaskaApi` passed it through (deleted in TAS-209); the members dialog
+  reads `…/members`, and the projects screen moved to `/project-stats` in
+  TAS-202.
 - **What the Java at the PR head does that the yml does not say** (read by
   `api-contract-guard`; the Java wins), and what each implementation does:
   - All or nothing: any part failing fails the response. The board therefore
@@ -1756,8 +1723,8 @@ Everything below is the entry as it stood, in the past tense.
   - An unknown `telegram_status` is a 500: the proto field is an open string and the
     gateway maps it with a throwing `fromValue`.
   - `GET /users/me` now waits on notification-service's `GetPreferences` before it answers.
-- **Compensation: none.** The UI calls these routes as they are, in `rest` and `hybrid`
-  alike, and shows a refusal with the server's words and the request id. `rest` narrows
+- **Compensation: none.** The UI calls these routes as they are, in `rest`,
+  and shows a refusal with the server's words and the request id. `rest` narrows
   a `telegramStatus` this build does not know to `null` (TAS-173, the `toUserStatus`
   precedent), which offers only Disconnect; that path is unreachable while the gateway's
   `fromValue` throws, and the mock never produces it. The mock
@@ -1864,8 +1831,8 @@ Everything below is the entry as it stood, in the past tense.
 - **Was:** after backend #205 (TAS-213, merged `d20ba0bc`) the client's `getBoard` / `toBoardIssue`
   still sent `issueType` as required, read labels as ids and had no `unplacedIssues`; no screen
   called it.
-- **Now:** the board reads `GET /projects/{id}/board?includeDone=true` in the #205 shape in rest,
-  mock and hybrid, and draws `columns` and `unplacedIssues` as sent (DESIGN.md §4.9). What the
+- **Now:** the board reads `GET /projects/{id}/board?includeDone=true` in the #205 shape in rest
+  and mock, and draws `columns` and `unplacedIssues` as sent (DESIGN.md §4.9). What the
   merged Java says that the yml does not is in the four board entries below.
 
 ### The yml and the server name different rules for the board's `unplacedIssues`
@@ -1918,6 +1885,18 @@ Everything below is the entry as it stood, in the past tense.
   nothing (DESIGN.md §5.4). That is correct only while the read is complete.
 - **Removal:** asked on TAS-213 on 2026-10-24 — a `pageSizePerColumn` parameter and per-column
   `totalCount` / `hasMore`; then the filters move to server parameters.
+
+### History events name their actor by id only
+
+- **Endpoint:** `GET /api/v1/issues/{issueId}`.
+- **Contract:** each history item carries `actorUserId` and nothing else about the person; the
+  people named in an `ASSIGNED` payload are ids too.
+- **Client:** the issue panel's Activity (`BoardScreen.tsx`) names the actor, and the people in an
+  `ASSIGNED` payload, by joining the ids against the `/context` members the screen
+  already holds. A former member is not in that list and reads "Someone".
+- **Compensation:** none worth the word — a join against data already on screen, no extra read.
+- **Removal:** [TAS-398](https://jira.ozero.dev/browse/TAS-398), the backend ask filed on
+  2026-10-24: an `actor` `UserSummary` on each history item. Then the actor join goes; the assignee ids inside an `ASSIGNED` payload (`assigneeId`, `previousAssigneeId`) stay joined against members unless TAS-398 takes its optional second half.
 
 ### `GET /project-stats`: what the yml does not say
 
@@ -2281,8 +2260,9 @@ The entry as it stood:
   refusal **403** `PERMISSION_DENIED`, MinIO down **503**
   (`S3ExceptionHandler.java:24-39`). Those are the same 404 and 403 this route
   answers for "Project not found" and "User has no access to project".
-- **What follows, and it is the stand now:** since TAS-224 made hybrid read this
-  route, every face on the board is initials, even for people who uploaded a
+- **What follows, and it is the stand now:** since TAS-224 put this route in the
+  client's read path (through `hybrid`, which delegated to `rest`; `rest` alone
+  since TAS-209), every face on the board is initials, even for people who uploaded a
   photo. The reader's own face appears through TAS-220's cache write and goes at
   the next members refetch. One broken avatar blanks the member list, and
   `retryUnlessMissing` retries neither 404 nor 403, so it stays blank. Mostly the
@@ -2330,10 +2310,9 @@ The entry as it stood:
   when a link no longer loads") swaps a face's link for one the network refuses
   with 403, which is what an expired presigned GET looks like from the browser.
   What no end-to-end run can show is the expiry itself.
-- **Removal:** none, and none wanted. It disappears with `hybrid` under
-  [TAS-209](https://jira.ozero.dev/browse/TAS-209), along with every other
-  mock-only behaviour; it is not a compensation for a gateway defect and should
-  not be filed as one.
+- **Removal:** none, and none wanted. It is the mock's own behaviour, and
+  [TAS-209](https://jira.ozero.dev/browse/TAS-209) removes `hybrid`, not `mock`.
+  It is not a compensation for a gateway defect and should not be filed as one.
 
 ### Closed by TAS-149 (backend PR #155, merged 2026-10-23): the create-project form's description and colour were discarded
 
@@ -2401,8 +2380,8 @@ The entry as it stood:
   `NOT_FOUND` / `PERMISSION_DENIED` / 404 / 403 as one answer and
   `BoardScreen` renders the Not found screen (`DESIGN.md` §4.18).
 - **The "no access" half is now exercised against the running gateway.** It used
-  to be reachable only in the mock, because `hybrid` hardcoded a healthy
-  membership (see the `VITE_TASKA_ASSUME_PROJECT_ADMIN` entry above) and
+  to be reachable only in the mock, because `hybrid` (deleted in TAS-209)
+  hardcoded a healthy membership (see the `VITE_TASKA_ASSUME_PROJECT_ADMIN` entry above) and
   project-service had no membership concept. TAS-154 gave it one, and a
   non-admin token walked the path on 2026-08-18: 403 for someone else's project,
   and the Not-found screen drawn from a real refusal for the first time.
@@ -4289,10 +4268,11 @@ It is kept because the compensation it explains is still in the tree.
   INVALID_ARGUMENT.
 - **The UI instead:** `MockTaskaApi` implements the summary fully, derived
   from the same mock `outbox_events` rows the Outbox journal reads, so the
-  two views of the section agree with each other. `HybridTaskaApi` passes the
+  two views of the section agree with each other. `HybridTaskaApi` passed the
   call to REST like every other admin read — deliberately no mock fallback:
-  hybrid holds no mock store, and a synthesized summary beside a journal of
-  real rows would put two contradicting answers on one screen. Until the
+  hybrid held no mock store, and a synthesized summary beside a journal of
+  real rows would have put two contradicting answers on one screen (the class
+  was deleted in TAS-209; `rest` is what answers now). Until the
   backend deploys, the Problems view renders exactly the measured signature
   above — INVALID_ARGUMENT with "Unknown service: outbox" — as "the gateway
   does not serve this yet (TAS-105)": a note, not an error alert. Any other
@@ -4312,7 +4292,8 @@ It is kept because the compensation it explains is still in the tree.
   the rendered `<p>` in `src/screens/admin/AdminEventsProblems.tsx`** — the view
   that actually draws the note, and the one an earlier version of this list
   forgot — plus the comments in `src/screens/admin/sections.ts`,
-  `src/api/HybridTaskaApi.ts` and the mock, and the `TAS-105` link pinned by
+  `src/api/HybridTaskaApi.ts` (deleted in TAS-209, comment and all) and the
+  mock, and the `TAS-105` link pinned by
   `src/screens/admin/AdminScreen.test.tsx`. The present-tense comments left
   standing in `AdminEventsProblems.tsx`, `src/api/mock/MockTaskaApi.ts`,
   `src/api/rest/RestTaskaApi.test.ts` and `AdminScreen.test.tsx` ride with them
@@ -4437,10 +4418,11 @@ The entry itself, in the past tense:
 - **The UI instead:** `MockTaskaApi` implements all three writes fully, with
   every refusal above reproduced word for word, and seeds one `INVITED`, one
   `BLOCKED` and one `LOCKED` account so all four states and all three actions
-  are reachable by clicking. `HybridTaskaApi` delegates straight to REST with
-  **no** compensation of any kind — these are writes, and a synthesised success
-  would report a change to a table this client cannot alter, which is worse
-  than the failure it would hide. While the routes were undeployed the
+  are reachable by clicking. `HybridTaskaApi` delegated straight to REST with
+  **no** compensation of any kind (it was deleted in TAS-209, and `rest` does
+  the same) — these are writes, and a synthesised success would have reported
+  a change to a table this client cannot alter, which is worse than the failure
+  it would hide. While the routes were undeployed the
   confirmation dialog stayed open and said so, naming the story the operation
   belonged to — TAS-108 for reset-lockout, TAS-107 for the other two — read from
   the 404 **and** the `No static resource` substring together. **TAS-196 removed
@@ -4829,7 +4811,7 @@ and on TAS-108.
 ### `mock` refused an over-long reason and `rest` sent it — closed by TAS-188
 
 Not a gateway divergence but an implementation one, and it belongs here because
-`AGENTS.md` makes mock/rest/hybrid interchangeability a constraint rather than a
+`AGENTS.md` makes mock/rest interchangeability a constraint rather than a
 preference. `MockTaskaApi`'s reason guard refused anything past 550 characters;
 `RestTaskaApi`'s refused only a blank one, deliberately and with a comment
 saying a client-side length check "would be a second, weaker copy of a rule the
@@ -5388,7 +5370,7 @@ and one `listIssues` page.) The one thing today's shape does worse is the
 in every column, and that is the one measured argument in its favour.
 
 **What this repository has instead:** `getBoard` on the `TaskaApi` interface,
-with `rest` mapping the route, `hybrid` delegating to live, and `mock` building
+with `rest` mapping the route, `hybrid` (deleted in TAS-209) delegating to live, and `mock` building
 the same board from its own workflow and issues — including the `500` on an
 inconsistent status, so the two implementations fail the same way. Nothing calls
 it. That is TAS-191's stated shape: be ready on the day the card DTO catches up,

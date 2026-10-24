@@ -21,14 +21,23 @@ export function refusalWords(error: unknown): string | null {
 }
 
 /**
- * A refusal that says the project is archived makes the board read its context
- * again, and the board turns read-only from the `archivedAt` that read brings
- * back — never from the refusal itself (§5.7). For the writes that are not
- * mutations (the attachment upload's legs); every mutation's refusal reaches the
- * board through its mutation-cache listener instead.
+ * A refusal that says the board's picture of the project is stale makes the
+ * board read its context again, and the board takes what it offers next — a
+ * read-only archive, a lower role — from the answer to that read, never from
+ * the refusal itself (§5.7). Two refusals say so: `PROJECT_ARCHIVED`, and
+ * `PERMISSION_DENIED` (TAS-209, api-contract-guard's N2: the gateway always
+ * writes the code, and demotion and removal both arrive as that one, so the
+ * role the board gated on is the one the server has just disagreed with).
+ *
+ * One rule for every write the board makes. A mutation's refusal reaches it
+ * through the board's mutation-cache listener; the writes that are not
+ * mutations — the attachment upload's gateway legs — call this themselves, so
+ * the same refusal means the same thing wherever it lands.
  */
-export function rereadContextIfArchived(queryClient: QueryClient, projectId: string, error: unknown): void {
-  if (isProjectArchived(error)) void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+export function rereadContextAfterRefusal(queryClient: QueryClient, projectId: string, error: unknown): void {
+  if (apiErrorFacts(error).code === "PERMISSION_DENIED" || isProjectArchived(error)) {
+    void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+  }
 }
 
 /** "Oct 23", or "Oct 23, 2025" for another year — the day an archived project is said to have been archived on. */

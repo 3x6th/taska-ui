@@ -1,7 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { NotificationPreferences } from "../domain/types";
-import { HybridTaskaApi } from "./HybridTaskaApi";
-import { MockTaskaApi } from "./mock/MockTaskaApi";
 import { RestTaskaApi } from "./rest/RestTaskaApi";
 
 const preference = {
@@ -84,28 +81,5 @@ describe("notification preference transport", () => {
       code: "ABORTED",
       requestId: "request-id",
     });
-  });
-
-  it("hybrid passes through every operation and its rejection", async () => {
-    const live = new MockTaskaApi();
-    const hybrid = new HybridTaskaApi(live);
-    const served = preference as NotificationPreferences;
-    const get = vi.spyOn(live, "getNotificationPreferences").mockResolvedValue(served);
-    const patch = vi.spyOn(live, "updateNotificationPreferences").mockResolvedValue(served);
-    const link = vi
-      .spyOn(live, "createTelegramLink")
-      .mockResolvedValue({ linkId: "link", url: "https://t.me/TaskaBot?start=token", expiresAt: "expires" });
-    const confirm = vi.spyOn(live, "confirmTelegramLink").mockRejectedValue(new Error("Expired"));
-    const disconnect = vi.spyOn(live, "disconnectTelegram").mockResolvedValue(served);
-    await hybrid.getNotificationPreferences();
-    await hybrid.updateNotificationPreferences({ telegramEnabled: false });
-    await hybrid.createTelegramLink();
-    await expect(hybrid.confirmTelegramLink("link")).rejects.toThrow("Expired");
-    await hybrid.disconnectTelegram();
-    expect(get).toHaveBeenCalledOnce();
-    expect(patch).toHaveBeenCalledWith({ telegramEnabled: false });
-    expect(link).toHaveBeenCalledOnce();
-    expect(confirm).toHaveBeenCalledWith("link");
-    expect(disconnect).toHaveBeenCalledOnce();
   });
 });

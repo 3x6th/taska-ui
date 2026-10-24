@@ -31,11 +31,11 @@ and the gap is recorded in `docs/ai/API-DIVERGENCE.md` with what removes it.
 
 ### No compensations for the backend
 
-The direction is off hybrid (epic TAS-210), and the owner made it a rule on
-2026-10-11 (TAS-253): **the frontend no longer works around a backend bug or a
-missing field on a route that exists.** No N+1 reads to fill a field the
-server leaves empty, no synthesised data, no guessing, no rewriting an answer.
-That day's case: member rows arrive with `avatar: null` while
+There is no hybrid mode since TAS-209 (epic TAS-210), and the rule the owner
+made on 2026-10-11 (TAS-253) stands: **the frontend no longer works around a
+backend bug or a missing field on a route that exists.** No N+1 reads to fill a
+field the server leaves empty, no synthesised data, no guessing, no rewriting an
+answer. That day's case: member rows arrive with `avatar: null` while
 `GET /users/{userId}/avatar` has the photo, and a per-member read was proposed
 and declined — the backend fixes it in TAS-225, and until then the board
 honestly draws initials.
@@ -155,7 +155,7 @@ afterwards.
 | Orchestrator (main thread) | Harness, docs and repository configuration, git, Jira, PRs — **`DESIGN.md` included** | Scope, sequencing, evidence, external operations |
 | `frontend-builder` | Workspace write | The only agent, orchestrator included, that may edit production frontend code |
 | `art-director` | Read-only | Design-system conformance, UX craft, states, keyboard, light/dark parity |
-| `api-contract-guard` | Read-only | Contract conformance, enums, role gating, mock/rest/hybrid parity |
+| `api-contract-guard` | Read-only | Contract conformance, enums, role gating, mock/rest parity |
 | `release-reviewer` | Read-only | Independent verdict before any PR |
 
 Never run two production-code writers in parallel. Read-only agents may
@@ -241,8 +241,9 @@ Credentials for any of these are covered by *Safety* at the end of this file.
 - Theme is `data-theme` on `<html>`. Do not mix a `.dark` class with media
   queries.
 - Every server call goes through the `TaskaApi` interface in `src/api/`. The
-  three implementations — mock, rest, hybrid — must stay behaviourally
-  interchangeable.
+  two implementations — `MockTaskaApi` and `RestTaskaApi` — must stay
+  behaviourally interchangeable except where `docs/ai/API-DIVERGENCE.md` records
+  the difference.
 
   **When a divergence between them may wait, and when it may not** (the rule
   `api-contract-guard` set on TAS-190, after this series had treated the

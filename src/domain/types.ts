@@ -468,7 +468,7 @@ export interface ProjectMembership {
   /**
    * The reader's role in this project, or `null` when the server answered and
    * stated no role this build can act on — the same meaning `ProjectMember.role`
-   * gives its `null` below. In `rest` and `hybrid` that is a project read whose
+   * gives its `null` below. In `rest` that is a project read whose
    * `currentUserRole` is absent, an explicit `null`, or a value `toProjectRole`
    * does not recognise; no 200 from the deployed gateway carries one (see
    * `Project.currentUserRole`). The mock never answers it.
@@ -487,9 +487,9 @@ export interface ProjectMembership {
 /**
  * One row of `GET /projects/{projectId}/members` — `ProjectMemberDetailsDto`
  * (backend TAS-137, in `docs/contract/openapi.yml`), which is where
- * `displayName` and `email` come from. Read from the gateway in `rest` and,
- * since TAS-224, in `hybrid` too; until then `HybridTaskaApi` synthesised a
- * single row on the stand — the reader — rather than reading one.
+ * `displayName` and `email` come from. Read from the gateway in `rest`. Until
+ * TAS-224 the `hybrid` mode (removed in TAS-209) synthesised a single row on
+ * the stand — the reader — rather than reading one.
  */
 export interface ProjectMember {
   userId: string;
@@ -523,8 +523,9 @@ export interface ProjectMember {
    * Both optional. `addedAt` joins `ProjectMemberDetailsDto` with backend
    * PR #169 (TAS-212, merged at develop `fa90b51`), and `rest` reads it where the row
    * carries it; `addedBy` is on no read. The mock fills both, as seed data and
-   * on the rows its own adds create — `HybridTaskaApi` also invented them from
-   * the project's own `createdAt`/`createdBy` until TAS-224 — and nothing
+   * on the rows its own adds create — the `hybrid` mode, removed in TAS-209,
+   * also invented them from the project's own `createdAt`/`createdBy` until
+   * TAS-224 — and nothing
    * outside the tests reads them.
    */
   addedAt?: string;

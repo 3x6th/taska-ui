@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
 import type { AuditEntries, AuditEntriesQuery } from "../../domain/types";
 import { MockTaskaApi } from "../../api/mock/MockTaskaApi";
 import { ApiError } from "../../api/rest/RestTaskaApi";
+import { tabbables } from "../../lib/focusTrap";
 import { AdminAuditSection } from "./AdminAuditSection";
 
 /**
@@ -56,10 +57,17 @@ vi.mock("../../api/client", () => ({ taskaApi: fakeApi }));
 
 function Where() {
   const location = useLocation();
-  return <span data-testid="location">{`${location.pathname}${location.search}`}</span>;
+  const navigationType = useNavigationType();
+  return (
+    <>
+      <span data-testid="location">{`${location.pathname}${location.search}`}</span>
+      <span data-testid="navigation-type">{navigationType}</span>
+    </>
+  );
 }
 
 const where = () => screen.getByTestId("location").textContent;
+const navigationType = () => screen.getByTestId("navigation-type").textContent;
 
 function renderAudit(path = "/admin/audit") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -294,8 +302,9 @@ describe("the Audit section", () => {
       expect(within(actor).getByText("Mark Lee")).toHaveClass("admin-user-name");
       expect(within(actor).getByText("mark@example.com")).toHaveClass("admin-user-email");
       const id = fact(detail, "actor id");
-      expect(id).toHaveTextContent(new RegExp(`^${ACTOR_ID}$`));
-      expect(id).toHaveClass("admin-cell-mono");
+      // The UUID whole, mono, in a span of its own; the link under it is UI type.
+      expect(within(id).getByText(ACTOR_ID)).toHaveClass("admin-cell-mono");
+      expect(within(id).getByRole("link", { name: "Filter by this actor" })).toHaveClass("admin-audit-actor-filter");
     });
 
     it("falls back to the address, then the start of the id, then a dash — and the detail says the same", async () => {
@@ -347,11 +356,74 @@ describe("the Audit section", () => {
       // the whole UUID — the one way to the account from the keyboard.
       detail = openDetail(idOnly);
       expect(fact(detail, "actor")).toHaveTextContent(/^—$/);
-      expect(fact(detail, "actor id")).toHaveTextContent(new RegExp(`^${ACTOR_ID}$`));
+      expect(within(fact(detail, "actor id")).getByText(ACTOR_ID)).toHaveClass("admin-cell-mono");
 
+      // No id, no link: there is nothing to filter by.
       detail = openDetail(nothing);
       expect(fact(detail, "actor")).toHaveTextContent(/^—$/);
       expect(fact(detail, "actor id")).toHaveTextContent(/^—$/);
+      expect(within(detail).queryByRole("link", { name: "Filter by this actor" })).not.toBeInTheDocument();
+    });
+
+    /**
+     * «Filter by this actor» (DESIGN.md §5.8, TAS-396): the one way to bring
+     * together the old rows that kept `mark` and the new ones that say `Mark
+     * Lee`. A link that writes the address; page 1, `replace`, the detail
+     * closed, and focus on the open half of the new chip — next Tab, its ×.
+     */
+    it("filters the log by the entry's actor id, on page 1, and puts focus on the new chip", async () => {
+      renderAudit("/admin/audit?page=2");
+      const [row] = bodyRows(await table());
+      const detail = openDetail(row);
+      const id = fact(detail, "actor id").querySelector(".admin-cell-mono")!.textContent!;
+      const link = within(detail).getByRole("link", { name: "Filter by this actor" });
+      expect(link).toHaveAttribute("href", `/admin/audit?filter=actorUserId%3Aequals%3A${id}`);
+
+      fireEvent.click(link);
+
+      await waitFor(() => expect(where()).toBe(`/admin/audit?filter=actorUserId%3Aequals%3A${id}`));
+      expect(navigationType()).toBe("REPLACE");
+      const chip = await screen.findByRole("button", { name: `Actor id is ${id}` });
+      await waitFor(() => expect(chip).toHaveFocus());
+      const stops = tabbables(document.body);
+      expect(stops[stops.indexOf(chip) + 1]).toBe(screen.getByRole("button", { name: `Remove filter Actor id is ${id}` }));
+      await waitFor(() => expect(queries().at(-1)).toEqual({ page: 1, pageSize: 20, actorUserId: id }));
+      // The detail closed with the view it was about.
+      for (const toggle of screen.getAllByRole("button", { name: /^Changes of / })) {
+        expect(toggle).toHaveAttribute("aria-expanded", "false");
+      }
+    });
+
+    it("keeps the other filters, and replaces an actor filter for somebody else where it stood", async () => {
+      const OTHER_ID = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
+      const base = (await (async () => {
+        const mock = new MockTaskaApi();
+        await mock.login({ email: "mark@example.com", password: "anything" });
+        return mock.listAuditEntries({ pageSize: 1 });
+      })()).entries[0];
+      setAnswer({
+        entries: [{ ...base, actorUserId: ACTOR_ID }],
+        pagination: { currentPage: 1, pageSize: 20, totalRows: 1, totalPages: 1, hasNext: false, hasPrev: false },
+      });
+      renderAudit(`/admin/audit?filter=actorUserId:equals:${OTHER_ID}&filter=action:equals:BLOCK_USER`);
+      const [row] = bodyRows(await table());
+
+      const link = within(openDetail(row)).getByRole("link", { name: "Filter by this actor" });
+
+      expect(link).toHaveAttribute(
+        "href",
+        `/admin/audit?filter=actorUserId%3Aequals%3A${ACTOR_ID}&filter=action%3Aequals%3ABLOCK_USER`,
+      );
+    });
+
+    it("draws no link when the log is already filtered to this actor", async () => {
+      renderAudit(`/admin/audit?filter=actorUserId:equals:${ACTOR_ID}`);
+      const [row] = bodyRows(await table());
+
+      const detail = openDetail(row);
+
+      expect(within(fact(detail, "actor id")).getByText(ACTOR_ID)).toBeVisible();
+      expect(within(detail).queryByRole("link", { name: "Filter by this actor" })).not.toBeInTheDocument();
     });
   });
 

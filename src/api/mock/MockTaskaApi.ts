@@ -1145,7 +1145,7 @@ const compareAsText = (left: unknown, right: unknown) => {
  * the gateway would have answered 400 for, or an absent cell, neither of which
  * matches anything. Callers that need a total order (sorting) fall back to text.
  *
- * The three implementations have to stay behaviourally interchangeable
+ * The two implementations have to stay behaviourally interchangeable
  * (AGENTS.md), and this mock is what the e2e suite runs against, so comparing
  * as strings here was not a mock detail: `failed_logins.from=10` matched 9 in
  * every test and would not on the wire, and at a timestamp boundary
@@ -2994,7 +2994,7 @@ export class MockTaskaStore {
    * when two writes race, and nothing here races: the store's methods run to
    * completion synchronously and only their *resolution* is delayed. Inventing
    * a trigger for it would be inventing a mechanism this store does not have.
-   * So the conflict exists against `rest` and `hybrid` only, `isConflict` in
+   * So the conflict exists against `rest` only, `isConflict` in
    * src/api/errors.ts is what recognises it, and the UI path is covered there.
    */
   updateProject(projectId: string, input: UpdateProjectInput): Project {

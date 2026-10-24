@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +32,8 @@ const {
   releaseRows,
   failCatalog,
   serveCatalog,
+  holdCatalog,
+  releaseCatalog,
   failRows,
   failRow,
   failSummary,
@@ -58,6 +60,8 @@ const {
     rowsRelease?: () => void;
     catalogFailure?: Error;
     catalogOverride?: typeof catalog;
+    catalogGate?: Promise<void>;
+    catalogRelease?: () => void;
     rowsFailure?: Error;
     rowFailure?: Error;
     summaryFailure?: Error;
@@ -251,6 +255,7 @@ const {
     listProjects: async () => [],
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0, unreadCount: 0 }),
     getAdminCatalog: async () => {
+      if (state.catalogGate) await state.catalogGate;
       if (state.catalogFailure) throw state.catalogFailure;
       return state.catalogOverride ?? catalog;
     },
@@ -395,6 +400,17 @@ const {
     /** Serve a different catalog, for the shapes the seed cannot express. */
     serveCatalog: (replacement?: typeof catalog) => {
       state.catalogOverride = replacement;
+    },
+    /** Keep the catalog read pending until `releaseCatalog()`. */
+    holdCatalog: () => {
+      state.catalogGate = new Promise<void>((resolve) => {
+        state.catalogRelease = resolve;
+      });
+    },
+    releaseCatalog: () => {
+      state.catalogRelease?.();
+      state.catalogGate = undefined;
+      state.catalogRelease = undefined;
     },
     /**
      * Fail the *rows* request, which every error test used to leave untested —
@@ -561,13 +577,16 @@ function renderAdmin(at = "/admin") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[at]}>
+      {/* As src/main.tsx sets it (TAS-396): navigations commit in the frame
+          they are made, so a data-driven redirect cannot undo a click. */}
+      <MemoryRouter initialEntries={[at]} useTransitions={false}>
         <App />
         <LocationProbe />
         <Jump />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 const currentLocation = () => screen.getByTestId("location").textContent;
@@ -586,6 +605,7 @@ const admin: User = { ...anna, globalRole: "GLOBAL_ADMIN" };
 describe("/admin", () => {
   beforeEach(() => {
     releaseMe();
+    releaseCatalog();
     releaseRows();
     failCatalog(undefined);
     serveCatalog(undefined);
@@ -612,6 +632,44 @@ describe("/admin", () => {
     // The way out lives in the rail now, not under the content.
     const rail = screen.getByRole("navigation", { name: "Administration" });
     expect(within(rail).getByRole("link", { name: "Back to projects" })).toHaveAttribute("href", "/projects");
+  });
+
+  /**
+   * The rail race (TAS-396): `/admin` goes to `/admin/data`, and from there into
+   * the catalog's first table once the catalog answers, with `<Navigate
+   * replace>`. A rail click made while the catalog is still on its way must
+   * not be undone by that second redirect when it lands.
+   */
+  it("keeps a rail click made while the catalog loads, when the catalog then answers", async () => {
+    setCurrentUser(admin);
+    const answer = await fakeApi.getAdminCatalog();
+    holdCatalog();
+    const queryClient = renderAdmin();
+    await waitFor(() => expect(currentLocation()).toBe("/admin/data"));
+    const users = within(screen.getByRole("navigation", { name: "Administration" })).getByRole("link", { name: "Users" });
+
+    // The click and the catalog's answer in one flush, which is the window: the
+    // answer's store update renders first (it is synchronous, the navigation is
+    // not), and with navigations committed as transitions the Data section's
+    // redirect then replaced the click's entry. A synchronous notifier puts the
+    // answer's update inside the same `act` as the click.
+    notifyManager.setScheduler((callback) => callback());
+    try {
+      act(() => {
+        users.click();
+        queryClient.setQueryData(["admin", "catalog"], answer);
+      });
+    } finally {
+      notifyManager.setScheduler(defaultScheduler);
+    }
+
+    expect(currentLocation()).toBe("/admin/users");
+    await act(async () => {
+      releaseCatalog();
+      await settle();
+    });
+    expect(await screen.findByRole("heading", { level: 1, name: /Administration.*Users/ })).toBeVisible();
+    expect(currentLocation()).toBe("/admin/users");
   });
 
   it("draws every section, including the ones with no endpoints yet", async () => {
@@ -720,6 +778,7 @@ describe("/admin", () => {
 describe("/admin sections under construction", () => {
   beforeEach(() => {
     releaseMe();
+    releaseCatalog();
     releaseRows();
     failCatalog(undefined);
     serveCatalog(undefined);
@@ -789,6 +848,7 @@ describe("/admin sections under construction", () => {
 describe("/admin console", () => {
   beforeEach(() => {
     releaseMe();
+    releaseCatalog();
     releaseRows();
     failCatalog(undefined);
     serveCatalog(undefined);
@@ -976,6 +1036,7 @@ describe("/admin console", () => {
 describe("/admin console selection in the URL", () => {
   beforeEach(() => {
     releaseMe();
+    releaseCatalog();
     releaseRows();
     failCatalog(undefined);
     serveCatalog(undefined);
@@ -1083,8 +1144,13 @@ describe("/admin console selection in the URL", () => {
 
     expect(await screen.findByRole("heading", { name: "admin.legacy_codes" })).toBeVisible();
     // The rows are the last page's, and the pager is still there to move with —
-    // not "This table is empty" and no way back.
-    expect(lastRowsQuery()?.page).toBe(2);
+    // not "This table is empty" and no way back. Awaited in order — the row, the
+    // address the redirect writes, then the read it sends — because the first
+    // answer (asked for page 999, served as page 2) already draws "a3", and the
+    // redirect and its read land a commit or more later.
+    expect(await screen.findByRole("cell", { name: "a3" })).toBeVisible();
+    await waitFor(() => expect(currentLocation()).toBe("/admin/data/admin/legacy_codes?page=2"));
+    await waitFor(() => expect(lastRowsQuery()?.page).toBe(2));
     expect(screen.getByRole("button", { name: "Previous" })).toBeEnabled();
   });
 
@@ -1365,6 +1431,7 @@ describe("/admin console selection in the URL", () => {
 describe("/admin console, opening one row", () => {
   beforeEach(() => {
     releaseMe();
+    releaseCatalog();
     releaseRows();
     failCatalog(undefined);
     serveCatalog(undefined);
@@ -1491,6 +1558,7 @@ describe("/admin console, opening one row", () => {
 describe("/admin console, when the catalog and the rows disagree", () => {
   beforeEach(() => {
     releaseMe();
+    releaseCatalog();
     releaseRows();
     failCatalog(undefined);
     serveCatalog(undefined);
@@ -1524,6 +1592,7 @@ describe("/admin console, when the catalog and the rows disagree", () => {
 describe("/admin console error copy", () => {
   beforeEach(() => {
     releaseMe();
+    releaseCatalog();
     releaseRows();
     // The fake's failures are module state and outlive a test, so each of these
     // starts from "nothing is failing" and breaks exactly one call.
@@ -1626,6 +1695,7 @@ describe("/admin console error copy", () => {
 describe("/admin/events problems", () => {
   beforeEach(() => {
     releaseMe();
+    releaseCatalog();
     failCatalog(undefined);
     serveCatalog(undefined);
     failSummary(undefined);
@@ -1883,9 +1953,14 @@ describe("admin events, retrying an event", () => {
     expect(lastRetry()).toEqual({ service: "auth", eventId: "e1", reason: "Kafka is back" });
     expect(within(dialog).getByRole("button", { name: "Retrying…" })).toBeDisabled();
 
+    // `Esc` is held while the retry is out (§4.11, TAS-397): it must not look
+    // like it cancelled the retry. ✕ and the backdrop are the ways out.
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(dialog).toBeInTheDocument();
+
     const readsBeforeDismissal = summaryReads();
     await act(async () => {
-      fireEvent.keyDown(document, { key: "Escape" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
       await settle();
     });
 
@@ -2046,8 +2121,8 @@ describe("admin events, retrying an event", () => {
   });
 
   /**
-   * A retry submitted, dismissed with `Esc` while it is still in flight, and
-   * about to be answered — with the fake moving the row the way `MockTaskaApi`
+   * A retry submitted, dismissed with ✕ while it is still in flight (`Esc` is
+   * held then, §4.11), and about to be answered — with the fake moving the row the way `MockTaskaApi`
    * does, so the refetch the answer sets off takes the Retry button away.
    *
    * That last part is what every test below is about, and what the two above
@@ -2058,7 +2133,9 @@ describe("admin events, retrying an event", () => {
     setRetryMovesRow(true);
     await startPendingRetry();
     await act(async () => {
-      fireEvent.keyDown(document, { key: "Escape" });
+      fireEvent.click(
+        within(screen.getByRole("dialog", { name: "Retry outbox event" })).getByRole("button", { name: "Close" }),
+      );
       await settle();
     });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -2332,7 +2409,7 @@ describe("admin events, retrying an event", () => {
       await settle();
     });
     await act(async () => {
-      fireEvent.keyDown(document, { key: "Escape" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
       await settle();
     });
 
@@ -2558,9 +2635,7 @@ describe("admin events, retrying an event", () => {
     expect(trigger).toHaveFocus();
   });
 
-  // §4.11: `Esc` cancels. Bound in the dialog itself, because `Modal` carries
-  // neither key and giving them to every modal in the product is §7 debt
-  // (TAS-142) rather than this story.
+  // §4.11: `Esc` cancels — `Modal`'s listener since TAS-397.
   it("closes on Escape", async () => {
     await openDialog();
     expect(screen.getByRole("dialog", { name: "Retry outbox event" })).toBeVisible();
@@ -2569,5 +2644,21 @@ describe("admin events, retrying an event", () => {
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(lastRetry()).toBeUndefined();
+  });
+
+  // …except while the reason holds text-work (§4.11, TAS-397): the dialog
+  // stays, the text and the focus with it.
+  it("stays open on Escape while the reason holds text", async () => {
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    const reason = within(dialog).getByLabelText("Reason");
+    fireEvent.change(reason, { target: { value: "Kafka is back" } });
+    reason.focus();
+
+    fireEvent.keyDown(reason, { key: "Escape" });
+
+    expect(dialog).toBeInTheDocument();
+    expect(reason).toHaveFocus();
+    expect(reason).toHaveValue("Kafka is back");
   });
 });

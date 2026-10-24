@@ -5,6 +5,7 @@ import { apiErrorFacts, isProjectArchived } from "../api/errors";
 import type { UpdateProjectInput } from "../api/TaskaApi";
 import type { Project, ProjectContext, ProjectStats } from "../domain/types";
 import { PROJECT_STATS_KEY } from "../lib/boardQuery";
+import { focusLost } from "../lib/focusTrap";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
 import { refusalWords } from "../lib/projectArchive";
 import { projectContextKey } from "../lib/projectContext";
@@ -62,6 +63,8 @@ export function EditProjectModal({
   const queryClient = useQueryClient();
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? "");
+  /** What the description box opened with: text that differs from it is text-work, and holds `Esc` (§4.11). */
+  const [openedDescription] = useState(description);
   /**
    * `null` is "Automatic" — the project states no colour and the client
    * computes one from the key. Seeded from what the server actually holds, so
@@ -265,6 +268,29 @@ export function EditProjectModal({
     archiveTrigger.current?.focus();
   };
 
+  /**
+   * The question strip is the innermost layer while it is open (§4.11's `Esc`
+   * order): `Esc` closes it and hands focus to the trigger wherever focus is in
+   * the dialog, and does nothing while the archive is out. It listens on
+   * `document`, ahead of `Modal`'s `window` listener, and takes the key with
+   * `preventDefault()` so the dialog stays — the issue panel's delete strip
+   * does the same (§4.10).
+   */
+  const archiveEscape = useRef({ archiving: false, cancelArchive });
+  useEffect(() => {
+    archiveEscape.current = { archiving: archive.isPending, cancelArchive };
+  });
+  useEffect(() => {
+    if (!askingArchive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      event.preventDefault();
+      if (!archiveEscape.current.archiving) archiveEscape.current.cancelArchive();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [askingArchive]);
+
   // No eyebrow badge, unlike the other project-scoped modals (§4.11). There the
   // key is context — which project am I creating an issue in — and here it is
   // content, with a labelled row of its own three lines down. Two copies of one
@@ -303,14 +329,11 @@ export function EditProjectModal({
   useEffect(() => {
     const target = archiveRefused ? refusalRef.current : lineRef.current;
     if (!target) return;
-    const active = document.activeElement;
-    const lost =
-      !active || active === document.body || !active.isConnected || (active as HTMLButtonElement).disabled === true;
-    if (lost) target.focus();
+    if (focusLost()) target.focus();
   }, [archiveRefused, readOnly, save.isError]);
 
   return (
-    <Modal title="Edit project" onClose={onClose}>
+    <Modal busy={save.isPending || archive.isPending} onClose={onClose} title="Edit project">
       <form
         className="form-stack"
         onSubmit={(event) => {
@@ -354,6 +377,10 @@ export function EditProjectModal({
         <label className="field">
           <span>Description</span>
           <textarea
+            // Text-work while it differs from what the dialog opened with: `Esc`
+            // leaves the dialog open (§4.11), and the mark stays when an archive
+            // makes the box read-only (§5.7).
+            data-unsaved-text={description !== openedDescription ? "true" : undefined}
             maxLength={2000}
             onChange={(event) => setDescription(event.target.value)}
             placeholder="What this project is for"
@@ -440,12 +467,6 @@ export function EditProjectModal({
                 archive.reset();
                 setAskingArchive((open) => !open);
               }}
-              onKeyDown={(event) => {
-                if (askingArchive && event.key === "Escape") {
-                  event.stopPropagation();
-                  if (!archiving) cancelArchive();
-                }
-              }}
               ref={archiveTrigger}
               type="button"
             >
@@ -458,12 +479,6 @@ export function EditProjectModal({
             <div
               className="member-confirm project-archive-confirm"
               id={archiveConfirmId}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.stopPropagation();
-                  if (!archiving) cancelArchive();
-                }
-              }}
             >
               <p className="member-confirm-sentence" id={`${archiveConfirmId}-sentence`}>
                 {project.projectKey} will be archived for everyone. Taska cannot restore it.

@@ -72,3 +72,16 @@ export function trapTab(event: KeyboardEvent<HTMLElement>) {
     (event.shiftKey ? last : first).focus();
   }
 }
+
+/**
+ * Whether focus has been lost: on nothing, on `<body>`, on a node that has left
+ * the document, or on a control switched off under it — where the next Tab
+ * starts over from the top of the page, or under a dialog's scrim. The one
+ * check the board's archive turn, Edit project and Labels make before placing
+ * focus themselves (DESIGN.md §5.7, TAS-397); a reader whose focus is still
+ * somewhere real keeps their place.
+ */
+export function focusLost(): boolean {
+  const active = document.activeElement;
+  return !active || active === document.body || !active.isConnected || (active as HTMLButtonElement).disabled === true;
+}

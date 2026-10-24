@@ -718,9 +718,8 @@ describe("RestTaskaApi people directory and invitations", () => {
  * 405 on 2026-09-12, and `GET /projects/{id}/membership` answered the
  * static-resource 404. The PR merged into `develop` `1cfe4d79f074` and is
  * deployed: measured on 2026-09-16 without a token, the member route answers
- * 401, and `docs/contract/openapi.yml` carries it and `currentUserRole`. Since
- * TAS-224 `hybrid` delegates both reads here, so this is the leg the stand
- * runs.
+ * 401, and `docs/contract/openapi.yml` carries it and `currentUserRole`. This
+ * is the leg the stand runs.
  *
  * Three asymmetries are what they are really for: the array is `members` and
  * not `items`; a member row's `role` is typed as an *open* string because

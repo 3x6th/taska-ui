@@ -656,6 +656,43 @@ test("the create form's mark follows the fault, rather than staying on the date 
   await expect(start).not.toHaveAttribute("aria-invalid");
 });
 
+test("the create form is held open on Esc from a choice while a date is half typed", async ({ page }) => {
+  await openBoard(page);
+  await page.getByRole("button", { name: "New", exact: true }).click();
+
+  // By name: the issue panel the form opens on success is a dialog too (TAS-380).
+  const modal = page.getByRole("dialog", { name: "New issue" });
+  const start = modal.getByLabel("Start date");
+  // The summary is empty, so the only text-work in the dialog is the entry the
+  // browser has not made a date of: its `value` is `""` and React's `onChange`
+  // never fires for it, so the box has to read `validity.badInput` itself, on
+  // its own `keyup` (TAS-209, art-director's B1).
+  await start.fill("");
+  await start.click();
+  await page.keyboard.type("12");
+  await expect(start).toHaveAttribute("data-unsaved-text", "true");
+
+  const high = modal.getByRole("button", { name: "High", exact: true });
+  await high.focus();
+  await page.keyboard.press("Escape");
+  await expect(modal).toBeVisible();
+  await expect(high).toBeFocused();
+
+  // Cleared, nothing is held. Backspace through the segments fires `keyup` and
+  // no `input` at all, so this is the route only the box's own read can see.
+  await start.click();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  for (let segment = 0; segment < 3; segment += 1) {
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("ArrowLeft");
+  }
+  await expect(start).not.toHaveAttribute("data-unsaved-text");
+  await high.focus();
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+});
+
 test("the create form answers the second press as loudly as the first", async ({ page }) => {
   await openBoard(page);
   await page.getByRole("button", { name: "New", exact: true }).click();

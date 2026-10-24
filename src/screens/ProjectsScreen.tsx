@@ -3,6 +3,7 @@ import { Pencil, Plus, Search } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
+import { apiErrorFacts } from "../api/errors";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches, type ColorChoice } from "../components/ColorSwatches";
@@ -430,7 +431,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   });
 
   return (
-    <Modal title="New project" onClose={onClose}>
+    <Modal busy={create.isPending} onClose={onClose} title="New project">
       <form
         className="form-stack"
         onSubmit={(event) => {
@@ -457,6 +458,8 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         <label className="field">
           <span>Description</span>
           <textarea
+            // Text-work once typed: `Esc` leaves the dialog open (§4.11).
+            data-unsaved-text={description !== "" ? "true" : undefined}
             maxLength={2000}
             onChange={(event) => setDescription(event.target.value)}
             placeholder="What this project is for"
@@ -484,7 +487,10 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
             The first swatch is Automatic: the project takes its colour from its key.
           </p>
         </div>
-        {create.isError ? <ErrorNote>{create.error.message}</ErrorNote> : null}
+        {/* The request id under the sentence (§5.6, TAS-397). */}
+        {create.isError ? (
+          <ErrorNote requestId={apiErrorFacts(create.error).requestId}>{create.error.message}</ErrorNote>
+        ) : null}
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">
             Cancel

@@ -21,8 +21,8 @@ Implementation principles:
 - design tokens from `DESIGN.md` §2/§3 only; no hardcoded hex in components,
   new shades via `color-mix(in oklab, <token> N%, transparent)`
 - theme is `data-theme` on `<html>`
-- every server call goes through the `TaskaApi` interface in `src/api/`; mock,
-  rest, and hybrid implementations stay behaviourally interchangeable
+- every server call goes through the `TaskaApi` interface in `src/api/`; the mock
+  and rest implementations stay behaviourally interchangeable
 - mutations are optimistic with rollback; spinners only where there is nothing
   to show
 - role gating (`ADMIN`/`MEMBER`/`VIEWER`) hides UI while the server stays

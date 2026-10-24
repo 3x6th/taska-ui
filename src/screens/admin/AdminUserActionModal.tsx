@@ -91,22 +91,16 @@ export function AdminUserActionModal({
   // rebinding a document listener per character is a cost with no upside. The
   // ref is refreshed in an effect rather than during render, which is where a
   // ref may be written at all.
-  const keyboard = useRef({ submit, onClose });
+  const keyboard = useRef({ submit });
   useEffect(() => {
-    keyboard.current = { submit, onClose };
+    keyboard.current = { submit };
   });
 
   useEffect(() => {
-    // §4.11: `Esc` cancels, `Cmd/Ctrl+Enter` confirms. Bound here rather than
-    // inside `Modal`, which carries neither today — putting them there would
-    // change the board's two modals under a story that is not about them, and
-    // §7 already tracks that gap. This is what the modal can do inside its own
-    // story.
+    // §4.11's `Cmd/Ctrl+Enter` confirms, and lives here. `Esc` is `Modal`'s
+    // since TAS-397: it closes the dialog, except while the reason holds text
+    // (`data-unsaved-text` below) or the write is out (`busy`).
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        keyboard.current.onClose();
-        return;
-      }
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         keyboard.current.submit();
@@ -117,7 +111,7 @@ export function AdminUserActionModal({
   }, []);
 
   return (
-    <Modal onClose={onClose} title={actionAccessibleName(action, name)}>
+    <Modal busy={run.isPending} onClose={onClose} title={actionAccessibleName(action, name)}>
       <form
         className="form-stack"
         onSubmit={(event) => {
@@ -183,6 +177,8 @@ export function AdminUserActionModal({
           <textarea
             aria-describedby={hintId}
             autoFocus
+            // A reason being written is text-work: `Esc` leaves the dialog open (§4.11).
+            data-unsaved-text={reason !== "" ? "true" : undefined}
             maxLength={ADMIN_WRITE_REASON_MAX_LENGTH}
             onChange={(event) => setReason(event.target.value)}
             required

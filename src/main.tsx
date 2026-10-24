@@ -21,10 +21,17 @@ const Router = ROUTER_MODE === "hash" ? HashRouter : BrowserRouter;
 // taken out here, held in memory, and the address becomes `/invite`.
 captureInviteLink(window, import.meta.env.BASE_URL, ROUTER_MODE);
 
+// `useTransitions={false}` (TAS-396): a navigation commits in the frame it is
+// made rather than as a transition. As a transition, a click could be pending
+// when a data-driven `<Navigate replace>` fired — the admin area's redirect into
+// the first table once the catalog answered replaced a rail click to Users that
+// React had not yet committed. Seven redirects of that kind share the window
+// (the admin sections and `/browse/:issueKey`); nothing in the app suspends, so
+// there is no pending UI for a transition to keep on screen.
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <Router>
+      <Router useTransitions={false}>
         <App />
       </Router>
     </QueryClientProvider>

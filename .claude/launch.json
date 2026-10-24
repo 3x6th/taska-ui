@@ -20,11 +20,11 @@
       "port": 5191
     },
     {
-      "name": "taska-ui-hybrid-offline",
+      "name": "taska-ui-rest-offline",
       "runtimeExecutable": "sh",
       "runtimeArgs": [
         "-c",
-        "VITE_TASKA_API_MODE=hybrid VITE_TASKA_API_PROXY_TARGET= npm run dev -- --port 5192 --strictPort"
+        "VITE_TASKA_API_MODE=rest VITE_TASKA_API_PROXY_TARGET= npm run dev -- --port 5192 --strictPort"
       ],
       "port": 5192
     }

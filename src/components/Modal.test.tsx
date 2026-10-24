@@ -267,3 +267,127 @@ describe("Modal, closing", () => {
     expect(screen.getByRole("button", { name: "TAS-108" })).toHaveFocus();
   });
 });
+
+/**
+ * `Esc` (DESIGN.md §4.11, TAS-397): one listener in `Modal`, on `window`, for
+ * every dialog of the product. It closes exactly one thing — the innermost —
+ * so an inner layer that takes the key with `preventDefault()` keeps the
+ * dialog open, and so do IME composition, a focused field holding text-work,
+ * and a write in flight.
+ */
+describe("Modal, Esc", () => {
+  function Escapable({ busy = false, onClose }: { busy?: boolean; onClose: () => void }) {
+    const [text, setText] = useState("");
+    return (
+      <Modal busy={busy} onClose={onClose} title="New project">
+        <label>
+          Description
+          <textarea
+            data-unsaved-text={text !== "" ? "true" : undefined}
+            onChange={(event) => setText(event.target.value)}
+            value={text}
+          />
+        </label>
+        <label>
+          Key
+          <input />
+        </label>
+        <button type="button">Swatch</button>
+        {/* An inner layer, the way Members' results list takes the key. */}
+        <ul
+          aria-label="Results"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") event.preventDefault();
+          }}
+          tabIndex={0}
+        />
+      </Modal>
+    );
+  }
+
+  it("closes, as Close does, from anywhere in the dialog", () => {
+    const onClose = vi.fn();
+    render(<Escapable onClose={onClose} />);
+
+    fireEvent.keyDown(screen.getByLabelText("Key"), { key: "Escape" });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the dialog to an inner layer that took the key", () => {
+    const onClose = vi.fn();
+    render(<Escapable onClose={onClose} />);
+
+    fireEvent.keyDown(screen.getByRole("list", { name: "Results" }), { key: "Escape" });
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("does nothing during IME composition", () => {
+    const onClose = vi.fn();
+    render(<Escapable onClose={onClose} />);
+
+    fireEvent.keyDown(screen.getByLabelText("Key"), { key: "Escape", isComposing: true });
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("stays open while the dialog holds text-work, wherever focus is in it, and closes once the text is gone", () => {
+    const onClose = vi.fn();
+    render(<Escapable onClose={onClose} />);
+    const description = screen.getByLabelText("Description");
+    fireEvent.change(description, { target: { value: "Half a thought" } });
+    description.focus();
+
+    fireEvent.keyDown(description, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(description).toHaveFocus();
+    expect(description).toHaveValue("Half a thought");
+
+    // Elsewhere in the dialog the text holds it just the same: one Esc from a
+    // short field or a button must not throw the words away (TAS-209).
+    for (const elsewhere of [screen.getByLabelText("Key"), screen.getByRole("button", { name: "Swatch" })]) {
+      elsewhere.focus();
+      fireEvent.keyDown(elsewhere, { key: "Escape" });
+      expect(onClose).not.toHaveBeenCalled();
+      expect(elsewhere).toHaveFocus();
+    }
+    expect(description).toHaveValue("Half a thought");
+
+    // Once the text is gone nothing holds it.
+    fireEvent.change(description, { target: { value: "" } });
+    fireEvent.keyDown(screen.getByRole("button", { name: "Swatch" }), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("still discards the text through Close, which asks for nothing", () => {
+    const onClose = vi.fn();
+    render(<Escapable onClose={onClose} />);
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Half a thought" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing while a write begun in it is in flight, and Close still closes", () => {
+    const onClose = vi.fn();
+    render(<Escapable busy onClose={onClose} />);
+
+    fireEvent.keyDown(screen.getByLabelText("Key"), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives focus back to the control it was opened from, as Close does", () => {
+    render(<Opened />);
+
+    const trigger = openFrom();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Cancel" }), { key: "Escape" });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+});

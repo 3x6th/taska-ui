@@ -330,8 +330,10 @@ export function AdminUsersSection() {
               {/* Named columns, not the catalog's own — this section knows what
                   it is looking at. No header is a button: the gateway states no
                   sortable column for this table (§5.8). */}
+              {/* The person column freezes at ≤720 (§5.8, TAS-396) on the Data
+                  key's recipe; above that the stylesheet leaves it in place. */}
               {COLUMN_NAMES.map((column) => (
-                <th key={column} scope="col">
+                <th className={column === "person" ? "admin-cell-frozen" : undefined} key={column} scope="col">
                   {column}
                 </th>
               ))}
@@ -370,7 +372,13 @@ export function AdminUsersSection() {
               const marked = flashed !== null && flashed === user.id;
               return (
                 <tr className={marked ? "is-changed" : undefined} key={user.id ?? index}>
-                  <td>
+                  {/* Frozen at ≤720, where the name and the address are cut at
+                      129 by width: whole in `title`, and in the confirmation
+                      that names the person (§5.8, TAS-396). */}
+                  <td
+                    className="admin-cell-frozen"
+                    title={user.email && user.email !== name ? `${name} · ${user.email}` : name}
+                  >
                     {/* A label that is only the row's key is set as a key (mono),
                         as the confirmation dialog sets it, and not as a name. */}
                     <span className={labelIsKey(user) ? "admin-user-name admin-cell-mono" : "admin-user-name"}>

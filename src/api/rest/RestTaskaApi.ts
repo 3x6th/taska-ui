@@ -1230,7 +1230,7 @@ export class RestTaskaApi implements TaskaApi {
    * when this route answered **405** (2026-09-12, no token: only POST was
    * mapped on the path). The PR merged into `develop` `1cfe4d79f074` and is
    * deployed — measured on 2026-09-16 without a token, the route answers 401 —
-   * and since TAS-224 the stand calls this method through `hybrid`.
+   * and it is the method the stand calls.
    *
    * **The row's `avatar` is read, and only its `downloadUrl`** (TAS-220, which
    * picked up what TAS-219 deliberately left: that comment said the avatars
@@ -3411,8 +3411,7 @@ function refusePlanningFields(input: PlanningFieldsInput): void {
  * Nothing reads the status that changed: the panel takes
  * `apiErrorFacts(error).message`, and the only `status >= 500` readers in this
  * build are `userWriteFailure` (src/screens/admin/users.ts) and `AdminError`
- * (src/screens/admin/), which no attachment failure reaches. `HybridTaskaApi`
- * forwards this leg to `live` untouched.
+ * (src/screens/admin/), which no attachment failure reaches.
  */
 function refuseAttachment(input: CreateAttachmentUploadUrlInput): void {
   const refusal = attachmentRefusal(input);
@@ -3472,7 +3471,7 @@ function refuseAvatar(input: CreateAvatarUploadUrlInput): void {
  * cannot tell a reason stopped here from one stopped there.
  *
  * The upper bound is checked here too, and that is the whole of what this
- * function decides: `AGENTS.md` requires mock, rest and hybrid to stay
+ * function decides: `AGENTS.md` requires mock and rest to stay
  * behaviourally interchangeable, and the mock has always refused
  * `reason.length > ADMIN_WRITE_REASON_MAX_LENGTH`. An earlier version of this
  * comment argued the other way — that a client-side length refusal would be a

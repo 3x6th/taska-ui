@@ -26,7 +26,7 @@ import { workflowCopyInput } from "../../lib/workflows";
 /**
  * The mock is the reference implementation of the TaskaApi contract: it is what
  * the UI is developed against and what `api-contract-guard` compares the REST
- * and hybrid adapters to. These tests pin the behaviour that parity is measured
+ * adapter to. These tests pin the behaviour that parity is measured
  * against, not the seed data.
  */
 const ANNA_ID = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
@@ -1408,7 +1408,7 @@ describe("MockTaskaApi", () => {
    * what it joins into a card, and its access rule — not about the seed.
    *
    * `RestTaskaApi.test.ts` pins the same shape on the wire. Between them they
-   * are what "mock, rest and hybrid are interchangeable" means for this route.
+   * are what "mock and rest are interchangeable" means for this route.
    */
   describe("board", () => {
     const columnShape = (board: Board) =>
@@ -1803,6 +1803,11 @@ describe("MockTaskaApi", () => {
         originalEstimateMinutes: 480,
         remainingEstimateMinutes: 240,
       });
+
+      // And a negative value after the clear is a refusal, not a second clear:
+      // the pin `HybridTaskaApi.test.ts` held on this mock until TAS-209
+      // deleted the class it wrapped.
+      await expect(edit(before.id, { storyPoints: -1 })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     });
 
     it("reads an explicitly undefined key as 'leave it alone', not as 'clear it'", async () => {
@@ -2772,7 +2777,7 @@ describe("MockTaskaApi", () => {
      * The gateway compares a `from`/`to` range typed — `BigDecimal` for a
      * numeric column, `OffsetDateTime` for a temporal one — and the mock is
      * both the reference implementation and what the e2e suite runs against
-     * (AGENTS.md: the three implementations stay behaviourally
+     * (AGENTS.md: the two implementations stay behaviourally
      * interchangeable). Comparing as text is not a mock detail: it answers a
      * different set of rows than the wire does.
      */

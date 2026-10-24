@@ -288,25 +288,25 @@ export function ProjectWorkflowsModal({
   };
 
   /**
-   * §4.11's `Esc`, bound here because `Modal` carries none (the gap §7 keeps
-   * open, as Members does). The nearer thing first: an open form, unless its
-   * write is out — then nothing at all, since Esc must not look like it
-   * cancelled a write that is still going; otherwise the dialog. Never during
-   * IME composition, where Esc belongs to the input method.
+   * This dialog's inner layer of §4.11's `Esc` (TAS-397): an open form closes,
+   * focus back on the control that opened it, and the dialog stays — unless its
+   * write is out, when `Esc` does nothing at all, since it must not look like it
+   * cancelled a write that is still going (`Modal`'s `busy` holds the dialog
+   * then). With no form open the key is left to `Modal`, which closes the
+   * dialog — on `window`, after this `document` listener has had it.
    */
-  const onEscape = useRef(() => {});
+  const onEscape = useRef((_event: KeyboardEvent) => {});
   useEffect(() => {
-    onEscape.current = () => {
-      if (inFlight) return;
-      if (form) closeForm();
-      else onClose();
+    onEscape.current = (event) => {
+      if (!form || inFlight) return;
+      event.preventDefault();
+      closeForm();
     };
   });
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
-      event.preventDefault();
-      onEscape.current();
+      onEscape.current(event);
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -328,6 +328,7 @@ export function ProjectWorkflowsModal({
           </span>
         ) : undefined
       }
+      busy={inFlight}
       focusableBody={readOnlyReader}
       onClose={onClose}
       title="Workflows"

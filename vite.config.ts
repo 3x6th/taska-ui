@@ -12,8 +12,25 @@ function getGitHubPagesUrl(repository?: string) {
   return owner && repo ? `https://${owner}.github.io/${repo}/` : "";
 }
 
+// The modes src/api/client.ts can build: "" means the default, "rest". Checked
+// here, at config time, so that a stale value stops dev, test and build with a
+// sentence instead of quietly becoming a different mode at runtime — which is
+// what a leftover `hybrid` in a .env or a repository variable would otherwise
+// do since TAS-209 removed it.
+const API_MODES = ["", "rest", "mock"];
+
+function assertApiMode(value: string | undefined) {
+  if (API_MODES.includes(value ?? "")) return;
+  throw new Error(
+    `VITE_TASKA_API_MODE=${JSON.stringify(value)} is not a mode this build has. ` +
+      `Use "rest" (the default, also when empty) or "mock". ` +
+      `"hybrid" was removed in TAS-209; set it to "rest" in .env or in the repository variable.`,
+  );
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  assertApiMode(env.VITE_TASKA_API_MODE);
   const base = env.VITE_BASE_PATH ?? "/";
   const publicUrl = withTrailingSlash(env.VITE_SITE_URL || getGitHubPagesUrl(process.env.GITHUB_REPOSITORY) || base);
   const apiProxyTarget = env.VITE_TASKA_API_PROXY_TARGET;

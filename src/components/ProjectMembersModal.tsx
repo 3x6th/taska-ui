@@ -815,27 +815,32 @@ export function ProjectMembersModal({
   // --- keyboard and focus -------------------------------------------------
 
   /**
-   * §4.11's `Esc`, bound here because `Modal` carries none (§7 keeps that gap
-   * open for every dialog, and closing it for all of them is not this story).
-   * An open confirmation is the nearer thing to cancel, so it goes first and the
-   * dialog stays; the next `Esc` closes the dialog. There is no `Cmd/Ctrl+Enter`:
-   * this dialog has no single action to confirm, and the add form already
-   * submits on Enter.
+   * This dialog's inner layers of §4.11's `Esc` (TAS-397): an open question
+   * first, then the open results (their text stays). Each takes the key with
+   * `preventDefault()` and the dialog stays; with neither open the key is left
+   * to `Modal`, which closes the dialog — on `window`, after this `document`
+   * listener has had it. There is no `Cmd/Ctrl+Enter`: this dialog has no
+   * single action to confirm, and the add form already submits on Enter.
    *
    * Read through a ref, refreshed after every render, so the listener is bound
    * once rather than on every keystroke in the field.
    */
-  const onEscape = useRef(() => {});
+  const onEscape = useRef((_event: KeyboardEvent) => {});
   useEffect(() => {
-    // The nearer thing first: a question, then the open results (their text
-    // stays), then the dialog (§4.22).
-    onEscape.current = () => (confirm ? cancelConfirm() : boxOpen ? setListOpen(false) : onClose());
+    onEscape.current = (event) => {
+      if (confirm) {
+        event.preventDefault();
+        cancelConfirm();
+      } else if (boxOpen) {
+        event.preventDefault();
+        setListOpen(false);
+      }
+    };
   });
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onEscape.current();
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      onEscape.current(event);
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -875,6 +880,8 @@ export function ProjectMembersModal({
 
   return (
     <Modal
+      // A member write in flight holds `Esc` (§4.11); ✕ and the scrim still close.
+      busy={addMember.isPending || changeRole.isPending || removeMember.isPending}
       title="Members"
       eyebrow={
         badge ? (

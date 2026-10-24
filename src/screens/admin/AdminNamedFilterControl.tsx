@@ -167,7 +167,9 @@ export function AdminNamedFilterControl({
       {filters.map((filter) => {
         const label = namedFilterChipLabel(definitions, filter);
         return (
-          <span className="admin-filter-chip" key={namedFilterKey(filter)}>
+          // `data-filter-key` lets a section put focus on a chip it has just
+          // applied from outside the popover (Audit's «Filter by this actor»).
+          <span className="admin-filter-chip" data-filter-key={namedFilterKey(filter)} key={namedFilterKey(filter)}>
             <button
               aria-controls={open ? popoverId : undefined}
               aria-expanded={open && editing === namedFilterKey(filter)}

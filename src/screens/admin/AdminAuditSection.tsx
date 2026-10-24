@@ -1,16 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useId, useState } from "react";
-import { Navigate, useSearchParams } from "react-router-dom";
+import { useEffect, useId, useRef, useState, type MouseEvent } from "react";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { taskaApi } from "../../api/client";
 import { isMissingOrForbidden, isUndeployedRoute } from "../../api/errors";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../../api/TaskaApi";
 import { RequestId } from "../../components/RequestId";
-import type { AuditEntry } from "../../domain/types";
+import type { AdminFilter, AuditEntry } from "../../domain/types";
 import { AdminError } from "./AdminError";
 import { AdminNamedFilterControl } from "./AdminNamedFilterControl";
 import { AdminPager } from "./AdminPager";
 import {
+  actorIdProblem,
   auditEntryKeys,
   auditFilters,
   auditFiltersProblem,
@@ -22,10 +23,24 @@ import {
   type AuditViewState,
 } from "./audit";
 import { shortKey } from "./columns";
+import { namedFilterKey } from "./namedFilters";
 import { jiraUrl } from "./sections";
 
 const PAGE_SIZE = 20;
 const COLUMNS = 7;
+/** The «Actor id is» filter, as `auditFilters` defines it and the chip is keyed. */
+const ACTOR_FILTER_KEY = namedFilterKey({ column: "actorUserId", operator: "equals" });
+
+/**
+ * The filters with «Actor id is» set to this id: replaced where it stood, or
+ * added after the others — every other filter stays (§5.8, TAS-396).
+ */
+function withActorFilter(filters: AdminFilter[], actorUserId: string): AdminFilter[] {
+  const actor: AdminFilter = { column: "actorUserId", operator: "equals", value: actorUserId };
+  return filters.some((filter) => namedFilterKey(filter) === ACTOR_FILTER_KEY)
+    ? filters.map((filter) => (namedFilterKey(filter) === ACTOR_FILTER_KEY ? actor : filter))
+    : [...filters, actor];
+}
 
 /**
  * The Audit section (DESIGN.md §5.8, TAS-251) — who changed what through the
@@ -66,6 +81,34 @@ export function AdminAuditSection() {
    */
   const [open, setOpen] = useState<string | null>(null);
   const detailIdBase = useId();
+  const planeRef = useRef<HTMLDivElement>(null);
+  /**
+   * Set by «Filter by this actor»: the link goes with the detail it sat in, so
+   * focus is put on the open half of the new «Actor id is» chip once the URL
+   * has brought it (§5.8, TAS-396) — next Tab is its ×. A ref, not state: a
+   * note to the next commit, nothing renders differently for it.
+   */
+  const focusActorChip = useRef(false);
+  const actorFilter = view.filters.find((filter) => namedFilterKey(filter) === ACTOR_FILTER_KEY)?.value ?? null;
+  useEffect(() => {
+    if (!focusActorChip.current) return;
+    focusActorChip.current = false;
+    planeRef.current
+      ?.querySelector<HTMLButtonElement>(`[data-filter-key="${ACTOR_FILTER_KEY}"] .admin-filter-chip-open`)
+      ?.focus();
+  }, [actorFilter]);
+
+  /** Where «Filter by this actor» leads: this view with the actor filter set, on page 1. */
+  const actorFilterHref = (actorUserId: string) => {
+    const next = writeAuditViewState({ page: 1, filters: withActorFilter(view.filters, actorUserId) }).toString();
+    return next ? `/admin/audit?${next}` : "/admin/audit";
+  };
+  const followActorFilter = (event: MouseEvent<HTMLAnchorElement>) => {
+    // A click meant for a new tab or window leaves this view as it is.
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    focusActorChip.current = true;
+    setOpen(null);
+  };
 
   const update = (changes: Partial<AuditViewState>) => {
     // Replace rather than push, as every view change in this area does: Back
@@ -94,7 +137,7 @@ export function AdminAuditSection() {
   const keys = auditEntryKeys(entries);
 
   return (
-    <div aria-busy={entriesQuery.isFetching} className="admin-plane admin-audit-plane">
+    <div aria-busy={entriesQuery.isFetching} className="admin-plane admin-audit-plane" ref={planeRef}>
       <div className="admin-plane-head">
         <h2 className="visually-hidden">Audit entries</h2>
         {data && !notServed ? (
@@ -165,6 +208,18 @@ export function AdminAuditSection() {
                 const detailId = `${detailIdBase}-${index}`;
                 return (
                   <AuditRow
+                    actorFilter={
+                      // Not drawn for an entry with no actor id, nor when the log
+                      // is already filtered to this one: a control that would
+                      // change nothing is not drawn (§5.8, the Match argument).
+                      // Nor for an id the filter itself would refuse, which the
+                      // address would drop on the way in.
+                      entry.actorUserId !== null &&
+                      entry.actorUserId !== actorFilter &&
+                      actorIdProblem(entry.actorUserId) === null
+                        ? { href: actorFilterHref(entry.actorUserId), onFollow: followActorFilter }
+                        : null
+                    }
                     detailId={detailId}
                     entry={entry}
                     expanded={expanded}
@@ -234,15 +289,23 @@ function ActorCell({ entry }: { entry: AuditEntry }) {
   );
 }
 
+/** «Filter by this actor» for one entry: where it leads, and what following it does first. */
+interface ActorFilterLink {
+  href: string;
+  onFollow: (event: MouseEvent<HTMLAnchorElement>) => void;
+}
+
 function AuditRow({
   entry,
   expanded,
   detailId,
+  actorFilter,
   onToggle,
 }: {
   entry: AuditEntry;
   expanded: boolean;
   detailId: string;
+  actorFilter: ActorFilterLink | null;
   onToggle: () => void;
 }) {
   const time = entry.createdAt ? formatAuditTime(entry.createdAt) : null;
@@ -311,7 +374,7 @@ function AuditRow({
       {expanded ? (
         <tr className="admin-audit-detail-row">
           <td className="admin-audit-detail-cell" colSpan={COLUMNS}>
-            <AuditDetail entry={entry} id={detailId} />
+            <AuditDetail actorFilter={actorFilter} entry={entry} id={detailId} />
           </td>
         </tr>
       ) : null}
@@ -324,7 +387,15 @@ function AuditRow({
  * value side by side — the reason anyone opens an audit entry. Side by side
  * from the readable width up, one above the other below it.
  */
-function AuditDetail({ entry, id }: { entry: AuditEntry; id: string }) {
+function AuditDetail({
+  entry,
+  id,
+  actorFilter,
+}: {
+  entry: AuditEntry;
+  id: string;
+  actorFilter: ActorFilterLink | null;
+}) {
   return (
     <section aria-label={`Changes of ${entry.action ?? "entry"}`} className="admin-audit-detail" id={id}>
       <dl className="admin-audit-facts">
@@ -335,9 +406,32 @@ function AuditDetail({ entry, id }: { entry: AuditEntry; id: string }) {
           </dd>
         </div>
         <div>
-          {/* Whole and selectable: exactly the value "Actor id is" filters by. */}
+          {/* Whole and selectable: exactly the value "Actor id is" filters by —
+              and, on its own line under it, the link that applies that filter
+              (§5.8, TAS-396). A link rather than a button: it writes the
+              address, so it copies and opens in a new tab. It is what brings
+              together the old rows that kept `mark` and the new ones that say
+              `Mark Lee`: only the id is the same in both. */}
           <dt>actor id</dt>
-          <dd className="admin-cell-mono">{entry.actorUserId ?? <Absent />}</dd>
+          <dd>
+            {entry.actorUserId !== null ? (
+              <>
+                <span className="admin-cell-mono">{entry.actorUserId}</span>
+                {actorFilter ? (
+                  <Link
+                    className="admin-audit-actor-filter"
+                    onClick={actorFilter.onFollow}
+                    replace
+                    to={actorFilter.href}
+                  >
+                    Filter by this actor
+                  </Link>
+                ) : null}
+              </>
+            ) : (
+              <Absent />
+            )}
+          </dd>
         </div>
         <div>
           <dt>target id</dt>
