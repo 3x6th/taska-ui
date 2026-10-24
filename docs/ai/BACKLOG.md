@@ -4008,78 +4008,78 @@ Frontend notes:
 
 ### Left by TAS-202 (projects from /project-stats, board from /board, 2026-10-24)
 
-- **The board's types are a constant, the context's come from the registry**
+- **The board's types are a constant, the context's come from the registry** — **graduated to [TAS-393](https://jira.ozero.dev/browse/TAS-393)** (2026-10-24)
   (`api-contract-guard`, A4): `BoardServiceImpl.java:48` iterates TASK, BUG, STORY while the
   context reads the project's type registry (TAS-385). Latent until custom types can hold issues
   (TAS-386); then an issue of a type outside the three is on no column and not in «Outside their workflow»
   — it is not on the board at all (the mock shows it: an Epic filter gives "0 of 4", a created
   Epic vanishes once its panel closes, the skeleton predicts EPIC's columns and jumps). Backend ask when TAS-386 lands.
-- **A project card counts issues the board does not draw** (`frontend-builder`, TAS-202):
+- **A project card counts issues the board does not draw** — **graduated to [TAS-393](https://jira.ozero.dev/browse/TAS-393)** (2026-10-24) (`frontend-builder`, TAS-202):
   `issueCount` counts every type, while the board reads only TASK, BUG and STORY (A4), so in
   the mock the Web App card says "5 issues" and its board "4 of 4" (WEB-15 is an EPIC). The
   stand cannot hold such an issue until TAS-386; same backend ask as A4.
-- **The project card's footer has no fixed height** (`art-director`, TAS-202 post-build N1):
+- **The project card's footer has no fixed height** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (`art-director`, TAS-202 post-build N1):
   without faces it is 16.7 tall, with faces 24, so every card grows 142 → 145 when stats
   arrive and a faceless card's title sits ~2px off its neighbours; «— members» keeps a 12px
   indent with no stack. Fix: `.project-card-foot { min-height: 24px }` and
   `.avatar-stack > .member-count:first-child { margin-left: 0 }`, plus the §4.8 line «Подвал
   держит `min-height:24`…».
-- **An admin rail click during the catalog load can be undone** (`frontend-builder`, TAS-202 CI
+- **An admin rail click during the catalog load can be undone** — **graduated to [TAS-396](https://jira.ozero.dev/browse/TAS-396)** (2026-10-24) (`frontend-builder`, TAS-202 CI
   diagnosis): `/admin` redirects to `/admin/data`, then into the first table once the catalog
   answers (`<Navigate replace>`); a click that pushed `/admin/users` before React Router commits
   it is replaced by that second redirect. A few ms in production; reproduced deterministically.
   Fix: guard the Data section's redirect, or `useTransitions={false}` on the router. The four
   admin e2e helpers now wait for the settled address.
-- **Labels' Add label is natively `disabled` while its write is in flight** (`art-director`,
+- **Labels' Add label is natively `disabled` while its write is in flight** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (`art-director`,
   TAS-202 narrow check): `disabled={!trimmed || createLabel.isPending}`, so after a mouse press
   or Enter on the button focus sits on `<body>` for about one round trip. Harmless in Chromium
   (a Tab lands inside the dialog), but §4.1 wants the in-flight case `aria-disabled` without
   dimming and `cursor:progress`: keep `disabled={!trimmed}`, add
   `aria-disabled={createLabel.isPending || undefined}`, refuse in the submit handler.
-- **The lost-focus check lives in three places** (board archive effect, `EditProjectModal`,
+- **The lost-focus check lives in three places** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (board archive effect, `EditProjectModal`,
   `ProjectLabelsModal`); a shared helper could replace them.
-- **Label chip order on a card is not stated**: `findLabelIdsByIssueIds`
+- **Label chip order on a card is not stated** — **graduated to [TAS-392](https://jira.ozero.dev/browse/TAS-392)** (2026-10-24): `findLabelIdsByIssueIds`
   (`IssueRepositoryImpl.java:338`) has no ORDER BY.
 - **`listIssues` has no screen caller any more** (board, projects and the link picker moved off
   it). Keep or delete with TAS-209.
 
 ### Left by TAS-149 (archive and the read-only archived board, frontend for backend #155/#159, 2026-10-23)
 
-- **The last-admin refusal carries no reason** (`api-contract-guard`): 400
+- **The last-admin refusal carries no reason** — **graduated to [TAS-394](https://jira.ozero.dev/browse/TAS-394)** (2026-10-24) (`api-contract-guard`): 400
   `FAILED_PRECONDITION` "Can't modify last admin: …" without `details`, so the Members
   dialog tells it apart only as "FAILED_PRECONDITION and not `PROJECT_ARCHIVED`" — a set that
   can grow. Backend ask: `details.reason: "LAST_ADMIN"` (ProjectMemberValidatorImpl:107,
   precedent `ProjectArchived.error()`), and `RestErrorResponse.details` documenting its
   `reason` values. Not filed.
-- **Several write surfaces show a refusal without its request id** — comments, labels,
+- **Several write surfaces show a refusal without its request id** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) — comments, labels,
   links, attachment toasts, the create-issue form (`api-contract-guard`); predates TAS-149,
   but archived and rollout 503 refusals now land there too.
 - **Typing at the end of an issue's summary scrolls `.issue-panel-body` by 44–81px**
   (`art-director`, TAS-149 pass; measured 44px on main too, so not from TAS-149).
-- **A half-typed panel date (`badInput`) survives the archive** (`frontend-builder`,
+- **A half-typed panel date (`badInput`) survives the archive** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (`frontend-builder`,
   TAS-149 round 2): the planning reset puts story points and estimates back to the stored
   values, but a date box holding partial segments keeps them visible, read-only, until the
   panel closes — clearing it needs the DOM value written directly, as `commitDate` does.
-- **Read-only dialogs can only be left by Cancel or ✕** (`art-director`, TAS-149 round 3):
+- **Read-only dialogs can only be left by Cancel or ✕** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (`art-director`, TAS-149 round 3):
   `Modal` has no Esc handler at all — the TAS-142 gap DESIGN.md already lists; the archived
   read-only state of Edit project, New issue and Labels makes it more visible.
-- **Nothing has been archived on the stand.** The DELETE answer and the refusal shape are
+- **Nothing has been archived on the stand.** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) The DELETE answer and the refusal shape are
   read from the Java; the first smoke (archive a throwaway project, one write → 400 with
   `details.reason` and a request id) needs the owner's word.
 
 ### Left by TAS-389 (the user's login removed, frontend for backend #219, 2026-10-23)
 
-- **"Only this actor" beside the audit detail's actor id** (`art-director`, pre-build N1).
+- **"Only this actor" beside the audit detail's actor id** — **graduated to [TAS-396](https://jira.ozero.dev/browse/TAS-396)** (2026-10-24) (`art-director`, pre-build N1).
   One person shows as `mark` in historical rows and `Mark Lee` in new ones; a link applying
   `?actorUserId=` through the existing "Actor id is" filter is the real identification task.
-- **At 375 the Users person column scrolls fully out of view when a row's action has focus**
+- **At 375 the Users person column scrolls fully out of view when a row's action has focus** — **graduated to [TAS-396](https://jira.ozero.dev/browse/TAS-396)** (2026-10-24)
   (`art-director`, post-build N3): the container scrolls 127 against a 120-wide person
   column, so only the row tint marks the row (the dialog still names the account). Candidate:
   the Data table's frozen-column recipe (`.admin-cell-frozen`) for the person cell at narrow
   widths — a §5.8 change that needs its own ruling.
-- **No e2e covers the audit actor column or the email line under the profile name**
+- **No e2e covers the audit actor column or the email line under the profile name** — **graduated to [TAS-396](https://jira.ozero.dev/browse/TAS-396)** (2026-10-24)
   (`release-reviewer`): row height 30, the 180 cap and the 390 wrap rest on screenshots.
-- **Emails in the Data view are masked inconsistently** (`api-contract-guard`):
+- **Emails in the Data view are masked inconsistently** — **graduated to [TAS-395](https://jira.ozero.dev/browse/TAS-395)** (2026-10-24) (`api-contract-guard`):
   `auth.users.email` and `admin_audit_log.actor_email` are plain, while
   `notification_preferences.email`, `invitation_email_deliveries.email` and
   `email_delivery_attempts.to_email` are `MASK_PARTIAL` (admin-service
@@ -4090,7 +4090,7 @@ Frontend notes:
 The code came from the backend developer's Codex run (PR #101); this repository's three
 roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fixes.
 
-- **Connect Telegram costs two requests where #218 made it one** (`api-contract-guard`,
+- **Connect Telegram costs two requests where #218 made it one** — **graduated to [TAS-391](https://jira.ozero.dev/browse/TAS-391)** (2026-10-24) (`api-contract-guard`,
   TAS-389 pass, 2026-10-23). Backend #218 (develop `3a2644f7`) returns an optional
   `preferences` snapshot on `POST /users/me/telegram/link`; `TelegramLink`
   (`src/domain/types.ts`) has no such field and `RestTaskaApi` drops it, so the section
