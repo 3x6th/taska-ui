@@ -4212,8 +4212,8 @@ roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fix
   TAS-411 is mapped; `toAccessToken` turns a missing `id` into `""` (a revoke would hit the bare
   collection path, rows would share a key); the mock allows duplicate names and has no cap — follow
   TAS-400/401; the "already gone" status drops the 404's request id; `ScreenRequests.test.tsx` does
-  not pin Settings → Access tokens' request count; the vendored `openapi.yml` is at `562d84de`, develop
-  at `92a00dbc` — refresh.
+  not pin Settings → Access tokens' request count; ~~the vendored `openapi.yml` is at `562d84de`, develop
+  at `92a00dbc` — refresh~~ — refreshed to `6ba4ed6` by TAS-416.
 - **Three notes from release-reviewer's last pass on `2cad7f2`** (non-blocking, left for speed):
   the `if (revoking) return;` guard that keeps the unseen line through a refused revoke has no test
   that can fail (`mockRejectedValueOnce` rejects before the optimistic removal renders — use a
@@ -4222,3 +4222,12 @@ roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fix
   `scrollIntoView({block:"nearest"})` could scroll the page vertically when the current link is out
   of view on a short window — scroll only the strip via `scrollLeft` if §5.8 allows. Also:
   `e2e/access-tokens.spec.ts` focuses the field before its final Esc.
+
+### Left by TAS-416 (edit and delete in the Workflows dialog, frontend for backend #225, 2026-10-26)
+
+- **No route changes the issue types of an existing workflow.** `PatchWorkflowRequestDto` takes only
+  `name` (and `version`); moving a type onto or off an own workflow is delete-and-create today, which
+  loses the statuses and transitions. Not a story yet: nobody has asked for it, and TAS-386 (issue type
+  as an open key) changes what a binding is. File it under TAS-384's successor when the owner asks.
+- **Editing from the diagram** (drag-to-connect, §4.28 "Редактирование потом") stays out: the rows and
+  forms carry every operation. A story when the owner asks for the graph editor.
