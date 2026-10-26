@@ -4241,10 +4241,12 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
 - **An issue panel open during a migration keeps the old status** until it refetches: a status or
   workflow delete with a move invalidates only the context, the board and the list
   (frontend-builder, TAS-416).
-- **«… is not a status of {workflow}, so its issues cannot be moved from here» is a real dead end**
-  with no path in the UI: issues of the workflow's types that already sit outside it block every
-  status delete (issue-service counts them). Asked on TAS-427 whether that is intended
-  (art-director N3, api-contract-guard A7).
+- **«… is not a status of {workflow}, so its issues cannot be moved from here» names no way out**:
+  issues of the workflow's types that already sit outside it block every status delete
+  (issue-service counts keys not in the remaining statuses). The way out exists — Add status with
+  the named key takes those issues out of the count, and the delete then goes through
+  (api-contract-guard r2) — but the strip does not point to it; art-director's call whether it
+  should. Asked on TAS-427 whether the counting is intended (art-director N3, api-contract-guard A7).
 - **The mock cannot produce a true «shares no status»** (an own copy always shares `TODO`), so that
   variant was reviewed by its copy only (art-director N3).
 - **Optional backend ask, not filed:** create and delete-workflow could answer the whole

@@ -6003,7 +6003,9 @@ nothing but `BACKLOG.md` for now.
   `details.statusKeys`; the message is never read. Without `details` the refusal is an ordinary
   one in the server's words with its request id, so issues cannot be moved from the UI — honest,
   not guessed (`api-contract-guard`, TAS-416). The mapping targets are the statuses both workflows
-  have, from the list already on screen; the server validates them. `ABORTED` and `ALREADY_EXISTS`
+  have, from the list already on screen; when the list has no shared default (every type has its
+  own workflow), the workflow's other statuses are offered with a line saying the server accepts
+  only ones both workflows have. The server validates them either way. `ABORTED` and `ALREADY_EXISTS`
   are told apart by `code`. The mock always sends the `details`, so mock mode always shows the
   steps. **Compensation: none.**
 - **Removal:** [TAS-427](https://jira.ozero.dev/browse/TAS-427) — `details.reason`
