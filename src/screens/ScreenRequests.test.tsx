@@ -144,9 +144,9 @@ function respond(path: string, search = new URLSearchParams()): unknown {
       ],
       labels: [{ id: LABEL, name: "ui", color: "#0052cc" }],
       issueTypes: [
-        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
-        { code: "BUG", name: "Bug", color: "red", icon: "bug", sortOrder: 20 },
-        { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 30 },
+        { code: "TASK", name: "Task", color: "blue", shape: "square", icon: null, sortOrder: 10 },
+        { code: "BUG", name: "Bug", color: "red", shape: "circle", icon: null, sortOrder: 20 },
+        { code: "STORY", name: "Story", color: "green", shape: "square", icon: null, sortOrder: 30 },
       ],
       workflows: ["TASK", "BUG", "STORY"].map((issueType) => ({ issueType, workflow })),
     };

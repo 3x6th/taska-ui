@@ -95,6 +95,7 @@ import {
   isIssueTypeCode,
   isIssueTypeColor,
   isIssueTypeIcon,
+  isIssueTypeShape,
   issueTypeExistsMessage,
   issueTypeInUseMessage,
   issueTypeNotDefinedMessage,
@@ -922,12 +923,14 @@ const memberWriteId = (userId: string): string => {
 /**
  * The registry every project is created with — `ProjectIssueTypeRepository`'s
  * seed (backend #212), which the migration also backfilled into every project
- * that existed before it. A project created at runtime here gets exactly this.
+ * that existed before it — in the plain look backend TAS-432 gives it (PR
+ * #256, migration 0003): TASK and STORY squares, BUG a circle, none with an
+ * icon. A project created at runtime here gets exactly this.
  */
 const SEED_ISSUE_TYPES: readonly ProjectIssueType[] = [
-  { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
-  { code: "BUG", name: "Bug", color: "red", icon: "bug", sortOrder: 20 },
-  { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 30 },
+  { code: "TASK", name: "Task", color: "blue", shape: "square", icon: null, sortOrder: 10 },
+  { code: "BUG", name: "Bug", color: "red", shape: "circle", icon: null, sortOrder: 20 },
+  { code: "STORY", name: "Story", color: "green", shape: "square", icon: null, sortOrder: 30 },
 ];
 
 /**
@@ -938,38 +941,54 @@ const SEED_ISSUE_TYPES: readonly ProjectIssueType[] = [
 const byRegistryOrder = (a: ProjectIssueType, b: ProjectIssueType) =>
   a.sortOrder - b.sortOrder || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0);
 
-/** `CreateProjectIssueTypeRequestDto`'s bean validation at the gateway (`useValidation=true`). */
+/**
+ * A request body as the gateway reads it off the wire: a key whose value is
+ * `undefined` is not sent at all (`JSON.stringify` drops it), so it is absent
+ * here too — which is what keeps "leave it" and "remove the icon" apart.
+ */
+const sentKeys = (body: Record<string, unknown>) => Object.keys(body).filter((key) => body[key] !== undefined);
+
+/**
+ * `CreateProjectIssueTypeRequestDto` as the gateway reads it (`useValidation=
+ * true`; backend TAS-432): the colour, the shape and the icon are enums, so a
+ * value outside its set fails deserialization, as does an explicit `null`
+ * shape (`Nulls.FAIL`); a missing or `null` icon is a type without one, and a
+ * missing shape the service's `square`.
+ */
 const isIssueTypeCreateBody = (input: unknown): input is CreateProjectIssueTypeInput => {
   if (typeof input !== "object" || input === null) return false;
   const body = input as Record<string, unknown>;
-  const allowed = ["code", "name", "color", "icon", "sortOrder"];
+  const allowed = ["code", "name", "color", "shape", "icon", "sortOrder"];
   return (
-    Object.keys(body).every((key) => allowed.includes(key)) &&
+    sentKeys(body).every((key) => allowed.includes(key)) &&
     isIssueTypeCode(body.code) &&
     typeof body.name === "string" &&
     body.name.trim() !== "" &&
     body.name.length <= ISSUE_TYPE_NAME_MAX_LENGTH &&
     isIssueTypeColor(body.color) &&
-    isIssueTypeIcon(body.icon) &&
+    (body.shape === undefined || isIssueTypeShape(body.shape)) &&
+    (body.icon === undefined || body.icon === null || isIssueTypeIcon(body.icon)) &&
     (body.sortOrder === undefined || (isInt32(body.sortOrder) && body.sortOrder >= 0))
   );
 };
 
 /**
  * `PatchProjectIssueTypeRequestDto` as the gateway parses it: the hand-written
- * DTO takes only its four keys, never `null`, and `sortOrder` as a whole
- * number; the values themselves are the service's to check, after the role.
+ * DTO takes only its five keys, `null` only for `icon` (it removes the icon,
+ * backend TAS-432; `Nulls.FAIL` on the rest), and `sortOrder` as a whole
+ * number. `color`, `shape` and `icon` are plain strings here: whether a value
+ * is in its set is the service's to check, after the role.
  */
 const isIssueTypePatchShape = (input: unknown): input is UpdateProjectIssueTypeInput => {
   if (typeof input !== "object" || input === null) return false;
   const body = input as Record<string, unknown>;
-  const allowed = ["name", "color", "icon", "sortOrder"];
+  const allowed = ["name", "color", "shape", "icon", "sortOrder"];
   return (
-    Object.keys(body).every((key) => allowed.includes(key)) &&
-    Object.values(body).every((value) => value !== null) &&
+    sentKeys(body).every((key) => allowed.includes(key)) &&
     (body.name === undefined || typeof body.name === "string") &&
     (body.color === undefined || typeof body.color === "string") &&
-    (body.icon === undefined || typeof body.icon === "string") &&
+    (body.shape === undefined || typeof body.shape === "string") &&
+    (body.icon === undefined || body.icon === null || typeof body.icon === "string") &&
     (body.sortOrder === undefined || isInt32(body.sortOrder))
   );
 };
@@ -1950,8 +1969,10 @@ export class MockTaskaStore {
    * goes through `registryOf`, which orders it as the server does. A project
    * created at runtime gets `SEED_ISSUE_TYPES`. **OPS holds only TASK and BUG**,
    * so one board offers fewer types than the seed; **WEB adds EPIC** (purple,
-   * `layers`, with a workflow of its own in `workflowOverrides`), so a type
-   * that is not one of the seeds is always on screen somewhere.
+   * the `layers` icon, with a workflow of its own in `workflowOverrides`), so a
+   * type that is not one of the seeds — and one drawn by its icon rather than
+   * a shape — is always on screen somewhere; **MOB adds INCIDENT**, an amber
+   * diamond without an icon (backend TAS-432's third shape).
    */
   private issueTypesByProject: Record<string, ProjectIssueType[]> = {};
   /**
@@ -2381,8 +2402,24 @@ export class MockTaskaStore {
     this.issueTypesByProject[OPS_PROJECT_ID] = SEED_ISSUE_TYPES.filter((type) => type.code !== "STORY").map((type) => ({
       ...type,
     }));
-    this.issueTypesByProject[WEB_PROJECT_ID].push({ code: "EPIC", name: "Epic", color: "purple", icon: "layers", sortOrder: 40 });
-    this.issueTypesByProject[MOB_PROJECT_ID].push({ code: "INCIDENT", name: "Incident", color: "amber", icon: "flag", sortOrder: 40 });
+    this.issueTypesByProject[WEB_PROJECT_ID].push({
+      code: "EPIC",
+      name: "Epic",
+      color: "purple",
+      // Migration 0003 makes every row that is not an untouched seed a square;
+      // the icon is what is drawn.
+      shape: "square",
+      icon: "layers",
+      sortOrder: 40,
+    });
+    this.issueTypesByProject[MOB_PROJECT_ID].push({
+      code: "INCIDENT",
+      name: "Incident",
+      color: "amber",
+      shape: "diamond",
+      icon: null,
+      sortOrder: 40,
+    });
 
     let minute = 10;
     const issue = (
@@ -5002,11 +5039,13 @@ export class MockTaskaStore {
 
   /**
    * `POST /projects/{projectId}/issue-types` in the server's order: the body
-   * (the gateway's bean validation — the code's pattern, a blank or over-50
-   * name measured before it is stripped, a colour or icon outside the sets, a
-   * negative `sortOrder`, an undeclared key), the project, the role, the
-   * archive, then a code the project already holds (409). The name is stored
-   * stripped and `sortOrder` defaults to 100; the 201 is the saved entry.
+   * (the gateway's bean validation and deserialization — the code's pattern, a
+   * blank or over-50 name measured before it is stripped, a colour, a shape or
+   * an icon outside its set, a `null` shape, a negative `sortOrder`, an
+   * undeclared key), the project, the role, the archive, then a code the
+   * project already holds (409). The name is stored stripped, `shape`
+   * defaults to `square`, `icon` to none and `sortOrder` to 100 (backend
+   * TAS-432); the 201 is the saved entry.
    */
   createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): ProjectIssueType {
     if (!isIssueTypeCreateBody(input)) throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
@@ -5018,7 +5057,8 @@ export class MockTaskaStore {
       code: input.code,
       name: input.name.trim(),
       color: input.color,
-      icon: input.icon,
+      shape: input.shape ?? "square",
+      icon: input.icon ?? null,
       sortOrder: input.sortOrder ?? ISSUE_TYPE_DEFAULT_SORT_ORDER,
     };
     (this.issueTypesByProject[projectId] ??= []).push(entry);
@@ -5027,34 +5067,40 @@ export class MockTaskaStore {
 
   /**
    * `PATCH /projects/{projectId}/issue-types/{code}` in the server's order: the
-   * gateway's parse (an undeclared key, `null`, a fractional `sortOrder`: 400
-   * "Invalid request parameters"); `{}` (400 "At least one field is required",
-   * before the role); the project, the role, the archive; a code the project
-   * does not hold (404); then the merged values (400 "Invalid issue type name,
-   * color, icon or sortOrder" — the name measured before it is stripped). The
-   * 200 is the saved entry.
+   * gateway's parse (an undeclared key, `null` for anything but `icon`, a
+   * fractional `sortOrder`: 400 "Invalid request parameters"); `{}` (400 "At
+   * least one field is required", before the role — `{ icon: null }` is not
+   * empty); the project, the role, the archive; a code the project does not
+   * hold (404); then the merged values (400 "Invalid issue type name, color,
+   * icon, shape or sortOrder" — the name measured before it is stripped). A
+   * key left out keeps its value; `icon: null` removes the icon (backend
+   * TAS-432). The 200 is the saved entry.
    */
   updateProjectIssueType(projectId: string, code: string, input: UpdateProjectIssueTypeInput): ProjectIssueType {
     if (!ISSUE_TYPE_CODE_PATTERN.test(code) || !isIssueTypePatchShape(input)) {
       throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
     }
-    if (Object.keys(input).length === 0) throw new MockApiError("INVALID_ARGUMENT", ISSUE_TYPE_EMPTY_PATCH_MESSAGE);
+    if (sentKeys(input as Record<string, unknown>).length === 0) {
+      throw new MockApiError("INVALID_ARGUMENT", ISSUE_TYPE_EMPTY_PATCH_MESSAGE);
+    }
     this.requireIssueTypeAdmin(projectId);
     const entry = this.findIssueType(projectId, code);
     const name = input.name ?? entry.name;
     const color = input.color ?? entry.color;
-    const icon = input.icon ?? entry.icon;
+    const shape = input.shape ?? entry.shape;
+    const icon = input.icon === undefined ? entry.icon : input.icon;
     const sortOrder = input.sortOrder ?? entry.sortOrder;
     if (
       name.trim() === "" ||
       name.length > ISSUE_TYPE_NAME_MAX_LENGTH ||
       !isIssueTypeColor(color) ||
-      !isIssueTypeIcon(icon) ||
+      !isIssueTypeShape(shape) ||
+      (icon !== null && !isIssueTypeIcon(icon)) ||
       sortOrder < 0
     ) {
       throw new MockApiError("INVALID_ARGUMENT", ISSUE_TYPE_INVALID_FIELDS_MESSAGE);
     }
-    Object.assign(entry, { name: name.trim(), color, icon, sortOrder });
+    Object.assign(entry, { name: name.trim(), color, shape, icon, sortOrder });
     return { ...entry };
   }
 
@@ -7456,8 +7502,9 @@ export class MockTaskaStore {
    * `IssueSearchHit` exists.
    */
   private searchHit(issue: Issue): IssueSearchHit {
-    // Backend TAS-418: the type's look from the issue's project registry as it
-    // stands now; a type deleted from it since leaves all three `null`.
+    // Backend TAS-418, TAS-432: the type's look from the issue's project
+    // registry as it stands now; a type deleted from it since leaves all four
+    // `null`, a type without an icon the icon alone.
     const type = (this.issueTypesByProject[issue.projectId] ?? []).find((entry) => entry.code === issue.issueType);
     return {
       id: issue.id,
@@ -7465,6 +7512,7 @@ export class MockTaskaStore {
       issueType: issue.issueType,
       issueTypeName: type?.name ?? null,
       issueTypeColor: type?.color ?? null,
+      issueTypeShape: type?.shape ?? null,
       issueTypeIcon: type?.icon ?? null,
       summary: issue.summary,
       priority: issue.priority,

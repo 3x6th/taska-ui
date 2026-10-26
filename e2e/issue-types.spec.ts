@@ -2,10 +2,12 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 // TAS-417: a project's issue types are its registry (backend #212, TAS-418;
 // DESIGN.md §4.30). The board offers them in the registry's order in the type
-// filter and in New issue, draws each by its name, colour and icon, and an
-// ADMIN adds, edits, reorders and deletes them in the Issue types dialog. In
-// the mock seed Taska Platform holds the three seeds, Infra and Ops only Task
-// and Bug (and no bug yet), and Web App adds Epic with a workflow of its own.
+// filter and in New issue, draws each by its name, colour and shape — or its
+// icon instead of the shape (TAS-434, backend TAS-432; §4.6) — and an ADMIN
+// adds, edits, reorders and deletes them in the Issue types dialog. In the mock
+// seed Taska Platform holds the three seeds as plain shapes (Task and Story
+// squares, Bug a circle), Infra and Ops only Task and Bug (and no bug yet), and
+// Web App adds Epic, drawn by its `layers` icon, with a workflow of its own.
 
 async function signIn(page: Page, email = "anna@example.com") {
   await page.goto("/login");
@@ -33,6 +35,29 @@ async function openIssueTypes(page: Page): Promise<Locator> {
 /** The names on the dialog's rows, in their order. */
 const rowNames = (dialog: Locator) => dialog.getByRole("list", { name: "Issue types" }).locator(".issue-type-name");
 
+/** A chip's figure as drawn: its class, box, radius, paint, the `::before` diamond, and any glyph. */
+const chipLook = (chip: Locator) =>
+  chip.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const before = getComputedStyle(element, "::before");
+    const box = element.getBoundingClientRect();
+    return {
+      figure: ["is-square", "is-circle", "is-diamond", "is-icon"].filter((name) => element.classList.contains(name)),
+      width: box.width,
+      height: box.height,
+      radius: style.borderRadius,
+      background: style.backgroundColor,
+      color: style.color,
+      beforeContent: before.content,
+      beforeBackground: before.backgroundColor,
+      beforeTransform: before.transform,
+      beforeWidth: before.width,
+      glyphs: element.querySelectorAll("svg").length,
+    };
+  });
+
+const TRANSPARENT = "rgba(0, 0, 0, 0)";
+
 test("a project that holds two issue types offers only those two, in the registry's order", async ({ page }) => {
   await openBoard(page, "Infra and Ops");
 
@@ -46,7 +71,7 @@ test("a project that holds two issue types offers only those two, in the registr
   await expect(types).toHaveValue("TASK");
 });
 
-test("an ADMIN adds a type; it is offered in the filter and New issue, and an issue of it lands on the board with its tile", async ({
+test("an ADMIN adds a type; it is offered in the filter and New issue, and an issue of it lands on the board with its icon", async ({
   page,
 }) => {
   await openBoard(page, "Taska Platform");
@@ -82,13 +107,21 @@ test("an ADMIN adds a type; it is offered in the filter and New issue, and an is
   await expect(panel.locator(".issue-panel-head .issue-type-label")).toHaveText("Customer request");
   await panel.getByRole("button", { name: "Close", exact: true }).click();
 
-  // On the board, in To Do, with the type's tile: teal, its glyph drawn.
+  // On the board, in To Do, drawn by its icon instead of a shape (§4.6): the
+  // glyph stroked teal, no fill, no tile.
   const card = page.getByRole("region", { name: "To Do column" }).locator("button.issue-card", { hasText: "Export my data" });
   await expect(card).toBeVisible();
   const chip = card.locator(".type-chip");
   await expect(chip).toHaveAttribute("title", "Customer request");
-  await expect(chip).toHaveCSS("background-color", "rgb(13, 148, 136)");
-  await expect(chip.locator("svg")).toHaveCount(1);
+  expect(await chipLook(chip)).toMatchObject({
+    figure: ["is-icon"],
+    width: 14,
+    height: 14,
+    background: TRANSPARENT,
+    color: "rgb(13, 148, 136)",
+    glyphs: 1,
+  });
+  await expect(chip.locator("svg")).toHaveAttribute("width", "14");
   await expect(card.locator(".issue-type-label")).toHaveText("Customer request");
 
   // And the filter finds it.
@@ -116,10 +149,11 @@ test("an ADMIN renames and recolours a type, and every card of it follows", asyn
   await expect(dialog.getByRole("button", { name: "Edit Defect" })).toBeFocused();
   await dialog.getByRole("button", { name: "Close" }).click();
 
-  // TAS-101 is a bug: its card is named and painted by the registry now.
+  // TAS-101 is a bug: its card is named and painted by the registry now, still its circle.
   const card = page.locator("button.issue-card", { hasText: "TAS-101" });
   await expect(card.locator(".issue-type-label")).toHaveText("Defect");
   await expect(card.locator(".type-chip")).toHaveCSS("background-color", "rgb(139, 92, 246)");
+  await expect(card.locator(".type-chip")).toHaveCSS("border-radius", "50%");
   await expect(page.getByRole("combobox", { name: "Type" }).locator("option")).toHaveText([
     "All",
     "Task",
@@ -241,7 +275,25 @@ test("the panel changes an issue's type in one write, and offers no type whose w
   await expect(type.locator("option:disabled")).toHaveCount(0);
   await type.selectOption("EPIC");
   await expect(panel.locator(".issue-panel-head .issue-type-label")).toHaveText("Epic");
-  await expect(panel.locator(".issue-panel-head .type-chip")).toHaveCSS("background-color", "rgb(139, 92, 246)");
+  // Epic is drawn by its icon: the glyph stroked purple, no fill.
+  const headChip = panel.locator(".issue-panel-head .type-chip");
+  await expect(headChip).toHaveCSS("color", "rgb(139, 92, 246)");
+  await expect(headChip).toHaveCSS("background-color", TRANSPARENT);
+  await expect(headChip.locator("svg")).toHaveCount(1);
+  // §5.5: the chosen type's chip inside the select, 8 from its left, centred in its 30.
+  const placed = await panel.locator(".type-select").evaluate((field) => {
+    const chip = field.querySelector(".type-chip")!.getBoundingClientRect();
+    const select = field.querySelector("select")!;
+    const box = select.getBoundingClientRect();
+    return {
+      left: chip.left - box.left,
+      centre: chip.top + chip.height / 2 - (box.top + box.height / 2),
+      width: chip.width,
+      paddingLeft: getComputedStyle(select).paddingLeft,
+    };
+  });
+  expect(placed).toMatchObject({ left: 8, width: 14, paddingLeft: "28px" });
+  expect(Math.abs(placed.centre)).toBeLessThanOrEqual(0.5);
   // The write landed: the card on the board is an epic now.
   await expect(page.locator("button.issue-card", { hasText: "WEB-14" }).locator(".issue-type-label")).toHaveText("Epic");
   await expect(panel.getByRole("alert")).toHaveCount(0);
@@ -283,11 +335,208 @@ test("lays the dialog out at 375 without sideways scrolling, every row's control
     expect(row.textWidth).toBeGreaterThan(100);
   }
 
-  // The form fits too.
+  // The form fits too, the nine icons on one row (§4.30: 26 buttons below 480,
+  // 264 in the column), Colour over Shape.
   await dialog.getByRole("button", { name: "Add type" }).click();
-  const fits = await dialog.evaluate((element) => {
+  await expect(dialog.getByRole("form", { name: "New type" })).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  const form = await dialog.evaluate((element) => {
     const body = element.querySelector(".modal-body") as HTMLElement;
-    return body.scrollWidth - body.clientWidth;
+    const icons = element.querySelector('[role="group"][aria-label="Icon"]') as HTMLElement;
+    const shapes = element.querySelector('[role="group"][aria-label="Shape"]') as HTMLElement;
+    const colours = element.querySelector('[role="group"][aria-label="Colour"]') as HTMLElement;
+    const buttons = [...icons.querySelectorAll("button")].map((button) => button.getBoundingClientRect());
+    return {
+      overflow: body.scrollWidth - body.clientWidth,
+      iconWidth: icons.getBoundingClientRect().width,
+      iconColumn: (icons.parentElement as HTMLElement).getBoundingClientRect().width,
+      iconRows: new Set(buttons.map((box) => Math.round(box.top))).size,
+      iconButtons: buttons.map((box) => [box.width, box.height]),
+      shapeButtons: [...shapes.querySelectorAll("button")].map((button) => button.getBoundingClientRect().width),
+      shapeBelowColour: shapes.getBoundingClientRect().top > colours.getBoundingClientRect().bottom,
+    };
   });
-  expect(fits).toBeLessThanOrEqual(0);
+  await page.screenshot({ path: testInfo.outputPath("issue-types-form-375.png") });
+  expect(form.overflow).toBeLessThanOrEqual(0);
+  expect(form.iconRows).toBe(1);
+  expect(form.iconButtons).toHaveLength(9);
+  for (const [width, height] of [...form.iconButtons, ...form.shapeButtons.map((width) => [width, width])]) {
+    expect(width).toBeCloseTo(26, 1);
+    expect(height).toBeCloseTo(26, 1);
+  }
+  expect(form.shapeButtons).toHaveLength(3);
+  expect(form.iconWidth).toBeCloseTo(264, 1);
+  expect(form.iconWidth).toBeLessThanOrEqual(form.iconColumn);
+  expect(form.shapeBelowColour).toBe(true);
 });
+
+test("draws Task, Bug and Story as plain 14px shapes on the board, and the card is no taller for it", async ({ page }) => {
+  await openBoard(page, "Taska Platform");
+  await page.evaluate(() => document.fonts.ready);
+
+  // TAS-102 a task, TAS-101 a bug, TAS-103 a story — one evaluate, after the fonts.
+  const cards = await page.evaluate(() =>
+    ["TAS-102", "TAS-101", "TAS-103"].map((key) => {
+      const card = [...document.querySelectorAll("button.issue-card")].find((node) =>
+        node.querySelector(".issue-key")?.textContent === key,
+      ) as HTMLElement;
+      const chip = card.querySelector(".type-chip") as HTMLElement;
+      const style = getComputedStyle(chip);
+      const box = chip.getBoundingClientRect();
+      return {
+        key,
+        figure: ["is-square", "is-circle", "is-diamond", "is-icon"].filter((name) => chip.classList.contains(name)),
+        size: [box.width, box.height],
+        radius: style.borderRadius,
+        background: style.backgroundColor,
+        glyphs: chip.querySelectorAll("svg").length,
+        margin: style.marginTop,
+        meta: (card.querySelector(".issue-card-meta") as HTMLElement).getBoundingClientRect().height,
+        line: (card.querySelector(".issue-key") as HTMLElement).getBoundingClientRect().height,
+      };
+    }),
+  );
+  expect(cards).toMatchObject([
+    { key: "TAS-102", figure: ["is-square"], size: [14, 14], radius: "4px", background: "rgb(79, 124, 240)", glyphs: 0 },
+    { key: "TAS-101", figure: ["is-circle"], size: [14, 14], radius: "50%", background: "rgb(229, 84, 75)", glyphs: 0 },
+    { key: "TAS-103", figure: ["is-square"], size: [14, 14], radius: "4px", background: "rgb(63, 168, 99)", glyphs: 0 },
+  ]);
+  for (const card of cards) {
+    // The chip sits inside the meta row's line box with no negative margin:
+    // the row — and so the card — is as high as the key's own line (§4.6).
+    expect(card.margin).toBe("0px");
+    expect(card.size[1]).toBeLessThanOrEqual(card.line);
+    expect(Math.abs(card.meta - card.line)).toBeLessThan(0.01);
+  }
+});
+
+test("an ADMIN adds a diamond without an icon, and the Shape group is unavailable while an icon is chosen", async ({
+  page,
+}) => {
+  await openBoard(page, "Taska Platform");
+  const dialog = await openIssueTypes(page);
+
+  await dialog.getByRole("button", { name: "Add type" }).click();
+  const form = dialog.getByRole("form", { name: "New type" });
+  const shapes = form.getByRole("group", { name: "Shape" });
+  const icons = form.getByRole("group", { name: "Icon" });
+  // No icon and a square by default.
+  await expect(icons.getByRole("button").first()).toHaveAccessibleName("No icon");
+  await expect(icons.getByRole("button", { name: "No icon" })).toHaveAttribute("aria-pressed", "true");
+  await expect(shapes.getByRole("button", { name: "Square" })).toHaveAttribute("aria-pressed", "true");
+
+  // An icon makes the Shape group steadily unavailable — kept, said why — and No icon brings it back.
+  await icons.getByRole("button", { name: "Flag" }).click();
+  const note = form.getByText("A type with an icon shows the icon instead of a shape.");
+  await expect(note).toBeVisible();
+  for (const name of ["Square", "Circle", "Diamond"]) {
+    await expect(shapes.getByRole("button", { name })).toHaveAttribute("aria-disabled", "true");
+  }
+  await expect(shapes.getByRole("button", { name: "Circle" })).toHaveCSS("opacity", "0.58");
+  // Playwright will not press an `aria-disabled` button on its own; the press is
+  // forced to show that it changes nothing.
+  await shapes.getByRole("button", { name: "Circle" }).click({ force: true });
+  await expect(shapes.getByRole("button", { name: "Square" })).toHaveAttribute("aria-pressed", "true");
+  await expect(form.locator(".issue-type-form-head .type-chip svg")).toHaveCount(1);
+  await icons.getByRole("button", { name: "No icon" }).click();
+  await expect(note).toHaveCount(0);
+  await expect(shapes.getByRole("button", { name: "Diamond" })).not.toHaveAttribute("aria-disabled", "true");
+
+  await form.getByLabel("Name").fill("Incident");
+  await shapes.getByRole("button", { name: "Diamond" }).click();
+  await expect(shapes.getByRole("button", { name: "Diamond" })).toHaveAttribute("aria-pressed", "true");
+  await form.getByRole("button", { name: "Add type" }).click();
+
+  await expect(rowNames(dialog)).toHaveText(["Task", "Bug", "Story", "Incident"]);
+  // Amber, the first colour no type wore: an 11×11 square turned 45° on `::before`, no glyph.
+  const row = dialog.locator(".issue-type-row", { hasText: "INCIDENT" });
+  expect(await chipLook(row.locator(".type-chip"))).toMatchObject({
+    figure: ["is-diamond"],
+    width: 14,
+    height: 14,
+    background: TRANSPARENT,
+    beforeBackground: "rgb(227, 160, 8)",
+    beforeWidth: "11px",
+    glyphs: 0,
+  });
+  const turned = await row.locator(".type-chip").evaluate((element) => {
+    const { a, b } = new DOMMatrix(getComputedStyle(element, "::before").transform);
+    return Math.round((Math.atan2(b, a) * 180) / Math.PI);
+  });
+  expect(turned).toBe(45);
+
+  // And on a card of it.
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "New" }).click();
+  const create = page.getByRole("dialog");
+  await create.getByLabel("Summary").fill("Payments are down");
+  await create.getByRole("combobox", { name: "Type" }).selectOption("INCIDENT");
+  // §5.5: the select carries the diamond too.
+  await expect(create.locator(".type-select .type-chip")).toHaveClass(/is-diamond/);
+  await create.getByRole("button", { name: "Create issue" }).click();
+  await page.locator(".issue-panel").getByRole("button", { name: "Close", exact: true }).click();
+  const card = page.locator("button.issue-card", { hasText: "Payments are down" });
+  expect(await chipLook(card.locator(".type-chip"))).toMatchObject({ figure: ["is-diamond"], glyphs: 0 });
+});
+
+test("an ADMIN takes a type's icon away, and its cards draw its shape again", async ({ page }) => {
+  await openBoard(page, "Web App");
+  const card = page.locator("button.issue-card", { hasText: "WEB-15" });
+  expect(await chipLook(card.locator(".type-chip"))).toMatchObject({ figure: ["is-icon"], glyphs: 1 });
+
+  const dialog = await openIssueTypes(page);
+  await dialog.getByRole("button", { name: "Edit Epic" }).click();
+  const form = dialog.getByRole("form", { name: "Edit Epic" });
+  await expect(form.getByRole("group", { name: "Icon" }).getByRole("button", { name: "Layers" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await form.getByRole("group", { name: "Icon" }).getByRole("button", { name: "No icon" }).click();
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog.getByRole("button", { name: "Edit Epic" })).toBeFocused();
+  expect(await chipLook(dialog.locator(".issue-type-row", { hasText: "EPIC" }).locator(".type-chip"))).toMatchObject({
+    figure: ["is-square"],
+    glyphs: 0,
+  });
+  await dialog.getByRole("button", { name: "Close" }).click();
+
+  // The card follows from the cache: a purple square, no glyph.
+  expect(await chipLook(card.locator(".type-chip"))).toMatchObject({
+    figure: ["is-square"],
+    radius: "4px",
+    background: "rgb(139, 92, 246)",
+    glyphs: 0,
+  });
+});
+
+for (const width of [1440, 375]) {
+  test(`gives the Issue types row's text column what the 14 chip leaves at ${width}`, async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== (width === 1440 ? "laptop" : "mobile"),
+      "each width once, in the project that has it",
+    );
+    await page.setViewportSize({ width, height: width === 1440 ? 900 : 812 });
+    await openBoard(page, "Taska Platform");
+    const dialog = await openIssueTypes(page);
+    await expect(rowNames(dialog)).toHaveCount(3);
+    await page.evaluate(() => document.fonts.ready);
+
+    const rows = await dialog.evaluate((element) =>
+      [...element.querySelectorAll<HTMLElement>(".issue-type-row")].map((row) => {
+        const box = row.getBoundingClientRect();
+        const chip = row.querySelector(".type-chip")!.getBoundingClientRect();
+        const text = row.querySelector(".issue-type-text")!.getBoundingClientRect();
+        const actions = row.querySelector(".issue-type-actions")!.getBoundingClientRect();
+        return { row: box.width, height: box.height, chip: chip.width, text: text.width, actions: actions.width };
+      }),
+    );
+    testInfo.annotations.push({ type: "measure", description: JSON.stringify(rows) });
+    for (const row of rows) {
+      expect(row.chip).toBeCloseTo(14, 1);
+      // Chip 14 · gap 8 · text · gap 8 · the four buttons.
+      expect(row.text).toBeCloseTo(row.row - 14 - 8 - 8 - row.actions, 1);
+      // Sub-pixel at a device scale of 3 (44.99998 measured).
+      expect(row.height).toBeCloseTo(45, 1);
+    }
+  });
+}

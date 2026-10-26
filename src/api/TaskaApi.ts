@@ -43,6 +43,7 @@ import type {
   ProjectIssueType,
   IssueTypeColor,
   IssueTypeIcon,
+  IssueTypeShape,
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
@@ -563,21 +564,28 @@ export interface CreateIssueLinkInput {
 }
 
 /**
- * `CreateProjectIssueTypeRequestDto` (backend #212). Every field but
- * `sortOrder` is required; the server defaults that one to 100, which is why
- * the dialog always sends it (DESIGN.md §4.30: a new type lands last).
+ * `CreateProjectIssueTypeRequestDto` (backend #212, TAS-432): `code`, `name`
+ * and `color` are required. `shape` defaults to `square` on the server and an
+ * explicit `null` is refused, so it is either a shape or left out; `icon` left
+ * out is a type without one — the contract takes `null` for that too, and
+ * this interface spells it only by leaving it out. The dialog always sends a
+ * shape and an icon only when one was chosen (DESIGN.md §4.30). `sortOrder`
+ * defaults to 100, which is why the dialog always sends it (a new type lands
+ * last).
  */
 export interface CreateProjectIssueTypeInput {
   code: IssueTypeCode;
   name: string;
   color: IssueTypeColor;
-  icon: IssueTypeIcon;
+  shape?: IssueTypeShape;
+  icon?: IssueTypeIcon;
   sortOrder?: number;
 }
 
 /**
- * `PatchProjectIssueTypeRequestDto`: at least one key, never `null`, never
- * `code` — the body is whitelisted by `projectIssueTypePatchBody`
+ * `PatchProjectIssueTypeRequestDto`: at least one key, never `code`, and
+ * `null` only for `icon`, where it removes the icon (backend TAS-432) — a key
+ * left out is unchanged. The body is whitelisted by `projectIssueTypePatchBody`
  * (src/api/issueTypes.ts). No version: the last write wins per field. The
  * dialog never sends `sortOrder` here: a move is one `reorderProjectIssueTypes`
  * (backend TAS-418), not a number picked between neighbours.
@@ -585,7 +593,8 @@ export interface CreateProjectIssueTypeInput {
 export interface UpdateProjectIssueTypeInput {
   name?: string;
   color?: IssueTypeColor;
-  icon?: IssueTypeIcon;
+  shape?: IssueTypeShape;
+  icon?: IssueTypeIcon | null;
   sortOrder?: number;
 }
 
@@ -1852,17 +1861,20 @@ export interface TaskaApi {
    * Refused in the server's order (`ProjectIssueTypeService`), with the
    * sentences of src/api/issueTypes.ts:
    *
-   * - create: the body (400 `INVALID_ARGUMENT` "Invalid request parameters");
-   *   a missing project (404); the role — anybody but the project's ADMIN, a
+   * - create: the body (400 `INVALID_ARGUMENT` "Invalid request parameters" —
+   *   a colour, a shape or an icon outside its set and an explicit `null`
+   *   shape among it, backend TAS-432); a missing project (404); the role — anybody but the project's ADMIN, a
    *   non-member included, 403 "Project ADMIN role is required"; an archived
    *   project (400 `FAILED_PRECONDITION`, `reason: PROJECT_ARCHIVED`); a code
    *   the project holds (409 `ALREADY_EXISTS`). The 201 is the saved entry,
-   *   its name stripped.
-   * - update: `{}` (400 "At least one field is required", before the role);
-   *   an undeclared key or `null` (400 "Invalid request parameters"); project,
+   *   its name stripped, `shape` the server's `square` when none was sent and
+   *   `icon` `null` when none was.
+   * - update: an undeclared key or a `null` anywhere but `icon` (400 "Invalid
+   *   request parameters"); `{}` (400 "At least one field is required", before
+   *   the role) — `{ icon: null }` is not empty, it removes the icon; project,
    *   role, archive as above; a code the project does not hold (404); then a
-   *   value the service refuses (400 "Invalid issue type name, color, icon or
-   *   sortOrder"). The 200 is the saved entry.
+   *   value the service refuses (400 "Invalid issue type name, color, icon,
+   *   shape or sortOrder"). The 200 is the saved entry.
    * - delete: project, role, archive; a code the project does not hold (404);
    *   the last type (400 `FAILED_PRECONDITION`, `details.reason`
    *   `LAST_ISSUE_TYPE`); a type live issues still carry — deleted ones do not

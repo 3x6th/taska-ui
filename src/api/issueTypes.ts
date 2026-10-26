@@ -1,10 +1,12 @@
-import type { IssueTypeColor, IssueTypeIcon, ProjectIssueType } from "../domain/types";
+import type { IssueTypeColor, IssueTypeIcon, IssueTypeShape, ProjectIssueType } from "../domain/types";
 
 /**
  * A project's issue-type registry as every implementation of `TaskaApi` has to
  * treat it (backend #212 TAS-385, #226 TAS-386, TAS-418; contract at develop
- * `be5085e5`): the closed colour and icon sets, the key's pattern, the server's
- * sentences and reasons, and how an answer is read.
+ * `be5085e5`; the shape and the optional icon of backend TAS-432, PR #256 at
+ * head `1c747de7`, `docs/contract/pending/pr-256-TAS-432.yml`): the closed
+ * colour, shape and icon sets, the key's pattern, the server's sentences and
+ * reasons, and how an answer is read.
  *
  * Written once for the reason src/api/issuePatch.ts gives: the mock and the
  * REST adapter both state these refusals, and two copies drift until the mock
@@ -17,7 +19,13 @@ import type { IssueTypeColor, IssueTypeIcon, ProjectIssueType } from "../domain/
 /** `ProjectIssueTypeColorDto`, in the contract's order — also the order of the swatches (DESIGN.md §4.30). */
 export const ISSUE_TYPE_COLORS: readonly IssueTypeColor[] = ["blue", "red", "green", "amber", "purple", "teal", "slate"];
 
-/** `ProjectIssueTypeIconDto`, in the contract's order — also the order of the icon picker (DESIGN.md §4.30). */
+/** `ProjectIssueTypeShapeDto`, in the contract's order — also the order of the Shape group (DESIGN.md §4.30). */
+export const ISSUE_TYPE_SHAPES: readonly IssueTypeShape[] = ["square", "circle", "diamond"];
+
+/**
+ * `ProjectIssueTypeIconDto`, in the contract's order — also the order of the
+ * icon picker after its «No icon» (DESIGN.md §4.30).
+ */
 export const ISSUE_TYPE_ICONS: readonly IssueTypeIcon[] = [
   "check-square",
   "bug",
@@ -39,6 +47,8 @@ export const ISSUE_TYPE_DEFAULT_SORT_ORDER = 100;
 
 export const isIssueTypeColor = (value: unknown): value is IssueTypeColor =>
   typeof value === "string" && (ISSUE_TYPE_COLORS as readonly string[]).includes(value);
+export const isIssueTypeShape = (value: unknown): value is IssueTypeShape =>
+  typeof value === "string" && (ISSUE_TYPE_SHAPES as readonly string[]).includes(value);
 export const isIssueTypeIcon = (value: unknown): value is IssueTypeIcon =>
   typeof value === "string" && (ISSUE_TYPE_ICONS as readonly string[]).includes(value);
 export const isIssueTypeCode = (value: unknown): value is string =>
@@ -46,7 +56,12 @@ export const isIssueTypeCode = (value: unknown): value is string =>
 
 /* --- The server's sentences ------------------------------------------------ */
 
-/** Bean validation of a registry body at the gateway: 400 `INVALID_ARGUMENT`. */
+/**
+ * A registry body the gateway cannot read: 400 `INVALID_ARGUMENT`. On a create
+ * that is bean validation and deserialization alike — a colour, a shape or an
+ * icon outside its enum, an explicit `null` shape (backend TAS-432); on a
+ * PATCH, an undeclared key and an explicit `null` for anything but `icon`.
+ */
 export const INVALID_REQUEST_PARAMETERS_MESSAGE = "Invalid request parameters";
 /** `PATCH …/issue-types/{code}` with `{}` — checked by the service before the role (400 `INVALID_ARGUMENT`). */
 export const ISSUE_TYPE_EMPTY_PATCH_MESSAGE = "At least one field is required";
@@ -54,8 +69,13 @@ export const ISSUE_TYPE_EMPTY_PATCH_MESSAGE = "At least one field is required";
 export const ISSUE_TYPE_ADMIN_REQUIRED_MESSAGE = "Project ADMIN role is required";
 /** PATCH or DELETE of a code the project does not hold (404 `NOT_FOUND`). */
 export const ISSUE_TYPE_NOT_FOUND_MESSAGE = "Issue type not found in this project";
-/** A PATCH value the hand-written DTO let through and the service refused (400 `INVALID_ARGUMENT`). */
-export const ISSUE_TYPE_INVALID_FIELDS_MESSAGE = "Invalid issue type name, color, icon or sortOrder";
+/**
+ * A PATCH value the hand-written DTO let through and the service refused (400
+ * `INVALID_ARGUMENT`) — the PATCH takes `color`, `shape` and `icon` as plain
+ * strings, so a value outside the sets is the service's, after the role and
+ * the code (backend TAS-432, `ProjectIssueTypeService.validate`).
+ */
+export const ISSUE_TYPE_INVALID_FIELDS_MESSAGE = "Invalid issue type name, color, icon, shape or sortOrder";
 /** DELETE of the only type left (400 `FAILED_PRECONDITION`, `details.reason` `LAST_ISSUE_TYPE`). */
 export const LAST_ISSUE_TYPE_MESSAGE = "Cannot delete the last issue type";
 /** `details.reason` of the refused delete of the only type left (backend TAS-418). */
@@ -109,8 +129,10 @@ export const STATUS_NOT_IN_TARGET_WORKFLOW_REASON = "STATUS_NOT_IN_TARGET_WORKFL
  * - an entry with no usable `code` (missing, blank, not a string) is dropped,
  *   and a repeated code keeps its first entry;
  * - a blank `name` reads as the code — a type is never drawn nameless;
- * - a colour or an icon outside the contract's sets is `null`, which the chip
- *   draws neutral (DESIGN.md §4.6) rather than as the nearest known value;
+ * - a colour, a shape or an icon outside the contract's sets is `null`, which
+ *   the chip draws by DESIGN.md §4.6's fallbacks rather than as the nearest
+ *   known value — so is a `shape` that is missing (drawn square, the server's
+ *   default) and an `icon` that is `null` or missing (no icon, since TAS-432);
  * - a `sortOrder` that is not a whole number reads as `0`.
  *
  * Not an array at all is an empty registry: `issueTypes` is `required`, and
@@ -139,25 +161,29 @@ export function toProjectIssueType(value: unknown): ProjectIssueType | null {
     code: wire.code,
     name,
     color: isIssueTypeColor(wire.color) ? wire.color : null,
+    shape: isIssueTypeShape(wire.shape) ? wire.shape : null,
     icon: isIssueTypeIcon(wire.icon) ? wire.icon : null,
     sortOrder: typeof wire.sortOrder === "number" && Number.isInteger(wire.sortOrder) ? wire.sortOrder : 0,
   };
 }
 
-/** The four keys `PatchProjectIssueTypeRequestDto` declares. `code` is not one of them: it never changes. */
-export const ISSUE_TYPE_PATCH_KEYS = ["name", "color", "icon", "sortOrder"] as const;
+/** The five keys `PatchProjectIssueTypeRequestDto` declares. `code` is not one of them: it never changes. */
+export const ISSUE_TYPE_PATCH_KEYS = ["name", "color", "shape", "icon", "sortOrder"] as const;
 
 /**
- * The PATCH body: each declared key whose value is neither `undefined` nor
- * `null` — the DTO refuses an explicit `null`, and "leave it" is spelled by
- * leaving it out. Copied by name, so a wider object (a form state, a registry
- * entry with its `code`) cannot put an undeclared key on the wire.
+ * The PATCH body: each declared key whose value is not `undefined` — "leave
+ * it" is spelled by leaving it out — and `null` only for `icon`, where it
+ * removes the icon (backend TAS-432); for every other key the DTO refuses an
+ * explicit `null`, so it is left out too. Copied by name, so a wider object (a
+ * form state, a registry entry with its `code`) cannot put an undeclared key
+ * on the wire.
  */
 export function projectIssueTypePatchBody(input: Partial<Record<(typeof ISSUE_TYPE_PATCH_KEYS)[number], unknown>>) {
   const body: Partial<Record<(typeof ISSUE_TYPE_PATCH_KEYS)[number], unknown>> = {};
   for (const key of ISSUE_TYPE_PATCH_KEYS) {
     const value = input[key];
-    if (value !== undefined && value !== null) body[key] = value;
+    if (value === undefined || (value === null && key !== "icon")) continue;
+    body[key] = value;
   }
   return body;
 }

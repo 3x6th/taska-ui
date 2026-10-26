@@ -126,18 +126,22 @@ const {
   const now = "2026-08-01T09:00:00Z";
 
   /**
-   * A registry entry the way the server seeds it (backend #212) — TASK, BUG
-   * and STORY with their seeded look, EPIC as the mock's purple layers, any
-   * other code with no look this build can draw — numbered in the order given.
+   * A registry entry the way the server seeds it (backend #212, the look of
+   * TAS-432) — TASK, BUG and STORY as plain shapes, EPIC as the mock's purple
+   * layers icon, any other code with no look this build can draw — numbered
+   * in the order given.
    */
-  const seededLooks: Record<string, { name: string; color: "blue" | "red" | "green" | "purple"; icon: "check-square" | "bug" | "book-open" | "layers" }> = {
-    TASK: { name: "Task", color: "blue", icon: "check-square" },
-    BUG: { name: "Bug", color: "red", icon: "bug" },
-    STORY: { name: "Story", color: "green", icon: "book-open" },
-    EPIC: { name: "Epic", color: "purple", icon: "layers" },
+  const seededLooks: Record<
+    string,
+    { name: string; color: "blue" | "red" | "green" | "purple"; shape: "square" | "circle"; icon: "layers" | null }
+  > = {
+    TASK: { name: "Task", color: "blue", shape: "square", icon: null },
+    BUG: { name: "Bug", color: "red", shape: "circle", icon: null },
+    STORY: { name: "Story", color: "green", shape: "square", icon: null },
+    EPIC: { name: "Epic", color: "purple", shape: "square", icon: "layers" },
   };
   const registryEntryOf = (code: string, index: number, names: Record<string, string>) => {
-    const look = Object.hasOwn(seededLooks, code) ? seededLooks[code] : { name: code, color: null, icon: null };
+    const look = Object.hasOwn(seededLooks, code) ? seededLooks[code] : { name: code, color: null, shape: null, icon: null };
     return { code, ...look, name: names[code] ?? look.name, sortOrder: (index + 1) * 10 };
   };
 

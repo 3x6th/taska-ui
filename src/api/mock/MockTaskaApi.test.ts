@@ -2399,7 +2399,7 @@ describe("MockTaskaApi", () => {
       // let a card or an edit claim something the gateway never sent. The
       // project and the status key are TAS-218's; `storyPoints` is the one
       // planning field, with no dates and no estimates beside it. The type's
-      // name, colour and icon are TAS-418's.
+      // name, colour and icon are TAS-418's, its shape TAS-432's.
       expect(Object.keys(hit ?? {}).sort()).toEqual([
         "assigneeId",
         "id",
@@ -2408,6 +2408,7 @@ describe("MockTaskaApi", () => {
         "issueTypeColor",
         "issueTypeIcon",
         "issueTypeName",
+        "issueTypeShape",
         "priority",
         "projectId",
         "projectKey",
@@ -2416,7 +2417,7 @@ describe("MockTaskaApi", () => {
         "summary",
       ]);
       expect(hit).toMatchObject({ projectId: project.id, projectKey: project.projectKey, statusKey: "TODO" });
-      expect(hit).toMatchObject({ issueTypeName: "Task", issueTypeColor: "blue", issueTypeIcon: "check-square" });
+      expect(hit).toMatchObject({ issueTypeName: "Task", issueTypeColor: "blue", issueTypeShape: "square", issueTypeIcon: null });
       // Created without one, so this states "not estimated" rather than a value.
       expect(hit?.storyPoints).toBeNull();
       // `""` on the wire for nobody, `null` here, exactly as `Issue.assigneeId`.
@@ -6347,18 +6348,30 @@ describe("MockTaskaApi", () => {
     const signIn = (email: string) => api.login({ email, password: "anything" });
     const projectByKey = async (key: string) => (await api.listProjects()).find((item) => item.projectKey === key)!;
     const codesOf = async (projectId: string) => (await api.getProjectContext(projectId)).issueTypes.map((type) => type.code);
-    const epic = { code: "EPIC", name: "  Epic  ", color: "purple", icon: "layers" } as const;
+    const epic = { code: "EPIC", name: "  Epic  ", color: "purple", shape: "square", icon: "layers" } as const;
 
-    it("seeds every project, a new one too, and orders by sortOrder then code; /meta stays the three seed names", async () => {
+    it("seeds every project, a new one too, in TAS-432's plain look, and orders by sortOrder then code", async () => {
+      // Backend TAS-432: TASK and STORY squares, BUG a circle, none with an icon.
       expect((await api.getProjectContext(project.id)).issueTypes).toEqual([
-        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
-        { code: "BUG", name: "Bug", color: "red", icon: "bug", sortOrder: 20 },
-        { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 30 },
+        { code: "TASK", name: "Task", color: "blue", shape: "square", icon: null, sortOrder: 10 },
+        { code: "BUG", name: "Bug", color: "red", shape: "circle", icon: null, sortOrder: 20 },
+        { code: "STORY", name: "Story", color: "green", shape: "square", icon: null, sortOrder: 30 },
       ]);
       expect(await codesOf((await projectByKey("OPS")).id)).toEqual(["TASK", "BUG"]);
       expect(await codesOf((await projectByKey("WEB")).id)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
       const fresh = await api.createProject({ projectKey: "NEWP", name: "New project" });
-      expect(await codesOf(fresh.id)).toEqual(["TASK", "BUG", "STORY"]);
+      expect((await api.getProjectContext(fresh.id)).issueTypes).toEqual(
+        (await api.getProjectContext(project.id)).issueTypes,
+      );
+
+      // One type drawn by its icon and one diamond without, always on screen somewhere.
+      const web = await api.getProjectContext((await projectByKey("WEB")).id);
+      expect(web.issueTypes.find((type) => type.code === "EPIC")).toMatchObject({ color: "purple", shape: "square", icon: "layers" });
+      // Mobile is Mark's.
+      await signIn("mark@example.com");
+      const mob = await api.getProjectContext((await projectByKey("MOB")).id);
+      expect(mob.issueTypes.find((type) => type.code === "INCIDENT")).toMatchObject({ color: "amber", shape: "diamond", icon: null });
+      await signIn("anna@example.com");
 
       // A tie on sortOrder falls to the code, byte-wise.
       await api.createProjectIssueType(project.id, { code: "AAA", name: "Aaa", color: "teal", icon: "flag", sortOrder: 20 });
@@ -6378,6 +6391,16 @@ describe("MockTaskaApi", () => {
       await expect(api.createProjectIssueType(project.id, { ...epic, name: "x".repeat(51) })).rejects.toMatchObject({
         message: "Invalid request parameters",
       });
+      // Backend TAS-432: the shape and the icon are enums the gateway reads, and a null shape fails it too.
+      for (const body of [
+        { ...epic, shape: "triangle" },
+        { ...epic, shape: null },
+        { ...epic, icon: "rocket" },
+      ]) {
+        await expect(
+          api.createProjectIssueType(project.id, body as unknown as typeof epic),
+        ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Invalid request parameters" });
+      }
       await expect(api.createProjectIssueType("missing", epic)).rejects.toMatchObject({
         code: "NOT_FOUND",
         message: "Project not found",
@@ -6400,8 +6423,21 @@ describe("MockTaskaApi", () => {
       });
       const created = await api.createProjectIssueType(project.id, epic);
       // Stored stripped; `sortOrder` the server's 100 when none is sent.
-      expect(created).toEqual({ code: "EPIC", name: "Epic", color: "purple", icon: "layers", sortOrder: 100 });
+      expect(created).toEqual({ code: "EPIC", name: "Epic", color: "purple", shape: "square", icon: "layers", sortOrder: 100 });
       expect(await codesOf(project.id)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
+      // No shape is the server's square, and no icon — left out or null — is none (backend TAS-432).
+      await expect(
+        api.createProjectIssueType(project.id, { code: "SPIKE", name: "Spike", color: "teal" }),
+      ).resolves.toMatchObject({ shape: "square", icon: null });
+      await expect(
+        api.createProjectIssueType(project.id, {
+          code: "CHORE",
+          name: "Chore",
+          color: "slate",
+          shape: "diamond",
+          ...({ icon: null } as object),
+        }),
+      ).resolves.toMatchObject({ shape: "diamond", icon: null });
 
       await api.archiveProject(project.id);
       const archived = await api
@@ -6420,6 +6456,18 @@ describe("MockTaskaApi", () => {
       await expect(
         api.updateProjectIssueType(project.id, "BUG", { name: null } as unknown as { name: string }),
       ).rejects.toMatchObject({ message: "Invalid request parameters" });
+      // `null` is refused for every key but the icon (backend TAS-432).
+      await expect(
+        api.updateProjectIssueType(project.id, "BUG", { shape: null } as unknown as { name: string }),
+      ).rejects.toMatchObject({ message: "Invalid request parameters" });
+      // A key that is undefined is not sent: this is `{}`.
+      await expect(api.updateProjectIssueType(project.id, "BUG", { icon: undefined })).rejects.toMatchObject({
+        message: "At least one field is required",
+      });
+      // `{ icon: null }` is not empty: it gets as far as the role.
+      await expect(api.updateProjectIssueType(project.id, "BUG", { icon: null })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
       await expect(api.updateProjectIssueType(project.id, "BUG", { name: "Defect" })).rejects.toMatchObject({
         code: "PERMISSION_DENIED",
         message: "Project ADMIN role is required",
@@ -6432,15 +6480,42 @@ describe("MockTaskaApi", () => {
       });
       await expect(api.updateProjectIssueType(project.id, "BUG", { name: "   " })).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
-        message: "Invalid issue type name, color, icon or sortOrder",
+        message: "Invalid issue type name, color, icon, shape or sortOrder",
       });
+      // The PATCH takes the shape and the icon as plain strings: a value outside
+      // the sets is the service's, after the role and the code.
+      for (const body of [{ shape: "triangle" }, { icon: "rocket" }, { color: "pink" }]) {
+        await expect(
+          api.updateProjectIssueType(project.id, "BUG", body as unknown as { name: string }),
+        ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Invalid issue type name, color, icon, shape or sortOrder" });
+      }
       await expect(api.updateProjectIssueType(project.id, "BUG", { name: " Defect ", color: "amber" })).resolves.toEqual({
         code: "BUG",
         name: "Defect",
         color: "amber",
-        icon: "bug",
+        shape: "circle",
+        icon: null,
         sortOrder: 20,
       });
+      // An icon, then a shape: each leaves the other as it was.
+      await expect(api.updateProjectIssueType(project.id, "BUG", { icon: "bug" })).resolves.toMatchObject({
+        shape: "circle",
+        icon: "bug",
+      });
+      await expect(api.updateProjectIssueType(project.id, "BUG", { shape: "diamond" })).resolves.toMatchObject({
+        shape: "diamond",
+        icon: "bug",
+      });
+      // `icon: null` removes the icon; the shape stays.
+      await expect(api.updateProjectIssueType(project.id, "BUG", { icon: null })).resolves.toEqual({
+        code: "BUG",
+        name: "Defect",
+        color: "amber",
+        shape: "diamond",
+        icon: null,
+        sortOrder: 20,
+      });
+      expect((await api.getProjectContext(project.id)).issueTypes[1]).toMatchObject({ shape: "diamond", icon: null });
     });
 
     it("reorders the whole registry in one write, renumbered 10, 20, 30, and refuses a set that is not exactly it", async () => {
@@ -6557,7 +6632,7 @@ describe("MockTaskaApi", () => {
       expect(changed).toMatchObject({ issueType: "EPIC", version: task.version + 1 });
     });
 
-    it("puts the type's look as the registry holds it now on a search hit", async () => {
+    it("puts the type's look as the registry holds it now on a search hit, its shape included", async () => {
       const web = await projectByKey("WEB");
       await api.updateProjectIssueType(web.id, "EPIC", { name: "Initiative", color: "teal" });
 
@@ -6566,8 +6641,20 @@ describe("MockTaskaApi", () => {
         issueType: "EPIC",
         issueTypeName: "Initiative",
         issueTypeColor: "teal",
+        issueTypeShape: "square",
         issueTypeIcon: "layers",
       });
+
+      // A type without an icon: its shape, and no icon (backend TAS-432).
+      await api.updateProjectIssueType(web.id, "EPIC", { icon: null, shape: "diamond" });
+      const again = await api.searchIssues({ query: "checkout", projectId: web.id });
+      expect(again.items.find((hit) => hit.issueKey === "WEB-15")).toMatchObject({
+        issueTypeShape: "diamond",
+        issueTypeIcon: null,
+      });
+      const bugs = await api.searchIssues({ query: "login", projectId: project.id });
+      const bug = bugs.items.find((hit) => hit.issueType === "BUG");
+      expect(bug).toMatchObject({ issueTypeName: "Bug", issueTypeColor: "red", issueTypeShape: "circle", issueTypeIcon: null });
     });
   });
 });
