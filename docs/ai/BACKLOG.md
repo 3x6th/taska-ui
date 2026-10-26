@@ -4129,7 +4129,14 @@ Frontend notes:
 
 The code came from the backend developer's Codex run (PR #101); this repository's three
 roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fixes.
+TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
 
+- **A compensation outlived its cause** (orchestrator, 2026-10-26).
+  `SettingsNotificationsSection.tsx` shows the `telegramError` sentence only while
+  `telegramAvailable`, because before backend #218 a disabled integration reported every
+  binding as `BOT_CHANGED`. #218 (develop `3a2644f7`) reports `BOT_CHANGED` only with the
+  integration on. The guard was never recorded in `API-DIVERGENCE.md`. Remove it, and drop the
+  refetch fallback for a link answer without `preferences`, which #222 (TAS-391) made required.
 - **Connect Telegram costs two requests where #218 made it one** — **graduated to [TAS-391](https://jira.ozero.dev/browse/TAS-391)** (2026-10-24) (`api-contract-guard`,
   TAS-389 pass, 2026-10-23). Backend #218 (develop `3a2644f7`) returns an optional
   `preferences` snapshot on `POST /users/me/telegram/link`; `TelegramLink`
@@ -4212,8 +4219,8 @@ roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fix
   TAS-411 is mapped; `toAccessToken` turns a missing `id` into `""` (a revoke would hit the bare
   collection path, rows would share a key); the mock allows duplicate names and has no cap — follow
   TAS-400/401; the "already gone" status drops the 404's request id; `ScreenRequests.test.tsx` does
-  not pin Settings → Access tokens' request count; the vendored `openapi.yml` is at `562d84de`, develop
-  at `92a00dbc` — refresh.
+  not pin Settings → Access tokens' request count; ~~the vendored `openapi.yml` is at `562d84de`, develop
+  at `92a00dbc` — refresh~~ — refreshed to `6ba4ed6` by TAS-416.
 - **Three notes from release-reviewer's last pass on `2cad7f2`** (non-blocking, left for speed):
   the `if (revoking) return;` guard that keeps the unseen line through a refused revoke has no test
   that can fail (`mockRejectedValueOnce` rejects before the optimistic removal renders — use a
@@ -4222,3 +4229,35 @@ roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fix
   `scrollIntoView({block:"nearest"})` could scroll the page vertically when the current link is out
   of view on a short window — scroll only the strip via `scrollLeft` if §5.8 allows. Also:
   `e2e/access-tokens.spec.ts` focuses the field before its final Esc.
+
+### Left by TAS-416 (edit and delete in the Workflows dialog, frontend for backend #225, 2026-10-26)
+
+- **No route changes the issue types of an existing workflow.** `PatchWorkflowRequestDto` takes only
+  `name` (and `version`); moving a type onto or off an own workflow is delete-and-create today, which
+  loses the statuses and transitions. Not a story yet: nobody has asked for it, and TAS-386 (issue type
+  as an open key) changes what a binding is. File it under TAS-384's successor when the owner asks.
+- **Editing from the diagram** (drag-to-connect, §4.28 "Редактирование потом") stays out: the rows and
+  forms carry every operation. A story when the owner asks for the graph editor.
+- **An issue panel open during a migration keeps the old status** until it refetches: a status or
+  workflow delete with a move invalidates only the context, the board and the list
+  (frontend-builder, TAS-416).
+- **«… is not a status of {workflow}, so its issues cannot be moved from here» names no way out**:
+  issues of the workflow's types that already sit outside it block every status delete
+  (issue-service counts keys not in the remaining statuses). The way out exists — Add status with
+  the named key takes those issues out of the count, and the delete then goes through
+  (api-contract-guard r2) — but the strip does not point to it; art-director's call whether it
+  should. Asked on TAS-427 whether the counting is intended (art-director N3, api-contract-guard A7).
+- **The mock cannot produce a true «shares no status»** (an own copy always shares `TODO`), so that
+  variant was reviewed by its copy only (art-director N3).
+- **Optional backend ask, not filed:** create and delete-workflow could answer the whole
+  `ProjectWorkflowsResponseDto`, saving the list re-read after them (api-contract-guard A5).
+- **Pre-existing since TAS-382:** the Category options come from the list's open set while the
+  request enum is closed, so a gateway `UNKNOWN` category could be offered and refused 400
+  (api-contract-guard).
+- **At develop `3e5fbf0`** the workflow-delete fallback is always TASK's default and «Issue types
+  have different default workflows» is gone; the mock comment above `deleteProjectWorkflow` still
+  names it — adjust in the TAS-385/386 snapshot refresh (api-contract-guard).
+- **A strip that grows into a move or mapping step is not revealed again:** `useRevealOnOpen` runs
+  once when the strip mounts; near the bottom edge only focusing the select scrolls, so the answer
+  below it could sit off-screen. Not reproduced (131px to spare in art-director's run); re-run the
+  reveal when the step first appears (art-director, TAS-416 r2).

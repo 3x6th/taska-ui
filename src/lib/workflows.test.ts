@@ -5,15 +5,26 @@ import {
   defaultCategory,
   defaultPosition,
   defaultTransitionPair,
+  freeSortOrderBetween,
+  isIssueCountRefusal,
+  issueCountOf,
+  namedStatusKeys,
   nextTransitionSortOrder,
   normalizeStatusKey,
   orderWorkflowEntries,
   positionOptions,
+  positionValue,
   statusCategoriesOf,
+  statusEditPositions,
   statusKeyFromName,
+  statusesInBoth,
+  statusesToMap,
   transitionButtonLabel,
+  transitionEditPositions,
+  transitionPositionValue,
   transitionsInListOrder,
   unreachedStatusIds,
+  withWorkflowEntry,
   workflowCopyInput,
 } from "./workflows";
 
@@ -234,5 +245,120 @@ describe("a list in words", () => {
     expect(andList(["Task"])).toBe("Task");
     expect(andList(["Task", "Bug"])).toBe("Task and Bug");
     expect(andList(["Task", "Bug", "Story"])).toBe("Task, Bug and Story");
+  });
+});
+
+/** TAS-416 (backend PR #225): where an existing row can move, and what a delete has to move issues out of. */
+describe("moving an existing status", () => {
+  it("offers Add status's places among the other statuses, the one it holds keeping its own number", () => {
+    const { options, current } = statusEditPositions(shared.statuses, "s-progress");
+    expect(current).toEqual({ after: "s-todo" });
+    expect(options.map((option) => [positionValue(option.position), option.sortOrder, option.current])).toEqual([
+      ["start", 5, false],
+      ["after:s-todo", 20, true],
+      ["after:s-done", 40, false],
+    ]);
+  });
+
+  it("puts the first status at the start, and finds no room where the others leave none", () => {
+    const tight = [status("a", "TODO", "TODO", 10), status("b", "B", "IN_PROGRESS", 11), status("c", "C", "DONE", 12)];
+    const { options, current } = statusEditPositions(tight, "a");
+    expect(current).toBe("start");
+    expect(options.map((option) => [positionValue(option.position), option.sortOrder])).toEqual([
+      ["start", 10],
+      ["after:b", null],
+      ["after:c", 22],
+    ]);
+  });
+});
+
+describe("moving an existing transition", () => {
+  it("offers the places among the moves out of the same status, at numbers no transition of the workflow holds", () => {
+    // Out of To Do: Start Progress (10) and Close (50); Complete (20) and Reopen (30) leave other statuses.
+    const { options, current } = transitionEditPositions(shared, "t5");
+    expect(current).toEqual({ after: "t1" });
+    expect(options.map((option) => [transitionPositionValue(option.position), option.sortOrder, option.current])).toEqual([
+      ["first", 5, false],
+      ["after:t1", 50, true],
+    ]);
+    const first = transitionEditPositions(shared, "t1");
+    expect(first.current).toBe("first");
+    expect(first.options.map((option) => [transitionPositionValue(option.position), option.sortOrder])).toEqual([
+      ["first", 10],
+      ["after:t5", 60 + 1],
+    ]);
+  });
+
+  it("finds the free number nearest the middle of a gap, or says there is none", () => {
+    expect(freeSortOrderBetween(10, 50, new Set([30]))).toBe(29);
+    expect(freeSortOrderBetween(10, 12, new Set([11]))).toBeNull();
+    expect(freeSortOrderBetween(null, 1, new Set())).toBe(0);
+    expect(freeSortOrderBetween(null, 0, new Set())).toBeNull();
+    expect(freeSortOrderBetween(40, null, new Set([50, 51]))).toBe(52);
+  });
+});
+
+describe("what a delete moves issues out of", () => {
+  const own: WorkflowDefinition = {
+    ...shared,
+    id: "wf-own",
+    statuses: [...shared.statuses, status("s-qa", "QA", "IN_PROGRESS", 25, "QA"), status("s-ship", "SHIP", "DONE", 40, "Ship")],
+  };
+
+  it("maps only to statuses both workflows have, in column order", () => {
+    expect(statusesInBoth(own, shared).map((item) => item.statusKey)).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
+    expect(statusesInBoth(own, undefined)).toEqual([]);
+  });
+
+  it("takes the statuses the details name, and keeps apart the ones that are not this workflow's", () => {
+    expect(statusesToMap(own, { issueCount: "4", statusKeys: "SHIP,BLOCKED" })).toEqual({
+      mappable: [own.statuses[4]],
+      unmappable: ["BLOCKED"],
+    });
+  });
+
+  // Never guessed from the shared default: without the keys there is nothing to map.
+  it("maps nothing when the details name no status", () => {
+    expect(statusesToMap(own, null)).toEqual({ mappable: [], unmappable: [] });
+    expect(statusesToMap(own, { issueCount: "4" })).toEqual({ mappable: [], unmappable: [] });
+  });
+
+  it("reads the named status keys as the server joins them, and none when they did not come", () => {
+    expect(namedStatusKeys({ issueCount: "3", statusKeys: "BLOCKED, QA" })).toEqual(["BLOCKED", "QA"]);
+    expect(namedStatusKeys({ issueCount: "3" })).toEqual([]);
+    expect(namedStatusKeys(null)).toEqual([]);
+  });
+
+  it("reads the issue-count refusal off the code and the details, never the message", () => {
+    const refusal = (code: string, details: Record<string, string> | null) =>
+      Object.assign(new Error("Workflow statuses have 3 issues; supply a target status mapping"), { code, details });
+    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { issueCount: "3", statusKeys: "QA" }))).toBe(true);
+    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { statusKeys: "QA" }))).toBe(true);
+    // Without details it is any of the deletes' other FAILED_PRECONDITIONs, said as itself.
+    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", null))).toBe(false);
+    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { reason: "PROJECT_ARCHIVED" }))).toBe(false);
+    expect(isIssueCountRefusal(refusal("INVALID_ARGUMENT", null))).toBe(false);
+    expect(issueCountOf(refusal("FAILED_PRECONDITION", { issueCount: "3" }))).toBe(3);
+    expect(issueCountOf(refusal("FAILED_PRECONDITION", { issueCount: "three" }))).toBeNull();
+    expect(issueCountOf(refusal("FAILED_PRECONDITION", null))).toBeNull();
+  });
+});
+
+describe("an edit's answer in the list", () => {
+  it("takes the place of the entry with its id, and leaves the list to be read when none has it", () => {
+    const list: ProjectWorkflowEntry[] = [
+      { workflow: { ...shared, id: "wf-own" }, issueTypes: ["TASK"], shared: false },
+      { workflow: shared, issueTypes: ["BUG"], shared: true },
+    ];
+    const answer: ProjectWorkflowEntry = { workflow: { ...shared, id: "wf-own", name: "Renamed" }, issueTypes: ["TASK"], shared: false };
+    expect(withWorkflowEntry(list, answer)?.map((entry) => entry.workflow.name)).toEqual(["Renamed", "Default workflow"]);
+    // An edit changes no binding: the list's types, in the list's order, stay.
+    const reordered = withWorkflowEntry(
+      [{ ...list[0], issueTypes: ["TASK", "STORY"] }, list[1]],
+      { ...answer, issueTypes: ["STORY", "TASK"] },
+    );
+    expect(reordered?.[0].issueTypes).toEqual(["TASK", "STORY"]);
+    expect(withWorkflowEntry(list, { ...answer, workflow: { ...answer.workflow, id: "" } })).toBeNull();
+    expect(withWorkflowEntry(list, { ...answer, workflow: { ...answer.workflow, id: "wf-gone" } })).toBeNull();
   });
 });

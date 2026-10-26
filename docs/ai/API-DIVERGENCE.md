@@ -5929,20 +5929,27 @@ nothing but `BACKLOG.md` for now.
   of an undeployed route. The other two #208 entries below stay open — neither was
   fixed in #208.
 
-### Adding a status or a transition answers the workflow without its hidden transitions
+### Closed by TAS-416 — adding a status or a transition answered the workflow without its hidden transitions
 
 - **Endpoints:** `POST …/workflows/{workflowId}/statuses` and `…/transitions`
-  (#208 at `9a04e99`, merged unchanged as `594f637`).
-- **Read in code, not measured:** the 201 is built from
+  (#208 at `9a04e99`, merged unchanged as `594f637`), and the create
+  `POST …/workflows`.
+- **What it was (read in code, never measured):** the 201 was built from
   `findVisibleByWorkflowId` (`WorkflowEditService.java:184`), so a hidden
-  transition just added is missing from its own answer; the yml says the
-  workflow comes back whole. The create 201 is the bare `WorkflowResponseDto`,
-  statuses and transitions in request order, hidden ones included.
-- **The UI instead:** no write answer is read into the screen. Every successful
-  write invalidates the workflow list and the project context and re-reads
-  them. **Compensation: none** — a re-read after a write is the ordinary path.
-- **Removal:** the writes answering what the list shows. Asked on TAS-381
-  (comment, 2026-10-21); not blocking.
+  transition just added was missing from its own answer, and the create 201 was
+  the bare `WorkflowResponseDto` in request order. The UI read no write answer
+  into the screen and re-read the list after every write. Compensation: none.
+- **What closed it:** backend PR #225 (TAS-384, develop `6ba4ed6`, deployed
+  2026-10-26). `GrpcWorkflowServiceAdapter` passes the create and both adds
+  through `WorkflowMutationResponse.enrich`, which re-reads
+  `findByWorkflowIdOrderBySortOrderAsc` (hidden transitions included) and answers
+  `ProjectWorkflowDto` with the issue types and `shared: false` — the shape the
+  six new edit and delete routes answer too. Read in code at `6ba4ed6` by
+  `release-reviewer` on TAS-416; not measured with a token. Since TAS-416 the
+  dialog puts the answer of an edit, Add status and Add transition straight into
+  the list cache; create and workflow delete still re-read the list, because
+  their answer does not describe the types that moved.
+- **What is still owed here:** nothing.
 
 ### A workflow with no status or no visible transition makes the project context 404
 
@@ -5964,13 +5971,65 @@ nothing but `BACKLOG.md` for now.
   whole workflow. `api-contract-guard` ruled the copy a UI default, not a
   compensation: it reads the list already on screen, adds no request, and the
   form says it is a copy. **Compensation: none.** Any other client can still
-  send the empty body.
+  send the empty body. Since TAS-416 (backend #225) the copy can be edited and
+  pruned after creation too; every edit and delete re-validates the whole
+  workflow and refuses to leave it without `TODO` or a visible transition, but
+  the create route itself still checks no minimum at `6ba4ed6`.
 - **Removal:** [TAS-383](https://jira.ozero.dev/browse/TAS-383) (filed 2026-10-22,
   High): the validator requiring a status and a visible transition, the context
   tolerating empty lists, and one type's failed workflow no longer failing the
   whole context. (Requiring the `TODO` key as well was asked on
   TAS-381 for the Other-statuses effect; it is not part of this entry.) Blocking remark on TAS-381
   (comment, 2026-10-21). The copy-only create stays as the default either way.
+
+### Workflow deletes: the "issues would be left" refusal is told only by `details`, whose way to the gateway is unmeasured
+
+- **Endpoints:** `DELETE /api/v1/projects/{projectId}/workflows/{workflowId}/statuses/{statusId}`
+  and `DELETE /api/v1/projects/{projectId}/workflows/{workflowId}` (backend #225, develop
+  `6ba4ed6`); the contract's silence covers all six TAS-384 routes.
+- **Read in code, not measured (no token):** issue-service refuses a migration that would leave
+  issues behind with `FAILED_PRECONDITION` "Workflow statuses have N issues; supply a target
+  status mapping" and `details {issueCount, statusKeys}` as strings
+  (`WorkflowIssueMigrationService.java:67`), in gRPC trailers. workflow-service does not catch the
+  migrate call's error (`WorkflowMutationService.java:113`, `:144`) and `GrpcExceptionHandler`
+  passes it on; whether the keys reach `RestErrorResponse.details` is not measured. By `code` alone
+  the refusal cannot be told from the other `FAILED_PRECONDITION`s of the same routes ("Default
+  workflow is missing", "Default workflow is not usable", "Workflow is shared with another
+  project…"). The contract states only `200` and `default` for the six routes: not the ADMIN
+  requirement, not 409 `ABORTED` against `ALREADY_EXISTS`, not the `details` keys. The 5000-issue
+  limit is `RESOURCE_EXHAUSTED`, which the gateway answers as 429.
+- **The UI instead:** the move step (status) and the mapping step (workflow) appear only for a
+  `FAILED_PRECONDITION` (not `PROJECT_ARCHIVED`) carrying `details.issueCount` or
+  `details.statusKeys`; the message is never read. Without `details` the refusal is an ordinary
+  one in the server's words with its request id, so issues cannot be moved from the UI — honest,
+  not guessed (`api-contract-guard`, TAS-416). The mapping targets are the statuses both workflows
+  have, from the list already on screen; when the list has no shared default (every type has its
+  own workflow), the workflow's other statuses are offered with a line saying the server accepts
+  only ones both workflows have. The server validates them either way. `ABORTED` and `ALREADY_EXISTS`
+  are told apart by `code`. The mock always sends the `details`, so mock mode always shows the
+  steps. **Compensation: none.**
+- **Removal:** [TAS-427](https://jira.ozero.dev/browse/TAS-427) — `details.reason`
+  `WORKFLOW_ISSUES_UNMAPPED` with `targetStatusKeys`, decoded by workflow-service into its own
+  refusal so the keys take one hop to the gateway, an integration test, and the six routes'
+  refusals in the contract. Or a stand probe that shows the keys arriving today (a status delete
+  with one issue in it), which would make this entry a documentation gap only.
+
+### The gateway does not enforce the workflow edit DTOs' bounds the contract states
+
+- **Endpoints:** the four TAS-384 bodies — `PatchWorkflowRequestDto`,
+  `PatchWorkflowStatusRequestDto`, `PatchWorkflowTransitionRequestDto`,
+  `DeleteProjectWorkflowRequestDto` (backend #225, `6ba4ed6`).
+- **Read in code, not measured:** the contract gives `name` 1..100, `sortOrder` ≥ 0 and
+  `version` ≥ 1, but `api-gateway/pom.xml` maps the four DTOs to hand-written classes with no
+  constraints (null rejection, exact integers and unknown-field rejection only). A body `version`
+  below 1 is refused by workflow-service ("version must be positive") before the role check; a
+  blank or long name or a negative `sortOrder` by the validator ("Workflow update failed: …") only
+  after role, 404 and version. Same 400, different message and order than a gateway check.
+- **The UI instead:** never sends such values (names are trimmed and required, positions come
+  from free numbers, `version` is omitted when unknown). The mock plays the server's order since
+  TAS-416's review (`api-contract-guard` B2). **Compensation: none.**
+- **Removal:** [TAS-427](https://jira.ozero.dev/browse/TAS-427) (constraints on the DTOs, or the
+  bounds dropped from the contract).
 
 ---
 

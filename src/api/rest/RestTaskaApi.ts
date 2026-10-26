@@ -13,6 +13,9 @@ import type {
   CreateProjectInput,
   CreateProjectLabelInput,
   CreateProjectWorkflowInput,
+  DeleteProjectWorkflowInput,
+  DeleteWorkflowStatusParams,
+  DeleteWorkflowTransitionParams,
   InviteUserInput,
   ListCommentsParams,
   ListIssuesParams,
@@ -27,6 +30,9 @@ import type {
   UpdateIssueInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
+  UpdateProjectWorkflowInput,
+  UpdateWorkflowStatusInput,
+  UpdateWorkflowTransitionInput,
   WorkflowStatusInput,
   WorkflowTransitionInput,
 } from "../TaskaApi";
@@ -271,9 +277,19 @@ interface RestWorkflowDefinition {
   transitions?: (Partial<WorkflowTransition> & { hidden?: unknown })[];
 }
 
+/**
+ * `ProjectWorkflowDto` (backend PR #208): an item of the list, and since
+ * backend PR #225 (develop `6ba4ed6`) the answer of every workflow write.
+ */
+interface RestProjectWorkflowItem {
+  workflow?: RestWorkflowDefinition | null;
+  issueTypes?: unknown[] | null;
+  shared?: unknown;
+}
+
 /** `ProjectWorkflowsResponseDto` (backend PR #208). */
 interface RestProjectWorkflows {
-  items?: { workflow?: RestWorkflowDefinition | null; issueTypes?: unknown[] | null; shared?: unknown }[] | null;
+  items?: RestProjectWorkflowItem[] | null;
 }
 
 /** `ListProjectMemberDetailsDto` — the array is `members`, not `items`. */
@@ -2032,24 +2048,17 @@ export class RestTaskaApi implements TaskaApi {
    */
   async listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]> {
     const response = await this.request<RestProjectWorkflows>(this.workflowsPath(projectId));
-    return (response.items ?? []).flatMap((item) =>
-      item.workflow
-        ? [
-            {
-              workflow: toWorkflowDefinition(item.workflow),
-              issueTypes: (item.issueTypes ?? []).flatMap((code) => {
-                const issueType = toIssueType(code);
-                return issueType ? [issueType] : [];
-              }),
-              shared: item.shared !== false,
-            },
-          ]
-        : [],
-    );
+    return (response.items ?? []).flatMap((item) => (item.workflow ? [toProjectWorkflowEntry(item)] : []));
   }
 
-  async createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<WorkflowDefinition> {
-    const response = await this.request<RestWorkflowDefinition>(this.workflowsPath(projectId), {
+  /**
+   * `POST /projects/{projectId}/workflows`. The 201 is a `ProjectWorkflowDto`
+   * since backend PR #225 — read as a list item is, so the bare workflow it
+   * used to be parses into an entry with no types and `shared: true`, which
+   * opens nothing.
+   */
+  async createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<ProjectWorkflowEntry> {
+    const response = await this.request<RestProjectWorkflowItem>(this.workflowsPath(projectId), {
       method: "POST",
       body: {
         name: input.name,
@@ -2058,27 +2067,137 @@ export class RestTaskaApi implements TaskaApi {
         transitions: input.transitions.map(workflowTransitionBody),
       },
     });
-    return toWorkflowDefinition(response);
+    return toProjectWorkflowEntry(response);
   }
 
-  async addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<WorkflowDefinition> {
-    const response = await this.request<RestWorkflowDefinition>(
-      `${this.workflowsPath(projectId)}/${this.segment(workflowId)}/statuses`,
-      { method: "POST", body: workflowStatusBody(input) },
-    );
-    return toWorkflowDefinition(response);
+  async addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<ProjectWorkflowEntry> {
+    const response = await this.request<RestProjectWorkflowItem>(`${this.workflowPath(projectId, workflowId)}/statuses`, {
+      method: "POST",
+      body: workflowStatusBody(input),
+    });
+    return toProjectWorkflowEntry(response);
   }
 
   async addWorkflowTransition(
     projectId: string,
     workflowId: string,
     input: WorkflowTransitionInput,
-  ): Promise<WorkflowDefinition> {
-    const response = await this.request<RestWorkflowDefinition>(
-      `${this.workflowsPath(projectId)}/${this.segment(workflowId)}/transitions`,
-      { method: "POST", body: workflowTransitionBody(input) },
+  ): Promise<ProjectWorkflowEntry> {
+    const response = await this.request<RestProjectWorkflowItem>(`${this.workflowPath(projectId, workflowId)}/transitions`, {
+      method: "POST",
+      body: workflowTransitionBody(input),
+    });
+    return toProjectWorkflowEntry(response);
+  }
+
+  /** `PATCH …/workflows/{workflowId}` — `PatchWorkflowRequestDto`, only the fields given. */
+  async updateProjectWorkflow(
+    projectId: string,
+    workflowId: string,
+    input: UpdateProjectWorkflowInput,
+  ): Promise<ProjectWorkflowEntry> {
+    const response = await this.request<RestProjectWorkflowItem>(this.workflowPath(projectId, workflowId), {
+      method: "PATCH",
+      body: definedFields({ version: input.version, name: input.name }),
+    });
+    return toProjectWorkflowEntry(response);
+  }
+
+  /**
+   * `DELETE …/workflows/{workflowId}` with a JSON body, always — `request`
+   * labels a body `application/json`, the type the gateway's typed route takes
+   * (a body of another type is 415). An empty input is sent as `{}`.
+   */
+  async deleteProjectWorkflow(
+    projectId: string,
+    workflowId: string,
+    input: DeleteProjectWorkflowInput,
+  ): Promise<ProjectWorkflowEntry> {
+    const response = await this.request<RestProjectWorkflowItem>(this.workflowPath(projectId, workflowId), {
+      method: "DELETE",
+      body: definedFields({
+        version: input.version,
+        statusMappings: input.statusMappings ? { ...input.statusMappings } : undefined,
+      }),
+    });
+    return toProjectWorkflowEntry(response);
+  }
+
+  /** `PATCH …/statuses/{statusId}` — `PatchWorkflowStatusRequestDto`, only the fields given. */
+  async updateWorkflowStatus(
+    projectId: string,
+    workflowId: string,
+    statusId: string,
+    input: UpdateWorkflowStatusInput,
+  ): Promise<ProjectWorkflowEntry> {
+    const response = await this.request<RestProjectWorkflowItem>(
+      `${this.workflowPath(projectId, workflowId)}/statuses/${this.segment(statusId)}`,
+      {
+        method: "PATCH",
+        body: definedFields({
+          version: input.version,
+          name: input.name,
+          category: input.category,
+          sortOrder: input.sortOrder,
+        }),
+      },
     );
-    return toWorkflowDefinition(response);
+    return toProjectWorkflowEntry(response);
+  }
+
+  /** `DELETE …/statuses/{statusId}?version=&targetStatusKey=`, each parameter only when given. */
+  async deleteWorkflowStatus(
+    projectId: string,
+    workflowId: string,
+    statusId: string,
+    params: DeleteWorkflowStatusParams,
+  ): Promise<ProjectWorkflowEntry> {
+    const search = new URLSearchParams();
+    if (params.version !== undefined) search.set("version", String(params.version));
+    if (params.targetStatusKey !== undefined) search.set("targetStatusKey", params.targetStatusKey);
+    const query = search.toString();
+    const response = await this.request<RestProjectWorkflowItem>(
+      `${this.workflowPath(projectId, workflowId)}/statuses/${this.segment(statusId)}${query ? `?${query}` : ""}`,
+      { method: "DELETE" },
+    );
+    return toProjectWorkflowEntry(response);
+  }
+
+  /** `PATCH …/transitions/{transitionId}` — `PatchWorkflowTransitionRequestDto`, only the fields given. */
+  async updateWorkflowTransition(
+    projectId: string,
+    workflowId: string,
+    transitionId: string,
+    input: UpdateWorkflowTransitionInput,
+  ): Promise<ProjectWorkflowEntry> {
+    const response = await this.request<RestProjectWorkflowItem>(
+      `${this.workflowPath(projectId, workflowId)}/transitions/${this.segment(transitionId)}`,
+      {
+        method: "PATCH",
+        body: definedFields({
+          version: input.version,
+          name: input.name,
+          sortOrder: input.sortOrder,
+          hidden: input.hidden,
+        }),
+      },
+    );
+    return toProjectWorkflowEntry(response);
+  }
+
+  /** `DELETE …/transitions/{transitionId}?version=`. */
+  async deleteWorkflowTransition(
+    projectId: string,
+    workflowId: string,
+    transitionId: string,
+    params: DeleteWorkflowTransitionParams,
+  ): Promise<ProjectWorkflowEntry> {
+    const query = params.version !== undefined ? `?${new URLSearchParams({ version: String(params.version) })}` : "";
+    const response = await this.request<RestProjectWorkflowItem>(
+      `${this.workflowPath(projectId, workflowId)}/transitions/${this.segment(transitionId)}${query}`,
+      { method: "DELETE" },
+    );
+    return toProjectWorkflowEntry(response);
   }
 
   async listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Promise<Page<IssueComment>> {
@@ -2515,6 +2634,10 @@ export class RestTaskaApi implements TaskaApi {
 
   private workflowsPath(projectId: string) {
     return `/projects/${this.segment(projectId)}/workflows`;
+  }
+
+  private workflowPath(projectId: string, workflowId: string) {
+    return `${this.workflowsPath(projectId)}/${this.segment(workflowId)}`;
   }
 
   private commentsPath(projectId: string, issueId: string) {
@@ -3122,6 +3245,33 @@ function toWorkflowDefinition(workflow: RestWorkflowDefinition): WorkflowDefinit
       hidden: transition.hidden === true,
     })),
   };
+}
+
+/**
+ * One `ProjectWorkflowDto` — a list item, or a write's answer. An issue type is
+ * kept as sent, a code this build has no name for included (TAS-173), and
+ * `shared` is `true` unless the server said `false` in so many words: a flag
+ * nobody stated must not open the writes on the shared default. A missing
+ * workflow reads as an empty one with no id, which no entry on screen matches.
+ */
+function toProjectWorkflowEntry(item: RestProjectWorkflowItem): ProjectWorkflowEntry {
+  return {
+    workflow: toWorkflowDefinition(item.workflow ?? {}),
+    issueTypes: (Array.isArray(item.issueTypes) ? item.issueTypes : []).flatMap((code) => {
+      const issueType = toIssueType(code);
+      return issueType ? [issueType] : [];
+    }),
+    shared: item.shared !== false,
+  };
+}
+
+/**
+ * The fields of a workflow edit that were given. The edit DTOs are
+ * `additionalProperties: false` and refuse an explicit `null`, so a field the
+ * caller left `undefined` is left out of the body rather than sent empty.
+ */
+function definedFields(fields: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined && value !== null));
 }
 
 /** `CreateWorkflowStatusRequestDto`, exactly the four fields. */

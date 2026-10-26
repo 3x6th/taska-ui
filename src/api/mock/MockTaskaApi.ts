@@ -13,6 +13,9 @@ import type {
   CreateProjectInput,
   CreateProjectLabelInput,
   CreateProjectWorkflowInput,
+  DeleteProjectWorkflowInput,
+  DeleteWorkflowStatusParams,
+  DeleteWorkflowTransitionParams,
   InviteUserInput,
   ListCommentsParams,
   ListIssuesParams,
@@ -27,6 +30,9 @@ import type {
   UpdateIssueWorklogInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
+  UpdateProjectWorkflowInput,
+  UpdateWorkflowStatusInput,
+  UpdateWorkflowTransitionInput,
   WorkflowStatusInput,
   WorkflowTransitionInput,
 } from "../TaskaApi";
@@ -1122,6 +1128,75 @@ function workflowViolations(candidate: WorkflowCandidate): WorkflowViolation[] {
 /** `buildViolationMessage`: the prefix, then every violation joined with ", ". */
 const violationMessage = (prefix: string, violations: readonly WorkflowViolation[]) =>
   `${prefix}${violations.map((violation) => violation.message).join(", ")}`;
+
+/**
+ * The gateway's reading of the edit bodies of backend PR #225. Its four DTOs
+ * are hand-written (api-gateway `pom.xml` `schemaMappings`, develop `6ba4ed6`)
+ * and check **shape only**: an unknown field is refused (`@JsonAnySetter`),
+ * an explicit `null` is refused (`Nulls.FAIL`), a number must be a whole int
+ * (`intValueExact`), a category one of the enum's. Each of those is "Invalid
+ * request parameters" before workflow-service is asked. The yml's bounds —
+ * a name of 1–100, `sortOrder ≥ 0`, `version ≥ 1` — are not checked there:
+ * a body version below 1 is workflow-service's "version must be positive"
+ * (`mutableWorkflow`), and a blank or long name or a negative `sortOrder` is
+ * the validator's, after the role, the 404s and the version
+ * (`validateWorkflowEdit`). A field that is `undefined` is one JSON would not
+ * carry, and is absent.
+ */
+const WORKFLOW_BODY_FIELDS = {
+  version: (value: unknown) => isInt32(value),
+  name: (value: unknown) => typeof value === "string",
+  category: (value: unknown) => typeof value === "string" && WORKFLOW_CATEGORIES.includes(value),
+  sortOrder: (value: unknown) => isInt32(value),
+  hidden: (value: unknown) => typeof value === "boolean",
+  statusMappings: (value: unknown) =>
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((target) => typeof target === "string"),
+} as const;
+
+/**
+ * The two deletes' query parameters, which the generated interface does
+ * validate: `version` an int32 of at least 1, `targetStatusKey` the
+ * contract's `pattern`.
+ */
+const WORKFLOW_QUERY_FIELDS = {
+  version: (value: unknown) => isInt32(value) && value >= 1,
+  targetStatusKey: (value: unknown) => typeof value === "string" && WORKFLOW_STATUS_KEY_PATTERN.test(value),
+} as const;
+
+function fieldsPass<F extends Readonly<Record<string, (value: unknown) => boolean>>>(
+  fields: F,
+  body: unknown,
+  allowed: readonly (keyof F & string)[],
+): boolean {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+  return Object.entries(body).every(([key, value]) => {
+    if (value === undefined) return true;
+    const field = allowed.find((name) => name === key);
+    return field !== undefined && fields[field](value);
+  });
+}
+
+const isWorkflowPatch = (body: unknown, allowed: readonly (keyof typeof WORKFLOW_BODY_FIELDS)[]) =>
+  fieldsPass(WORKFLOW_BODY_FIELDS, body, allowed);
+const isWorkflowQuery = (params: unknown, allowed: readonly (keyof typeof WORKFLOW_QUERY_FIELDS)[]) =>
+  fieldsPass(WORKFLOW_QUERY_FIELDS, params, allowed);
+
+/** `requireStatus`: a status of this workflow, else 404. */
+function requireWorkflowStatus(workflow: WorkflowDefinition, statusId: string): WorkflowStatus {
+  const status = workflow.statuses.find((item) => item.id === statusId);
+  if (!status) throw new MockApiError("NOT_FOUND", "Status not found in this workflow");
+  return status;
+}
+
+/** `requireTransition`: a transition of this workflow, else 404. */
+function requireWorkflowTransition(workflow: WorkflowDefinition, transitionId: string): WorkflowDefinition["transitions"][number] {
+  const transition = workflow.transitions.find((item) => item.id === transitionId);
+  if (!transition) throw new MockApiError("NOT_FOUND", "Transition not found in this workflow");
+  return transition;
+}
 
 /** Substring, case-insensitive, over `issue_key` OR `summary` OR `description` — the probe's own OR. */
 const matchesSearchQuery = (issue: Issue, query: string | null) => {
@@ -3391,10 +3466,15 @@ export class MockTaskaStore {
           const { createdAt: _createdAt, updatedAt: _updatedAt, ...workflow } = this.workflowFor(projectId, issueType);
           // `GetWorkflowForProject` reads only the visible transitions, and the
           // context's transitions carry no `hidden` at all (backend PR #208).
-          const transitions = workflow.transitions
-            .filter((transition) => !transition.hidden)
-            .map(({ hidden: _hidden, ...transition }) => transition);
-          return [issueType, { ...workflow, statuses: [...workflow.statuses], transitions }];
+          // Both by `sortOrder`, as its repositories read them (`ORDER BY
+          // sort_order ASC`): an edit renumbers a row in place (backend PR
+          // #225), and the panel's move buttons follow this order.
+          const bySortOrder = <T extends { sortOrder: number }>(items: readonly T[]) =>
+            [...items].sort((a, b) => a.sortOrder - b.sortOrder);
+          const transitions = bySortOrder(workflow.transitions.filter((transition) => !transition.hidden)).map(
+            ({ hidden: _hidden, ...transition }) => transition,
+          );
+          return [issueType, { ...workflow, statuses: bySortOrder(workflow.statuses), transitions }];
         }),
       ),
     };
@@ -3422,7 +3502,7 @@ export class MockTaskaStore {
       const workflow = this.workflowFor(projectId, issueType);
       const entry = entries.find((item) => item.workflow.id === workflow.id);
       if (entry) entry.issueTypes.push(issueType);
-      else entries.push({ workflow: this.workflowView(workflow, "all"), issueTypes: [issueType], shared: workflow === this.workflow });
+      else entries.push({ workflow: this.workflowView(workflow), issueTypes: [issueType], shared: workflow === this.workflow });
     }
     return entries;
   }
@@ -3432,11 +3512,12 @@ export class MockTaskaStore {
    * the gateway's validation, the role, the whole body
    * (`workflowViolations`, every failure 400 here — a duplicate included),
    * then any requested type this project has already bound, 409. The 201 is
-   * the bare workflow, statuses and transitions in request order with the
-   * hidden ones marked; the types are bound to it from now on, in the context
+   * `ProjectWorkflowDto` since backend PR #225 (`WorkflowMutationResponse`
+   * enriches it): statuses and every transition by `sortOrder`, the types,
+   * `shared: false`. The types are bound to it from now on, in the context
    * and on the board as well as in the list.
    */
-  createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): WorkflowDefinition {
+  createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): ProjectWorkflowEntry {
     const body = input as Partial<Record<keyof CreateProjectWorkflowInput, unknown>>;
     if (
       typeof body.name !== "string" ||
@@ -3497,24 +3578,24 @@ export class MockTaskaStore {
       })),
     };
     for (const code of candidate.issueTypes) bindings[code] = workflow;
-    return this.workflowView(workflow, "as-stored");
+    return this.workflowAnswer(projectId, workflow);
   }
 
   /**
    * `POST …/workflows/{workflowId}/statuses` — `WorkflowEditService.addStatus`.
    * See `editableWorkflow` for the refusals before the body is looked at.
    */
-  addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): WorkflowDefinition {
+  addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): ProjectWorkflowEntry {
     if (!isWorkflowStatusBody(input)) throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
     const { workflow, issueTypes } = this.editableWorkflow(projectId, workflowId);
     const status = trimmedStatus(input);
     this.refuseWorkflowUpdate(workflow, issueTypes, { status });
     workflow.statuses.push({ id: makeId("status"), ...status });
-    return this.bumpWorkflow(workflow);
+    return this.bumpWorkflow(projectId, workflow);
   }
 
   /** `POST …/workflows/{workflowId}/transitions` — `WorkflowEditService.addTransition`. */
-  addWorkflowTransition(projectId: string, workflowId: string, input: WorkflowTransitionInput): WorkflowDefinition {
+  addWorkflowTransition(projectId: string, workflowId: string, input: WorkflowTransitionInput): ProjectWorkflowEntry {
     if (!isWorkflowTransitionBody(input)) throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
     const { workflow, issueTypes } = this.editableWorkflow(projectId, workflowId);
     const transition = trimmedTransition(input);
@@ -3528,7 +3609,273 @@ export class MockTaskaStore {
       sortOrder: transition.sortOrder,
       hidden: transition.hidden,
     });
-    return this.bumpWorkflow(workflow);
+    return this.bumpWorkflow(projectId, workflow);
+  }
+
+  /**
+   * `PATCH …/workflows/{workflowId}` — `WorkflowMutationService.rename`: a
+   * name is required, stripped, and checked with the whole workflow
+   * (`validateWorkflowEdit`). See `mutableWorkflow` for what comes before.
+   */
+  updateProjectWorkflow(projectId: string, workflowId: string, input: UpdateProjectWorkflowInput): ProjectWorkflowEntry {
+    if (!isWorkflowPatch(input, ["version", "name"])) throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    const { workflow, issueTypes } = this.mutableWorkflow(projectId, workflowId, input.version);
+    if (input.name === undefined) throw new MockApiError("INVALID_ARGUMENT", "name is required");
+    const name = input.name.trim();
+    this.validateWorkflowEdit({ ...workflow, name }, issueTypes);
+    workflow.name = name;
+    return this.bumpWorkflow(projectId, workflow);
+  }
+
+  /**
+   * `PATCH …/statuses/{statusId}` — `updateStatus`: one of the three fields at
+   * least, a status of this workflow, and the workflow as it would stand
+   * checked whole. The key never changes. The arrays are replaced rather than
+   * edited in place: WEB's EPIC workflow shares the default's status objects.
+   */
+  updateWorkflowStatus(
+    projectId: string,
+    workflowId: string,
+    statusId: string,
+    input: UpdateWorkflowStatusInput,
+  ): ProjectWorkflowEntry {
+    if (!UUID_PATTERN.test(statusId) || !isWorkflowPatch(input, ["version", "name", "category", "sortOrder"])) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    }
+    const { workflow, issueTypes } = this.mutableWorkflow(projectId, workflowId, input.version);
+    if (input.name === undefined && input.category === undefined && input.sortOrder === undefined) {
+      throw new MockApiError("INVALID_ARGUMENT", "At least one status field is required");
+    }
+    const old = requireWorkflowStatus(workflow, statusId);
+    const changed: WorkflowStatus = {
+      ...old,
+      name: input.name === undefined ? old.name : input.name.trim(),
+      category: input.category ?? old.category,
+      sortOrder: input.sortOrder ?? old.sortOrder,
+    };
+    const statuses = workflow.statuses.map((status) => (status === old ? changed : status));
+    this.validateWorkflowEdit({ ...workflow, statuses }, issueTypes);
+    workflow.statuses = statuses;
+    return this.bumpWorkflow(projectId, workflow);
+  }
+
+  /**
+   * `DELETE …/statuses/{statusId}` — `deleteStatus`: never `TODO`; the status
+   * goes with every transition from or to it; a target must be another status
+   * of this workflow; the workflow as it would stand is checked whole; then
+   * issue-service moves the issues (`migrateWorkflowIssues`) — refusing when
+   * any would be left in a status the workflow no longer has.
+   */
+  deleteWorkflowStatus(
+    projectId: string,
+    workflowId: string,
+    statusId: string,
+    params: DeleteWorkflowStatusParams,
+  ): ProjectWorkflowEntry {
+    if (!UUID_PATTERN.test(statusId) || !isWorkflowQuery(params, ["version", "targetStatusKey"])) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    }
+    const { workflow, issueTypes } = this.mutableWorkflow(projectId, workflowId, params.version);
+    const old = requireWorkflowStatus(workflow, statusId);
+    if (old.statusKey === "TODO") throw new MockApiError("FAILED_PRECONDITION", "The initial TODO status cannot be deleted");
+    const statuses = workflow.statuses.filter((status) => status.id !== old.id);
+    const transitions = workflow.transitions.filter(
+      (transition) => transition.fromStatusId !== old.id && transition.toStatusId !== old.id,
+    );
+    const validKeys = statuses.map((status) => status.statusKey);
+    const target = params.targetStatusKey;
+    if (target !== undefined && !validKeys.includes(target)) {
+      throw new MockApiError("INVALID_ARGUMENT", "Target status is not in this workflow");
+    }
+    this.validateWorkflowEdit({ ...workflow, statuses, transitions }, issueTypes);
+    this.migrateWorkflowIssues(projectId, workflow.id, issueTypes, validKeys, target === undefined ? {} : { [old.statusKey]: target });
+    workflow.statuses = statuses;
+    workflow.transitions = transitions;
+    return this.bumpWorkflow(projectId, workflow);
+  }
+
+  /** `PATCH …/transitions/{transitionId}` — `updateTransition`: one of the three fields at least. From and To never change. */
+  updateWorkflowTransition(
+    projectId: string,
+    workflowId: string,
+    transitionId: string,
+    input: UpdateWorkflowTransitionInput,
+  ): ProjectWorkflowEntry {
+    if (!UUID_PATTERN.test(transitionId) || !isWorkflowPatch(input, ["version", "name", "sortOrder", "hidden"])) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    }
+    const { workflow, issueTypes } = this.mutableWorkflow(projectId, workflowId, input.version);
+    if (input.name === undefined && input.hidden === undefined && input.sortOrder === undefined) {
+      throw new MockApiError("INVALID_ARGUMENT", "At least one transition field is required");
+    }
+    const old = requireWorkflowTransition(workflow, transitionId);
+    const changed = {
+      ...old,
+      name: input.name === undefined ? old.name : input.name.trim(),
+      hidden: input.hidden ?? old.hidden,
+      sortOrder: input.sortOrder ?? old.sortOrder,
+    };
+    const transitions = workflow.transitions.map((transition) => (transition === old ? changed : transition));
+    this.validateWorkflowEdit({ ...workflow, transitions }, issueTypes);
+    workflow.transitions = transitions;
+    return this.bumpWorkflow(projectId, workflow);
+  }
+
+  /** `DELETE …/transitions/{transitionId}` — `deleteTransition`: the workflow without it, checked whole. */
+  deleteWorkflowTransition(
+    projectId: string,
+    workflowId: string,
+    transitionId: string,
+    params: DeleteWorkflowTransitionParams,
+  ): ProjectWorkflowEntry {
+    if (!UUID_PATTERN.test(transitionId) || !isWorkflowQuery(params, ["version"])) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    }
+    const { workflow, issueTypes } = this.mutableWorkflow(projectId, workflowId, params.version);
+    const old = requireWorkflowTransition(workflow, transitionId);
+    const transitions = workflow.transitions.filter((transition) => transition !== old);
+    this.validateWorkflowEdit({ ...workflow, transitions }, issueTypes);
+    workflow.transitions = transitions;
+    return this.bumpWorkflow(projectId, workflow);
+  }
+
+  /**
+   * `DELETE …/workflows/{workflowId}` — `deleteWorkflow`. Here every type's
+   * default is the one shared workflow, so "Issue types have different
+   * default workflows" cannot arise. A mapping's source must be a status of
+   * this workflow and its target a status of **both** (so a failure after the
+   * issues moved leaves them valid in the old graph too); then the issues
+   * move, the bindings go, and the answer is the shared default with the
+   * deleted workflow's types and `shared: true`. Nothing is versioned: the
+   * workflow is gone.
+   */
+  deleteProjectWorkflow(projectId: string, workflowId: string, input: DeleteProjectWorkflowInput): ProjectWorkflowEntry {
+    if (!isWorkflowPatch(input, ["version", "statusMappings"])) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    }
+    const { workflow, issueTypes } = this.mutableWorkflow(projectId, workflowId, input.version);
+    const fallback = this.workflow;
+    const validKeys = fallback.statuses.map((status) => status.statusKey);
+    if (!validKeys.includes("TODO") || !fallback.transitions.some((transition) => !transition.hidden)) {
+      throw new MockApiError("FAILED_PRECONDITION", "Default workflow is not usable");
+    }
+    const mapping = input.statusMappings ?? {};
+    const sourceKeys = workflow.statuses.map((status) => status.statusKey);
+    const targets = Object.values(mapping);
+    if (
+      !Object.keys(mapping).every((key) => sourceKeys.includes(key)) ||
+      !targets.every((key) => validKeys.includes(key)) ||
+      !targets.every((key) => sourceKeys.includes(key))
+    ) {
+      throw new MockApiError(
+        "INVALID_ARGUMENT",
+        "Map to statuses present in both workflows; add a target status to the current workflow first if needed",
+      );
+    }
+    this.migrateWorkflowIssues(projectId, workflow.id, issueTypes, validKeys, mapping);
+    const bindings = this.workflowOverrides[projectId] ?? {};
+    for (const code of issueTypes) delete bindings[code];
+    return { workflow: this.workflowView(fallback), issueTypes, shared: true };
+  }
+
+  /**
+   * `WorkflowMutationService.mutate` before the operation: a version below 1
+   * is "version must be positive" before anything else is looked at (only a
+   * body can carry one — the deletes' query `version` is the gateway's to
+   * refuse); then the workflow as an add finds it (`editableWorkflow` — the
+   * role and the archive, a workflow nobody holds, the shared default,
+   * another project's); then the version. A version that is not the stored
+   * one is 409 `ABORTED`, whatever else the request says; one left out is not
+   * compared.
+   */
+  private mutableWorkflow(
+    projectId: string,
+    workflowId: string,
+    version: number | undefined,
+  ): { workflow: WorkflowDefinition; issueTypes: string[] } {
+    if (version !== undefined && version < 1) throw new MockApiError("INVALID_ARGUMENT", "version must be positive");
+    const editable = this.editableWorkflow(projectId, workflowId);
+    if (version !== undefined && version !== editable.workflow.version) {
+      throw new MockApiError("ABORTED", "Workflow version changed");
+    }
+    return editable;
+  }
+
+  /**
+   * `WorkflowMutationService.validate`: the workflow as an edit would leave
+   * it keeps a `TODO` status and a visible transition, and then passes the
+   * create rules with the edit's prefix (`refuseWorkflowUpdate`) — a blank or
+   * over-long name, a negative `sortOrder`, and a `sortOrder` another status
+   * or transition holds, which is a 400, not a 409.
+   */
+  private validateWorkflowEdit(
+    workflow: Pick<WorkflowDefinition, "name" | "statuses" | "transitions">,
+    issueTypes: string[],
+  ): void {
+    if (
+      !workflow.statuses.some((status) => status.statusKey === "TODO") ||
+      !workflow.transitions.some((transition) => !transition.hidden)
+    ) {
+      throw new MockApiError("INVALID_ARGUMENT", "Workflow requires a TODO status and at least one visible transition");
+    }
+    this.refuseWorkflowUpdate(workflow, issueTypes);
+  }
+
+  /**
+   * issue-service's `WorkflowIssueMigrationService.migrate`, as the two
+   * deletes call it: the project's live issues of the workflow's types whose
+   * status the workflow will not keep, or that a mapping names. Any of them
+   * left, after the mapping, in a status outside `validKeys` refuses the
+   * whole delete with the count and the keys in `details` — strings, as
+   * `RestErrorResponse.details` carries them. Otherwise each mapped issue
+   * moves, with a `TRANSITIONED` history entry that says why and the
+   * `ISSUE_TRANSITIONED` event's notification.
+   */
+  private migrateWorkflowIssues(
+    projectId: string,
+    workflowId: string,
+    issueTypes: readonly string[],
+    validKeys: readonly string[],
+    mapping: Readonly<Record<string, string>>,
+  ): void {
+    const targetOf = (statusKey: string) => (Object.hasOwn(mapping, statusKey) ? mapping[statusKey] : statusKey);
+    const found = this.issues.filter(
+      (issue) =>
+        issue.projectId === projectId &&
+        issue.deletedAt === null &&
+        issueTypes.includes(issue.issueType) &&
+        (!validKeys.includes(issue.status) || Object.hasOwn(mapping, issue.status)),
+    );
+    if (found.length > 5000) {
+      throw new MockApiError("RESOURCE_EXHAUSTED", "Synchronous workflow migration is limited to 5000 issues");
+    }
+    const unmapped = found.filter((issue) => !validKeys.includes(targetOf(issue.status)));
+    if (unmapped.length) {
+      const statusKeys = [...new Set(unmapped.map((issue) => issue.status))].sort().join(",");
+      throw new MockApiError(
+        "FAILED_PRECONDITION",
+        `Workflow statuses have ${unmapped.length} issues; supply a target status mapping`,
+        { issueCount: String(unmapped.length), statusKeys },
+      );
+    }
+    for (const issue of found) {
+      const target = targetOf(issue.status);
+      if (target === issue.status) continue;
+      const from = issue.status;
+      issue.status = target;
+      issue.updatedAt = now();
+      issue.version += 1;
+      this.pushHistory(issue.id, "TRANSITIONED", this.currentUserId, {
+        from,
+        to: target,
+        reason: "WORKFLOW_CONFIGURATION_CHANGED",
+        workflowId,
+      });
+      // The outbox's `ISSUE_TRANSITIONED`, as `transitionIssue` notifies one.
+      this.notifications.unshift(
+        this.notification("ISSUE_TRANSITIONED", "Status changed", `${issue.issueKey} moved to ${target}`, issue, now(), null),
+      );
+    }
   }
 
   /**
@@ -3580,9 +3927,9 @@ export class MockTaskaStore {
    * (`WorkflowEditService.checkViolations`).
    */
   private refuseWorkflowUpdate(
-    workflow: WorkflowDefinition,
+    workflow: Pick<WorkflowDefinition, "name" | "statuses" | "transitions">,
     issueTypes: string[],
-    added: { status?: WorkflowStatusInput; transition?: WorkflowTransitionInput },
+    added: { status?: WorkflowStatusInput; transition?: WorkflowTransitionInput } = {},
   ): void {
     const keyOf = (statusId: string) => workflow.statuses.find((status) => status.id === statusId)?.statusKey ?? "";
     const candidate: WorkflowCandidate = {
@@ -3611,28 +3958,35 @@ export class MockTaskaStore {
     );
   }
 
-  /** `incrementVersion`, then the workflow as `GetWorkflowForProject` reads it: statuses, visible transitions. */
-  private bumpWorkflow(workflow: WorkflowDefinition): WorkflowDefinition {
+  /** `incrementVersion` (or `updateMetadata`'s `version+1`), then the workflow's answer. */
+  private bumpWorkflow(projectId: string, workflow: WorkflowDefinition): ProjectWorkflowEntry {
     workflow.version += 1;
     workflow.updatedAt = now();
-    return this.workflowView(workflow, "visible");
+    return this.workflowAnswer(projectId, workflow);
   }
 
   /**
-   * A copy of a stored workflow in one of the three shapes the routes answer:
-   * the list's (`all`, ordered by `sortOrder`), an add's (`visible` — sorted,
-   * the hidden transitions left out), and the create's (`as-stored`, request
-   * order).
+   * A write's answer for a project's own workflow, as every workflow write
+   * sends it since backend PR #225: `ProjectWorkflowDto` with the whole
+   * workflow, the types bound to it in this project, `shared: false`.
    */
-  private workflowView(workflow: WorkflowDefinition, shape: "all" | "visible" | "as-stored"): WorkflowDefinition {
-    const bySortOrder = <T extends { sortOrder: number }>(items: T[]) =>
-      shape === "as-stored" ? [...items] : [...items].sort((a, b) => a.sortOrder - b.sortOrder);
+  private workflowAnswer(projectId: string, workflow: WorkflowDefinition): ProjectWorkflowEntry {
+    const issueTypes = Object.entries(this.workflowOverrides[projectId] ?? {})
+      .filter(([, item]) => item === workflow)
+      .map(([code]) => code);
+    return { workflow: this.workflowView(workflow), issueTypes, shared: false };
+  }
+
+  /**
+   * A copy of a stored workflow as the list and every write answer it:
+   * statuses and every transition, hidden ones included, by `sortOrder`.
+   */
+  private workflowView(workflow: WorkflowDefinition): WorkflowDefinition {
+    const bySortOrder = <T extends { sortOrder: number }>(items: T[]) => [...items].sort((a, b) => a.sortOrder - b.sortOrder);
     return {
       ...workflow,
       statuses: bySortOrder(workflow.statuses).map((status) => ({ ...status })),
-      transitions: bySortOrder(workflow.transitions)
-        .filter((transition) => shape !== "visible" || !transition.hidden)
-        .map((transition) => ({ ...transition })),
+      transitions: bySortOrder(workflow.transitions).map((transition) => ({ ...transition })),
     };
   }
 
@@ -7271,11 +7625,11 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.listProjectWorkflows(projectId));
   }
 
-  async createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<WorkflowDefinition> {
+  async createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<ProjectWorkflowEntry> {
     return wait(this.store.createProjectWorkflow(projectId, input));
   }
 
-  async addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<WorkflowDefinition> {
+  async addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<ProjectWorkflowEntry> {
     return wait(this.store.addWorkflowStatus(projectId, workflowId, input));
   }
 
@@ -7283,8 +7637,60 @@ export class MockTaskaApi implements TaskaApi {
     projectId: string,
     workflowId: string,
     input: WorkflowTransitionInput,
-  ): Promise<WorkflowDefinition> {
+  ): Promise<ProjectWorkflowEntry> {
     return wait(this.store.addWorkflowTransition(projectId, workflowId, input));
+  }
+
+  async updateProjectWorkflow(
+    projectId: string,
+    workflowId: string,
+    input: UpdateProjectWorkflowInput,
+  ): Promise<ProjectWorkflowEntry> {
+    return wait(this.store.updateProjectWorkflow(projectId, workflowId, input));
+  }
+
+  async deleteProjectWorkflow(
+    projectId: string,
+    workflowId: string,
+    input: DeleteProjectWorkflowInput,
+  ): Promise<ProjectWorkflowEntry> {
+    return wait(this.store.deleteProjectWorkflow(projectId, workflowId, input));
+  }
+
+  async updateWorkflowStatus(
+    projectId: string,
+    workflowId: string,
+    statusId: string,
+    input: UpdateWorkflowStatusInput,
+  ): Promise<ProjectWorkflowEntry> {
+    return wait(this.store.updateWorkflowStatus(projectId, workflowId, statusId, input));
+  }
+
+  async deleteWorkflowStatus(
+    projectId: string,
+    workflowId: string,
+    statusId: string,
+    params: DeleteWorkflowStatusParams,
+  ): Promise<ProjectWorkflowEntry> {
+    return wait(this.store.deleteWorkflowStatus(projectId, workflowId, statusId, params));
+  }
+
+  async updateWorkflowTransition(
+    projectId: string,
+    workflowId: string,
+    transitionId: string,
+    input: UpdateWorkflowTransitionInput,
+  ): Promise<ProjectWorkflowEntry> {
+    return wait(this.store.updateWorkflowTransition(projectId, workflowId, transitionId, input));
+  }
+
+  async deleteWorkflowTransition(
+    projectId: string,
+    workflowId: string,
+    transitionId: string,
+    params: DeleteWorkflowTransitionParams,
+  ): Promise<ProjectWorkflowEntry> {
+    return wait(this.store.deleteWorkflowTransition(projectId, workflowId, transitionId, params));
   }
 
   async listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {

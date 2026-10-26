@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 /**
  * The Workflows dialog (TAS-382, DESIGN.md §4.28) against MockTaskaApi, which
@@ -114,6 +114,161 @@ test("an ADMIN makes a workflow, adds a status and a transition, and the board h
   const move = panel.getByRole("group", { name: "Status" }).getByRole("button", { name: "Move to Code Review", exact: true });
   await move.click();
   await expect(panel.locator(".status-pill")).toHaveText("Code Review");
+});
+
+/** A workflow of the project's own for one type, made in the open dialog; answers its card. */
+async function makeWorkflow(page: Page, dialog: Locator, name: string, type: string) {
+  await dialog.getByRole("button", { name: "New workflow" }).click();
+  const create = dialog.getByRole("form", { name: "New workflow" });
+  await create.getByRole("textbox", { name: "Name" }).fill(name);
+  await create.getByRole("checkbox", { name: type }).check();
+  await create.getByRole("button", { name: "Create workflow" }).click();
+  await expect(dialog.getByRole("heading", { level: 3, name })).toBeFocused();
+  return cardOf(page, dialog, name);
+}
+
+const cardOf = (page: Page, dialog: Locator, name: string) =>
+  dialog.locator("section", { has: page.getByRole("heading", { level: 3, name }) });
+
+/** The board's columns, left to right, by the names they are read by. */
+const columnNames = (page: Page) =>
+  page.locator("section.board-column").evaluateAll((columns) => columns.map((column) => column.getAttribute("aria-label")));
+
+/**
+ * TAS-416 (backend PR #225, as MockTaskaApi plays it): the edits reach the
+ * board through the project context the dialog invalidates. Task is the
+ * board's first type, so its own workflow names and places the merged
+ * columns; a task that was In Progress is TAS-107.
+ */
+test("an ADMIN renames and moves a status, and deletes one with issues by moving them; the board follows each", async ({ page }, testInfo) => {
+  const project = testInfo.project.name;
+  await openBoardAs(page, "anna@example.com");
+  let dialog = await openWorkflows(page);
+  let own = await makeWorkflow(page, dialog, "Development", "Task");
+
+  await own.getByRole("button", { name: "Edit In Progress", exact: true }).click();
+  const rename = own.getByRole("form", { name: "Edit In Progress" });
+  await expect(rename.getByRole("textbox", { name: "Key" })).toHaveValue("IN_PROGRESS");
+  await rename.getByRole("textbox", { name: "Name" }).fill("Doing");
+  await rename.getByRole("button", { name: "Save" }).click();
+  const editDoing = own.getByRole("button", { name: "Edit Doing", exact: true });
+  await expect(editDoing).toBeFocused();
+
+  await editDoing.click();
+  const move = own.getByRole("form", { name: "Edit Doing" });
+  // Brought into view on opening (scrollIntoView), and only the body scrolls for it.
+  await expect(move.getByRole("button", { name: "Save" })).toBeInViewport();
+  await expectOnlyTheBodyScrolls(page, project);
+  await move.getByRole("combobox", { name: "Position" }).selectOption({ label: "After Done" });
+  await move.getByRole("button", { name: "Save" }).click();
+  await expect(editDoing).toBeFocused();
+  await expectOnlyTheBodyScrolls(page, project);
+  await expect(own.getByRole("list", { name: "Statuses of Development" }).locator(".workflow-status-name")).toHaveText([
+    "To Do",
+    "Done",
+    "Doing",
+  ]);
+
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  // The new name, and the column after Done.
+  await expect.poll(() => columnNames(page)).toEqual(["To Do column", "Done column", "Doing column"]);
+  await expect(page.getByRole("region", { name: "Doing column" }).getByRole("button", { name: /TAS-107/ })).toBeVisible();
+
+  dialog = await openWorkflows(page);
+  own = cardOf(page, dialog, "Development");
+  await own.getByRole("button", { name: "Delete Doing", exact: true }).click();
+  await expect(own.getByText("Delete Doing? Its transitions are deleted with it.")).toBeVisible();
+  await expectOnlyTheBodyScrolls(page, project);
+  await own.getByRole("button", { name: "Delete status" }).click();
+  // Refused for the tasks in it: the strip asks where they go.
+  await expect(own.getByRole("alert")).toContainText(/^\d+ issues? would be left in a status this workflow no longer has/);
+  const target = own.getByRole("combobox", { name: "Move its issues to" });
+  await expect(target).toBeFocused();
+  await target.selectOption({ label: "To Do" });
+  await own.getByRole("button", { name: "Move and delete" }).click();
+
+  await expect(own.getByRole("button", { name: "Add status" })).toBeFocused();
+  await expect(own.getByRole("list", { name: "Statuses of Development" }).locator(".workflow-status-name")).toHaveText([
+    "To Do",
+    "Done",
+  ]);
+  await expectOnlyTheBodyScrolls(page, project);
+
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("region", { name: "To Do column" }).getByRole("button", { name: /TAS-107/ })).toBeVisible();
+});
+
+test("an ADMIN deletes an own workflow, mapping a status the shared default lacks, and its type goes back", async ({ page }) => {
+  await openBoardAs(page, "anna@example.com");
+  let dialog = await openWorkflows(page);
+  const own = await makeWorkflow(page, dialog, "Development", "Task");
+
+  await own.getByRole("button", { name: "Add status" }).click();
+  await own.getByRole("form", { name: "Add status" }).getByRole("textbox", { name: "Name" }).fill("Code Review");
+  await own.getByRole("form", { name: "Add status" }).getByRole("button", { name: "Add status" }).click();
+  await expect(own.getByRole("button", { name: "Add transition" })).toBeFocused();
+  await own.getByRole("button", { name: "Add transition" }).click();
+  await own.getByRole("form", { name: "Add transition" }).getByRole("button", { name: "Add transition" }).click();
+  await expect(own.getByRole("button", { name: "Add transition" })).toBeFocused();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  // TAS-107 moves into the status only this workflow has.
+  await page.getByRole("region", { name: "In Progress column" }).getByRole("button", { name: /TAS-107/ }).click();
+  const panel = page.getByRole("dialog", { name: "TAS-107 issue" });
+  await expect(panel).not.toHaveAttribute("aria-busy", "true");
+  await panel.getByRole("group", { name: "Status" }).getByRole("button", { name: "Move to Code Review", exact: true }).click();
+  await expect(panel.locator(".status-pill")).toHaveText("Code Review");
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(panel).toBeHidden();
+
+  dialog = await openWorkflows(page);
+  const card = cardOf(page, dialog, "Development");
+  await card.getByRole("button", { name: "Delete Development" }).click();
+  await expect(card.getByText("Delete Development? Task goes back to Default workflow.")).toBeVisible();
+  await card.getByRole("button", { name: "Delete workflow" }).click();
+  await expect(card.getByRole("alert")).toContainText("1 issue would be left in statuses Default workflow does not have.");
+  const mapTo = card.getByRole("combobox", { name: "Move Code Review issues to" });
+  await expect(mapTo).toBeFocused();
+  await mapTo.selectOption({ label: "In Progress" });
+  await card.getByRole("button", { name: "Move and delete" }).click();
+
+  await expect(dialog.getByRole("heading", { level: 3, name: "Default workflow" })).toBeFocused();
+  await expect(dialog.getByRole("heading", { level: 3, name: "Development" })).toHaveCount(0);
+  const shared = cardOf(page, dialog, "Default workflow");
+  await expect(shared.locator(".workflow-type")).toHaveText(["Task", "Bug", "Story"]);
+
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("region", { name: "In Progress column" }).getByRole("button", { name: /TAS-107/ })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Code Review column" })).toHaveCount(0);
+});
+
+/**
+ * The issue panel offers its moves in the order the project context sends
+ * them, which is `sortOrder` (backend repositories, `ORDER BY sort_order`): a
+ * transition moved in the dialog moves among the buttons. TAS-102 is a task in
+ * To Do, whose moves are Start Progress (10) and Close (50).
+ */
+test("moving a transition in the dialog moves it among an issue's move buttons", async ({ page }) => {
+  await openBoardAs(page, "anna@example.com");
+  const dialog = await openWorkflows(page);
+  const own = await makeWorkflow(page, dialog, "Development", "Task");
+
+  await own.getByRole("button", { name: "Edit To Do to Done", exact: true }).click();
+  const edit = own.getByRole("form", { name: "Edit To Do to Done" });
+  await edit.getByRole("combobox", { name: "Position" }).selectOption({ label: "First" });
+  await edit.getByRole("button", { name: "Save" }).click();
+  await expect(own.getByRole("button", { name: "Edit To Do to Done", exact: true })).toBeFocused();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  await page.getByRole("region", { name: "To Do column" }).getByRole("button", { name: /TAS-102/ }).click();
+  const panel = page.getByRole("dialog", { name: "TAS-102 issue" });
+  await expect(panel).not.toHaveAttribute("aria-busy", "true");
+  await expect(panel.getByRole("group", { name: "Status" }).getByRole("button")).toHaveText(["Close", "Start Progress"]);
 });
 
 test("the shared default offers no write, even to an ADMIN", async ({ page }) => {

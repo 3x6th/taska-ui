@@ -1,3 +1,4 @@
+import { apiErrorFacts, isProjectArchived, type ErrorDetails } from "../api/errors";
 import type { CreateProjectWorkflowInput } from "../api/TaskaApi";
 import type {
   IssueTypeCode,
@@ -10,14 +11,18 @@ import { statusLabel } from "./format";
 
 /**
  * The arithmetic and the defaults of the Workflows dialog (DESIGN.md §4.28,
- * TAS-382), kept out of the component so each rule can be tested by itself:
- * where a new status goes, which number a new transition takes, which key a
- * name suggests, and what a new workflow is a copy of.
+ * TAS-382, TAS-416), kept out of the component so each rule can be tested by
+ * itself: where a new or moved status goes, which number a new or moved
+ * transition takes, which key a name suggests, what a new workflow is a copy
+ * of, and which statuses a delete has to move issues out of.
  *
- * Nothing here can be reordered, renamed or removed on the server (backend PR
- * #208 has no such route), so every number chosen here is permanent — which is
- * why the positions never renumber anything and say so when there is no room.
+ * A position is still never a renumbering: a move changes one row's number,
+ * to a free one between its new neighbours, and says so when there is no room
+ * (backend PR #225 refuses a `sortOrder` another row holds).
  */
+
+/** The status issue-service creates every issue in, which the server never lets a workflow delete. */
+export const INITIAL_STATUS_KEY = "TODO";
 
 /** The three categories this build can rank, in board order (§4.28 "Position"). */
 const CATEGORY_RANK: Readonly<Record<string, number>> = { TODO: 0, IN_PROGRESS: 1, DONE: 2 };
@@ -100,10 +105,11 @@ export interface PositionOption {
  * Every place a new status can go (§4.28, "Порядок колонок"): at the start —
  * half the first number — or after each status — halfway to the next, or ten
  * past the last. A gap with no whole number in it is offered as such rather
- * than renumbered: a status cannot be moved once it exists, and the board sorts
- * columns across *every* workflow of the project (`mergeWorkflowStatuses`), so
- * numbers far from the copy's 10/20/30 would put a column beside the wrong
- * neighbours. A workflow with no status at all takes the shared step, 10.
+ * than renumbered: renumbering would move other columns, and the board sorts
+ * columns across *every* workflow of the project (the gateway's merge, as
+ * `buildMockBoard` plays it), so numbers far from the copy's 10/20/30 would put
+ * a column beside the wrong neighbours. A workflow with no status at all takes
+ * the shared step, 10.
  */
 export function positionOptions(statuses: readonly WorkflowStatus[]): PositionOption[] {
   const ordered = statusesInColumnOrder(statuses);
@@ -306,3 +312,199 @@ export function transitionButtonLabel(name: string, toLabel: string): { text: st
     ariaLabel: text.trim().toLowerCase() === plain.toLowerCase() ? undefined : `${text.trim()}, move to ${toLabel}`,
   };
 }
+
+/** "Move …" — an edit's Position select, the current place included. */
+export interface EditPositionOption<P> {
+  position: P;
+  /** The number the row would take there: its own for the place it is in, `null` where no whole number is free. */
+  sortOrder: number | null;
+  /** The place the row is in now — what the select opens on, and what sends no `sortOrder`. */
+  current: boolean;
+}
+
+/**
+ * Every place an existing status can move to (§4.28, Edit status): Add
+ * status's positions computed among the **other** statuses, so the row does
+ * not stand in its own way, with the place it is in now keeping its own
+ * number. Every other number is a midpoint between two of the others, which
+ * no status holds.
+ */
+export function statusEditPositions(
+  statuses: readonly WorkflowStatus[],
+  statusId: string,
+): { options: (EditPositionOption<StatusPosition> & { after: WorkflowStatus | null })[]; current: StatusPosition } {
+  const ordered = statusesInColumnOrder(statuses);
+  const index = ordered.findIndex((status) => status.id === statusId);
+  const self = ordered[index];
+  const before = index > 0 ? ordered[index - 1] : undefined;
+  const current: StatusPosition = before ? { after: before.id } : "start";
+  const options = positionOptions(ordered.filter((status) => status.id !== statusId)).map((option) => {
+    const here = positionValue(option.position) === positionValue(current);
+    return { ...option, sortOrder: here && self ? self.sortOrder : option.sortOrder, current: here };
+  });
+  return { options, current };
+}
+
+/** "First" or "After {transition}" among the moves leaving the same status — an edit's Position select value. */
+export type TransitionPosition = "first" | { after: string };
+
+export const transitionPositionValue = (position: TransitionPosition) =>
+  position === "first" ? "first" : `after:${position.after}`;
+
+/**
+ * Every place an existing transition can move to among the transitions that
+ * leave the same status — the order of the move buttons on an issue in that
+ * status (§4.1). `sortOrder` is unique across **every** transition of the
+ * workflow, hidden ones included, so a place takes the free number nearest the
+ * middle of its gap that no other transition holds — or `null` when the gap has
+ * none. "First" counts from 0; after the last, ten past it. The place the row
+ * is in keeps its own number. A transition alone in its group has one place.
+ */
+export function transitionEditPositions(
+  workflow: Pick<WorkflowDefinition, "transitions">,
+  transitionId: string,
+): {
+  options: (EditPositionOption<TransitionPosition> & { after: WorkflowDefinitionTransition | null })[];
+  current: TransitionPosition;
+} {
+  const self = workflow.transitions.find((transition) => transition.id === transitionId);
+  const siblings = [...workflow.transitions]
+    .filter((transition) => self && transition.fromStatusId === self.fromStatusId)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  const index = siblings.findIndex((transition) => transition.id === transitionId);
+  const before = index > 0 ? siblings[index - 1] : undefined;
+  const current: TransitionPosition = before ? { after: before.id } : "first";
+  const others = siblings.filter((transition) => transition.id !== transitionId);
+  const taken = new Set(workflow.transitions.filter((transition) => transition.id !== transitionId).map((t) => t.sortOrder));
+  const places: { position: TransitionPosition; after: WorkflowDefinitionTransition | null; low: number | null; high: number | null }[] = [
+    { position: "first", after: null, low: null, high: others[0]?.sortOrder ?? null },
+    ...others.map((transition, at) => ({
+      position: { after: transition.id } as TransitionPosition,
+      after: transition,
+      low: transition.sortOrder,
+      high: others[at + 1]?.sortOrder ?? null,
+    })),
+  ];
+  const options = places.map(({ position, after, low, high }) => {
+    const here = transitionPositionValue(position) === transitionPositionValue(current);
+    return {
+      position,
+      after,
+      current: here,
+      sortOrder: here && self ? self.sortOrder : freeSortOrderBetween(low, high, taken),
+    };
+  });
+  return { options, current };
+}
+
+/**
+ * A whole number strictly between `low` and `high` that `taken` does not hold:
+ * the one nearest the midpoint, or `null` when there is none. No `low` counts
+ * from 0 (half of `high`, as "At the start" does for a status); no `high` is ten
+ * past `low`, or the first free number after that.
+ */
+export function freeSortOrderBetween(low: number | null, high: number | null, taken: ReadonlySet<number>): number | null {
+  if (high === null) {
+    let next = (low ?? 0) + SORT_ORDER_STEP;
+    while (taken.has(next)) next += 1;
+    return next;
+  }
+  const floor = low === null ? 0 : low + 1;
+  const ceil = high - 1;
+  if (floor > ceil) return null;
+  const mid = low === null ? Math.floor(high / 2) : Math.floor((low + high) / 2);
+  for (let step = 0; mid - step >= floor || mid + step <= ceil; step += 1) {
+    for (const candidate of [mid - step, mid + step]) {
+      if (candidate >= floor && candidate <= ceil && !taken.has(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * The statuses of `own` whose key the shared default also has, in column
+ * order — the only targets a workflow delete may map issues to: the server
+ * takes a target present in **both** workflows (backend PR #225).
+ */
+export function statusesInBoth(own: WorkflowDefinition, shared: WorkflowDefinition | undefined): WorkflowStatus[] {
+  const keys = new Set((shared?.statuses ?? []).map((status) => status.statusKey));
+  return statusesInColumnOrder(own.statuses).filter((status) => keys.has(status.statusKey));
+}
+
+/**
+ * The status keys a refusal for issues names in `details.statusKeys` — the
+ * statuses those issues sit in (issue-service, comma-joined and sorted) — or
+ * none when the details did not come. Never read out of the message.
+ */
+export function namedStatusKeys(details: ErrorDetails | null): string[] {
+  const named = details && Object.hasOwn(details, "statusKeys") ? details.statusKeys : "";
+  return named
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
+}
+
+/**
+ * The statuses whose issues a workflow delete has to map, after the server
+ * refused it for issues: the keys `details.statusKeys` names. Those that are
+ * statuses of `own` can be mapped; the rest cannot be from here (a mapping's
+ * source must be a status of the workflow being deleted). Without the keys
+ * there is nothing to map, and the refusal is said as one.
+ */
+export function statusesToMap(
+  own: WorkflowDefinition,
+  details: ErrorDetails | null,
+): { mappable: WorkflowStatus[]; unmappable: string[] } {
+  const ordered = statusesInColumnOrder(own.statuses);
+  const keys = namedStatusKeys(details);
+  return {
+    mappable: ordered.filter((status) => keys.includes(status.statusKey)),
+    unmappable: keys.filter((key) => !ordered.some((status) => status.statusKey === key)),
+  };
+}
+
+/**
+ * Whether a delete was refused for the issues it would leave behind — issue-
+ * service's `FAILED_PRECONDITION` "Workflow statuses have N issues; supply a
+ * target status mapping" — so that the strip can offer to move them. Read off
+ * the code and the details, never the message: only a refusal carrying
+ * `details.issueCount` or `details.statusKeys`. One without details is said
+ * as the refusal it is — the two deletes have other `FAILED_PRECONDITION`s
+ * ("Default workflow is not usable", "Issue types have different default
+ * workflows", …), and whether the details survive the gRPC hop to the
+ * gateway is not verified (api-contract-guard, TAS-416). An archived
+ * project's refusal carries `details.reason` and is not this one.
+ */
+export function isIssueCountRefusal(error: unknown): boolean {
+  const { code, details } = apiErrorFacts(error);
+  if (code !== "FAILED_PRECONDITION" || isProjectArchived(error) || details === null) return false;
+  return Object.hasOwn(details, "issueCount") || Object.hasOwn(details, "statusKeys");
+}
+
+/** `details.issueCount` as a number when it came as a whole one, else `null`. */
+export function issueCountOf(error: unknown): number | null {
+  const { details } = apiErrorFacts(error);
+  const count = details && Object.hasOwn(details, "issueCount") ? details.issueCount : "";
+  return /^\d+$/.test(count) ? Number(count) : null;
+}
+
+/**
+ * The list with `answer`'s workflow in the place of the entry it answers for —
+ * an edit's whole `ProjectWorkflowDto` (backend PR #225) — or `null` when no
+ * entry has its id, which leaves the caller to read the list again. The
+ * entry keeps the list's `issueTypes`: an edit never changes a binding, and
+ * the answer's come from an unordered binding read where the list's are TASK,
+ * BUG, STORY — the order the chips are drawn in and the cards are ranked by
+ * (`orderWorkflowEntries`).
+ */
+export function withWorkflowEntry(
+  list: readonly ProjectWorkflowEntry[],
+  answer: ProjectWorkflowEntry,
+): ProjectWorkflowEntry[] | null {
+  const index = answer.workflow.id ? list.findIndex((entry) => entry.workflow.id === answer.workflow.id) : -1;
+  if (index === -1) return null;
+  return list.map((entry, at) => (at === index ? { ...answer, issueTypes: entry.issueTypes } : entry));
+}
+
+/** "1 issue", "12 issues". */
+export const issueCountWords = (count: number) => `${count} ${count === 1 ? "issue" : "issues"}`;

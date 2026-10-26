@@ -5204,7 +5204,7 @@ describe("RestTaskaApi project workflows", () => {
   });
 
   it("creates with exactly the four parts, every transition stating hidden", async () => {
-    const fetchStub = stubFetch({ ...wireWorkflow, version: 1 }, 201);
+    const fetchStub = stubFetch({ workflow: { ...wireWorkflow, version: 1 }, issueTypes: ["TASK"], shared: false }, 201);
 
     const created = await new RestTaskaApi().createProjectWorkflow(PROJECT, {
       name: "Development",
@@ -5227,7 +5227,143 @@ describe("RestTaskaApi project workflows", () => {
         { fromStatusKey: "DONE", toStatusKey: "TODO", name: "Back", sortOrder: 60, hidden: true },
       ],
     });
-    expect(created.version).toBe(1);
+    expect(created).toMatchObject({ issueTypes: ["TASK"], shared: false, workflow: { id: WORKFLOW, version: 1 } });
+  });
+
+  // Backend PR #225: the three adds answer ProjectWorkflowDto, as the six
+  // edits do. Read as the list reads an item — so the bare workflow they used
+  // to answer is an entry with no id and no types that opens nothing.
+  it("reads every add's answer as a ProjectWorkflowDto, hidden transitions included, shared only when not false", async () => {
+    const item = { workflow: wireWorkflow, issueTypes: ["TASK", "STORY"], shared: false };
+    const input = { statusKey: "QA", name: "QA", category: "IN_PROGRESS", sortOrder: 25 };
+
+    stubFetch(item, 201);
+    const added = await new RestTaskaApi().addWorkflowStatus(PROJECT, WORKFLOW, input);
+    expect(added.issueTypes).toEqual(["TASK", "STORY"]);
+    expect(added.shared).toBe(false);
+    expect(added.workflow.transitions.map((transition) => [transition.name, transition.hidden])).toEqual([
+      ["Visible", false],
+      ["Hidden", true],
+      ["Unsaid", false],
+      ["Stringly", false],
+    ]);
+
+    stubFetch({ workflow: wireWorkflow, issueTypes: ["BUG"] }, 201);
+    const unsaid = await new RestTaskaApi().addWorkflowTransition(PROJECT, WORKFLOW, {
+      fromStatusKey: "TODO",
+      toStatusKey: "DONE",
+      name: "Close",
+      sortOrder: 50,
+      hidden: false,
+    });
+    expect(unsaid.shared).toBe(true);
+
+    stubFetch(wireWorkflow, 201);
+    const bare = await new RestTaskaApi().addWorkflowStatus(PROJECT, WORKFLOW, input);
+    expect(bare).toMatchObject({ issueTypes: [], shared: true, workflow: { id: "", statuses: [], transitions: [] } });
+  });
+
+  it("renames and deletes a workflow on its own path: only the fields given, the delete's body always JSON", async () => {
+    const answer = { workflow: wireWorkflow, issueTypes: ["TASK"], shared: false };
+    const renameStub = stubFetch(answer);
+    const renamed = await new RestTaskaApi().updateProjectWorkflow(PROJECT, WORKFLOW, { version: 3, name: "Delivery" });
+    expect(renameStub.mock.calls[0][0]).toBe(`${base}/${WORKFLOW}`);
+    expect(renameStub.mock.calls[0][1]?.method).toBe("PATCH");
+    expect(sentBody(renameStub)).toEqual({ version: 3, name: "Delivery" });
+    expect(renamed.workflow.id).toBe(WORKFLOW);
+
+    const sharedAnswer = { workflow: { ...wireWorkflow, id: "default" }, issueTypes: ["TASK"], shared: true };
+    const deleteStub = stubFetch(sharedAnswer);
+    const fallback = await new RestTaskaApi().deleteProjectWorkflow(PROJECT, WORKFLOW, {
+      version: 4,
+      statusMappings: { CODE_REVIEW: "IN_PROGRESS" },
+    });
+    expect(deleteStub.mock.calls[0][0]).toBe(`${base}/${WORKFLOW}`);
+    expect(deleteStub.mock.calls[0][1]?.method).toBe("DELETE");
+    expect(new Headers(deleteStub.mock.calls[0][1]?.headers).get("Content-Type")).toBe("application/json");
+    expect(sentBody(deleteStub)).toEqual({ version: 4, statusMappings: { CODE_REVIEW: "IN_PROGRESS" } });
+    expect(fallback).toMatchObject({ shared: true, issueTypes: ["TASK"], workflow: { id: "default" } });
+
+    const emptyStub = stubFetch(sharedAnswer);
+    await new RestTaskaApi().deleteProjectWorkflow(PROJECT, WORKFLOW, {});
+    expect(sentBody(emptyStub)).toEqual({});
+  });
+
+  it("changes and deletes a status: the PATCH with only what changed, the DELETE's two query parameters only when given", async () => {
+    const answer = { workflow: wireWorkflow, issueTypes: ["TASK"], shared: false };
+    const patchStub = stubFetch(answer);
+    await new RestTaskaApi().updateWorkflowStatus(PROJECT, WORKFLOW, "s1", {
+      version: 2,
+      name: "Doing",
+      category: undefined,
+      sortOrder: 0,
+    });
+    expect(patchStub.mock.calls[0][0]).toBe(`${base}/${WORKFLOW}/statuses/s1`);
+    expect(patchStub.mock.calls[0][1]?.method).toBe("PATCH");
+    // Never an explicit null or an absent field as one: the DTO refuses both.
+    expect(sentBody(patchStub)).toEqual({ version: 2, name: "Doing", sortOrder: 0 });
+
+    const deleteStub = stubFetch(answer);
+    await new RestTaskaApi().deleteWorkflowStatus(PROJECT, WORKFLOW, "s1", { version: 2, targetStatusKey: "TODO" });
+    expect(deleteStub.mock.calls[0][0]).toBe(`${base}/${WORKFLOW}/statuses/s1?version=2&targetStatusKey=TODO`);
+    expect(deleteStub.mock.calls[0][1]?.method).toBe("DELETE");
+    expect(deleteStub.mock.calls[0][1]?.body).toBeUndefined();
+
+    const bareStub = stubFetch(answer);
+    await new RestTaskaApi().deleteWorkflowStatus(PROJECT, WORKFLOW, "s1", {});
+    expect(bareStub.mock.calls[0][0]).toBe(`${base}/${WORKFLOW}/statuses/s1`);
+  });
+
+  it("changes and deletes a transition: hidden false is sent, the DELETE's version as a query parameter", async () => {
+    const answer = { workflow: wireWorkflow, issueTypes: ["TASK"], shared: false };
+    const patchStub = stubFetch(answer);
+    await new RestTaskaApi().updateWorkflowTransition(PROJECT, WORKFLOW, "t1", { version: 5, hidden: false });
+    expect(patchStub.mock.calls[0][0]).toBe(`${base}/${WORKFLOW}/transitions/t1`);
+    expect(patchStub.mock.calls[0][1]?.method).toBe("PATCH");
+    expect(sentBody(patchStub)).toEqual({ version: 5, hidden: false });
+
+    const deleteStub = stubFetch(answer);
+    const after = await new RestTaskaApi().deleteWorkflowTransition(PROJECT, WORKFLOW, "t1", { version: 5 });
+    expect(deleteStub.mock.calls[0][0]).toBe(`${base}/${WORKFLOW}/transitions/t1?version=5`);
+    expect(deleteStub.mock.calls[0][1]?.method).toBe("DELETE");
+    expect(after.workflow.transitions).toHaveLength(4);
+
+    const bareStub = stubFetch(answer);
+    await new RestTaskaApi().deleteWorkflowTransition(PROJECT, WORKFLOW, "t1", {});
+    expect(bareStub.mock.calls[0][0]).toBe(`${base}/${WORKFLOW}/transitions/t1`);
+  });
+
+  it("rejects an edit's ABORTED and a delete's issue count with the code, the request id and the details as sent", async () => {
+    const refuse = (status: number, body: unknown) =>
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({
+          status,
+          ok: false,
+          headers: { get: (name: string) => (name === "X-Request-Id" ? "req-416" : null) },
+          json: async () => body,
+        })),
+      );
+
+    refuse(409, { code: "ABORTED", message: "Workflow version changed" });
+    const stale = await new RestTaskaApi()
+      .updateProjectWorkflow(PROJECT, WORKFLOW, { version: 1, name: "Late" })
+      .catch((error: unknown) => error);
+    expect(apiErrorFacts(stale)).toMatchObject({ status: 409, code: "ABORTED", requestId: "req-416", details: null });
+
+    refuse(400, {
+      code: "FAILED_PRECONDITION",
+      message: "Workflow statuses have 3 issues; supply a target status mapping",
+      details: { issueCount: "3", statusKeys: "CODE_REVIEW,QA" },
+    });
+    const counted = await new RestTaskaApi()
+      .deleteWorkflowStatus(PROJECT, WORKFLOW, "s1", { version: 1 })
+      .catch((error: unknown) => error);
+    expect(apiErrorFacts(counted)).toMatchObject({
+      status: 400,
+      code: "FAILED_PRECONDITION",
+      details: { issueCount: "3", statusKeys: "CODE_REVIEW,QA" },
+    });
   });
 
   it("adds a status and a transition on their own paths, hidden false sent rather than left to the default", async () => {
