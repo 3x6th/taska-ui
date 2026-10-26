@@ -156,6 +156,9 @@ test("an ADMIN renames and moves a status, and deletes one with issues by moving
 
   await editDoing.click();
   const move = own.getByRole("form", { name: "Edit Doing" });
+  // Brought into view on opening (scrollIntoView), and only the body scrolls for it.
+  await expect(move.getByRole("button", { name: "Save" })).toBeInViewport();
+  await expectOnlyTheBodyScrolls(page, project);
   await move.getByRole("combobox", { name: "Position" }).selectOption({ label: "After Done" });
   await move.getByRole("button", { name: "Save" }).click();
   await expect(editDoing).toBeFocused();
@@ -176,6 +179,7 @@ test("an ADMIN renames and moves a status, and deletes one with issues by moving
   own = cardOf(page, dialog, "Development");
   await own.getByRole("button", { name: "Delete Doing", exact: true }).click();
   await expect(own.getByText("Delete Doing? Its transitions are deleted with it.")).toBeVisible();
+  await expectOnlyTheBodyScrolls(page, project);
   await own.getByRole("button", { name: "Delete status" }).click();
   // Refused for the tasks in it: the strip asks where they go.
   await expect(own.getByRole("alert")).toContainText(/^\d+ issues? would be left in a status this workflow no longer has/);

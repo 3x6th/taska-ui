@@ -1,8 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import type { ProjectRole, ProjectWorkflowEntry, WorkflowDefinition } from "../domain/types";
+import { boardKey } from "../lib/boardQuery";
+import { projectContextKey } from "../lib/projectContext";
 import { ProjectWorkflowsModal } from "./ProjectWorkflowsModal";
 
 /**
@@ -109,7 +111,7 @@ function renderDialog(readerRole: ProjectRole | null | undefined = "ADMIN", arch
       />
     </QueryClientProvider>,
   );
-  return { onClose, dialog: screen.getByRole("dialog", { name: "Workflows" }) };
+  return { onClose, queryClient, dialog: screen.getByRole("dialog", { name: "Workflows" }) };
 }
 
 const card = (name: string) => screen.getByRole("heading", { level: 3, name }).closest("section") as HTMLElement;
@@ -659,7 +661,9 @@ describe("Rename", () => {
   it("reloads a workflow the server says changed elsewhere, and says so once with its words and id", async () => {
     state.writeFailure = refusal("Workflow version changed", 409, "ABORTED");
     state.lists = [[ownEntry, sharedEntry], [{ ...ownEntry, workflow: { ...ownWorkflow, version: 4, name: "Platform" } }, sharedEntry]];
-    await openDialog();
+    const { queryClient } = renderDialog("ADMIN");
+    await screen.findAllByRole("heading", { level: 3 });
+    const invalidated = vi.spyOn(queryClient, "invalidateQueries");
     fireEvent.click(within(card("Development")).getByRole("button", { name: "Rename Development" }));
     const form = screen.getByRole("form", { name: "Rename Development" });
     fireEvent.change(within(form).getByRole("textbox", { name: "Name" }), { target: { value: "Delivery" } });
@@ -670,6 +674,10 @@ describe("Rename", () => {
     expect(screen.getByText("Workflow version changed")).toBeVisible();
     expect(screen.getByText("req-382")).toBeVisible();
     expect(state.listCalls).toBe(2);
+    // The board read the same workflow: it is read again with the list (api-contract-guard N3).
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([projectContextKey(PROJECT), boardKey(PROJECT)]),
+    );
     expect(screen.queryByRole("form", { name: /Rename/ })).toBeNull();
     // Not "was not renamed": a conflict is not said as a refusal of the form.
     expect(screen.queryByText("The workflow was not renamed.")).toBeNull();
@@ -835,10 +843,14 @@ describe("Delete status", () => {
 
     const step = await within(strip).findByRole("alert");
     expect(step).toHaveTextContent("2 issues would be left in a status this workflow no longer has. Move In Progress’s issues to delete it.");
-    expect(within(strip).getByText("Workflow statuses have 2 issues; supply a target status mapping")).toBeVisible();
-    expect(within(strip).getByText("req-382")).toBeVisible();
+    // A step with an answer is a question: the server's instruction to an API
+    // client and the request id are not printed (art-director, TAS-416).
+    expect(within(strip).queryByText("Workflow statuses have 2 issues; supply a target status mapping")).toBeNull();
+    expect(within(strip).queryByText("req-382")).toBeNull();
     // Said once, by the step: not again as "was not deleted".
     expect(within(strip).queryByText("The status was not deleted.")).toBeNull();
+    // A refusal is not a reason to read the list again.
+    expect(state.listCalls).toBe(1);
     const target = within(strip).getByRole("combobox", { name: "Move its issues to" });
     await waitFor(() => expect(target).toHaveFocus());
     expect(within(target).getAllByRole("option").map((option) => option.textContent)).toEqual(["Choose a status", "To Do", "Done"]);
@@ -852,10 +864,29 @@ describe("Delete status", () => {
     await waitFor(() => expect(state.writes).toHaveLength(2));
     expect(state.writes[1].args).toEqual([PROJECT, "wf-own", "s-progress", { version: 1, targetStatusKey: "TODO" }]);
     expect(await screen.findByText("Status In Progress deleted. Its issues moved to To Do.")).toBeInTheDocument();
+    expect(state.listCalls).toBe(1);
   });
 
-  it("offers the move step for a refusal whose details did not come, without reading its message", async () => {
+  // api-contract-guard, TAS-416: the deletes have other FAILED_PRECONDITIONs,
+  // and the message is never read — only the details make a step.
+  it("says a FAILED_PRECONDITION without details as an ordinary refusal, in the server's words", async () => {
     state.failQueue = [refusal("Workflow statuses have 3 issues; supply a target status mapping", 400, "FAILED_PRECONDITION")];
+    const strip = await openStrip();
+    fireEvent.click(within(strip).getByRole("button", { name: "Delete status" }));
+
+    expect(await within(strip).findByText("The status was not deleted.")).toHaveAttribute("role", "alert");
+    expect(within(strip).getByText("Workflow statuses have 3 issues; supply a target status mapping")).toBeVisible();
+    expect(within(strip).getByText("req-382")).toBeVisible();
+    expect(within(strip).queryByRole("combobox")).toBeNull();
+    expect(within(strip).getByRole("button", { name: "Delete status" })).toBeVisible();
+  });
+
+  it("names no count when only the statuses came", async () => {
+    state.failQueue = [
+      refusal("Workflow statuses have 3 issues; supply a target status mapping", 400, "FAILED_PRECONDITION", {
+        statusKeys: "IN_PROGRESS",
+      }),
+    ];
     const strip = await openStrip();
     fireEvent.click(within(strip).getByRole("button", { name: "Delete status" }));
 
@@ -886,11 +917,17 @@ describe("Delete status", () => {
     await waitFor(() =>
       expect(within(strip).getByRole("alert")).toHaveTextContent(/^1 issue would be left in a status this workflow no longer has\.$/),
     );
-    expect(within(strip).getByText("BLOCKED_BY_QA is not a status of Development, so its issues cannot be moved from here.")).toBeVisible();
+    const why = within(strip).getByText("BLOCKED_BY_QA is not a status of Development, so its issues cannot be moved from here.");
+    expect(why).toBeVisible();
+    // A dead end reads sentence, why, then the server's words and the id, then Cancel.
+    const words = within(strip).getByText("Workflow statuses have 1 issues; supply a target status mapping");
+    expect(why.compareDocumentPosition(words) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(strip).getByText("req-382")).toBeVisible();
     expect(within(strip).queryByRole("combobox")).toBeNull();
     expect(within(strip).queryByRole("button", { name: /Move and delete|Delete status/ })).toBeNull();
     await waitFor(() => expect(within(strip).getByRole("button", { name: "Cancel" })).toHaveFocus());
     expect(state.writes).toHaveLength(2);
+    expect(state.listCalls).toBe(1);
   });
 
   it("says any other refusal in the strip, and Esc closes it with focus back on Delete", async () => {
@@ -962,6 +999,8 @@ describe("Delete workflow", () => {
     expect(await within(strip).findByRole("alert")).toHaveTextContent(
       "1 issue would be left in statuses Default workflow does not have. Choose where each status’s issues go.",
     );
+    expect(within(strip).queryByText("Workflow statuses have 1 issues; supply a target status mapping")).toBeNull();
+    expect(within(strip).queryByText("req-382")).toBeNull();
     const select = within(strip).getByRole("combobox", { name: "Move QA issues to" });
     await waitFor(() => expect(select).toHaveFocus());
     // Only what both workflows have: QA is not among them.
@@ -981,15 +1020,19 @@ describe("Delete workflow", () => {
     await waitFor(() => expect(screen.queryByRole("heading", { level: 3, name: "Development" })).toBeNull());
   });
 
-  it("without details, maps every status of its own the shared default lacks", async () => {
+  it("says a refusal without the statuses it names as an ordinary refusal, and keeps the question", async () => {
     state.lists = [[withQa, sharedEntry]];
-    state.failQueue = [issuesRefusal(null)];
-    const strip = await openStrip();
-    fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
+    for (const details of [null, { issueCount: "1" }]) {
+      state.failQueue = [issuesRefusal(details)];
+      const strip = await openStrip();
+      fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
 
-    expect(await within(strip).findByRole("alert")).toHaveTextContent(/^Issues would be left in statuses Default workflow does not have/);
-    expect(within(strip).getAllByRole("combobox")).toHaveLength(1);
-    expect(within(strip).getByRole("combobox", { name: "Move QA issues to" })).toBeVisible();
+      expect(await within(strip).findByText("The workflow was not deleted.")).toHaveAttribute("role", "alert");
+      expect(within(strip).getByText("Workflow statuses have 1 issues; supply a target status mapping")).toBeVisible();
+      expect(within(strip).queryByRole("combobox")).toBeNull();
+      expect(within(strip).getByRole("button", { name: "Delete workflow" })).toBeVisible();
+      cleanup();
+    }
   });
 
   it("offers no answer when the two workflows share no status, and says what to do first", async () => {
@@ -1002,11 +1045,14 @@ describe("Delete workflow", () => {
     const strip = await openStrip();
     fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
 
-    expect(
-      await within(strip).findByText(
-        "Development shares no status with Default workflow, so these issues have nowhere to go. Add one of Default workflow’s statuses to Development first.",
-      ),
-    ).toBeVisible();
+    const why = await within(strip).findByText(
+      "Development shares no status with Default workflow, so these issues have nowhere to go. Add one of Default workflow’s statuses to Development first.",
+    );
+    expect(why).toBeVisible();
+    expect(within(strip).getByRole("alert")).toHaveTextContent(/^1 issue would be left in statuses Default workflow does not have\.$/);
+    const words = within(strip).getByText("Workflow statuses have 1 issues; supply a target status mapping");
+    expect(why.compareDocumentPosition(words) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(strip).getByText("req-382")).toBeVisible();
     expect(within(strip).queryByRole("button", { name: /Move and delete|Delete workflow/ })).toBeNull();
     await waitFor(() => expect(within(strip).getByRole("button", { name: "Cancel" })).toHaveFocus());
   });
@@ -1020,8 +1066,9 @@ describe("Delete workflow", () => {
     expect(strip).toHaveTextContent("Delete Development? Story goes back to the shared workflow.");
     fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
 
+    // The line under it says "Choose" already; the sentence does not say it twice.
     expect(await within(strip).findByRole("alert")).toHaveTextContent(
-      "1 issue would be left in statuses the shared workflow does not have. Choose where each status’s issues go.",
+      /^1 issue would be left in statuses the shared workflow does not have\.$/,
     );
     expect(
       within(strip).getByText(
@@ -1044,21 +1091,16 @@ describe("Delete workflow", () => {
     expect(state.writes[1].args).toEqual([PROJECT, "wf-own", { version: 1, statusMappings: { QA: "DONE" } }]);
   });
 
-  it("without the shared default and without details, says the statuses to move cannot be told, and offers no answer", async () => {
+  it("without the shared default and without details, says the refusal as one", async () => {
     state.lists = [[withQa]];
     state.failQueue = [issuesRefusal(null)];
     const strip = await openStrip();
     fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
 
-    expect(await within(strip).findByRole("alert")).toHaveTextContent(
-      /^Issues would be left in statuses the shared workflow does not have\.$/,
-    );
-    expect(
-      within(strip).getByText("The shared workflow is not in this list, so the statuses whose issues have to move cannot be told here."),
-    ).toBeVisible();
-    expect(within(strip).queryByText(/shares no status/)).toBeNull();
+    expect(await within(strip).findByText("The workflow was not deleted.")).toBeVisible();
+    expect(within(strip).queryByText(/shares no status|not in this list/)).toBeNull();
     expect(within(strip).queryByRole("combobox")).toBeNull();
-    expect(within(strip).queryByRole("button", { name: /Move and delete|Delete workflow/ })).toBeNull();
+    expect(within(strip).getByRole("button", { name: "Delete workflow" })).toBeVisible();
   });
 
   it("says a refusal that names nothing to map as a refusal, and keeps the question", async () => {
@@ -1069,5 +1111,100 @@ describe("Delete workflow", () => {
     expect(await within(strip).findByText("The workflow was not deleted.")).toBeVisible();
     expect(within(strip).getByText("Default workflow is not usable")).toBeVisible();
     expect(within(strip).getByRole("button", { name: "Delete workflow" })).toBeVisible();
+  });
+});
+
+/**
+ * api-contract-guard N2 (TAS-416): what each write asks of the server. An edit
+ * or an add answers the whole workflow, so it is one write and no re-read of
+ * the list; it invalidates exactly the project context and the board, the two
+ * reads that show the workflow elsewhere.
+ */
+describe("what a write asks the server for", () => {
+  const flows: [string, ProjectWorkflowEntry, () => void][] = [
+    [
+      "edit status",
+      answerWith({ statuses: [statuses[0], { ...statuses[1], name: "Doing" }, statuses[2]] }),
+      () => {
+        fireEvent.click(within(card("Development")).getByRole("button", { name: "Edit In Progress" }));
+        const form = screen.getByRole("form", { name: "Edit In Progress" });
+        fireEvent.change(within(form).getByRole("textbox", { name: "Name" }), { target: { value: "Doing" } });
+        fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+      },
+    ],
+    [
+      "edit transition",
+      answerWith({ transitions: sharedWorkflow.transitions.map((t) => (t.id === "t5" ? { ...t, hidden: true } : t)) }),
+      () => {
+        fireEvent.click(within(card("Development")).getByRole("button", { name: "Edit To Do to Done" }));
+        const form = screen.getByRole("form", { name: "Edit To Do to Done" });
+        fireEvent.click(within(form).getByRole("checkbox", { name: "Hidden" }));
+        fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+      },
+    ],
+    [
+      "add transition",
+      answerWith({
+        transitions: [
+          ...sharedWorkflow.transitions,
+          { id: "t10", fromStatusId: "s-progress", toStatusId: "s-todo", name: "Move to To Do", sortOrder: 100, hidden: false },
+        ],
+      }),
+      () => {
+        fireEvent.click(within(card("Development")).getByRole("button", { name: "Add transition" }));
+        const form = screen.getByRole("form", { name: "Add transition" });
+        fireEvent.change(within(form).getByRole("combobox", { name: "From" }), { target: { value: "s-progress" } });
+        fireEvent.change(within(form).getByRole("combobox", { name: "To" }), { target: { value: "s-todo" } });
+        fireEvent.click(within(form).getByRole("button", { name: "Add transition" }));
+      },
+    ],
+    [
+      "delete status",
+      answerWith({ statuses: [statuses[0], statuses[1]], transitions: [sharedWorkflow.transitions[0]] }),
+      () => {
+        fireEvent.click(within(card("Development")).getByRole("button", { name: "Delete Done" }));
+        fireEvent.click(screen.getByRole("button", { name: "Delete status" }));
+      },
+    ],
+    [
+      "delete transition",
+      answerWith({ transitions: sharedWorkflow.transitions.filter((t) => t.id !== "t5") }),
+      () => {
+        fireEvent.click(within(card("Development")).getByRole("button", { name: "Delete To Do to Done" }));
+        fireEvent.click(screen.getByRole("button", { name: "Delete transition" }));
+      },
+    ],
+  ];
+
+  for (const [name, answer, act] of flows) {
+    it(`${name}: one write, no re-read of the list, and the context and the board read again`, async () => {
+      state.answer = answer;
+      const { queryClient } = renderDialog("ADMIN");
+      await screen.findAllByRole("heading", { level: 3 });
+      const invalidated = vi.spyOn(queryClient, "invalidateQueries");
+      act();
+
+      await waitFor(() => expect(screen.getByText(/ (saved|added|deleted)/, { selector: "[aria-live]" })).toBeInTheDocument());
+      expect(state.writes).toHaveLength(1);
+      expect(state.listCalls).toBe(1);
+      expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([projectContextKey(PROJECT), boardKey(PROJECT)]);
+    });
+  }
+});
+
+describe("a row form or strip opened below the fold", () => {
+  it("is brought into the body's view on opening, nearest and without an animation", async () => {
+    await openDialog();
+    const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+    fireEvent.click(within(card("Development")).getByRole("button", { name: "Edit In Progress to Done" }));
+    expect(scrolled).toHaveBeenCalledWith({ block: "nearest" });
+    expect(scrolled.mock.contexts.at(-1)).toBe(screen.getByRole("form", { name: "Edit In Progress to Done" }));
+
+    pressEscape();
+    scrolled.mockClear();
+    fireEvent.click(within(card("Development")).getByRole("button", { name: "Delete In Progress" }));
+    expect(scrolled).toHaveBeenCalledWith({ block: "nearest" });
+    expect((scrolled.mock.contexts.at(-1) as HTMLElement).classList.contains("workflow-confirm")).toBe(true);
+    scrolled.mockRestore();
   });
 });

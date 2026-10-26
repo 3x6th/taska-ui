@@ -311,26 +311,16 @@ describe("what a delete moves issues out of", () => {
   });
 
   it("takes the statuses the details name, and keeps apart the ones that are not this workflow's", () => {
-    expect(statusesToMap(own, shared, { issueCount: "4", statusKeys: "SHIP,BLOCKED" })).toEqual({
+    expect(statusesToMap(own, { issueCount: "4", statusKeys: "SHIP,BLOCKED" })).toEqual({
       mappable: [own.statuses[4]],
       unmappable: ["BLOCKED"],
-      undetermined: false,
     });
   });
 
-  it("without the details, takes every status of its own the shared default lacks", () => {
-    expect(statusesToMap(own, shared, null).mappable.map((item) => item.statusKey)).toEqual(["QA", "SHIP"]);
-    expect(statusesToMap(own, shared, { issueCount: "4" }).unmappable).toEqual([]);
-  });
-
-  // The list leaves the shared default out when every type has a workflow of its own.
-  it("without the shared default's statuses, still takes the named ones, and says it cannot tell the rest", () => {
-    expect(statusesToMap(own, undefined, { statusKeys: "QA" })).toEqual({
-      mappable: [own.statuses[3]],
-      unmappable: [],
-      undetermined: false,
-    });
-    expect(statusesToMap(own, undefined, null)).toEqual({ mappable: [], unmappable: [], undetermined: true });
+  // Never guessed from the shared default: without the keys there is nothing to map.
+  it("maps nothing when the details name no status", () => {
+    expect(statusesToMap(own, null)).toEqual({ mappable: [], unmappable: [] });
+    expect(statusesToMap(own, { issueCount: "4" })).toEqual({ mappable: [], unmappable: [] });
   });
 
   it("reads the named status keys as the server joins them, and none when they did not come", () => {
@@ -343,8 +333,9 @@ describe("what a delete moves issues out of", () => {
     const refusal = (code: string, details: Record<string, string> | null) =>
       Object.assign(new Error("Workflow statuses have 3 issues; supply a target status mapping"), { code, details });
     expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { issueCount: "3", statusKeys: "QA" }))).toBe(true);
-    // The details are not verified to survive the gRPC hop: none at all still counts.
-    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", null))).toBe(true);
+    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { statusKeys: "QA" }))).toBe(true);
+    // Without details it is any of the deletes' other FAILED_PRECONDITIONs, said as itself.
+    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", null))).toBe(false);
     expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { reason: "PROJECT_ARCHIVED" }))).toBe(false);
     expect(isIssueCountRefusal(refusal("INVALID_ARGUMENT", null))).toBe(false);
     expect(issueCountOf(refusal("FAILED_PRECONDITION", { issueCount: "3" }))).toBe(3);
@@ -361,6 +352,12 @@ describe("an edit's answer in the list", () => {
     ];
     const answer: ProjectWorkflowEntry = { workflow: { ...shared, id: "wf-own", name: "Renamed" }, issueTypes: ["TASK"], shared: false };
     expect(withWorkflowEntry(list, answer)?.map((entry) => entry.workflow.name)).toEqual(["Renamed", "Default workflow"]);
+    // An edit changes no binding: the list's types, in the list's order, stay.
+    const reordered = withWorkflowEntry(
+      [{ ...list[0], issueTypes: ["TASK", "STORY"] }, list[1]],
+      { ...answer, issueTypes: ["STORY", "TASK"] },
+    );
+    expect(reordered?.[0].issueTypes).toEqual(["TASK", "STORY"]);
     expect(withWorkflowEntry(list, { ...answer, workflow: { ...answer.workflow, id: "" } })).toBeNull();
     expect(withWorkflowEntry(list, { ...answer, workflow: { ...answer.workflow, id: "wf-gone" } })).toBeNull();
   });

@@ -1781,9 +1781,14 @@ export interface TaskaApi {
   addWorkflowTransition(projectId: string, workflowId: string, input: WorkflowTransitionInput): Promise<ProjectWorkflowEntry>;
   /**
    * The six routes of backend PR #225 (TAS-384, develop `6ba4ed6`), read from
-   * workflow-service's `WorkflowMutationService`. Each is refused first as an
-   * add is (role, archive, unknown workflow 404, the shared default 400
-   * `FAILED_PRECONDITION`, another project's workflow 404), then:
+   * workflow-service's `WorkflowMutationService`. The gateway checks a body's
+   * shape only — an unknown field, an explicit `null`, a number that is not a
+   * whole int, a category outside the enum: "Invalid request parameters" — and
+   * not the yml's bounds; the deletes' query parameters it does check
+   * (`version ≥ 1`, the key's pattern). Then a body `version` below 1 is 400
+   * "version must be positive" before the role is looked at. Then each route
+   * is refused as an add is (role, archive, unknown workflow 404, the shared
+   * default 400 `FAILED_PRECONDITION`, another project's workflow 404), then:
    *
    * - a `version` that is not the server's → 409 `ABORTED` "Workflow version
    *   changed" (a concurrent write is `ABORTED` too). `ALREADY_EXISTS` is a 409
@@ -1792,14 +1797,16 @@ export interface TaskaApi {
    * - the workflow as it would stand must keep a `TODO` status and a visible
    *   transition → else 400 `INVALID_ARGUMENT` "Workflow requires a TODO status
    *   and at least one visible transition"; then the create rules with the
-   *   edit's prefix — a `sortOrder` another status (or transition) holds is
-   *   400 "Workflow update failed: Status sort order is not unique: N";
+   *   edit's prefix, 400 "Workflow update failed: …" — a blank or over-100
+   *   name, a negative `sortOrder`, a `sortOrder` another status (or
+   *   transition) holds ("Status sort order is not unique: N");
    * - a delete that leaves issues of the workflow's types in a status it no
    *   longer has → issue-service's 400 `FAILED_PRECONDITION` "Workflow statuses
    *   have N issues; supply a target status mapping", `details`
    *   `{issueCount, statusKeys}` as strings. That the details survive the hop
    *   from issue-service through workflow-service to the gateway is **not
-   *   verified**; a caller treats them as optional. Over 5000 issues →
+   *   verified**; the dialog offers its move or mapping step only when they
+   *   came, and says any other refusal as one. Over 5000 issues →
    *   `RESOURCE_EXHAUSTED`. Each moved issue gets a `TRANSITIONED` history entry.
    *
    * Every edit raises `version` by one.

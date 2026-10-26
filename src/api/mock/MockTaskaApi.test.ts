@@ -5780,8 +5780,10 @@ describe("MockTaskaApi", () => {
         const doing = statusOf(created, "IN_PROGRESS").id;
         const invalid = { code: "INVALID_ARGUMENT", message: "Invalid request parameters" };
 
-        // additionalProperties: false, no explicit null, the DTO's bounds.
-        for (const body of [{ name: null }, { statusKey: "DOING" }, { sortOrder: -1 }, { category: "REVIEW" }, { version: 0, name: "x" }]) {
+        // The gateway's hand-written DTOs check shape only: an unknown field,
+        // an explicit null, a number that is not a whole int, a category
+        // outside the enum. The deletes' query parameters it does bound.
+        for (const body of [{ name: null }, { statusKey: "DOING" }, { sortOrder: 2.5 }, { category: "REVIEW" }]) {
           await expect(
             api.updateWorkflowStatus(project.id, created.id, doing, body as unknown as { name: string }),
           ).rejects.toMatchObject(invalid);
@@ -5790,6 +5792,9 @@ describe("MockTaskaApi", () => {
         await expect(
           api.deleteWorkflowStatus(project.id, created.id, doing, { targetStatusKey: "to do" }),
         ).rejects.toMatchObject(invalid);
+        await expect(api.deleteWorkflowTransition(project.id, created.id, created.transitions[0].id, { version: 0 })).rejects.toMatchObject(
+          invalid,
+        );
 
         await expect(api.updateWorkflowStatus(project.id, created.id, doing, { version: 1 })).rejects.toMatchObject({
           code: "INVALID_ARGUMENT",
@@ -5818,6 +5823,40 @@ describe("MockTaskaApi", () => {
         await expect(api.updateProjectWorkflow(project.id, created.id, { name: "Mine" })).rejects.toMatchObject({
           code: "PERMISSION_DENIED",
           message: "Not allowed role",
+        });
+        // A body version below 1 is workflow-service's, before the role is looked at.
+        await expect(api.updateProjectWorkflow(project.id, created.id, { version: 0, name: "Mine" })).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: "version must be positive",
+        });
+      });
+
+      it("leaves the yml's bounds to the validator, after the role, the 404s and the version", async () => {
+        const created = await ownWorkflow();
+        const doing = statusOf(created, "IN_PROGRESS").id;
+        const prefix = "Workflow update failed: ";
+
+        await expect(api.updateProjectWorkflow(project.id, created.id, { version: 1, name: "" })).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: `${prefix}Workflow name must not be blank`,
+        });
+        await expect(
+          api.updateProjectWorkflow(project.id, created.id, { version: 1, name: "x".repeat(101) }),
+        ).rejects.toMatchObject({ message: `${prefix}Workflow name exceeds maximum length of 100` });
+        await expect(api.updateWorkflowStatus(project.id, created.id, doing, { version: 1, sortOrder: -1 })).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: `${prefix}Status sort order must not be negative for status: IN_PROGRESS`,
+        });
+        await expect(
+          api.updateWorkflowTransition(project.id, created.id, transitionNamed(created, "Close").id, { version: 1, sortOrder: -1 }),
+        ).rejects.toMatchObject({ message: `${prefix}Transition sort order must not be negative: from TODO to DONE` });
+        // The version comes first: a stale one is ABORTED whatever the bounds.
+        await expect(api.updateWorkflowStatus(project.id, created.id, doing, { version: 9, sortOrder: -1 })).rejects.toMatchObject({
+          code: "ABORTED",
+        });
+        await signIn("mark@example.com");
+        await expect(api.updateWorkflowStatus(project.id, created.id, doing, { version: 1, sortOrder: -1 })).rejects.toMatchObject({
+          code: "PERMISSION_DENIED",
         });
       });
 

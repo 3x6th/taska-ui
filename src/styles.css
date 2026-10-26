@@ -9134,8 +9134,12 @@ button.attachment-open:hover:not(:disabled) {
 }
 
 /* Meta beside the name it qualifies: `--fg-3` is §7's floor for meta (3.14:1
-   light / 3.05:1 dark on `--surface`), and the full key is in `title`. */
+   light / 3.05:1 dark on `--surface`), and the full key is in `title`. It
+   yields first (art-director, TAS-416): a basis of 0 takes only the room the
+   name leaves, so the name is cut only once the key is gone — at 375 a row
+   with Edit and Delete beside "Waiting for Customer Review" had both cut. */
 .workflow-status-key {
+  flex: 1 1 0;
   color: var(--fg-3);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -9272,7 +9276,9 @@ button.attachment-open:hover:not(:disabled) {
   background: var(--surface);
 }
 
-.workflow-field input:focus {
+/* A field one types in is ringed by its accent frame; the read-only key keeps
+   §7's global ring instead. */
+.workflow-field input:focus:not(.workflow-readonly-input) {
   outline: 0;
 }
 
@@ -9384,12 +9390,22 @@ button.attachment-open:hover:not(:disabled) {
   margin: 6px 0 8px;
 }
 
+/* Brought into the body's view when it opens (`useRevealOnOpen`): with a
+   margin, so its edge and §7's ring on its last button are not flush with
+   the body's. */
+.workflow-row-form,
+.workflow-rename,
+.member-confirm.workflow-confirm {
+  scroll-margin-block: 8px;
+}
+
 .workflow-card .workflow-rename {
   margin-top: 0;
 }
 
 /* §4.3's read-only field, for the key a status keeps: no fill, a quiet edge,
-   and on focus §7's ring rather than the accent frame that invites typing.
+   and on focus §7's global ring (`input:read-only`) rather than the accent
+   frame that invites typing.
    A class, not `:read-only`: the name fields are read-only in flight too, and
    those must not change their look while a write is out (§4.28). */
 .workflow-field input.workflow-readonly-input,
@@ -9397,11 +9413,6 @@ button.attachment-open:hover:not(:disabled) {
   border-color: var(--border);
   background: transparent;
   cursor: default;
-}
-
-.workflow-field input.workflow-readonly-input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 /* "{From} → {To}" over the Edit transition form, as the row has it. */

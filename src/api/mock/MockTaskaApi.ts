@@ -1130,35 +1130,59 @@ const violationMessage = (prefix: string, violations: readonly WorkflowViolation
   `${prefix}${violations.map((violation) => violation.message).join(", ")}`;
 
 /**
- * The gateway's bean validation of the edit routes of backend PR #225: each
- * DTO is `additionalProperties: false` and refuses an explicit `null`, so a
- * field outside the route's set, or present as `null`, or of the wrong shape,
- * is "Invalid request parameters" before workflow-service is asked. A field
- * that is `undefined` is one JSON would not carry, and is absent.
+ * The gateway's reading of the edit bodies of backend PR #225. Its four DTOs
+ * are hand-written (api-gateway `pom.xml` `schemaMappings`, develop `6ba4ed6`)
+ * and check **shape only**: an unknown field is refused (`@JsonAnySetter`),
+ * an explicit `null` is refused (`Nulls.FAIL`), a number must be a whole int
+ * (`intValueExact`), a category one of the enum's. Each of those is "Invalid
+ * request parameters" before workflow-service is asked. The yml's bounds —
+ * a name of 1–100, `sortOrder ≥ 0`, `version ≥ 1` — are not checked there:
+ * a body version below 1 is workflow-service's "version must be positive"
+ * (`mutableWorkflow`), and a blank or long name or a negative `sortOrder` is
+ * the validator's, after the role, the 404s and the version
+ * (`validateWorkflowEdit`). A field that is `undefined` is one JSON would not
+ * carry, and is absent.
  */
-const WORKFLOW_PATCH_FIELDS = {
-  version: (value: unknown) => isInt32(value) && value >= 1,
-  name: (value: unknown) => typeof value === "string" && value.length >= 1 && value.length <= WORKFLOW_NAME_MAX_LENGTH,
+const WORKFLOW_BODY_FIELDS = {
+  version: (value: unknown) => isInt32(value),
+  name: (value: unknown) => typeof value === "string",
   category: (value: unknown) => typeof value === "string" && WORKFLOW_CATEGORIES.includes(value),
-  sortOrder: (value: unknown) => isInt32(value) && value >= 0,
+  sortOrder: (value: unknown) => isInt32(value),
   hidden: (value: unknown) => typeof value === "boolean",
   statusMappings: (value: unknown) =>
     typeof value === "object" &&
     value !== null &&
     !Array.isArray(value) &&
     Object.values(value).every((target) => typeof target === "string"),
-  // The query parameter's `pattern`, as the contract states it.
+} as const;
+
+/**
+ * The two deletes' query parameters, which the generated interface does
+ * validate: `version` an int32 of at least 1, `targetStatusKey` the
+ * contract's `pattern`.
+ */
+const WORKFLOW_QUERY_FIELDS = {
+  version: (value: unknown) => isInt32(value) && value >= 1,
   targetStatusKey: (value: unknown) => typeof value === "string" && WORKFLOW_STATUS_KEY_PATTERN.test(value),
 } as const;
 
-function isWorkflowPatch(body: unknown, allowed: readonly (keyof typeof WORKFLOW_PATCH_FIELDS)[]): boolean {
+function fieldsPass<F extends Readonly<Record<string, (value: unknown) => boolean>>>(
+  fields: F,
+  body: unknown,
+  allowed: readonly (keyof F & string)[],
+): boolean {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
   return Object.entries(body).every(([key, value]) => {
     if (value === undefined) return true;
     const field = allowed.find((name) => name === key);
-    return field !== undefined && WORKFLOW_PATCH_FIELDS[field](value);
+    return field !== undefined && fields[field](value);
   });
 }
+
+const isWorkflowPatch = (body: unknown, allowed: readonly (keyof typeof WORKFLOW_BODY_FIELDS)[]) =>
+  fieldsPass(WORKFLOW_BODY_FIELDS, body, allowed);
+const isWorkflowQuery = (params: unknown, allowed: readonly (keyof typeof WORKFLOW_QUERY_FIELDS)[]) =>
+  fieldsPass(WORKFLOW_QUERY_FIELDS, params, allowed);
 
 /** `requireStatus`: a status of this workflow, else 404. */
 function requireWorkflowStatus(workflow: WorkflowDefinition, statusId: string): WorkflowStatus {
@@ -3648,7 +3672,7 @@ export class MockTaskaStore {
     statusId: string,
     params: DeleteWorkflowStatusParams,
   ): ProjectWorkflowEntry {
-    if (!UUID_PATTERN.test(statusId) || !isWorkflowPatch(params, ["version", "targetStatusKey"])) {
+    if (!UUID_PATTERN.test(statusId) || !isWorkflowQuery(params, ["version", "targetStatusKey"])) {
       throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
     }
     const { workflow, issueTypes } = this.mutableWorkflow(projectId, workflowId, params.version);
@@ -3704,7 +3728,7 @@ export class MockTaskaStore {
     transitionId: string,
     params: DeleteWorkflowTransitionParams,
   ): ProjectWorkflowEntry {
-    if (!UUID_PATTERN.test(transitionId) || !isWorkflowPatch(params, ["version"])) {
+    if (!UUID_PATTERN.test(transitionId) || !isWorkflowQuery(params, ["version"])) {
       throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
     }
     const { workflow, issueTypes } = this.mutableWorkflow(projectId, workflowId, params.version);
@@ -3755,17 +3779,21 @@ export class MockTaskaStore {
   }
 
   /**
-   * `WorkflowMutationService.mutate` before the operation: the workflow as an
-   * add finds it (`editableWorkflow` — the role and the archive, a workflow
-   * nobody holds, the shared default, another project's), then the version. A
-   * version that is not the stored one is 409 `ABORTED`, whatever else the
-   * request says; one left out is not compared.
+   * `WorkflowMutationService.mutate` before the operation: a version below 1
+   * is "version must be positive" before anything else is looked at (only a
+   * body can carry one — the deletes' query `version` is the gateway's to
+   * refuse); then the workflow as an add finds it (`editableWorkflow` — the
+   * role and the archive, a workflow nobody holds, the shared default,
+   * another project's); then the version. A version that is not the stored
+   * one is 409 `ABORTED`, whatever else the request says; one left out is not
+   * compared.
    */
   private mutableWorkflow(
     projectId: string,
     workflowId: string,
     version: number | undefined,
   ): { workflow: WorkflowDefinition; issueTypes: string[] } {
+    if (version !== undefined && version < 1) throw new MockApiError("INVALID_ARGUMENT", "version must be positive");
     const editable = this.editableWorkflow(projectId, workflowId);
     if (version !== undefined && version !== editable.workflow.version) {
       throw new MockApiError("ABORTED", "Workflow version changed");
@@ -3776,8 +3804,9 @@ export class MockTaskaStore {
   /**
    * `WorkflowMutationService.validate`: the workflow as an edit would leave
    * it keeps a `TODO` status and a visible transition, and then passes the
-   * create rules with the edit's prefix (`refuseWorkflowUpdate`) — where a
-   * `sortOrder` another status or transition holds is a 400, not a 409.
+   * create rules with the edit's prefix (`refuseWorkflowUpdate`) — a blank or
+   * over-long name, a negative `sortOrder`, and a `sortOrder` another status
+   * or transition holds, which is a 400, not a 409.
    */
   private validateWorkflowEdit(
     workflow: Pick<WorkflowDefinition, "name" | "statuses" | "transitions">,

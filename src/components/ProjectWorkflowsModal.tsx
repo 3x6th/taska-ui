@@ -431,6 +431,9 @@ export function ProjectWorkflowsModal({
         // it, read the list again, and say what happened once, in the
         // server's words with its request id. The draft goes with the form —
         // kept, it would be checked against rows that may be gone.
+        // The board read the same workflow, so it is read again too, as after a success.
+        void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+        void queryClient.invalidateQueries({ queryKey: boardKey(projectId) });
         const { failed } = await reread();
         setForm(null);
         setNotice({ sentence: staleSentence(sent.said.staleIn, failed), error });
@@ -1367,13 +1370,29 @@ function FormFoot({
 }
 
 /**
+ * A row form or a strip opened below the fold is brought into the body's view
+ * once, on opening — the whole box, so its Save or its answer is on screen
+ * (art-director, TAS-416) — as §4.22 brings its notice: `nearest`, no
+ * `behavior`, so reduced motion has nothing to take away.
+ */
+function useRevealOnOpen<T extends HTMLElement>() {
+  const box = useRef<T>(null);
+  useEffect(() => {
+    box.current?.scrollIntoView({ block: "nearest" });
+  }, []);
+  return box;
+}
+
+/**
  * §4.22's confirmation strip, in a card: the question, Cancel first and
  * focused, and the answer edged in `--danger`. A delete refused for the issues
  * it would leave behind becomes a step in the same strip (`step`): its own
- * sentence, said as an alert, the server's words and the request id, the
- * fields that move the issues, and the answer that sends them — or no answer
- * at all when there is nowhere to move them. Any other refusal is said above
- * the actions, as a form's is.
+ * sentence, said as an alert, then the fields that move the issues and the
+ * answer that sends them. A step is a question, so it does not print the
+ * server's words, which instruct an API client (art-director, TAS-416) —
+ * except a step with nowhere to move the issues and so no answer, which reads
+ * sentence, why, then the server's words and the request id, then Cancel.
+ * Any other refusal is said above the actions, as a form's is.
  */
 function ConfirmStrip({
   id,
@@ -1402,26 +1421,29 @@ function ConfirmStrip({
   };
 }) {
   const sentenceId = `${id}-sentence`;
-  const stepFacts = step ? apiErrorFacts(step.refusal) : null;
-  const stepWords = step ? refusalWords(step.refusal) : null;
+  const box = useRevealOnOpen<HTMLDivElement>();
+  // Only a step with no answer prints the refusal it came from.
+  const deadEnd = step && !onAnswer ? step : null;
+  const stepFacts = deadEnd ? apiErrorFacts(deadEnd.refusal) : null;
+  const stepWords = deadEnd ? refusalWords(deadEnd.refusal) : null;
   const blocked = step?.blocked ?? false;
   // The step says its refusal itself; only a later one of another kind is said again.
   const otherError = error && (!step || error !== step.refusal) ? error : null;
 
   return (
-    <div className={`member-confirm workflow-confirm${step ? " is-step" : ""}`} id={id}>
+    <div className={`member-confirm workflow-confirm${step ? " is-step" : ""}`} id={id} ref={box}>
       {step ? (
         <div className="workflow-confirm-step">
           <p className="member-confirm-sentence" id={sentenceId} role="alert">
             {step.sentence}
           </p>
+          {step.fields}
           {stepWords || stepFacts?.requestId ? (
             <p className="error-note-detail workflow-confirm-detail">
               {stepWords ? <span>{stepWords}</span> : null}
               {stepFacts?.requestId ? <RequestId value={stepFacts.requestId} /> : null}
             </p>
           ) : null}
-          {step.fields}
         </div>
       ) : (
         <p className="member-confirm-sentence" id={sentenceId}>
@@ -1614,17 +1636,16 @@ function DeleteStatusStrip({
 
 /**
  * Delete workflow (§4.28): its types go back to the shared default. Issues in
- * a status the shared default does not have are refused with their count, and
- * the strip then asks, per such status, which status of **both** workflows
- * they go to — or says there is none, and offers no answer.
+ * a status the shared default does not have are refused with their count and
+ * their statuses (`details.statusKeys`), and the strip then asks, per such
+ * status, which status of **both** workflows they go to — or says there is
+ * none, and offers no answer. A refusal that names no status is said as one.
  *
  * When every type has a workflow of its own the list leaves the shared
- * default out, and its statuses are not known here. With `statusKeys` the
- * sources are still known — each is a status the shared default lacks — so
- * the targets offered are this workflow's other statuses, under a line that
- * says the server takes only one both workflows have; it judges, in its own
- * words. Without `statusKeys` not even the sources can be told, and the strip
- * says that and offers no answer.
+ * default out, and its statuses are not known here. The sources still are —
+ * each named status is one the shared default lacks — so the targets offered
+ * are this workflow's other statuses, under a line that says the server takes
+ * only one both workflows have; it judges, in its own words.
  */
 function DeleteWorkflowStrip({
   id,
@@ -1649,10 +1670,10 @@ function DeleteWorkflowStrip({
   send: (sent: WorkflowWrite) => void;
 }) {
   const [mapping, setMapping] = useState<Record<string, string>>({});
-  const toMap = refusal ? statusesToMap(workflow, shared, apiErrorFacts(refusal).details) : null;
+  const toMap = refusal ? statusesToMap(workflow, apiErrorFacts(refusal).details) : null;
   // A refusal that names no status to map is not one a mapping answers: it is
   // said as a refusal, and the question stays as it was.
-  const step = toMap && (toMap.mappable.length > 0 || toMap.unmappable.length > 0 || toMap.undetermined) ? toMap : null;
+  const step = toMap && (toMap.mappable.length > 0 || toMap.unmappable.length > 0) ? toMap : null;
   const sources = new Set(step?.mappable.map((status) => status.statusKey) ?? []);
   // A source is a status the shared default lacks, so without the shared
   // default's statuses the candidates are the others of this workflow.
@@ -1669,8 +1690,8 @@ function DeleteWorkflowStrip({
   const count = refusal ? issueCountOf(refusal) : null;
   // Every candidate gone is a true "no status in common" either way: without
   // the shared default, each remaining status was named as one it lacks.
-  const nowhere = step && step.unmappable.length === 0 && !step.undetermined && targets.length === 0;
-  const answerable = !step || (step.unmappable.length === 0 && !step.undetermined && targets.length > 0);
+  const nowhere = step && step.unmappable.length === 0 && targets.length === 0;
+  const answerable = !step || (step.unmappable.length === 0 && targets.length > 0);
   const left = `${count === null ? "Issues" : issueCountWords(count)} would be left in statuses ${sharedName} does not have.`;
   const one = typeCount === 1;
   const back = typesInWords
@@ -1703,16 +1724,13 @@ function DeleteWorkflowStrip({
         step
           ? {
               refusal,
-              sentence: answerable ? `${left} Choose where each status’s issues go.` : left,
+              // Without the shared default its line already says "Choose".
+              sentence: answerable && shared ? `${left} Choose where each status’s issues go.` : left,
               blocked,
               fields: (
                 <>
                   {step.unmappable.length ? (
                     <p className="workflow-confirm-note">{strandedSentence(step.unmappable, name)}</p>
-                  ) : step.undetermined ? (
-                    <p className="workflow-confirm-note">
-                      The shared workflow is not in this list, so the statuses whose issues have to move cannot be told here.
-                    </p>
                   ) : nowhere ? (
                     <p className="workflow-confirm-note">
                       {`${name} shares no status with ${sharedName}, so these issues have nowhere to go. Add one of ${sharedName}’s statuses to ${name} first.`}
@@ -1855,6 +1873,7 @@ function RenameWorkflowForm({
   send: (sent: WorkflowWrite) => void;
 }) {
   const ids = useId();
+  const box = useRevealOnOpen<HTMLFormElement>();
   const [name, setName] = useState(workflow.name);
   const trimmed = name.trim();
   const blocked = trimmed === "";
@@ -1862,6 +1881,7 @@ function RenameWorkflowForm({
   return (
     <form
       aria-label={`Rename ${shownName}`}
+      ref={box}
       className="workflow-form workflow-rename"
       noValidate
       onSubmit={(event) => {
@@ -2088,6 +2108,7 @@ function EditStatusForm({
   send: (sent: WorkflowWrite) => void;
 }) {
   const ids = useId();
+  const box = useRevealOnOpen<HTMLFormElement>();
   const [name, setName] = useState(status.name);
   const [category, setCategory] = useState(status.category);
   const { options, current } = statusEditPositions(workflow.statuses, status.id);
@@ -2109,6 +2130,7 @@ function EditStatusForm({
   return (
     <form
       aria-label={`Edit ${shownLabel}`}
+      ref={box}
       className="workflow-form workflow-row-form"
       noValidate
       onSubmit={(event) => {
@@ -2222,6 +2244,7 @@ function EditTransitionForm({
   send: (sent: WorkflowWrite) => void;
 }) {
   const ids = useId();
+  const box = useRevealOnOpen<HTMLFormElement>();
   const [name, setName] = useState(transition.name);
   const [hidden, setHidden] = useState(transition.hidden);
   const { options, current } = transitionEditPositions(workflow, transition.id);
@@ -2246,6 +2269,7 @@ function EditTransitionForm({
   return (
     <form
       aria-label={`Edit ${pairInWords}`}
+      ref={box}
       className="workflow-form workflow-row-form"
       noValidate
       onSubmit={(event) => {

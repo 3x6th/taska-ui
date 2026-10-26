@@ -446,47 +446,39 @@ export function namedStatusKeys(details: ErrorDetails | null): string[] {
 
 /**
  * The statuses whose issues a workflow delete has to map, after the server
- * refused it for issues. The keys `details.statusKeys` names when it came:
- * those that are statuses of `own` can be mapped, the rest cannot be from here
- * (a mapping's source must be a status of the workflow being deleted).
- * Without it, every status of `own` the shared default does not have — which
- * only the shared default's statuses can tell: when the list did not carry it
- * (every type has a workflow of its own, so the list leaves it out), the
- * answer is `undetermined` rather than every status.
+ * refused it for issues: the keys `details.statusKeys` names. Those that are
+ * statuses of `own` can be mapped; the rest cannot be from here (a mapping's
+ * source must be a status of the workflow being deleted). Without the keys
+ * there is nothing to map, and the refusal is said as one.
  */
 export function statusesToMap(
   own: WorkflowDefinition,
-  shared: WorkflowDefinition | undefined,
   details: ErrorDetails | null,
-): { mappable: WorkflowStatus[]; unmappable: string[]; undetermined: boolean } {
+): { mappable: WorkflowStatus[]; unmappable: string[] } {
   const ordered = statusesInColumnOrder(own.statuses);
   const keys = namedStatusKeys(details);
-  if (keys.length) {
-    return {
-      mappable: ordered.filter((status) => keys.includes(status.statusKey)),
-      unmappable: keys.filter((key) => !ordered.some((status) => status.statusKey === key)),
-      undetermined: false,
-    };
-  }
-  if (!shared) return { mappable: [], unmappable: [], undetermined: true };
-  const sharedKeys = new Set(shared.statuses.map((status) => status.statusKey));
-  return { mappable: ordered.filter((status) => !sharedKeys.has(status.statusKey)), unmappable: [], undetermined: false };
+  return {
+    mappable: ordered.filter((status) => keys.includes(status.statusKey)),
+    unmappable: keys.filter((key) => !ordered.some((status) => status.statusKey === key)),
+  };
 }
 
 /**
  * Whether a delete was refused for the issues it would leave behind — issue-
  * service's `FAILED_PRECONDITION` "Workflow statuses have N issues; supply a
  * target status mapping" — so that the strip can offer to move them. Read off
- * the code and the details, never the message: `details.issueCount` or
- * `details.statusKeys` when they came, and, because their survival through the
- * gRPC hop to the gateway is not verified, a `FAILED_PRECONDITION` with no
- * details at all too. An archived project's refusal carries `details.reason`
- * and is not this one.
+ * the code and the details, never the message: only a refusal carrying
+ * `details.issueCount` or `details.statusKeys`. One without details is said
+ * as the refusal it is — the two deletes have other `FAILED_PRECONDITION`s
+ * ("Default workflow is not usable", "Issue types have different default
+ * workflows", …), and whether the details survive the gRPC hop to the
+ * gateway is not verified (api-contract-guard, TAS-416). An archived
+ * project's refusal carries `details.reason` and is not this one.
  */
 export function isIssueCountRefusal(error: unknown): boolean {
   const { code, details } = apiErrorFacts(error);
-  if (code !== "FAILED_PRECONDITION" || isProjectArchived(error)) return false;
-  return details === null || Object.hasOwn(details, "issueCount") || Object.hasOwn(details, "statusKeys");
+  if (code !== "FAILED_PRECONDITION" || isProjectArchived(error) || details === null) return false;
+  return Object.hasOwn(details, "issueCount") || Object.hasOwn(details, "statusKeys");
 }
 
 /** `details.issueCount` as a number when it came as a whole one, else `null`. */
@@ -497,9 +489,13 @@ export function issueCountOf(error: unknown): number | null {
 }
 
 /**
- * The list with `answer` in the place of the entry it answers for — an edit's
- * whole `ProjectWorkflowDto` (backend PR #225) — or `null` when no entry has
- * its id, which leaves the caller to read the list again.
+ * The list with `answer`'s workflow in the place of the entry it answers for —
+ * an edit's whole `ProjectWorkflowDto` (backend PR #225) — or `null` when no
+ * entry has its id, which leaves the caller to read the list again. The
+ * entry keeps the list's `issueTypes`: an edit never changes a binding, and
+ * the answer's come from an unordered binding read where the list's are TASK,
+ * BUG, STORY — the order the chips are drawn in and the cards are ranked by
+ * (`orderWorkflowEntries`).
  */
 export function withWorkflowEntry(
   list: readonly ProjectWorkflowEntry[],
@@ -507,7 +503,7 @@ export function withWorkflowEntry(
 ): ProjectWorkflowEntry[] | null {
   const index = answer.workflow.id ? list.findIndex((entry) => entry.workflow.id === answer.workflow.id) : -1;
   if (index === -1) return null;
-  return list.map((entry, at) => (at === index ? answer : entry));
+  return list.map((entry, at) => (at === index ? { ...answer, issueTypes: entry.issueTypes } : entry));
 }
 
 /** "1 issue", "12 issues". */
