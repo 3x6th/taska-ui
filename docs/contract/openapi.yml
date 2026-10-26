@@ -1,6 +1,6 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: 6ba4ed6de96b5f4384c26fde53458b0bc66dade4 (develop, 2026-10-26)
+# Backend commit: af41c322c62a7afc372032630c634bc5d12a9043 (develop, 2026-10-26)
 # Fetched: 2026-10-26
 #
 # The backend repository is the single source of truth for this contract.
@@ -712,6 +712,7 @@ paths:
 
     get:
       summary: Возвращает проекты текущего пользователя
+      description: Доступные неархивные проекты по createdAt по возрастанию, затем по id по возрастанию.
       operationId: listMyProjects
       tags:
         - project
@@ -733,6 +734,7 @@ paths:
   /api/v1/project-stats:
     get:
       summary: Счётчики и первые пять участников всех проектов пользователя
+      description: Проекты в том же порядке, что GET /projects — createdAt по возрастанию, затем id по возрастанию.
       operationId: getProjectStats
       tags: [project-stats]
       security:
@@ -1747,9 +1749,9 @@ paths:
         - name: issueType
           in: query
           required: false
-          description: Фильтр по типу задачи (TASK, BUG, STORY)
+          description: Фильтр по ключу типа задачи проекта. Неизвестное значение или неверный формат дают пустой результат.
           schema:
-            $ref: '#/components/schemas/IssueTypeDto'
+            type: string
         - name: page
           in: query
           required: false
@@ -2200,9 +2202,9 @@ paths:
         - name: issueType
           in: query
           required: false
-          description: Фильтр по типу задачи. Без параметра возвращаются задачи всех типов.
+          description: Фильтр по ключу типа задачи проекта. Без параметра возвращаются все типы. Неизвестное значение или неверный формат дают пустую доску.
           schema:
-            $ref: '#/components/schemas/IssueTypeDto'
+            type: string
         - name: assigneeId
           in: query
           required: false
@@ -2235,6 +2237,15 @@ paths:
           schema:
             type: string
             minLength: 1
+        - name: pageSizePerColumn
+          in: query
+          required: false
+          description: Первая страница каждой колонки после объединения всех типов. Для продолжения используйте поиск задач по статусу. Та же граница применяется к unplacedIssues.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
       responses:
         '200':
           description: Доска успешно сформирована
@@ -4377,6 +4388,11 @@ components:
           type: string
         actorUserId:
           type: string
+        actor:
+          nullable: true
+          description: Профиль автора события, в том числе бывшего участника проекта. Null, если профиль недоступен; actorUserId сохраняется.
+          allOf:
+            - $ref: '#/components/schemas/UserSummaryDto'
         occurredAt:
           type: string
           format: date-time
@@ -4627,6 +4643,8 @@ components:
         В коде отображается на собственный класс ru.taska.domain.dto.PatchIssueRequestDto
         (schemaMappings в openapi-generator), который различает отсутствующее поле и явный null.
       properties:
+        issueType:
+          $ref: '#/components/schemas/IssueTypeDto'
         summary:
           type: string
           description: Краткое описание задачи. Не может быть null.
@@ -5570,16 +5588,20 @@ components:
           nullable: true
           additionalProperties:
             type: string
-          description: Параметры ошибки. Для временной блокировки lockedUntil — время разблокировки в ISO 8601 UTC.
+          description: >
+            Параметры ошибки. lockedUntil — время разблокировки в ISO 8601 UTC.
+            reason=PROJECT_ARCHIVED означает запрет записи в архивный проект: изменение проекта,
+            участников, задач, меток и workflow. reason=LAST_ADMIN означает отказ удалить или
+            понизить последнего ADMIN через DELETE/PATCH /projects/{projectId}/members/{userId}.
+            Обе причины возвращаются с FAILED_PRECONDITION (HTTP 400).
           example:
             lockedUntil: '2026-09-22T11:55:50.398486Z'
 
     IssueTypeDto:
       type: string
-      enum:
-        - TASK
-        - BUG
-        - STORY
+      pattern: '^[A-Z][A-Z0-9_]{1,31}$'
+      description: Stable key from the project issue type registry.
+      example: REQUEST
 
     IssuePriorityDto:
       type: string
@@ -6544,7 +6566,7 @@ components:
 
     BoardResponseDto:
       type: object
-      required: [ projectId, columns, unplacedIssues ]
+      required: [ projectId, columns, unplacedIssues, unplacedTotalCount, unplacedHasMore ]
       properties:
         projectId:
           type: string
@@ -6553,15 +6575,21 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BoardColumnDto'
+        unplacedTotalCount:
+          type: integer
+          format: int64
+          minimum: 0
+        unplacedHasMore:
+          type: boolean
         unplacedIssues:
           type: array
-          description: Задачи, чей statusKey не входит ни в один workflow, использованный для построения колонок.
+          description: Задачи, чей statusKey отсутствует в workflow их собственного типа (включая тип без workflow). Порядок createdAt asc, id asc независимо от типа; первая страница ограничена pageSizePerColumn.
           items:
             $ref: '#/components/schemas/BoardIssueDto'
 
     BoardColumnDto:
       type: object
-      required: [ statusKey, name, category, sortOrder, issues ]
+      required: [ statusKey, name, category, sortOrder, issues, totalCount, hasMore ]
       properties:
         statusKey:
           type: string
@@ -6574,8 +6602,17 @@ components:
         sortOrder:
           type: integer
           format: int32
+        totalCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Число задач колонки после фильтров, до ограничения страницы; сумма по типам.
+        hasMore:
+          type: boolean
+          description: В колонке есть задачи за пределами первой страницы.
         issues:
           type: array
+          description: Порядок createdAt asc, id asc независимо от типа.
           items:
             $ref: '#/components/schemas/BoardIssueDto'
 
@@ -6630,7 +6667,7 @@ components:
           $ref: '#/components/schemas/BoardUserDto'
         labels:
           type: array
-          description: Метки задачи в порядке label_ids карточки; id метки, отсутствующей в проекте, пропускается.
+          description: Устойчивый порядок привязки createdAt asc, labelId asc; метка, отсутствующая в проекте, пропускается.
           items:
             $ref: '#/components/schemas/IssueLabelResponseDto'
 
