@@ -1,65 +1,28 @@
 import type { BoardIssue } from "../domain/types";
 
 /**
- * Where a type's cards stand in a board column: TASK, BUG, STORY, and every
- * other code after them. The gateway's `BoardServiceImpl` reads the issues of
- * those three types one type after another, so a column holds them in that
- * order; a code outside the three never reaches the board on the server today
- * (backend A4), and ranks last here so the comparator stays total.
- */
-const TYPE_RANK: Readonly<Record<string, number>> = { TASK: 0, BUG: 1, STORY: 2 };
-const OTHER_TYPE_RANK = 3;
-
-const typeRank = (issueType: string) =>
-  Object.hasOwn(TYPE_RANK, issueType) ? TYPE_RANK[issueType] : OTHER_TYPE_RANK;
-
-/**
- * The order of the cards inside a board column (DESIGN.md §5.3, TAS-202,
- * art-director's B1): the type's rank, then `createdAt` from the oldest, then
- * `id` — the server's own order, which it does not state (backend A1), with
- * the `id` tiebreak it lacks.
+ * The order of the cards in a board column, and of `unplacedIssues` (DESIGN.md
+ * §5.3; backend TAS-392, `BoardServiceImpl` at develop `be5085e5`):
+ * `createdAt` from the oldest — a card with no readable `createdAt` after
+ * every dated one — then `id` as a string, **whatever the type**. Before
+ * TAS-392 the server read one type after another and this ranked TASK, BUG and
+ * STORY first; with an open registry there is no type rank any more, and none
+ * replaces it.
  *
  * One comparator for the two places that place a card without the server: the
  * mock's board, and the board's optimistic move. Placing a dropped card by
  * anything else would make the re-read after a successful move reorder it.
- * When backend A1 ships (`createdAt`, then `id`, across types) only this
- * function changes.
  *
  * `createdAt` is compared as an instant, not as text: two spellings of one
- * moment are one moment.
+ * moment are one moment. The ids are compared as code units.
  */
 export function compareBoardIssues(
-  a: Pick<BoardIssue, "issueType" | "createdAt" | "id">,
-  b: Pick<BoardIssue, "issueType" | "createdAt" | "id">,
+  a: Pick<BoardIssue, "createdAt" | "id">,
+  b: Pick<BoardIssue, "createdAt" | "id">,
 ): number {
-  const byType = typeRank(a.issueType) - typeRank(b.issueType);
-  if (byType !== 0) return byType;
-  const byCreated = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-  if (byCreated !== 0 && !Number.isNaN(byCreated)) return byCreated;
+  const at = a.createdAt ? new Date(a.createdAt).getTime() : NaN;
+  const bt = b.createdAt ? new Date(b.createdAt).getTime() : NaN;
+  if (Number.isNaN(at) !== Number.isNaN(bt)) return Number.isNaN(at) ? 1 : -1;
+  if (!Number.isNaN(at) && at !== bt) return at - bt;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
-
-/**
- * The order the gateway reads the issues of a board in, for the mock that has
- * to stand in for the read (TAS-202, release-reviewer): the type's rank, then
- * `statusKey`, then `createdAt` from the oldest, then `id`. `BoardServiceImpl`
- * reads one type at a time and issue-service sorts each read by
- * `status_key, created_at`; the columns and `unplacedIssues` are filled from
- * that sequence as it comes.
- *
- * Inside a column the status is one value, so this is `compareBoardIssues`
- * there. `unplacedIssues` is where the two differ: its cards are of many
- * statuses, and the server groups them by status before it looks at the date.
- * Not for the board's optimistic move, which only ever places a card in a
- * column. The status keys are compared as code units; the database's collation
- * is not stated, and the keys are upper-case ASCII.
- */
-export function compareBoardReadOrder(
-  a: Pick<BoardIssue, "issueType" | "statusKey" | "createdAt" | "id">,
-  b: Pick<BoardIssue, "issueType" | "statusKey" | "createdAt" | "id">,
-): number {
-  const byType = typeRank(a.issueType) - typeRank(b.issueType);
-  if (byType !== 0) return byType;
-  if (a.statusKey !== b.statusKey) return a.statusKey < b.statusKey ? -1 : 1;
-  return compareBoardIssues(a, b);
 }

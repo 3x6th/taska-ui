@@ -1,5 +1,6 @@
 import type { DateOnly } from "../domain/types";
 import { apiErrorFacts } from "./errors";
+import { INVALID_ISSUE_TYPE_KEY_MESSAGE, ISSUE_TYPE_NOT_CLEARABLE_MESSAGE, isIssueTypeCode } from "./issueTypes";
 import type { UpdateIssueInput } from "./TaskaApi";
 
 /**
@@ -18,8 +19,12 @@ import type { UpdateIssueInput } from "./TaskaApi";
  * measurement: no PATCH carrying a token has been sent to the stand yet.
  */
 
-/** The nine keys `PatchIssueRequestDto` declares. Nothing else is ever sent. */
+/**
+ * The ten keys `PatchIssueRequestDto` declares — `issueType` since backend #226
+ * (TAS-386). Nothing else is ever sent.
+ */
 export const ISSUE_PATCH_KEYS = [
+  "issueType",
   "summary",
   "description",
   "priority",
@@ -94,6 +99,22 @@ export function blankSummaryRefusal(input: UpdateIssueInput): IssuePatchRefusal 
   if (input.summary !== undefined && input.summary.trim() === "") {
     return { code: "INVALID_ARGUMENT", message: BLANK_SUMMARY_MESSAGE };
   }
+  return null;
+}
+
+/**
+ * An `issueType` the gateway refuses on the request's face, before the issue is
+ * looked up (`IssueMapper`, backend #226): `null` — a type cannot be cleared —
+ * and a key outside `IssueTypeDto`'s pattern. Both 400 `BAD_REQUEST`, the
+ * gateway's own `ResponseStatusException`. A well-formed key the project's
+ * registry does not hold is the server's to refuse later, after the version
+ * (`issueTypeNotDefinedMessage` in src/api/issueTypes.ts). Absent is fine.
+ */
+export function issueTypePatchRefusal(input: UpdateIssueInput): IssuePatchRefusal | null {
+  const value: unknown = (input as { issueType?: unknown }).issueType;
+  if (value === undefined) return null;
+  if (value === null) return { code: "BAD_REQUEST", message: ISSUE_TYPE_NOT_CLEARABLE_MESSAGE };
+  if (!isIssueTypeCode(value)) return { code: "BAD_REQUEST", message: INVALID_ISSUE_TYPE_KEY_MESSAGE };
   return null;
 }
 

@@ -1,4 +1,4 @@
-import { apiErrorFacts, isProjectArchived, type ErrorDetails } from "../api/errors";
+import { apiErrorFacts, hasRefusalReason, type ErrorDetails } from "../api/errors";
 import type { CreateProjectWorkflowInput } from "../api/TaskaApi";
 import type {
   IssueTypeCode,
@@ -422,16 +422,6 @@ export function freeSortOrderBetween(low: number | null, high: number | null, ta
 }
 
 /**
- * The statuses of `own` whose key the shared default also has, in column
- * order — the only targets a workflow delete may map issues to: the server
- * takes a target present in **both** workflows (backend PR #225).
- */
-export function statusesInBoth(own: WorkflowDefinition, shared: WorkflowDefinition | undefined): WorkflowStatus[] {
-  const keys = new Set((shared?.statuses ?? []).map((status) => status.statusKey));
-  return statusesInColumnOrder(own.statuses).filter((status) => keys.has(status.statusKey));
-}
-
-/**
  * The status keys a refusal for issues names in `details.statusKeys` — the
  * statuses those issues sit in (issue-service, comma-joined and sorted) — or
  * none when the details did not come. Never read out of the message.
@@ -463,22 +453,58 @@ export function statusesToMap(
   };
 }
 
+/** `details.reason` of a delete refused for the issues it would leave behind (backend TAS-427). */
+export const WORKFLOW_ISSUES_UNMAPPED_REASON = "WORKFLOW_ISSUES_UNMAPPED";
+
+/** `details.reason` of a delete that would move more issues than one migration may (backend TAS-427). */
+export const WORKFLOW_MIGRATION_LIMIT_REASON = "WORKFLOW_MIGRATION_LIMIT";
+
 /**
  * Whether a delete was refused for the issues it would leave behind — issue-
- * service's `FAILED_PRECONDITION` "Workflow statuses have N issues; supply a
- * target status mapping" — so that the strip can offer to move them. Read off
- * the code and the details, never the message: only a refusal carrying
- * `details.issueCount` or `details.statusKeys`. One without details is said
- * as the refusal it is — the two deletes have other `FAILED_PRECONDITION`s
- * ("Default workflow is not usable", "Issue types have different default
- * workflows", …), and whether the details survive the gRPC hop to the
- * gateway is not verified (api-contract-guard, TAS-416). An archived
- * project's refusal carries `details.reason` and is not this one.
+ * service's 400 `FAILED_PRECONDITION` "Workflow statuses have N issues; supply
+ * a target status mapping" — so that the strip can offer to move them. Read
+ * off the code and `details.reason` `WORKFLOW_ISSUES_UNMAPPED` (backend
+ * TAS-427, which also carries `issueCount`, `statusKeys` and
+ * `targetStatusKeys`), never the message: the two deletes have other
+ * `FAILED_PRECONDITION`s ("Default workflow is not usable", the migration
+ * limit, an archived project), and each is said as the refusal it is.
  */
 export function isIssueCountRefusal(error: unknown): boolean {
-  const { code, details } = apiErrorFacts(error);
-  if (code !== "FAILED_PRECONDITION" || isProjectArchived(error) || details === null) return false;
-  return Object.hasOwn(details, "issueCount") || Object.hasOwn(details, "statusKeys");
+  return hasRefusalReason(error, "FAILED_PRECONDITION", WORKFLOW_ISSUES_UNMAPPED_REASON);
+}
+
+/**
+ * Whether a delete was refused because it would move more issues than one
+ * synchronous migration may — 400 `FAILED_PRECONDITION`, `details.reason`
+ * `WORKFLOW_MIGRATION_LIMIT` with the `limit` (backend TAS-427; it was a 429
+ * `RESOURCE_EXHAUSTED` before). Not a rate limit: trying again later does not
+ * help, and no mapping does either.
+ */
+export function isMigrationLimitRefusal(error: unknown): boolean {
+  return hasRefusalReason(error, "FAILED_PRECONDITION", WORKFLOW_MIGRATION_LIMIT_REASON);
+}
+
+/** `details.limit` of the migration-limit refusal as a number when it came as a whole one, else `null`. */
+export function migrationLimitOf(error: unknown): number | null {
+  const { details } = apiErrorFacts(error);
+  const limit = details && Object.hasOwn(details, "limit") ? details.limit : "";
+  return /^\d+$/.test(limit) ? Number(limit) : null;
+}
+
+/**
+ * The status keys an unmapped refusal offers as targets, `details.targetStatusKeys`
+ * (backend TAS-427, comma-joined): for a status delete the statuses the
+ * workflow keeps, for a workflow delete the shared default's statuses this
+ * workflow also has, in the default's order. Empty when the details named
+ * none — for a workflow delete, that is "no status in common".
+ */
+export function targetStatusKeysOf(error: unknown): string[] {
+  const { details } = apiErrorFacts(error);
+  const named = details && Object.hasOwn(details, "targetStatusKeys") ? details.targetStatusKeys : "";
+  return named
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
 }
 
 /** `details.issueCount` as a number when it came as a whole one, else `null`. */

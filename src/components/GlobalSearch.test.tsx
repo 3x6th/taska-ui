@@ -23,7 +23,7 @@ import { GlobalSearch } from "./GlobalSearch";
  * routed by guessing a project from the key's prefix, which is what this
  * widget did until then.
  */
-const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.hoisted(() => {
+const { fakeApi, seedHits, failSearch, holdSearch, projectReads, contextReads, reset } = vi.hoisted(() => {
   interface Hit {
     id: string;
     issueKey: string;
@@ -45,6 +45,10 @@ const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.ho
     projectId?: string | null;
     projectKey?: string | null;
     statusKey?: string | null;
+    /** The type's look from the hit's project registry (backend TAS-418); absent for a type not in it. */
+    issueTypeName?: string | null;
+    issueTypeColor?: string | null;
+    issueTypeIcon?: string | null;
   }
   const now = "2026-08-01T09:00:00Z";
   const state: {
@@ -54,11 +58,14 @@ const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.ho
     held: boolean;
     /** Every project-list read, so a test can say the widget no longer needs one. */
     projectReads: number;
+    /** Every project-context read: a type is drawn from the hit, never from a context read per hit (TAS-418). */
+    contextReads: number;
   } = {
     hits: [],
     totalCount: 0,
     held: false,
     projectReads: 0,
+    contextReads: 0,
   };
 
   const api = {
@@ -85,6 +92,10 @@ const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.ho
       state.projectReads += 1;
       return [{ id: "project-tas", projectKey: "TAS", name: "TAS", createdBy: "user-anna", createdAt: now, updatedAt: now, archivedAt: null }];
     },
+    getProjectContext: async () => {
+      state.contextReads += 1;
+      throw new Error("Global search must not read a project context");
+    },
     searchIssues: async () => {
       if (state.held) return new Promise(() => {});
       if (state.failure) throw state.failure;
@@ -105,12 +116,14 @@ const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.ho
       state.held = true;
     },
     projectReads: () => state.projectReads,
+    contextReads: () => state.contextReads,
     reset: () => {
       state.hits = [];
       state.totalCount = 0;
       state.failure = undefined;
       state.held = false;
       state.projectReads = 0;
+      state.contextReads = 0;
     },
   };
 });
@@ -329,11 +342,14 @@ describe("the top bar's global search", () => {
   // TAS-173: a hit of a type, a priority and a status this build does not know
   // is a row like any other — named by the one label rule, never indexed into a
   // table that has no entry for it, which is what took the top bar down.
-  it("draws a hit of an unknown type, priority and status by the label rule", async () => {
+  it("draws a hit of an unknown priority and status by the label rule, and its type from the hit's own look", async () => {
     seedHits([
       {
         ...hit("WEB-15", "Checkout redesign"),
         issueType: "EPIC",
+        issueTypeName: "Epic",
+        issueTypeColor: "purple",
+        issueTypeIcon: "layers",
         priority: "URGENT",
         projectId: "project-web",
         statusKey: "IN_REVIEW",
@@ -344,12 +360,44 @@ describe("the top bar's global search", () => {
     fireEvent.change(box, { target: { value: "checkout" } });
 
     const option = await screen.findByRole("option", { name: /WEB-15/ });
-    // The type by its English /meta name, the priority as its code — /meta
-    // names it in Russian — and lowercased only where the word is the build's.
+    // The type by the hit's own name (backend TAS-418), the priority as its
+    // code — /meta names it in Russian — lowercased only where the word is
+    // the build's.
     expect(await within(option).findByText("Epic, URGENT priority")).toHaveClass("visually-hidden");
     expect(within(option).getByText("URGENT")).toHaveClass("global-search-note");
     expect(within(option).getByText("IN_REVIEW")).toHaveClass("global-search-note");
-    expect(option.querySelector(".type-chip")).toHaveClass("is-unknown");
+    const chip = option.querySelector(".type-chip") as HTMLElement;
+    expect(chip).not.toHaveClass("is-unknown");
+    expect(chip).toHaveAttribute("title", "Epic");
+    // §2.2's purple, with the white glyph `readableTextOn` picks for it, and the glyph drawn.
+    expect(chip.style.backgroundColor).toBe("rgb(139, 92, 246)");
+    expect(chip.style.color).toBe("rgb(255, 255, 255)");
+    expect(chip.querySelector("svg")).not.toBeNull();
+    expect(contextReads()).toBe(0);
+  });
+
+  it("names a hit's type by the Cyrillic rule and draws one with no look neutral, never asking /meta or a context", async () => {
+    seedHits([
+      // /meta names TASK "Задача"; the hit's own name wins, and is English.
+      { ...hit("TAS-1", "Renamed"), issueType: "TASK", issueTypeName: "Chore", issueTypeColor: "teal", issueTypeIcon: "flag" },
+      // A Cyrillic name on a seeded key: the build's word.
+      { ...hit("TAS-2", "Russian"), id: "b", issueType: "BUG", issueTypeName: "Ошибка", issueTypeColor: "red", issueTypeIcon: "bug" },
+      // A type deleted from the registry since: the look is absent, the key is printed.
+      { ...hit("TAS-3", "Orphan"), id: "c", issueType: "REQUEST" },
+    ]);
+    const box = renderSearch();
+
+    fireEvent.change(box, { target: { value: "anything" } });
+
+    const [renamed, russian, orphan] = await within(
+      await screen.findByRole("listbox", { name: "Issue search results" }),
+    ).findAllByRole("option");
+    expect(within(renamed).getByText("Chore, high priority")).toBeInTheDocument();
+    expect(within(russian).getByText("Bug, high priority")).toBeInTheDocument();
+    expect(within(orphan).getByText("REQUEST, high priority")).toBeInTheDocument();
+    expect(orphan.querySelector(".type-chip")).toHaveClass("is-unknown");
+    expect(orphan.querySelector(".type-chip svg")).toBeNull();
+    expect(contextReads()).toBe(0);
   });
 
   it("stands in for a row it cannot draw, and still opens it", async () => {

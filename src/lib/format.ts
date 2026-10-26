@@ -6,7 +6,8 @@ import type {
   IssueLinkType,
   IssuePriority,
   IssueStatus,
-  IssueType,
+  IssueTypeColor,
+  ProjectIssueType,
   UserStatus,
 } from "../domain/types";
 import { enumLabel, enumLabelInSentence, isEnglishName, type KnownLabels } from "./enumLabel";
@@ -29,11 +30,33 @@ const statusColors: Record<IssueStatus, string> = {
   DONE: "#3fa863",
 };
 
-const typeMeta: Record<IssueType, { label: string; color: string; radius: string }> = {
-  TASK: { label: "Task", color: "#4f7cf0", radius: "4px" },
-  STORY: { label: "Story", color: "#3fa863", radius: "4px" },
-  BUG: { label: "Bug", color: "#e5544b", radius: "50%" },
+/**
+ * The build's own words for the three keys every registry is seeded with —
+ * **only** for §6's fallback: a name with Cyrillic in it, or a search hit
+ * whose type carries no name. Not a table of types: a project's types, their
+ * names and their look are its registry's (TAS-417).
+ */
+const seededTypeLabels: KnownLabels = { TASK: "Task", BUG: "Bug", STORY: "Story" };
+
+/**
+ * DESIGN.md §2.2 «Цвета типов задач» (TAS-417): the contract's colour key →
+ * the value this build paints it with. Every value is already a §2/§9 colour
+ * (`--type-task`, `--type-bug`, `--type-story`, `--prio-medium`, the label
+ * purple, the teal accent alternative, `--prio-low`), theme-independent, and
+ * opaque — the glyph on it is chosen from it by `readableTextOn`.
+ */
+const issueTypeColorValues: Record<IssueTypeColor, string> = {
+  blue: "#4f7cf0",
+  red: "#e5544b",
+  green: "#3fa863",
+  amber: "#e3a008",
+  purple: "#8b5cf6",
+  teal: "#0d9488",
+  slate: "#9aa0aa",
 };
+
+/** The paint of a registry colour key (§2.2). Only a key of the closed set reaches here; `null` is drawn neutral by the caller. */
+export const issueTypeColorValue = (color: IssueTypeColor) => issueTypeColorValues[color];
 
 const priorityMeta: Record<IssuePriority, { label: string; color: string; level: number }> = {
   LOW: { label: "Low", color: "#9aa0aa", level: 1 },
@@ -57,7 +80,6 @@ const userStatusLabels: Record<UserStatus, string> = {
 
 const labelsOf = <T extends string>(table: Record<T, { label: string }>): KnownLabels =>
   Object.fromEntries(Object.entries<{ label: string }>(table).map(([code, meta]) => [code, meta.label]));
-const issueTypeLabels = labelsOf(typeMeta);
 const priorityLabels = labelsOf(priorityMeta);
 
 /**
@@ -68,34 +90,85 @@ const priorityLabels = labelsOf(priorityMeta);
 export const issuePriorities: readonly IssuePriority[] = ["LOW", "MEDIUM", "HIGH"];
 
 /**
- * "Task", a served English name, or the code as received (`enumLabel`). An issue
- * with no type at all reads "No type", as one with no status reads "No status"
- * (DESIGN.md §6, TAS-173).
+ * A project's issue-type registry as a label source: the entries the context
+ * sent, or `null`/`undefined` when there is none to read — a global-search hit,
+ * which carries its own name instead (DESIGN.md §6, §4.20).
  */
-export const issueTypeLabel = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
-  enumLabel(code, issueTypeLabels, served, "No type");
+export type IssueTypeRegistry = readonly ProjectIssueType[] | null | undefined;
+
+/** The registry entry for a key, by value — never by indexing (a key is a string the server chose). */
+export const issueTypeEntry = (code: string | null | undefined, registry: IssueTypeRegistry) =>
+  typeof code === "string" ? registry?.find((entry) => entry.code === code) : undefined;
 
 /**
- * `issueTypeLabel` for running text: "no workflow for bug issues", "no workflow
- * for EPIC issues". "No type" is the build's own words, so it is lowercased here
- * like the build's other words.
+ * **The one Cyrillic check for type names** (DESIGN.md §6 «Подпись типа», the
+ * owner's ruling of 2026-10-19): whether a registry or a hit's name may be
+ * printed in this English UI. Amending the rule is a change to this line and
+ * no other.
  */
-export const issueTypeInSentence = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
-  enumLabelInSentence(code, issueTypeLabels, served, "no type");
-
-export const isKnownIssueType = (code: string | null | undefined): code is IssueType =>
-  typeof code === "string" && Object.hasOwn(typeMeta, code);
+const printableTypeName = (name: string | null | undefined): string | null =>
+  typeof name === "string" && isEnglishName(name) ? name.trim() : null;
 
 /**
- * How a type chip is drawn (§4.6). A type this build has no colour for is a
- * square filled `--fg-3` (art-director, TAS-173): the same 14px slot, so nothing
- * moves, and neutral rather than a hollow box that would read as an unchecked
- * checkbox. Its name is carried beside it as text, as every type's is.
+ * What a type reads as when its name may not be printed: the build's word for
+ * the three seeded keys, the key itself for any other (§6). Also the
+ * `{fallback}` the Issue types form names under a Cyrillic name (§4.30).
  */
-export const issueTypeVisual = (code: string | null | undefined) =>
-  isKnownIssueType(code)
-    ? { color: typeMeta[code].color, radius: typeMeta[code].radius, known: true }
-    : { color: "var(--fg-3)", radius: "4px", known: false };
+export const issueTypeFallbackLabel = (code: string) =>
+  (Object.hasOwn(seededTypeLabels, code) ? seededTypeLabels[code] : undefined) ?? code;
+
+/** The label and whether it is the build's own word, which is what running text lowercases. */
+function typeLabelOf(
+  code: string | null | undefined,
+  registry: IssueTypeRegistry,
+  hitName: string | null | undefined,
+): { text: string; own: boolean } {
+  if (typeof code !== "string" || code.trim() === "") return { text: "No type", own: true };
+  let name: string | null | undefined = hitName;
+  if (registry) {
+    const entry = issueTypeEntry(code, registry);
+    // A key the registry does not hold is drawn as itself — a type the project
+    // no longer has is not one to name from anywhere else.
+    if (!entry) return { text: code, own: false };
+    name = entry.name;
+  }
+  const printable = printableTypeName(name);
+  if (printable !== null) return { text: printable, own: false };
+  return { text: issueTypeFallbackLabel(code), own: Object.hasOwn(seededTypeLabels, code) };
+}
+
+/**
+ * A type's label (DESIGN.md §6 «Подпись типа», TAS-417, TAS-418):
+ *
+ * - the registry was read and holds the key → its `name`; with Cyrillic in it,
+ *   the build's word for TASK/BUG/STORY, else the key;
+ * - the registry was read and does not hold the key → the key as it is;
+ * - no registry (`null`/`undefined`: a global-search hit) → the hit's
+ *   `issueTypeName` by the same Cyrillic rule; without one, the build's word
+ *   for TASK/BUG/STORY, else the key. `/meta` is not read for types.
+ *
+ * No type at all reads "No type", as no status reads "No status".
+ */
+export const issueTypeLabel = (
+  code: string | null | undefined,
+  registry: IssueTypeRegistry,
+  hitName?: string | null,
+) => typeLabelOf(code, registry, hitName).text;
+
+/**
+ * `issueTypeLabel` for running text: only the build's own words are lowercased
+ * ("no workflow for bug issues" when the build named it); a registry name or a
+ * key is printed as received ("no workflow for Epic issues", "… for EPIC
+ * issues"), because lowercasing it would print a word nobody chose.
+ */
+export const issueTypeInSentence = (
+  code: string | null | undefined,
+  registry: IssueTypeRegistry,
+  hitName?: string | null,
+) => {
+  const label = typeLabelOf(code, registry, hitName);
+  return label.own ? label.text.toLowerCase() : label.text;
+};
 
 /** "High", a served English name, or the code as received; "No priority" for none (DESIGN.md §6). */
 export const priorityLabel = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>

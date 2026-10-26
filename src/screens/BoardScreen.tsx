@@ -12,16 +12,16 @@ import {
 } from "@dnd-kit/core";
 import {
   infiniteQueryOptions,
+  keepPreviousData,
   queryOptions,
   replaceEqualDeep,
   useInfiniteQuery,
   useMutation,
   usePrefetchInfiniteQuery,
-  usePrefetchQuery,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Shapes, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
 import {
   useEffect,
   useId,
@@ -35,7 +35,6 @@ import {
 } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput, IssueWriteAnswer, UpdateIssueInput } from "../api/TaskaApi";
-import { compareBoardIssues } from "../api/boardOrder";
 import {
   ATTACHMENT_ACCEPTED_SUMMARY,
   ATTACHMENT_ACCEPT_ATTRIBUTE,
@@ -50,9 +49,11 @@ import {
   isIssueVersionConflict,
   isMissingOrForbidden,
   isProjectArchived,
+  isTransitionConflict,
   IssueVersionConflictError,
 } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
+import { STATUS_NOT_IN_TARGET_WORKFLOW_REASON } from "../api/issueTypes";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches } from "../components/ColorSwatches";
@@ -67,6 +68,7 @@ import { IssueWorklogSection } from "../components/IssueWorklogSection";
 import { issueWorklogsOptions } from "../components/issueWorklogsQuery";
 import { Modal } from "../components/Modal";
 import { NotificationsBell } from "../components/NotificationsBell";
+import { ProjectIssueTypesModal } from "../components/ProjectIssueTypesModal";
 import { ProjectMembersModal } from "../components/ProjectMembersModal";
 import { ProjectWorkflowsModal } from "../components/ProjectWorkflowsModal";
 import { RequestId } from "../components/RequestId";
@@ -77,7 +79,9 @@ import { useMeta } from "../hooks/useMeta";
 import { carriesFiles, closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
 import { focusLost, tabbables } from "../lib/focusTrap";
 import { personFor, type NamedBy, type Person } from "../lib/people";
-import { boardKey, boardQueryOptions } from "../lib/boardQuery";
+import { BOARD_PAGE_SIZE_PER_COLUMN, NO_BOARD_FILTERS, boardKey, boardQueryOptions, type BoardFilters } from "../lib/boardQuery";
+import { boardCards, boardHasMore, boardIssueCount, moveCardOnBoard, withCardVersion, withoutCardOnBoard } from "../lib/boardCards";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { allowedIssueTypes, projectContextKey, workflowFor } from "../lib/projectContext";
 import { archivedOnDay, PROJECT_ARCHIVED_SENTENCE, refusalWords, rereadContextAfterRefusal } from "../lib/projectArchive";
 import { useUnanswered } from "../hooks/useUnanswered";
@@ -100,6 +104,7 @@ import type {
   IssueStatusKey,
   IssueTypeCode,
   ProjectContext,
+  ProjectIssueType,
   ProjectMember,
   ProjectWorkflow,
   User,
@@ -112,7 +117,6 @@ import {
   formatDateTime,
   formatDay,
   formatFileSize,
-  isKnownIssueType,
   isKnownPriority,
   isLabelColor,
   issueLinkTypeLabel,
@@ -125,6 +129,7 @@ import {
   priorityLabel,
   statusColor,
   statusLabel,
+  type IssueTypeRegistry,
 } from "../lib/format";
 import { selectableCodes } from "../lib/enumLabel";
 import { transitionButtonLabel } from "../lib/workflows";
@@ -390,6 +395,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const [managingMembers, setManagingMembers] = useState(false);
   const [editingProject, setEditingProject] = useState(false);
   const [managingWorkflows, setManagingWorkflows] = useState(false);
+  const [managingIssueTypes, setManagingIssueTypes] = useState(false);
   // What `NotificationsBell` hands to `useTriggerAnchor`: the bell's own box
   // never changes size, only its position, and this is the box whose resizing
   // moves it — the bar wraps to two rows below 820 and to three at 390 when
@@ -398,6 +404,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // component's prop is documented against.
   const topbarRef = useRef<HTMLElement>(null);
   const [creating, setCreating] = useState(false);
+  /**
+   * The column whose "+" opened the create form (§5.5, P3′), or `null` for
+   * "New". Until backend TAS-428 the server creates every issue in `TODO`, so
+   * only that column offers a "+" (§4.9).
+   */
+  const [creatingIn, setCreatingIn] = useState<ColumnStatus | null>(null);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
   // A drop with no legal transition must say so — the board has no toast, so
   // silence here means the card just snaps back unexplained.
@@ -427,7 +439,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 
   // The board's whole frame in one read since TAS-251 (backend TAS-212): the
   // project, the reader's role, the members, the labels and one workflow per
-  // issue type the project allows. It replaced seven requests — the project,
+  // issue type of the project's registry, and the registry itself (TAS-417).
+  // It replaced seven requests — the project,
   // the project again for the role, the members, three workflows and the
   // labels — and it is all or nothing on the server, so every part below is
   // answered, or none is.
@@ -437,13 +450,45 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     queryFn: () => taskaApi.getProjectContext(projectId),
     retry: retryUnlessMissing,
   });
+  // The four filters as they go to the server (TAS-392, §5.4): the text after
+  // a 200ms pause, trimmed, and only when it is not blank. A filter over a
+  // capped column on the client would lie about the counts. Emptied — by
+  // Clear, or by the reader — it is no filter at once: waiting out the pause
+  // would read the old text once more under whatever else changed with it.
+  const typedQuery = query.trim();
+  const pausedQuery = useDebouncedValue(typedQuery, 200);
+  const settledQuery = typedQuery === "" ? "" : pausedQuery;
+  const filters = useMemo<BoardFilters>(
+    () => ({
+      issueType: typeFilter,
+      assigneeId: assigneeFilter === "ALL" ? null : assigneeFilter,
+      labelId: labelFilter === "ALL" ? null : labelFilter,
+      query: settledQuery || null,
+    }),
+    [typeFilter, assigneeFilter, labelFilter, settledQuery],
+  );
   // The board's issues in one read since TAS-202 (backend #205, TAS-213), in
   // parallel with the context: the columns, the cards in them and the cards
-  // outside their own type's workflow, complete — no page, no cap — so every
-  // filter below is local and asks nothing. The context still brings the
-  // name, the role, the people, the labels and the workflows the moves are
-  // resolved against; the columns are the board's.
-  const boardQuery = useQuery({ ...boardQueryOptions(projectId), enabled: Boolean(projectId) });
+  // outside their own type's workflow, each cut at 200 with its true count
+  // (TAS-392) and read under the filters. A new combination keeps the board
+  // already drawn until it answers (`keepPreviousData`, §5.4); one already read
+  // and fresh, and "Clear", ask nothing. The context still brings the name, the
+  // role, the people, the labels and the workflows the moves are resolved
+  // against; the columns are the board's.
+  const boardQuery = useQuery({
+    ...boardQueryOptions(projectId, filters),
+    enabled: Boolean(projectId),
+    placeholderData: keepPreviousData,
+  });
+  // The board without filters, held by its own observer whatever the filters
+  // are: its sum is `Y`, and the link picker offers its cards (§5.4). The same
+  // entry as `boardQuery` when nothing is filtered, so it costs no request
+  // then; while filtered, a write re-reads it beside the filtered one.
+  const wholeBoardQuery = useQuery({ ...boardQueryOptions(projectId, NO_BOARD_FILTERS), enabled: Boolean(projectId) });
+  // The board drawn is an earlier answer while the read under new filters is
+  // out — the typing pause included (§5.4): the cards do not lift, and a drop
+  // made in it is not sent.
+  const awaitingFilter = typedQuery !== settledQuery || boardQuery.isPlaceholderData;
   const meQuery = useQuery({
     queryKey: ["me"],
     queryFn: () => taskaApi.getCurrentUser(),
@@ -455,15 +500,20 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // every render and invalidate the memos below.
   const members = useMemo(() => context?.members ?? [], [context]);
   const board = boardQuery.data;
-  // Every card the board read holds — the columns' and the group's — which is
-  // what `Y` counts and what a card is looked up in.
-  const cards = useMemo(() => (board ? [...board.columns.flatMap((column) => column.issues), ...board.unplacedIssues] : []), [board]);
+  // Every card the board read drew — the columns' and the group's — which is
+  // what a card is looked up in.
+  const cards = useMemo(() => (board ? boardCards(board) : []), [board]);
   const projectLabels = useMemo(() => context?.labels ?? [], [context]);
   const workflows = context?.workflows;
-  // The types this project allows — the ones the context sent a workflow for.
-  // The type filter and the create form offer these and nothing else: a type
-  // the server did not list is not one the board may invent (TAS-251).
+  // The project's issue-type registry (TAS-417), in the server's order: every
+  // type's name, colour and icon, and the order the filter, the create form
+  // and the panel offer them in. `undefined` until the context answers.
+  const registry = context?.issueTypes;
   const offeredIssueTypes = useMemo(() => allowedIssueTypes(context), [context]);
+  // A type that leaves the registry resets the filter to "All" (§5.4) — during
+  // render, like `useUnanswered`, so the board never draws a frame filtered by
+  // a type the select no longer offers.
+  if (typeFilter !== null && context && !offeredIssueTypes.includes(typeFilter)) setTypeFilter(null);
   // `undefined` until the context answers, and `null` once it has answered
   // with no role this build can act on (`ProjectContext.role`). Every
   // permission below and the unstated-role banner read this one value.
@@ -563,70 +613,55 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // The columns on screen: the board's own, as sent (§4.9) — or, until it has
   // answered and after it failed, the ones predicted from the context, never
   // used to place a card.
+  // Predicted, under a type filter, from that type's workflow alone (§4.9):
+  // the server builds such a board's columns from it (§5.4).
   const columns = useMemo<ColumnStatus[]>(
-    () => board?.columns ?? predictColumns(workflows, offeredIssueTypes),
-    [board, workflows, offeredIssueTypes],
+    () => board?.columns ?? predictColumns(workflows, typeFilter === null ? offeredIssueTypes : [typeFilter]),
+    [board, workflows, offeredIssueTypes, typeFilter],
   );
-  // Names for codes this build does not know (TAS-173). `undefined` while
-  // `GET /meta` is on the way or after it failed, and every reader then falls
-  // back to the build's own words — nothing waits for it.
-  const meta = useMeta();
-
-  // The four filters, ANDed, all local over the complete read (§5.4): no
-  // filter and no keystroke asks the server anything. Three text fields, the
-  // ones the route's own `query` matches; a card with no description matches
-  // on the other two.
-  const matches = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    return (issue: BoardIssue) => {
-      if (typeFilter !== null && issue.issueType !== typeFilter) return false;
-      if (assigneeFilter !== "ALL" && issue.assignee?.id !== assigneeFilter) return false;
-      if (labelFilter !== "ALL" && !issue.labels.some((label) => label.id === labelFilter)) return false;
-      if (!normalized) return true;
-      return (
-        issue.summary.toLowerCase().includes(normalized) ||
-        issue.issueKey.toLowerCase().includes(normalized) ||
-        (issue.description ?? "").toLowerCase().includes(normalized)
-      );
-    };
-  }, [assigneeFilter, labelFilter, query, typeFilter]);
-  /** Each column's cards that pass the filters, by status key. */
-  const filteredByColumn = useMemo(
-    () => new Map((board?.columns ?? []).map((column) => [column.statusKey, column.issues.filter(matches)])),
-    [board, matches],
-  );
+  /** Each column of the read, by status key: its cards, its count and whether it has more (§4.9). */
+  const columnsByKey = useMemo(() => new Map((board?.columns ?? []).map((column) => [column.statusKey, column])), [board]);
   // The server's `unplacedIssues` (§4.9, «Outside their workflow»): drawn as
   // sent, never recomputed here.
-  const outsideIssues = useMemo(() => (board?.unplacedIssues ?? []).filter(matches), [board, matches]);
-  /** Every card drawn: `X` in "X of Y". */
-  const shownCount = useMemo(
-    () => [...filteredByColumn.values()].reduce((total, issues) => total + issues.length, 0) + outsideIssues.length,
-    [filteredByColumn, outsideIssues],
-  );
+  const outsideIssues = useMemo(() => board?.unplacedIssues ?? [], [board]);
+  /** `X` in "X of Y": the issues that match the filters — the sum of the count pills, `null` if any is unknown (§5.4). */
+  const shownCount = board ? boardIssueCount(board) : null;
+  /** `Y`: the same sum over the board without filters. */
+  const wholeCount = wholeBoardQuery.data ? boardIssueCount(wholeBoardQuery.data) : null;
 
   const transitionIssue = useMutation({
-    mutationFn: ({ movedIssueId, transitionId }: { movedIssueId: string; nextStatus: IssueStatusKey; transitionId: string }) =>
-      taskaApi.transitionIssue(projectId, movedIssueId, transitionId),
+    // One move at a time per project (TAS-422): each one reads, as it leaves,
+    // the version the one before it brought back.
+    scope: { id: `board-move:${projectId}` },
+    /**
+     * With `If-Match` (backend TAS-422): the newer of the card's version and
+     * the open panel's — both came from the server, and a drag right after a
+     * panel edit would otherwise be refused against the reader's own write.
+     */
+    mutationFn: ({ movedIssueId, transitionId }: BoardMove) =>
+      taskaApi.transitionIssue(projectId, movedIssueId, transitionId, latestKnownVersion(queryClient, projectId, movedIssueId)),
     onMutate: async ({ nextStatus, movedIssueId }) => {
       // Captured, not read again in `onError`: react-query hands a pending
       // mutation the options of the *latest* render, and the rollback must land
-      // on the board this snapshot came from.
+      // on the boards this snapshot came from — every board read of the
+      // project in the cache, one per combination of filters (TAS-392).
       const key = boardKey(projectId);
       await queryClient.cancelQueries({ queryKey: key });
-      const previousBoard = queryClient.getQueryData<Board>(key);
+      const previousBoards = queryClient.getQueriesData<Board>({ queryKey: key });
       // The card goes where the server will put it (§5.3, art-director's B1):
       // into the target column at the place `compareBoardIssues` gives it, so
-      // the re-read after a successful move does not reorder it. No version:
-      // nothing optimistic may invent one — the re-read brings the real one.
-      queryClient.setQueryData<Board>(key, (current) =>
-        current ? moveCard(current, movedIssueId, nextStatus, new Date().toISOString()) : current,
+      // the re-read after a successful move does not reorder it — and not at
+      // all into a column it would sort past the end of (§4.9), the counts
+      // moving by one either way. No version: nothing optimistic may invent
+      // one — the answer brings the real one.
+      const stamp = new Date().toISOString();
+      queryClient.setQueriesData<Board>({ queryKey: key }, (current) =>
+        current ? moveCardOnBoard(current, movedIssueId, nextStatus, stamp) : current,
       );
-      return { previousBoard, key };
+      return { previousBoards, key };
     },
     onError: (_error, _variables, context) => {
-      if (context?.previousBoard) {
-        queryClient.setQueryData(context.key, context.previousBoard);
-      }
+      for (const [entry, previous] of context?.previousBoards ?? []) queryClient.setQueryData(entry, previous);
       // And the board is read again (release-reviewer, TAS-202): a refusal says
       // the move was not made, a timeout does not — the server may have applied
       // it and lost the answer. On return to the tab only a read that failed is
@@ -634,7 +669,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       // the snapshot stands until this read answers.
       void queryClient.invalidateQueries({ queryKey: context?.key ?? boardKey(projectId) });
     },
-    onSuccess: async () => {
+    onSuccess: async (answer, { movedIssueId }) => {
+      // The version the move left, at once (TAS-422): a second move of the
+      // card queued behind this one leaves with it, before any re-read.
+      queryClient.setQueriesData<Board>({ queryKey: boardKey(projectId) }, (current) =>
+        current ? withCardVersion(current, movedIssueId, answer.version, answer.updatedAt) : current,
+      );
       await invalidateBoard(queryClient, projectId);
     },
   });
@@ -771,9 +811,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
    */
   const issueDeleted = (deleted: Pick<Issue, "id" | "issueKey">, alreadyGone: boolean) => {
     // Where the board draws it — a column, the group, or nowhere (filtered
-    // out, or a re-read apart from the panel).
-    const column = [...filteredByColumn.entries()].find(([, issues]) => issues.some((item) => item.id === deleted.id));
-    const siblings = column ? column[1] : outsideIssues;
+    // out, past a column's page, or a re-read apart from the panel).
+    const column = (board?.columns ?? []).find((item) => item.issues.some((issue) => issue.id === deleted.id));
+    const siblings = column ? column.issues : outsideIssues;
     const index = siblings.findIndex((item) => item.id === deleted.id);
     const chain: DeleteFocusStep[] = [];
     if (index !== -1) {
@@ -782,7 +822,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       if (next) chain.push({ card: next.id });
       if (previous) chain.push({ card: previous.id });
     }
-    if (column) chain.push({ add: column[0] });
+    if (column) chain.push({ add: column.statusKey });
     chain.push("new");
     // Only while its panel is still the one open (release-reviewer, TAS-299
     // round 1): a panel the reader closed, or left for another issue, while
@@ -790,7 +830,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     const stillOpen = shownIssueId.current === deleted.id;
     if (stillOpen) deleteFocusChain.current = chain;
 
-    queryClient.setQueryData<Board>(boardKey(projectId), (current) => (current ? withoutCard(current, deleted.id) : current));
+    // Off every board read of the project, its count one down (TAS-392).
+    queryClient.setQueriesData<Board>({ queryKey: boardKey(projectId) }, (current) =>
+      current ? withoutCardOnBoard(current, deleted.id) : current,
+    );
     setBoardStatus(alreadyGone ? `${deleted.issueKey} was already deleted.` : `${deleted.issueKey} deleted.`);
     if (stillOpen) navigate(`/projects/${projectId}/board`, { replace: true });
     void queryClient.invalidateQueries({ queryKey: boardKey(projectId) });
@@ -834,7 +877,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // Only once the board is drawn and only when something is in it: not while
   // the columns are skeletons, and not on a failed read, where every column
   // already says it does not know.
-  const outsideShown = !issuesUnknown && !columnsLoading && board !== undefined && outsideIssues.length > 0;
+  // While its count is above 0 (§4.9) — a count the server did not state, while
+  // it drew any.
+  const outsideShown =
+    !issuesUnknown &&
+    !columnsLoading &&
+    board !== undefined &&
+    (board.unplacedTotalCount === null ? outsideIssues.length > 0 : board.unplacedTotalCount > 0);
   /** The key off the board's own read, when it holds the open issue — the read error's head names it. */
   const boardIssueKey = issueId ? knownKey(cards.find((item) => item.id === issueId)?.issueKey) : undefined;
   const activeIssue = activeIssueId ? cards.find((item) => item.id === activeIssueId) : undefined;
@@ -862,10 +911,18 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       setActiveIssueId(null);
       return;
     }
+    // A drag that began before the filter changed and ends while the board is
+    // still updating (§5.4): the card stays, nothing is sent — there was no
+    // request, so no request id — and the reader is told to move it again.
+    if (awaitingFilter) {
+      setDragNotice(`${issue.issueKey} was not moved: the board was still updating for the new filter. Move it again.`);
+      setActiveIssueId(null);
+      return;
+    }
     const workflow = workflowFor(workflows, issue.issueType);
     // In running text the build's own word is lowercased and anything else is
     // printed as it came: "bug issues", "EPIC issues" (TAS-173).
-    const typeWord = issueTypeInSentence(issue.issueType, meta?.issueTypes);
+    const typeWord = issueTypeInSentence(issue.issueType, registry);
     // No fallback on this path, ever. The only transition ids this repository
     // owns are the mock's seed, and posting one to a gateway that never
     // described it invents a transition — the drop is refused instead, whether
@@ -895,7 +952,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     }
     const transition = findTransition(issue.statusKey, nextStatus, workflow.statuses, workflow.transitions);
     if (transition) {
-      transitionIssue.mutate({ movedIssueId: issue.id, nextStatus, transitionId: transition.id });
+      transitionIssue.mutate({ movedIssueId: issue.id, issueKey: issue.issueKey, nextStatus, transitionId: transition.id });
     } else {
       // Named by the issue's own workflow first, then by the columns on screen
       // — the target may be a column another type's workflow put there.
@@ -982,8 +1039,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         </button>
         <div className="topbar-spacer" />
         {/* A filter of this board, not a search of the product (§4.13, §5.4):
-            local, on the first character, over the board already read. The
-            product's search is the top bar's on /projects (§4.20). */}
+            sent with the board read after a 200ms pause, trimmed — the server
+            filters before it cuts a column at 200 (TAS-392). The product's
+            search is the top bar's on /projects (§4.20). */}
         <label className="search-box">
           <Search aria-hidden="true" size={15} />
           <span className="visually-hidden">Filter issues by key, summary or description</span>
@@ -1001,7 +1059,15 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           <NotificationsBell bar={topbarRef} />
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
           {hidesWrites ? null : (
-            <button className="primary-button board-new" disabled={!canCreate} onClick={() => setCreating(true)} type="button">
+            <button
+              className="primary-button board-new"
+              disabled={!canCreate}
+              onClick={() => {
+                setCreatingIn(null);
+                setCreating(true);
+              }}
+              type="button"
+            >
               <Plus size={15} />
               New
             </button>
@@ -1016,28 +1082,51 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       </header>
 
       <section className="filterbar">
-        {/* `aria-pressed` on every segmented button (§7, TAS-299): the
-            current one is otherwise said only by its fill. */}
-        <div className="segmented compact">
+        {/* The type select and the Issue types trigger, one unwrappable group
+            (§4.13, TAS-417): a select, not segments, because the set and the
+            length of its names are an admin's data. Labels and order are the
+            registry's; no tiles in a native option. Its states are the label
+            picker's: pending while the context is read, a line when it failed. */}
+        <div className="filter-type-group">
+          {contextUnread.unanswered ? (
+            <span className="filter-error">Types could not be loaded</span>
+          ) : (
+            <label className="filter-select filter-type">
+              <span className="filter-label">Type</span>
+              <select
+                disabled={contextQuery.isLoading}
+                onChange={(event) => setTypeFilter(event.target.value === "" ? null : event.target.value)}
+                // "" for All: a registry key is never blank (`toProjectIssueTypes`).
+                value={contextQuery.isLoading ? "LOADING" : (typeFilter ?? "")}
+              >
+                {contextQuery.isLoading ? (
+                  <option value="LOADING">Loading types</option>
+                ) : (
+                  <>
+                    <option value="">All</option>
+                    {(registry ?? []).map((entry) => (
+                      <option key={entry.code} value={entry.code}>
+                        {issueTypeLabel(entry.code, registry)}
+                      </option>
+                    ))}
+                  </>
+                )}
+              </select>
+            </label>
+          )}
+          {/* Every role, from the first frame, an archived project included
+              (§4.30, §5.7): the registry is read by all and written by its
+              ADMIN, and only the controls inside the dialog are gated. */}
           <button
-            aria-pressed={typeFilter === null}
-            className={typeFilter === null ? "is-active" : ""}
-            onClick={() => setTypeFilter(null)}
+            aria-haspopup="dialog"
+            aria-label="Issue types"
+            className="icon-button"
+            onClick={() => setManagingIssueTypes(true)}
+            title="Issue types"
             type="button"
           >
-            All
+            <Shapes size={15} />
           </button>
-          {offeredIssueTypes.map((type) => (
-            <button
-              aria-pressed={typeFilter === type}
-              key={type}
-              className={typeFilter === type ? "is-active" : ""}
-              onClick={() => setTypeFilter(type)}
-              type="button"
-            >
-              {issueTypeLabel(type, meta?.issueTypes)}
-            </button>
-          ))}
         </div>
         <span className="divider" />
         <span className="filter-label">Assignee</span>
@@ -1154,10 +1243,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             failed read is `pending` again, and the failure is the stabler
             statement of the two.
 
-            X is every card drawn — the columns and «Outside their workflow»
-            together, the sum of their count pills; Y is every card the board
-            read holds, whatever the filters (§5.4). The read is complete, so Y
-            is the board's total and no longer the size of a page. */}
+            X is the issues that match the filters — the sum of the count
+            pills, columns and «Outside their workflow» together; Y is the same
+            sum over the board without filters (§5.4, TAS-392). Neither is the
+            number of cards loaded: a column cut at its page says so at its
+            foot. An unknown count makes its sum unknown. */}
         <span className="counter">
           {issuesUnknown ? (
             <>
@@ -1169,7 +1259,14 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             </>
           ) : (
             <>
-              {shownCount} of {cards.length}
+              {shownCount === null ? <Unknown /> : shownCount} of{" "}
+              {wholeCount !== null ? (
+                wholeCount
+              ) : wholeBoardQuery.isPending ? (
+                <PendingValue />
+              ) : (
+                <Unknown />
+              )}
             </>
           )}
         </span>
@@ -1233,7 +1330,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               dismiss={{ label: "Dismiss the failed move", onDismiss: () => transitionIssue.reset() }}
               error={transitionIssue.error}
             >
-              The move could not be saved, so the card went back where it was.
+              {/* 409 `ABORTED` (TAS-422, §5.5 P13′): the card went back and the
+                  board was read again; the server's words and the request id
+                  follow, as for any refused move. */}
+              {isTransitionConflict(transitionIssue.error) && transitionIssue.variables
+                ? `${transitionIssue.variables.issueKey} was not moved: it was changed elsewhere after this board was read. The board now shows the latest version.`
+                : "The move could not be saved, so the card went back where it was."}
             </ApiNotice>
           ) : null}
           {dragNotice ? (
@@ -1252,28 +1354,45 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             group is drawn. The stylesheet centres the first set and hangs the
             group to its right; in the default Left alignment, and at 820 and
             below, nothing reads them. */}
-        <section className="columns-area" style={boardColumnCounts(columns.length, outsideShown)}>
+        {/* Busy while the read under new filters is out — the typing pause
+            included — and the earlier answer stands (§5.4): no skeleton, no
+            dimming, no spinner. */}
+        <section
+          aria-busy={awaitingFilter || undefined}
+          className="columns-area"
+          style={boardColumnCounts(columns.length, outsideShown)}
+        >
           {columnsLoading
             ? columns.map((status) => <ColumnSkeleton key={status.statusKey} status={status} />)
             : columns.map((status) => (
                 <BoardColumn
                   key={status.statusKey}
                   status={status}
-                  issues={filteredByColumn.get(status.statusKey) ?? []}
+                  issues={columnsByKey.get(status.statusKey)?.issues ?? []}
+                  totalCount={columnsByKey.get(status.statusKey)?.totalCount ?? null}
+                  hasMore={columnsByKey.get(status.statusKey)?.hasMore ?? null}
                   issuesUnknown={issuesUnknown}
+                  awaitingFilter={awaitingFilter}
                   userById={userById}
                   canEdit={canEdit}
                   canCreate={canCreate}
                   offersCreate={!hidesWrites}
-                  onAdd={() => setCreating(true)}
+                  onAdd={() => {
+                    setCreatingIn(status);
+                    setCreating(true);
+                  }}
                   onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
+                  registry={registry}
                 />
               ))}
           {outsideShown ? (
             <OutsideWorkflowGroup
               columns={columns}
               issues={outsideIssues}
+              totalCount={board?.unplacedTotalCount ?? null}
+              hasMore={board?.unplacedHasMore ?? null}
               onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
+              registry={registry}
               userById={userById}
             />
           ) : null}
@@ -1281,7 +1400,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <DragOverlay dropAnimation={null} zIndex={1000}>
           {activeIssue ? (
             <div className="issue-card drag-overlay-card">
-              <IssueCardContent issue={activeIssue} userById={userById} />
+              <IssueCardContent issue={activeIssue} registry={registry} userById={userById} />
             </div>
           ) : null}
         </DragOverlay>
@@ -1334,6 +1453,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               archivedAt={archivedAt}
               currentUserId={meQuery.data?.id}
               workflows={workflows}
+              issueTypes={registry}
               workflowUnknown={workflowUnknown}
               onDeleted={issueDeleted}
             />
@@ -1372,7 +1492,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 
       {managingWorkflows ? (
         <ProjectWorkflowsModal
-          issueTypeOrder={offeredIssueTypes}
+          issueTypes={registry}
           onClose={() => setManagingWorkflows(false)}
           projectColor={project?.color}
           projectId={projectId}
@@ -1381,6 +1501,21 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           // `null`, so the dialog says the role is unknown rather than nothing.
           readerRole={roleUnknown ? null : role}
           archived={archived}
+        />
+      ) : null}
+
+      {managingIssueTypes ? (
+        <ProjectIssueTypesModal
+          archived={archived}
+          contextError={contextUnread.unanswered ? contextUnread.error : null}
+          issueTypes={registry}
+          onClose={() => setManagingIssueTypes(false)}
+          projectColor={project?.color}
+          projectId={projectId}
+          projectKey={project?.projectKey ?? ""}
+          // Members' reading of the role: a failed context read folded into
+          // `null`, so the dialog says the role is unknown rather than nothing.
+          readerRole={roleUnknown ? null : role}
         />
       ) : null}
 
@@ -1404,7 +1539,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       {creating ? (
         <CreateIssueModal
           archived={archived}
-          issueTypes={offeredIssueTypes}
+          inStatus={creatingIn}
+          filteredType={typeFilter}
+          workflows={workflows}
+          issueTypes={registry ?? []}
           projectKey={project?.projectKey ?? ""}
           projectColor={project?.color}
           onClose={() => setCreating(false)}
@@ -1466,43 +1604,11 @@ function boardColumnCounts(boardColumns: number, outsideShown: boolean): CSSProp
 type ColumnStatus = Pick<BoardColumnData, "statusKey" | "name" | "category" | "sortOrder">;
 
 /**
- * `board` with the card `issueId` moved to `statusKey`: out of wherever it is,
- * into that column at the place `compareBoardIssues` gives it — the server's
- * order (§5.3) — with `updatedAt` stamped. A board with no such card, or no
- * such column, is answered unchanged.
+ * The status issue-service creates every issue in (`IssueServiceImpl`), and so
+ * the one column a "+" may sit on until a create can name its status (backend
+ * TAS-428, DESIGN.md §4.9).
  */
-function moveCard(board: Board, issueId: string, statusKey: string, updatedAt: string): Board {
-  const card = [...board.columns.flatMap((column) => column.issues), ...board.unplacedIssues].find(
-    (issue) => issue.id === issueId,
-  );
-  if (!card || !board.columns.some((column) => column.statusKey === statusKey)) return board;
-  const moved: BoardIssue = { ...card, statusKey, updatedAt };
-  return {
-    ...board,
-    columns: board.columns.map((column) => {
-      const issues = column.issues.filter((issue) => issue.id !== issueId);
-      return column.statusKey === statusKey
-        ? { ...column, issues: [...issues, moved].sort(compareBoardIssues) }
-        : issues.length === column.issues.length
-          ? column
-          : { ...column, issues };
-    }),
-    unplacedIssues: board.unplacedIssues.filter((issue) => issue.id !== issueId),
-  };
-}
-
-/** `board` without the card `issueId`, wherever it stood. */
-function withoutCard(board: Board, issueId: string): Board {
-  return {
-    ...board,
-    columns: board.columns.map((column) =>
-      column.issues.some((issue) => issue.id === issueId)
-        ? { ...column, issues: column.issues.filter((issue) => issue.id !== issueId) }
-        : column,
-    ),
-    unplacedIssues: board.unplacedIssues.filter((issue) => issue.id !== issueId),
-  };
-}
+const CREATE_STATUS_KEY = "TODO";
 
 /**
  * The delete's 404: the issue is not there any more — deleted elsewhere in
@@ -1538,19 +1644,31 @@ const fallbackStatuses: WorkflowStatus[] = [
 function BoardColumn({
   status,
   issues,
+  totalCount,
+  hasMore,
   issuesUnknown,
+  awaitingFilter,
   userById,
   canEdit,
   canCreate,
   offersCreate,
   onAdd,
   onOpenIssue,
+  registry,
 }: {
   status: ColumnStatus;
   issues: BoardIssue[];
+  /** The column's issues that match the filters — its count pill (§4.9); `null` when the server did not say. */
+  totalCount: number | null;
+  /** Whether issues of the column lie past the ones drawn: the foot says so (§4.9). */
+  hasMore: boolean | null;
   /** The board read never arrived: this column knows nothing about its contents. */
   issuesUnknown: boolean;
+  /** An earlier answer is drawn while the read under new filters is out: the cards do not lift (§5.4). */
+  awaitingFilter: boolean;
   userById: ReadonlyMap<string, Person>;
+  /** The project's issue-type registry, which names and draws each card's type (§4.6). */
+  registry: IssueTypeRegistry;
   canEdit: boolean;
   /** `canEdit`, and a project that allows at least one issue type. */
   canCreate: boolean;
@@ -1574,9 +1692,21 @@ function BoardColumn({
       <div className="column-head">
         <StatusDot status={status} />
         <strong>{name}</strong>
-        <span className="count-pill">{issuesUnknown ? <Unknown /> : issues.length}</span>
-        {offersCreate ? (
-          <button className="icon-button mini" disabled={!canCreate} onClick={onAdd} title="Create issue" type="button">
+        {/* The issues that match the filters, never the cards drawn (§4.9). */}
+        <span className="count-pill">{issuesUnknown || totalCount === null ? <Unknown /> : totalCount}</span>
+        {/* Only on the To Do column, by its key (§4.9): until backend TAS-428
+            the server creates every issue in TODO, and a "+" on another column
+            would put the issue somewhere other than where it was pressed.
+            Nothing stands in for it on the others. */}
+        {offersCreate && status.statusKey === CREATE_STATUS_KEY ? (
+          <button
+            aria-label={`Create issue in ${name}`}
+            className="icon-button mini"
+            disabled={!canCreate}
+            onClick={onAdd}
+            title={`Create issue in ${name}`}
+            type="button"
+          >
             <Plus size={13} />
           </button>
         ) : null}
@@ -1588,9 +1718,16 @@ function BoardColumn({
             key={issue.id}
             resetKey={issue}
           >
-            <IssueCard issue={issue} userById={userById} canEdit={canEdit} onOpen={onOpenIssue} />
+            <IssueCard
+              issue={issue}
+              registry={registry}
+              userById={userById}
+              canEdit={canEdit && !awaitingFilter}
+              onOpen={onOpenIssue}
+            />
           </ErrorBoundary>
         ))}
+        {!issuesUnknown && hasMore === true ? <ColumnFoot drawn={issues.length} total={totalCount} /> : null}
         {/* Three different empty columns. A column whose contents are unknown
             must not invite a card, and the dashed frame §5.6 gives the empty
             state is exactly that invitation; a reader who cannot drop one must
@@ -1598,11 +1735,28 @@ function BoardColumn({
             stopped making. */}
         {issuesUnknown ? (
           <div className="empty-column is-unknown">Not loaded</div>
-        ) : issues.length === 0 ? (
+        ) : issues.length === 0 && hasMore !== true ? (
           <div className="empty-column">{canEdit ? "Drop issues here" : "No issues"}</div>
         ) : null}
       </div>
     </section>
+  );
+}
+
+/**
+ * The foot of a column cut at its page (§4.9, «Колонка не целиком»): the last
+ * item of the list, how many of how many are drawn — `{total}` is the count
+ * pill's number. No «Show more»: nothing continues a column in its own order
+ * yet (backend A1, TAS-430), so the sentence says how to find the rest. Not a
+ * live region; the same for every role and on an archived project.
+ */
+function ColumnFoot({ drawn, total }: { drawn: number; total: number | null }) {
+  return (
+    <div className="list-more">
+      <p className="list-more-note">
+        {drawn} of {total === null ? <Unknown /> : total} shown. Filter to find the rest.
+      </p>
+    </div>
   );
 }
 
@@ -1634,19 +1788,27 @@ function StatusDot({ status }: { status: Pick<WorkflowStatus, "statusKey" | "cat
 function OutsideWorkflowGroup({
   columns,
   issues,
+  totalCount,
+  hasMore,
   userById,
   onOpenIssue,
+  registry,
 }: {
   columns: readonly ColumnStatus[];
   issues: BoardIssue[];
+  /** `unplacedTotalCount`: the group's count pill (§4.9). */
+  totalCount: number | null;
+  /** `unplacedHasMore`: the group's foot (§4.9). */
+  hasMore: boolean | null;
   userById: ReadonlyMap<string, Person>;
+  registry: IssueTypeRegistry;
   onOpenIssue: (issueId: string) => void;
 }) {
   return (
     <section aria-label="Outside their workflow" className="board-column is-plain other-statuses">
       <div className="column-head">
         <strong>Outside their workflow</strong>
-        <span className="count-pill">{issues.length}</span>
+        <span className="count-pill">{totalCount === null ? <Unknown /> : totalCount}</span>
       </div>
       <div className="issue-list">
         {issues.map((issue) => (
@@ -1659,11 +1821,13 @@ function OutsideWorkflowGroup({
               canEdit={false}
               issue={issue}
               onOpen={onOpenIssue}
+              registry={registry}
               statusNote={statusLabel(issue.statusKey, columns)}
               userById={userById}
             />
           </ErrorBoundary>
         ))}
+        {hasMore === true ? <ColumnFoot drawn={issues.length} total={totalCount} /> : null}
       </div>
     </section>
   );
@@ -1693,12 +1857,14 @@ function IssueCardFailure({ issue, onOpen }: { issue: Pick<BoardIssue, "id" | "i
 
 function IssueCard({
   issue,
+  registry,
   userById,
   canEdit,
   onOpen,
   statusNote,
 }: {
   issue: BoardIssue;
+  registry: IssueTypeRegistry;
   userById: ReadonlyMap<string, Person>;
   canEdit: boolean;
   onOpen: (issueId: string) => void;
@@ -1725,7 +1891,7 @@ function IssueCard({
       {...(canEdit ? listeners : null)}
       {...(canEdit ? attributes : null)}
     >
-      <IssueCardContent issue={issue} statusNote={statusNote} userById={userById} />
+      <IssueCardContent issue={issue} registry={registry} statusNote={statusNote} userById={userById} />
     </button>
   );
 }
@@ -1762,19 +1928,20 @@ function CardFace({ assignee, userById }: { assignee: BoardIssue["assignee"]; us
 
 function IssueCardContent({
   issue,
+  registry,
   userById,
   statusNote,
 }: {
   issue: BoardIssue;
+  registry: IssueTypeRegistry;
   userById: ReadonlyMap<string, Person>;
   statusNote?: string;
 }) {
-  const served = useMeta()?.issueTypes;
-  const typeName = issueTypeLabel(issue.issueType, served);
+  const typeName = issueTypeLabel(issue.issueType, registry);
   return (
     <>
       <span className="issue-card-meta">
-        <TypeChip type={issue.issueType} />
+        <TypeChip registry={registry} type={issue.issueType} />
         <span className="issue-key">{issue.issueKey}</span>
         <span className="issue-type-label" title={typeName}>
           {typeName}
@@ -1941,6 +2108,7 @@ function IssuePanel({
   archivedAt,
   currentUserId,
   workflows,
+  issueTypes: registry,
   workflowUnknown,
   onDeleted,
 }: {
@@ -1991,6 +2159,12 @@ function IssuePanel({
   archivedAt: string | null;
   currentUserId?: string;
   workflows?: WorkflowsByIssueType;
+  /**
+   * The project's issue-type registry off the board's context (TAS-417), in
+   * its order, or `undefined` before it answers: the type's name and look in
+   * the head, and the Type select's options.
+   */
+  issueTypes?: readonly ProjectIssueType[];
   /** The workflow read failed; these buttons are the keyboard path a drag has. */
   workflowUnknown: boolean;
   /**
@@ -2033,14 +2207,14 @@ function IssuePanel({
   usePrefetchInfiniteQuery(issueCommentsOptions(projectId, issueId));
   /**
    * The work log (TAS-251, backend PR #178) on the same terms as the comments
-   * above: started beside the issue read, so it is a third request in the same
-   * round rather than a round of its own, and not asked again by the section
-   * when it mounts.
+   * above: its first page (TAS-421) started beside the issue read, so it is a
+   * third request in the same round rather than a round of its own, and not
+   * asked again by the section when it mounts.
    */
   const [worklogsPrefetched] = useState(
     () => queryClient.getQueryState(issueWorklogsOptions(projectId, issueId).queryKey) === undefined,
   );
-  usePrefetchQuery(issueWorklogsOptions(projectId, issueId));
+  usePrefetchInfiniteQuery(issueWorklogsOptions(projectId, issueId));
   const issue = issueQuery.data?.issue;
   const history = issueQuery.data?.history ?? [];
   const [summary, setSummary] = useState("");
@@ -2090,6 +2264,8 @@ function IssuePanel({
   // to sit under the box without joining the label's accessible name, and a
   // wrapped label would read as "Original estimate e.g. 8h, 1h 30m, 45m".
   const planningId = useId();
+  /** The Type row's label, which names its select (§5.5). */
+  const typeRowId = useId();
 
   /**
    * A write refused because the issue had moved on (TAS-246), held apart from
@@ -2204,7 +2380,15 @@ function IssuePanel({
     }
   }, [planningArchived]);
 
-  const workflow = issue ? workflowFor(workflows, issue.issueType) : undefined;
+  /**
+   * The type the reader just picked, until its write is answered (§5.5,
+   * TAS-417): the head's tile and name and the transition slot follow it in
+   * the same frame, as the select does. The answer — or its refusal — puts the
+   * issue's own type back in charge.
+   */
+  const [pendingType, setPendingType] = useState<IssueTypeCode | null>(null);
+  const shownType = pendingType ?? issue?.issueType;
+  const workflow = issue ? workflowFor(workflows, shownType ?? issue.issueType) : undefined;
   // These buttons are the drag's keyboard equivalent (§5.3), so they answer to
   // the same rule as the drop: only the server's own transitions, never the
   // fallback's. Offering a move built from an invented id would post that id.
@@ -2287,6 +2471,11 @@ function IssuePanel({
     // it — the reader who leaves the half-typed box alone and edits the
     // estimate beside it.
     onMutate: ({ patch }) => writeStarts(patch),
+    // The picked type stops standing in for the issue's own once its write is
+    // answered, whichever way — unless a later pick has replaced it.
+    onSettled: (_answer, _error, { patch }) => {
+      if (patch.issueType !== undefined) setPendingType((current) => (current === patch.issueType ? null : current));
+    },
     onSuccess: (answer) => {
       // Synchronous, and before anything is awaited: a write queued behind
       // this one reads its version from the cache the moment this returns.
@@ -2314,6 +2503,13 @@ function IssuePanel({
         // the request was in flight — see `clearDateNotice` — or a conflict
         // line was still standing for a box.
         refusalLands();
+        // A type change the server refused because the target workflow lacks
+        // the status (backend TAS-418): the options were pre-disabled from
+        // the context's workflows, so those were stale — read them again. The
+        // slot prints the server's words; nothing branches on them.
+        if (sent.issueType !== undefined && apiErrorFacts(error).details?.reason === STATUS_NOT_IN_TARGET_WORKFLOW_REASON) {
+          void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+        }
         setPlanning((current) => rollbackPlanningDrafts(current, sent, planningDrafts(issueQuery.data?.issue)));
         return;
       }
@@ -2352,7 +2548,7 @@ function IssuePanel({
       // Added to what the line already says rather than replacing it: text an
       // earlier conflict left unsaved is still unsaved, and an edit refused
       // here without a request is the same news as the one that refused it.
-      const refused = Object.keys(sent) as (keyof UpdateIssueInput)[];
+      const refused = Object.keys(sent) as ConflictField[];
       setConflict((previous) => ({
         fields: [...(previous?.fields ?? []).filter((field) => !refused.includes(field)), ...refused],
         // The request that found the conflict is the one the gateway log has.
@@ -2368,9 +2564,44 @@ function IssuePanel({
     // In the same queue as the edits: a transition bumps the version, so an
     // edit queued behind it has to read the version it left.
     scope: { id: issueWriteScope(issueId) },
-    mutationFn: (transitionId: string) => taskaApi.transitionIssue(projectId, issueId, transitionId),
+    /**
+     * With the version the cache holds when the request leaves (`If-Match`,
+     * backend TAS-422), as an edit is sent. A transition asked for before the
+     * latest conflict landed is never sent: it was chosen over a version the
+     * server has already refused (`conflictEpoch`).
+     */
+    mutationFn: ({ transitionId, epoch }: IssueTransitionWrite) => {
+      const cached = queryClient.getQueryData(issueKey)?.issue;
+      if (cached === undefined) throw new Error("This issue is not loaded, so there is no version to move.");
+      if (epoch < conflictEpoch.current) throw new UnsentTransition();
+      return taskaApi.transitionIssue(projectId, issueId, transitionId, cached.version);
+    },
     onMutate: () => writeStarts({}),
-    onError: refusalLands,
+    onError: (error) => {
+      const unsent = error instanceof UnsentTransition;
+      if (!unsent && !isTransitionConflict(error)) {
+        refusalLands();
+        return;
+      }
+      // 409 `ABORTED` (DESIGN.md §5.5, P13′): the status was not changed. The
+      // choice template with "status"; the issue is read again, so the panel
+      // and its transitions show it as it now is, and the board with it. Never
+      // retried, least of all with `details.currentVersion`.
+      clearDateNotice();
+      if (!unsent) {
+        conflictEpoch.current += 1;
+        // The issue and the board, once each: `invalidateBoard` re-reads every
+        // issue of the project, this one among them.
+        void invalidateBoard(queryClient, projectId);
+      }
+      setConflict((previous) => ({
+        // Free text an earlier conflict left unsaved is still unsaved.
+        fields: [...(previous?.fields ?? []).filter((field) => field !== "status"), "status"],
+        // The request that found the conflict is the one the gateway log has.
+        error: unsent && previous ? previous.error : error,
+        seq: (previous?.seq ?? 0) + 1,
+      }));
+    },
     onSuccess: (answer) => {
       queryClient.setQueryData(issueKey, (data) =>
         data
@@ -2534,10 +2765,35 @@ function IssuePanel({
   // Named by the issue read itself since TAS-246; the member list is the
   // fallback for a summary the server could not fill (`personFor`).
   const reporter = personFor(issue.reporterId, issue.reporter, userById);
-  // Every word the panel says about a code, by the one label rule (TAS-173).
-  const typeName = issueTypeLabel(issue.issueType, meta?.issueTypes);
-  const typeWord = issueTypeInSentence(issue.issueType, meta?.issueTypes);
+  // Every word the panel says about a code: the type's from the registry by
+  // §6's type rule (TAS-417), the rest by the one label rule (TAS-173).
+  const typeShown = shownType ?? issue.issueType;
+  const typeName = issueTypeLabel(typeShown, registry);
+  const typeWord = issueTypeInSentence(typeShown, registry);
   const statusName = statusLabel(issue.status, workflow?.statuses);
+  // The status as the issue's saved type names it, for the Type select's
+  // unavailable options — the workflow it is a status of.
+  const savedStatusName = statusLabel(issue.status, workflowFor(workflows, issue.issueType)?.statuses);
+  /**
+   * The Type select's options (§5.5, TAS-417): the registry in its order, and
+   * the issue's own type last, by its key, when the registry does not hold it.
+   * A type whose workflow lacks the issue's status is offered but off — the
+   * server would refuse the change (`STATUS_NOT_IN_TARGET_WORKFLOW`); a type
+   * with no workflow in the context, or an issue with no status, is left to
+   * the server.
+   */
+  const typeOptions = [
+    ...(registry ?? []).map((entry) => entry.code),
+    ...(registry?.some((entry) => entry.code === issue.issueType) ? [] : [issue.issueType]),
+  ].map((code) => {
+    const target = workflowFor(workflows, code);
+    const unavailable =
+      code !== issue.issueType && Boolean(issue.status) && target !== undefined
+        ? !target.statuses.some((status) => status.statusKey === issue.status)
+        : false;
+    const name = issueTypeLabel(code, registry);
+    return { code, unavailable, label: unavailable ? `${name} — no ${savedStatusName} status` : name };
+  });
   // What `GET /meta` lists, or the contract's three while it has not answered
   // (art-director's ruling 5) — and the issue's own value always: a priority
   // the list does not carry is still this issue's, so it is appended last and
@@ -2726,7 +2982,12 @@ function IssuePanel({
    * or come back as a line the reader had already settled.
    */
   const editRefusal = isIssueVersionConflict(updateIssue.error) ? null : updateIssue.error;
-  const writeError = editRefusal ?? transitionIssue.error ?? deleteIssue.error;
+  // A transition's conflict likewise (TAS-422): held in `conflict`, never read off the mutation.
+  const transitionRefusal =
+    isTransitionConflict(transitionIssue.error) || transitionIssue.error instanceof UnsentTransition
+      ? null
+      : transitionIssue.error;
+  const writeError = editRefusal ?? transitionRefusal ?? deleteIssue.error;
   const shownError: unknown = dateNotice ? null : (conflict?.error ?? writeError);
   const panelNotice = dateNotice
     ? planningDateIncompleteEditMessage(dateNotice.field)
@@ -2745,7 +3006,7 @@ function IssuePanel({
     <>
       {head.start(
         <>
-          <TypeChip type={issue.issueType} />
+          <TypeChip registry={registry} type={typeShown} />
           <span className="issue-key">{issue.issueKey}</span>
           <span className="issue-type-label" title={typeName}>
             {typeName}
@@ -2927,7 +3188,7 @@ function IssuePanel({
                 className="secondary-button compact-button"
                 disabled={!canEdit || transitionIssue.isPending}
                 key={transition.id}
-                onClick={() => transitionIssue.mutate(transition.id)}
+                onClick={() => transitionIssue.mutate({ transitionId: transition.id, epoch: conflictEpoch.current })}
                 type="button"
               >
                 {text}
@@ -3000,6 +3261,37 @@ function IssuePanel({
                 );
               })}
           </div>
+          <span id={typeRowId}>Type</span>
+          {canEdit ? (
+            // §5.5 (TAS-417): one field, one PATCH, on `change`, in the
+            // panel's queue — the tile of the chosen type inside the field.
+            <span className="type-select">
+              <TypeChip registry={registry} type={typeShown} />
+              <select
+                aria-labelledby={typeRowId}
+                onChange={(event) => {
+                  const picked = event.target.value;
+                  if (picked === typeShown) return;
+                  setPendingType(picked);
+                  editIssue({ issueType: picked });
+                }}
+                value={typeShown}
+              >
+                {typeOptions.map((option) => (
+                  <option disabled={option.unavailable} key={option.code} value={option.code}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </span>
+          ) : (
+            // Not a disabled select (§4.3's argument): the type as text, in a
+            // row as tall as the select, so the grid holds when a role arrives.
+            <span className="type-static">
+              <TypeChip registry={registry} type={typeShown} />
+              <strong>{typeName}</strong>
+            </span>
+          )}
           <span>Priority</span>
           <div className="segmented compact fit">
             {priorityChoices.map((priority) => (
@@ -4391,25 +4683,23 @@ function IssueLinksSection({
   // Refused before the request goes out; the server stays the authority.
   const [localError, setLocalError] = useState<string | null>(null);
 
-  // The board's own read behind the panel (TAS-202): one cache entry, and no
-  // filter is in it — the board filters locally — so every issue of the board
-  // may be linked to, whatever the bar shows. It costs nothing: the board has
-  // already asked. The read is complete, so an issue missing from it is one of
-  // a type the board does not read (backend A4) or of another project, and
-  // its row resolves to the server's own `target` or to its id.
+  // The board's own read behind the panel (TAS-202): the entry with no filter
+  // in it (TAS-392), so the bar's filter does not narrow what an issue may be
+  // linked to. It costs nothing: the board keeps that entry read. It is cut at
+  // 200 a status, so an issue missing from it may be past a cut — the picker
+  // says so — or of a type the registry no longer holds, or of another
+  // project; a link row resolves to the server's own `target` or to its id.
   //
   // `refetchOnMount: false`: opening a panel past `staleTime` must not read the
   // whole board again for a picker (release-reviewer, TAS-202). This observer
   // takes whatever board the screen holds; the screen's own read, the reader's
   // writes and the focus policy are what keep it current.
-  const projectIssuesQuery = useQuery({ ...boardQueryOptions(projectId), refetchOnMount: false });
-  const issues = useMemo(
-    () =>
-      projectIssuesQuery.data
-        ? [...projectIssuesQuery.data.columns.flatMap((column) => column.issues), ...projectIssuesQuery.data.unplacedIssues]
-        : [],
-    [projectIssuesQuery.data],
-  );
+  // The board without filters (§5.4): the board's filter does not narrow what
+  // an issue may be linked to. Its columns are cut at 200 (TAS-392), so an
+  // issue past one is not offered, and the line under the picker says so.
+  const projectIssuesQuery = useQuery({ ...boardQueryOptions(projectId, NO_BOARD_FILTERS), refetchOnMount: false });
+  const issues = useMemo(() => (projectIssuesQuery.data ? boardCards(projectIssuesQuery.data) : []), [projectIssuesQuery.data]);
+  const pickerCut = projectIssuesQuery.data ? boardHasMore(projectIssuesQuery.data) : false;
 
   const linksCache = issuePartCache(queryClient, projectId, issueId, "links");
   const linksQuery = useIssuePart(projectId, issueId, "links");
@@ -4547,6 +4837,12 @@ function IssueLinksSection({
           >
             Link
           </button>
+          {/* A state, not a live region (§5.4). */}
+          {pickerCut ? (
+            <p className="issue-link-cut">
+              Only the first {BOARD_PAGE_SIZE_PER_COLUMN} issues of each status are listed here.
+            </p>
+          ) : null}
         </form>
       ) : null}
 
@@ -5703,7 +5999,9 @@ function CommentItem({
 
   return (
     <article className="comment-item">
-      <Avatar user={author} size="sm" />
+      {/* An author nobody can name is "Unknown", circle included: without the
+          label `Avatar` names the empty circle "Unassigned" (§4.26). */}
+      <Avatar user={author} label="Unknown" size="sm" />
       {/* Esc closes an open question from anywhere in the comment's text
           column — the strip's two answers, and the Delete that asked, which
           Shift+Tab from Cancel lands on (§4.22). On the strip alone it did
@@ -5937,7 +6235,9 @@ function ActivitySection({
                 key={event.id}
                 isLast={index === history.length - 1}
                 names={{ statuses, priorities }}
-                user={userById.get(event.actorUserId)}
+                // The server's summary of the actor first — a former member
+                // included — then the member list, then nobody (TAS-398, §4.26).
+                user={personFor(event.actorUserId, event.actor, userById)}
                 userById={userById}
               />
             ))}
@@ -5969,10 +6269,13 @@ function ActivityItem({
   return (
     <div className="activity-item">
       {!isLast ? <span className="activity-line" /> : null}
-      <Avatar user={user} size="sm" />
+      {/* "Unknown", word and circle alike, when neither the server nor the
+          member list names the actor — never "Someone", and never the
+          "Unassigned" an unlabelled empty circle says (§4.26). */}
+      <Avatar user={user} label="Unknown" size="sm" />
       <div>
         <p>
-          <strong>{user?.displayName ?? "Someone"}</strong> {historyText(event, userById, names)}
+          <strong>{user?.displayName ?? "Unknown"}</strong> {historyText(event, userById, names)}
         </p>
         {via ? (
           <div className="activity-meta">
@@ -6460,6 +6763,9 @@ function LabelSwatches({
 
 function CreateIssueModal({
   archived,
+  inStatus,
+  filteredType,
+  workflows,
   issueTypes,
   projectId,
   projectKey,
@@ -6476,13 +6782,24 @@ function CreateIssueModal({
    */
   archived: boolean;
   /**
-   * The types this project allows (`allowedIssueTypes`), in the board's order —
-   * a type this build has no name for included, after the ones it knows
-   * (TAS-173). Only these are offered, and the first is the default. Empty
-   * means nothing can be created, and the form says so rather than offering a
-   * type the server did not list (TAS-251).
+   * The project's issue-type registry (TAS-417), in its order: only these are
+   * offered, and the first is the default. Empty means nothing can be created,
+   * and the form says so rather than offering a type the server did not list
+   * (TAS-251).
    */
-  issueTypes: IssueTypeCode[];
+  issueTypes: readonly ProjectIssueType[];
+  /**
+   * The column whose "+" opened the form (§5.5, P3′), or `null` for "New". The
+   * server creates in `TODO` until backend TAS-428, so the form names the
+   * column in its title and switches off a type whose workflow lacks its
+   * status: such an issue would land in «Outside their workflow», not where
+   * "+" was pressed.
+   */
+  inStatus: ColumnStatus | null;
+  /** The type the board is filtered by: the "+" form's default when it can take it. */
+  filteredType: IssueTypeCode | null;
+  /** The context's workflows by type — what says whether a type has the column's status. */
+  workflows: ProjectContext["workflows"] | undefined;
   projectId: string;
   projectKey: string;
   /** Same reason as `ProjectLabelsModal`: one key, one colour, on every surface. */
@@ -6494,7 +6811,34 @@ function CreateIssueModal({
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
   const meta = useMeta();
-  const [issueType, setIssueType] = useState<IssueTypeCode | null>(issueTypes[0] ?? null);
+  const statusName = inStatus ? statusLabel(inStatus.statusKey, [inStatus]) : null;
+  /**
+   * A type the "+" form switches off (§5.5): its workflow is in the context
+   * and has no status of the column's key. A type with no workflow entry is
+   * left on — the server decides.
+   */
+  const lacksStatus = (code: IssueTypeCode) => {
+    if (!inStatus) return false;
+    const workflow = workflows?.[code];
+    return workflow !== undefined && !workflow.statuses.some((status) => status.statusKey === inStatus.statusKey);
+  };
+  const enabledTypes = issueTypes.filter((entry) => !lacksStatus(entry.code));
+  // The default (§5.5): the first type of the registry from "New"; from "+",
+  // the type the board is filtered by, else the first type of the registry that
+  // has the column's status. The reader's pick is kept for as long as it can
+  // still be made, so a reorder that lands while the form is open moves only a
+  // default nobody chose.
+  const [pickedType, setIssueType] = useState<IssueTypeCode | null>(null);
+  const defaultType = inStatus
+    ? ((filteredType !== null && enabledTypes.some((entry) => entry.code === filteredType) ? filteredType : null) ??
+      enabledTypes[0]?.code ??
+      issueTypes[0]?.code ??
+      null)
+    : (issueTypes[0]?.code ?? null);
+  const issueType =
+    pickedType !== null && enabledTypes.some((entry) => entry.code === pickedType) ? pickedType : defaultType;
+  /** Every type switched off — the context and the board disagree (§5.5): nothing can be created here. */
+  const noTypeHasStatus = inStatus !== null && issueTypes.length > 0 && enabledTypes.length === 0;
   // The priorities `GET /meta` lists, or the contract's three until it has
   // answered (TAS-173, art-director's ruling 5). Medium by default when it is
   // offered, the first otherwise; the reader's pick is kept for as long as the
@@ -6508,11 +6852,11 @@ function CreateIssueModal({
       : offeredPriorities.includes("MEDIUM")
         ? "MEDIUM"
         : offeredPriorities[0];
-  // Stacked rather than side by side once either picker holds a value this
-  // build has no word for: its label is the code, and two such columns of
-  // half width run out of room (art-director's ruling 5).
-  const stackPickers =
-    issueTypes.some((type) => !isKnownIssueType(type)) || offeredPriorities.some((code) => !isKnownPriority(code));
+  // Stacked rather than side by side once the priority picker holds a value
+  // this build has no word for: its label is the code, and a half-width
+  // segmented control runs out of room for it (art-director's ruling 5). The
+  // type is a select since TAS-417 and takes any name in its own width.
+  const stackPickers = offeredPriorities.some((code) => !isKnownPriority(code));
   // The five planning fields, all optional (TAS-189). Held as drafts for the
   // same reason the panel holds them that way — the boxes are typed into — and
   // reduced to a request body by `planningInput`, which omits what was left
@@ -6814,7 +7158,7 @@ function CreateIssueModal({
   return (
     <Modal
       busy={createIssue.isPending}
-      title="New issue"
+      title={statusName ? `New issue in ${statusName}` : "New issue"}
       // Same as `ProjectLabelsModal`: an unstyled pill would be an empty chip.
       eyebrow={
         badge ? (
@@ -6870,7 +7214,7 @@ function CreateIssueModal({
             return;
           }
           clearDateNotice();
-          if (summary.trim() && issueType) createIssue.mutate(issueType);
+          if (summary.trim() && issueType && !noTypeHasStatus) createIssue.mutate(issueType);
         }}
       >
         {/* Every box `readOnly` once archived: the reader's words stay, legible
@@ -6898,25 +7242,33 @@ function CreateIssueModal({
         <div className={`form-two ${stackPickers ? "is-stacked" : ""}`}>
           <label>
             <span>Type</span>
-            {issueTypes.length ? (
-              <div className="segmented compact">
-                {issueTypes.map((type) => (
-                  <button
-                    // §4.1's steadily-unavailable `aria-disabled`: the choice
-                    // made stays legible and reachable, a press does nothing.
-                    aria-disabled={archived || undefined}
-                    aria-pressed={issueType === type}
-                    className={issueType === type ? "is-active" : ""}
-                    key={type}
-                    onClick={() => {
-                      if (!archived) setIssueType(type);
-                    }}
-                    type="button"
-                  >
-                    {issueTypeLabel(type, meta?.issueTypes)}
-                  </button>
-                ))}
-              </div>
+            {issueTypes.length && issueType ? (
+              // §5.5 (TAS-417): the panel's select, at 30, with the chosen
+              // type's tile inside the field.
+              <span className="type-select">
+                <TypeChip registry={issueTypes} type={issueType} />
+                <select
+                  // §4.1's steadily-unavailable `aria-disabled` once archived:
+                  // the choice stays legible and reachable, a change does nothing.
+                  aria-disabled={archived || undefined}
+                  onChange={(event) => {
+                    if (!archived) setIssueType(event.target.value);
+                  }}
+                  value={issueType}
+                >
+                  {issueTypes.map((entry) =>
+                    lacksStatus(entry.code) ? (
+                      <option disabled key={entry.code} value={entry.code}>
+                        {`${issueTypeLabel(entry.code, issueTypes)} — no ${statusName} status`}
+                      </option>
+                    ) : (
+                      <option key={entry.code} value={entry.code}>
+                        {issueTypeLabel(entry.code, issueTypes)}
+                      </option>
+                    ),
+                  )}
+                </select>
+              </span>
             ) : (
               <p className="muted-label">This project allows no issue types.</p>
             )}
@@ -7113,11 +7465,20 @@ function CreateIssueModal({
             This project is archived, so issues cannot be created in it.
           </p>
         ) : null}
+        {noTypeHasStatus && !archived ? (
+          <p className="modal-unavailable-note">{`No issue type in this project has a ${statusName} status.`}</p>
+        ) : null}
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">
             Cancel
           </button>
-          {archived ? null : (
+          {archived ? null : noTypeHasStatus ? (
+            // §4.1's "steadily unavailable": reachable, dimmed, and a press
+            // does nothing — the line above says why.
+            <button aria-disabled="true" className="primary-button is-unavailable" type="button">
+              Create issue
+            </button>
+          ) : (
             <button className="primary-button" disabled={!summary.trim() || !issueType || createIssue.isPending} type="submit">
               Create issue
             </button>
@@ -7267,10 +7628,10 @@ function sentWithoutStatuses(workflow: ProjectWorkflow) {
  * read that failed (§4.9) — never for placing a card. The server's own rule
  * (`BoardServiceImpl.mergeStatusesByKey`): every status of every workflow, the
  * first type to state a key winning, walked in the order the board offers the
- * types (`allowedIssueTypes`), then sorted stably by `sortOrder`. A type this
- * build has no name for is walked too (TAS-173); where the board read differs
- * — it reads TASK, BUG and STORY only (backend A4) — its answer replaces this
- * once, like "3 → N" in §5.2.
+ * types (`allowedIssueTypes`, the registry's order since backend #226), then
+ * sorted stably by `sortOrder`. A type this build has no name for is walked
+ * too (TAS-173); where the board read differs, its answer replaces this once,
+ * like "3 → N" in §5.2.
  */
 function predictColumns(workflows: WorkflowsByIssueType | undefined, issueTypes: readonly IssueTypeCode[]): ColumnStatus[] {
   if (!workflows) return fallbackStatuses;
@@ -7285,6 +7646,38 @@ function predictColumns(workflows: WorkflowsByIssueType | undefined, issueTypes:
   // A project that allows no issue type sends no workflow at all.
   if (statusByKey.size === 0) return fallbackStatuses;
   return [...statusByKey.values()].sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
+/** One drop on the board: the card, its key for the refusal's sentence, where it goes and by which transition. */
+interface BoardMove {
+  movedIssueId: string;
+  issueKey: string;
+  nextStatus: IssueStatusKey;
+  transitionId: string;
+}
+
+/**
+ * The version a board move sends as `If-Match` (TAS-422): the newest the
+ * reader's screen holds for the issue — its card in any of the board's cached
+ * reads, or the open panel's issue. Both are server answers; neither is ever
+ * invented. `undefined` only for an issue no cache holds a version of, which
+ * then moves without the header.
+ */
+function latestKnownVersion(
+  queryClient: ReturnType<typeof useQueryClient>,
+  projectId: string,
+  issueId: string,
+): number | undefined {
+  const versions: number[] = [];
+  for (const [, board] of queryClient.getQueriesData<Board>({ queryKey: boardKey(projectId) })) {
+    if (!board) continue;
+    for (const card of [...board.columns.flatMap((column) => column.issues), ...board.unplacedIssues]) {
+      if (card.id === issueId && typeof card.version === "number") versions.push(card.version);
+    }
+  }
+  const panel = queryClient.getQueryData<{ issue?: { version?: unknown } }>(["issue", projectId, issueId])?.issue?.version;
+  if (typeof panel === "number") versions.push(panel);
+  return versions.length ? Math.max(...versions) : undefined;
 }
 
 /**
@@ -7306,13 +7699,33 @@ interface IssueEdit {
 
 /** The two fields a conflict leaves the reader's own words in, rather than the server's value. */
 type FreeTextField = "summary" | "description";
-const isFreeTextField = (field: keyof UpdateIssueInput): field is FreeTextField =>
+const isFreeTextField = (field: keyof UpdateIssueInput | "status"): field is FreeTextField =>
   field === "summary" || field === "description";
+
+/**
+ * One transition of the panel's issue (TAS-422): which, and how many version
+ * conflicts the panel had shown when the reader chose it — see `conflictEpoch`.
+ */
+interface IssueTransitionWrite {
+  transitionId: string;
+  epoch: number;
+}
+
+/** A transition chosen before the latest conflict landed: refused here, never sent (`conflictEpoch`). */
+class UnsentTransition extends Error {
+  constructor() {
+    super("This move was chosen before the issue changed elsewhere, so it was not sent.");
+  }
+}
+
+/** What a conflict line can be about: a field an edit sends, or the status a transition moves (TAS-422). */
+type ConflictField = keyof UpdateIssueInput | "status";
 
 /** What the panel's conflict line is about — see the `conflict` state in `IssuePanel`. */
 interface IssueConflict {
-  fields: (keyof UpdateIssueInput)[];
-  error: IssueVersionConflictError;
+  fields: ConflictField[];
+  /** The refusal that found the conflict: an edit's 409, or a transition's `ABORTED`. */
+  error: Error;
   seq: number;
 }
 
@@ -7329,10 +7742,15 @@ function keepUnsentText(conflict: IssueConflict | null, sent: UpdateIssueInput):
   return fields.length ? { ...conflict, fields } : null;
 }
 
-/** What the conflict sentence calls each field a write can carry. */
-const issueFieldNames: Record<keyof UpdateIssueInput, string> = {
+/**
+ * What the conflict sentence calls each field a write can carry, in the
+ * panel's order — the status first, above everything else (TAS-422).
+ */
+const issueFieldNames: Record<ConflictField, string> = {
+  status: "status",
   summary: "summary",
   description: "description",
+  issueType: "type",
   priority: "priority",
   assigneeId: "assignee",
   storyPoints: "story points",
@@ -7361,9 +7779,9 @@ function joinWithAnd(words: string[]): string {
  * still in its box — and then one sentence names them all, in the panel's
  * order, because the slot holds one sentence.
  */
-function issueConflictText(fields: (keyof UpdateIssueInput)[]): string {
+function issueConflictText(fields: ConflictField[]): string {
   const stale = "this issue was changed elsewhere after you opened it.";
-  const named = (Object.keys(issueFieldNames) as (keyof UpdateIssueInput)[]).filter((field) => fields.includes(field));
+  const named = (Object.keys(issueFieldNames) as ConflictField[]).filter((field) => fields.includes(field));
   const texts = named.filter(isFreeTextField);
   const choices = named.filter((field) => !isFreeTextField(field)).map((field) => `the ${issueFieldNames[field]}`);
   const change = `change${choices.length > 1 ? "s" : ""} to ${joinWithAnd(choices.length ? choices : ["the issue"])}`;

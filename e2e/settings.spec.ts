@@ -124,7 +124,7 @@ test.describe("on a wide screen", () => {
     expect(first.x).toBeCloseTo((1920 - flow) / 2, 0);
     // Full-width planes stay where they were.
     const filterbar = page.locator(".filterbar");
-    const firstControl = (await filterbar.locator(".segmented").boundingBox())!;
+    const firstControl = (await filterbar.locator(".filter-type-group").boundingBox())!;
     expect(firstControl.x).toBeCloseTo(18, 0);
     const back = (await page.locator(".board-topbar > .icon-button").first().boundingBox())!;
     expect(back.x).toBeCloseTo(18, 0);
@@ -137,34 +137,39 @@ test.describe("on a wide screen", () => {
     await openBoard(page, "Web App");
     const others = page.getByRole("region", { name: "Outside their workflow" });
     await expect(others).toBeVisible();
+    // Web App's registry reads the shared three and the epic's In Review
+    // (backend #226), so four columns of flow, five with the group.
     const columns = page.locator(".columns-area > .board-column:not(.other-statuses)");
-    await expect(columns).toHaveCount(3);
+    await expect(columns).toHaveCount(4);
 
-    // The formula of art-director's ruling 2: three columns of flow, four with
-    // the group. At 1920 there is room, so the group hangs off the centred
-    // columns and moves nothing.
-    const flow = 3 * 312 + 2 * 14;
-    const all = 4 * 312 + 3 * 14;
+    // The formula of art-director's ruling 2. At 2400 there is room, so the
+    // group hangs off the centred columns and moves nothing.
+    const flow = 4 * 312 + 3 * 14;
+    const all = 5 * 312 + 4 * 14;
     const placed = (width: number, group: boolean) =>
       group ? Math.max(18, Math.min((width - flow) / 2, width - all - 18)) : Math.max(18, (width - flow) / 2);
-    expect((await columns.first().boundingBox())!.x).toBeCloseTo(placed(1920, true), 0);
-    expect(placed(1920, true)).toBeCloseTo(placed(1920, false), 0);
+    await page.setViewportSize({ width: 2400, height: 1080 });
+    await expect.poll(async () => (await columns.first().boundingBox())!.x).toBeCloseTo(placed(2400, true), 0);
+    expect(placed(2400, true)).toBeCloseTo(placed(2400, false), 0);
     const last = (await columns.last().boundingBox())!;
     const group = (await others.boundingBox())!;
     expect(group.x).toBeCloseTo(last.x + 312 + 14, 0);
-    expect(group.x + group.width).toBeLessThanOrEqual(1920 - 18 + 0.5);
+    expect(group.x + group.width).toBeLessThanOrEqual(2400 - 18 + 0.5);
 
-    // At 1440 there is not: the columns move left by exactly what keeps the
-    // group on screen, and come back by that much when a Bug filter takes the
-    // group away.
-    await page.setViewportSize({ width: 1440, height: 900 });
-    await expect.poll(async () => (await columns.first().boundingBox())!.x).toBeCloseTo(placed(1440, true), 0);
-    const group1440 = (await others.boundingBox())!;
-    expect(group1440.x + group1440.width).toBeCloseTo(1440 - 18, 0);
-    await page.locator(".filterbar .segmented").getByRole("button", { name: "Bug" }).click();
+    // At 1920 there is not: the columns move left by exactly what keeps the
+    // group on screen, and come back by that much when a filter takes the
+    // group away. A text filter, not a type: since TAS-392 a type filter is the
+    // server's and changes the columns too (§5.4), which would move them for
+    // another reason. "Checkout" keeps WEB-15 and drops the group's WEB-16.
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await expect.poll(async () => (await columns.first().boundingBox())!.x).toBeCloseTo(placed(1920, true), 0);
+    const group1920 = (await others.boundingBox())!;
+    expect(group1920.x + group1920.width).toBeCloseTo(1920 - 18, 0);
+    await page.getByRole("textbox", { name: "Filter issues by key, summary or description" }).fill("checkout");
     await expect(others).toHaveCount(0);
-    expect((await columns.first().boundingBox())!.x).toBeCloseTo(placed(1440, false), 0);
-    expect(placed(1440, false) - placed(1440, true)).toBeCloseTo(106, 0);
+    await expect(columns).toHaveCount(4);
+    await expect.poll(async () => (await columns.first().boundingBox())!.x).toBeCloseTo(placed(1920, false), 0);
+    expect(placed(1920, false) - placed(1920, true)).toBeCloseTo(29, 0);
   });
 });
 

@@ -9,6 +9,7 @@ import {
   ifMatch,
   isDatesOutOfOrderRefusal,
   issuePatchBody,
+  issueTypePatchRefusal,
   issueVersionRefusal,
 } from "./issuePatch";
 import type { UpdateIssueInput } from "./TaskaApi";
@@ -20,12 +21,13 @@ import type { UpdateIssueInput } from "./TaskaApi";
  * ever does.
  */
 describe("issuePatchBody", () => {
-  it("sends exactly the nine keys PatchIssueRequestDto declares", () => {
+  it("sends exactly the ten keys PatchIssueRequestDto declares, issueType among them since backend #226", () => {
     expect([...ISSUE_PATCH_KEYS].sort()).toEqual(
       [
         "assigneeId",
         "description",
         "dueDate",
+        "issueType",
         "originalEstimateMinutes",
         "priority",
         "remainingEstimateMinutes",
@@ -34,6 +36,10 @@ describe("issuePatchBody", () => {
         "summary",
       ].sort(),
     );
+  });
+
+  it("carries a type change as the key it names", () => {
+    expect(issuePatchBody({ issueType: "EPIC" })).toEqual({ issueType: "EPIC" });
   });
 
   it("omits what is undefined and keeps what is stated, null and zero included", () => {
@@ -106,4 +112,34 @@ describe("the other guards", () => {
     expect(isDatesOutOfOrderRefusal(refusal("INVALID_ARGUMENT", "Start date must not be after Due date"))).toBe(false);
     expect(isDatesOutOfOrderRefusal(new Error(sentence))).toBe(false);
   });
+});
+
+/**
+ * The gateway refuses an `issueType` on the request's face, before the issue
+ * is looked up (`IssueMapper`, backend #226) — in its own `BAD_REQUEST`, which
+ * the mock and the REST adapter both raise from here without a request.
+ */
+describe("issueTypePatchRefusal", () => {
+  it("lets a patch without a type, and a well-formed key, through", () => {
+    expect(issueTypePatchRefusal({ summary: "Renamed" })).toBeNull();
+    expect(issueTypePatchRefusal({ issueType: "EPIC" })).toBeNull();
+    expect(issueTypePatchRefusal({ issueType: "QA_2" })).toBeNull();
+  });
+
+  it("refuses null: a type cannot be cleared", () => {
+    expect(issueTypePatchRefusal({ issueType: null } as unknown as UpdateIssueInput)).toEqual({
+      code: "BAD_REQUEST",
+      message: "issueType cannot be cleared",
+    });
+  });
+
+  it.each([[""], ["epic"], ["E"], ["1EPIC"], ["EPIC-1"], ["A".repeat(33)], [42]])(
+    "refuses %j as a key outside IssueTypeDto's pattern",
+    (issueType) => {
+      expect(issueTypePatchRefusal({ issueType } as unknown as UpdateIssueInput)).toEqual({
+        code: "BAD_REQUEST",
+        message: "Invalid issue type key",
+      });
+    },
+  );
 });

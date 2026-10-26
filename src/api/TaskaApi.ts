@@ -1,6 +1,6 @@
-import type { AccessTokenExpiryDays, AccessTokenScopes } from "./accessTokens";
+import type { AccessTokenScopes } from "./accessTokens";
 import type {
-  AccessToken,
+  AccessTokenList,
   AdminCatalog,
   AdminRow,
   AdminRowQuery,
@@ -26,6 +26,7 @@ import type {
   IssueTypeCode,
   IssueWatchers,
   IssueWorklog,
+  IssueWorklogPage,
   IssueDetailsWithHistory,
   IssuedAccessToken,
   InvitationResult,
@@ -39,6 +40,9 @@ import type {
   ProblematicOutboxSummary,
   Project,
   ProjectContext,
+  ProjectIssueType,
+  IssueTypeColor,
+  IssueTypeIcon,
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
@@ -201,11 +205,19 @@ export interface ListIssuesParams {
  * Everything `GET /projects/{projectId}/board` takes since backend #205
  * (TAS-213): six filters, every one optional and all ANDed by the server.
  *
- * Without `issueType` the board is about TASK, BUG and STORY together (see
- * `Board`); with it, about that one type. `assigneeId`, `labelId` and
- * `priority` narrow the issues and never the columns. `query` is a literal,
- * case-insensitive substring over the key, the summary and the description,
- * `minLength: 1` in the contract — a blank one is not sent.
+ * Without `issueType` the board is about every type of the project's registry
+ * together (see `Board`); with it, about that one type — its own workflow's
+ * columns, and a key the registry does not hold answers an empty board with no
+ * columns. `assigneeId`, `labelId` and `priority` narrow the issues and never
+ * the columns. `query` is a literal, case-insensitive substring over the key,
+ * the summary and the description, `minLength: 1` in the contract: it is sent
+ * as given, and the gateway refuses an empty one — the board screen trims it
+ * and leaves a blank one out (DESIGN.md §5.4). Every filter is applied before
+ * the cap, so the counts are of matching issues.
+ *
+ * `pageSizePerColumn` (backend TAS-392): 1–200, 50 when not sent — the board
+ * screen always sends 200. Each column and the unplaced bucket carry at most
+ * that many issues, with `totalCount` and `hasMore`.
  *
  * `includeDone` filters **issues, not columns**: omitted or `false`, the
  * issues whose status the workflow of their own type files under the `DONE`
@@ -214,9 +226,9 @@ export interface ListIssuesParams {
  * meant to be complete. `false` and `undefined` are the same request, which is
  * why the implementations send the parameter only when it is `true`.
  *
- * The board screen sends `includeDone` and nothing else: its four filters are
- * local over the complete read (DESIGN.md §5.4) until the route pages (backend
- * A3).
+ * The board screen sends its four filters to the server (TAS-392, DESIGN.md
+ * §5.4): a filter over a capped column on the client would lie about the
+ * counts.
  */
 export interface BoardParams {
   issueType?: IssueTypeCode;
@@ -225,6 +237,7 @@ export interface BoardParams {
   includeDone?: boolean;
   priority?: IssuePriorityCode;
   query?: string;
+  pageSizePerColumn?: number;
 }
 
 /**
@@ -491,7 +504,7 @@ export interface CreateIssueInput {
  * `summary` and `priority` cannot be cleared (the gateway refuses a `null` for
  * either), so they have no `null` case. The other seven can.
  *
- * Only these nine keys ever reach the wire: `issuePatchBody` in
+ * Only these ten keys ever reach the wire: `issuePatchBody` in
  * src/api/issuePatch.ts copies them by name, so a caller spreading a wider
  * object cannot widen the request.
  *
@@ -503,6 +516,14 @@ export interface CreateIssueInput {
  * write path and one place that handles the version.
  */
 export interface UpdateIssueInput {
+  /**
+   * A key of the project's registry (backend #226). Cannot be cleared: `null`
+   * and a malformed key are refused before the request (`issueTypePatchRefusal`
+   * in src/api/issuePatch.ts), a key the registry lacks by the server after the
+   * version, and a target whose workflow lacks the issue's status by the server
+   * after that.
+   */
+  issueType?: IssueTypeCode;
   summary?: string;
   /** `null` clears it. Read back as `""`, which is how the UI spells an empty description. */
   description?: string | null;
@@ -539,6 +560,33 @@ export interface CreateIssueLinkInput {
    * a relation the backend adds is offered the day it is served.
    */
   linkType: IssueLinkTypeCode;
+}
+
+/**
+ * `CreateProjectIssueTypeRequestDto` (backend #212). Every field but
+ * `sortOrder` is required; the server defaults that one to 100, which is why
+ * the dialog always sends it (DESIGN.md §4.30: a new type lands last).
+ */
+export interface CreateProjectIssueTypeInput {
+  code: IssueTypeCode;
+  name: string;
+  color: IssueTypeColor;
+  icon: IssueTypeIcon;
+  sortOrder?: number;
+}
+
+/**
+ * `PatchProjectIssueTypeRequestDto`: at least one key, never `null`, never
+ * `code` — the body is whitelisted by `projectIssueTypePatchBody`
+ * (src/api/issueTypes.ts). No version: the last write wins per field. The
+ * dialog never sends `sortOrder` here: a move is one `reorderProjectIssueTypes`
+ * (backend TAS-418), not a number picked between neighbours.
+ */
+export interface UpdateProjectIssueTypeInput {
+  name?: string;
+  color?: IssueTypeColor;
+  icon?: IssueTypeIcon;
+  sortOrder?: number;
 }
 
 /**
@@ -719,9 +767,9 @@ interface WorkflowVersion {
   version?: number;
 }
 
-/** `PatchWorkflowRequestDto`: a new name, 1–100 characters. */
+/** `PatchWorkflowRequestDto`: a new name, 1–100 characters, not blank — required (`@NotBlank`, backend TAS-427). */
 export interface UpdateProjectWorkflowInput extends WorkflowVersion {
-  name?: string;
+  name: string;
 }
 
 /**
@@ -761,6 +809,12 @@ export interface ListCommentsParams {
   pageSize?: number;
 }
 
+/** `GET …/worklogs`' two parameters (backend TAS-421): `page` ≥ 0, `pageSize` 1–100. */
+export interface ListWorklogsParams {
+  page?: number;
+  pageSize?: number;
+}
+
 /**
  * `POST /users/me/access-tokens` (TAS-412, for backend TAS-402): a name, the
  * grants and a lifetime from `ACCESS_TOKEN_EXPIRY_DAYS`. The frontend's
@@ -770,7 +824,11 @@ export interface CreateAccessTokenInput {
   /** Trimmed, 1 to `ACCESS_TOKEN_NAME_MAX_LENGTH` characters. */
   name: string;
   scopes: AccessTokenScopes;
-  expiresInDays: AccessTokenExpiryDays;
+  /**
+   * 1 to `policy.maxLifetimeDays`; left out when the list stated no policy, and
+   * the server applies its default (30).
+   */
+  expiresInDays?: number;
 }
 
 export interface ListNotificationsParams {
@@ -833,19 +891,23 @@ export interface TaskaApi {
   disconnectTelegram(): Promise<NotificationPreferences>;
 
   /**
-   * The reader's own personal access tokens (TAS-412; routes from backend
-   * TAS-402, **not deployed and not in the contract** — the shapes are the
-   * frontend's proposal, noted once in `RestTaskaApi`). Managing tokens is a
-   * signed-in session's business only: a request made with a token gets 403
-   * `insufficient_scope`. On a gateway without the routes every one of them
-   * answers the static-resource 404 (`isUndeployedRoute`).
+   * The reader's own personal access tokens (TAS-412; backend TAS-401/402, in
+   * the contract since develop `be5085e5`). Managing tokens is a signed-in
+   * session's business only: a request made with a token gets 403
+   * `PERMISSION_DENIED`, `details.reason` `SESSION_REQUIRED`. A gateway
+   * without the routes answers each with the static-resource 404
+   * (`isUndeployedRoute`) — kept until the stand's three probes are recorded.
    *
-   * `listAccessTokens` never carries a secret. `createAccessToken` answers with
-   * the token's value once; the caller shows it and lets it go — no cache, no
-   * storage, no log. `revokeAccessToken` takes the token out at once, and
-   * revoking it again succeeds as the first time did (TAS-401).
+   * `listAccessTokens` never carries a secret; it answers the tokens in the
+   * server's order and the policy. `createAccessToken` answers with the
+   * token's value once; the caller shows it and lets it go — no cache, no
+   * storage, no log. Its refusals, in the gateway's order: five attempts an
+   * hour (429, refused attempts counted), the body, the name, the scopes, the
+   * lifetime against the policy, then the cap on active tokens (400
+   * `FAILED_PRECONDITION`, `ACTIVE_TOKEN_LIMIT`). `revokeAccessToken` is 204
+   * for any id — unknown, another account's, already revoked.
    */
-  listAccessTokens(): Promise<AccessToken[]>;
+  listAccessTokens(): Promise<AccessTokenList>;
   createAccessToken(input: CreateAccessTokenInput): Promise<IssuedAccessToken>;
   revokeAccessToken(tokenId: string): Promise<void>;
 
@@ -985,9 +1047,11 @@ export interface TaskaApi {
    *   not found. The backend ask — an unreadable avatar as `avatar: null`
    *   rather than a failed read — is a comment on TAS-212
    *   (docs/ai/API-DIVERGENCE.md).
-   * - **Only the allowed issue types.** `workflows` may hold fewer than three
-   *   entries, or none, in no fixed order; an entry with an issue type this
-   *   build does not know arrives as `issueType: null` and is dropped.
+   * - **The registry, in its order** (backend #212, #226): `issueTypes` is
+   *   the project's issue types by `sortOrder`, then `code`, read through
+   *   `toProjectIssueTypes` (src/api/issueTypes.ts) and never re-sorted; the
+   *   first is the default. `workflows` holds one entry per registry type, in
+   *   no fixed order; an entry with no type at all (`null`) is dropped.
    * - Statuses and transitions are ordered by `sortOrder` and carry no
    *   timestamps; labels carry only `id`, `name` and `color`, unordered;
    *   members come by `userId`, and a name auth-service could not supply
@@ -1193,17 +1257,20 @@ export interface TaskaApi {
    * TAS-202 (backend #205, TAS-213): the columns, the issues placed in them and
    * the issues outside their own type's workflow (`Board`).
    *
-   * **Complete and unbounded.** The route has no paging and no cap, so the
-   * answer holds every issue of the three types the gateway reads — which is
-   * what lets the board filter locally and count `Y` from it (backend A3 is the
-   * day that changes).
+   * **Cut at a page since backend TAS-392.** Each column, and the unplaced
+   * bucket, carries at most `pageSizePerColumn` issues (50 when not sent, at
+   * most 200), with `totalCount` and `hasMore`. The filters are applied first,
+   * so the counts are of matching issues — which is why the board screen sends
+   * its filters rather than narrowing a cut column itself. Nothing continues a
+   * column in its own order yet (backend A1): `/issues/search` orders newest
+   * first and places issues differently, so its "use search to continue"
+   * advice does not hold. Bean validation comes before anything: a page size
+   * outside 1–200, or an empty `query`, is 400 `INVALID_ARGUMENT`.
    *
-   * Order inside a column, as read from the merged Java and not stated by the
-   * contract: grouped by type — TASK, BUG, STORY — and by `createdAt` ascending
-   * inside each, with no tiebreak (backend A1). `compareBoardIssues`
-   * (src/api/boardOrder.ts) is that order, with `id` as the tiebreak the server
-   * lacks; the mock sorts with it and the board's optimistic move places a card
-   * with it.
+   * Order inside a column and in `unplacedIssues`, as the contract states it
+   * since backend TAS-392: `createdAt` ascending, then `id`, whatever the type.
+   * `compareBoardIssues` (src/api/boardOrder.ts) is that order; the mock sorts
+   * with it and the board's optimistic move places a card with it.
    *
    * Enrichment fails silently on the server (backend A2): a label read that
    * fails sends every card's `labels` as `[]`, and a profile read that fails
@@ -1332,7 +1399,19 @@ export interface TaskaApi {
     input: UpdateIssueInput,
     expectedVersion: number,
   ): Promise<IssueWriteAnswer>;
-  transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue>;
+  /**
+   * `PUT /issues/{issueId}/transition/{transitionId}`, with `If-Match:
+   * "<expectedVersion>"` when the caller holds a version (backend TAS-422). With
+   * it the compare and the move are one atomic step: a version that is not the
+   * server's is 409 `ABORTED` "Issue version does not match expected version",
+   * `details.currentVersion` and `details.currentStatus` (strings), and nothing
+   * changes. Checked after the issue and the archive, before whether the
+   * transition is valid. A version the gateway cannot use is refused before any
+   * request, as `updateIssue`'s is. Never retried here, least of all with
+   * `details.currentVersion`: whether the move still makes sense is the
+   * reader's to decide.
+   */
+  transitionIssue(projectId: string, issueId: string, transitionId: string, expectedVersion?: number): Promise<Issue>;
   deleteIssue(projectId: string, issueId: string): Promise<void>;
 
   /**
@@ -1715,10 +1794,13 @@ export interface TaskaApi {
    * (never below 0). A caller holding the issue's version for a later
    * `If-Match` has to re-read the issue after one of these.
    *
-   * The list comes ordered by `workDate` descending with no tiebreak, so equal
-   * days come in no stated order (`sortWorklogs` in src/lib/worklog.ts).
+   * The list is paged since backend TAS-421: `page` from 0, `pageSize` 1–100
+   * (20 when not sent), newest first by `workDate`, `createdAt`, then `id`, all
+   * descending (`sortWorklogs` in src/lib/worklog.ts is that order), with
+   * `totalCount` and `hasMore`. Each list row names its author (`author`, a
+   * nullable summary); the add and edit answers leave the key out.
    */
-  listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]>;
+  listIssueWorklogs(projectId: string, issueId: string, params?: ListWorklogsParams): Promise<IssueWorklogPage>;
   /** `POST …/worklogs`, answered `201` with the entry. */
   addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): Promise<IssueWorklog>;
   /** `PUT …/worklogs/{worklogId}`, a partial update — see `UpdateIssueWorklogInput`. */
@@ -1739,10 +1821,10 @@ export interface TaskaApi {
    * which the merge took unchanged (api-contract-guard, TAS-382):
    *
    * - The list is any member's: a missing project is 404 "Project not found", a
-   *   non-member — a `GLOBAL_ADMIN` included — 403. It walks TASK, BUG and STORY
-   *   whatever the project allows, resolves each to the project's own workflow
-   *   or the shared default, and answers each workflow once, at the position of
-   *   the first type on it. Statuses and transitions by `sortOrder`, hidden
+   *   non-member — a `GLOBAL_ADMIN` included — 403. It walks the project's
+   *   issue-type registry in its order (backend #226), resolves each type to
+   *   the project's own workflow or the shared default, and answers each
+   *   workflow once, at the position of the first type on it. Statuses and transitions by `sortOrder`, hidden
    *   transitions included.
    * - The three writes are ADMIN-only, refused by workflow-service: 404
    *   "Project not found", 403 "Access denied" for a non-member, 403 "Not
@@ -1761,6 +1843,45 @@ export interface TaskaApi {
    * read again after those.
    */
   listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]>;
+  /**
+   * The issue-type registry's writes (backend #212, TAS-385; DESIGN.md §4.30).
+   * There is no read here on purpose: the registry rides the project context
+   * (`ProjectContext.issueTypes`) under the same membership rule, and a second
+   * read of the same facts would be a request per dialog for nothing.
+   *
+   * Refused in the server's order (`ProjectIssueTypeService`), with the
+   * sentences of src/api/issueTypes.ts:
+   *
+   * - create: the body (400 `INVALID_ARGUMENT` "Invalid request parameters");
+   *   a missing project (404); the role — anybody but the project's ADMIN, a
+   *   non-member included, 403 "Project ADMIN role is required"; an archived
+   *   project (400 `FAILED_PRECONDITION`, `reason: PROJECT_ARCHIVED`); a code
+   *   the project holds (409 `ALREADY_EXISTS`). The 201 is the saved entry,
+   *   its name stripped.
+   * - update: `{}` (400 "At least one field is required", before the role);
+   *   an undeclared key or `null` (400 "Invalid request parameters"); project,
+   *   role, archive as above; a code the project does not hold (404); then a
+   *   value the service refuses (400 "Invalid issue type name, color, icon or
+   *   sortOrder"). The 200 is the saved entry.
+   * - delete: project, role, archive; a code the project does not hold (404);
+   *   the last type (400 `FAILED_PRECONDITION`, `details.reason`
+   *   `LAST_ISSUE_TYPE`); a type live issues still carry — deleted ones do not
+   *   count since backend TAS-418 — (400 `FAILED_PRECONDITION`,
+   *   `details.reason` `ISSUE_TYPE_IN_USE`, `details.issueCount` as a string).
+   *   Read the two apart by `details.reason`, never by prose.
+   * - reorder (`PUT …/issue-types/order`, backend TAS-418): an empty or
+   *   malformed `codes` (400 "Invalid request parameters"); a code named twice
+   *   (400 `INVALID_ARGUMENT`, before the role); project, role, archive; a set
+   *   that is not exactly the registry's — stale or incomplete — (400
+   *   `INVALID_ARGUMENT`, nothing written). The 200 is the whole registry,
+   *   renumbered 10, 20, 30… in one transaction, in its new order — read by
+   *   `toProjectIssueTypes`, never re-sorted. One request per move: `codes` is
+   *   the full permutation the reader sees once the move is made.
+   */
+  createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): Promise<ProjectIssueType>;
+  updateProjectIssueType(projectId: string, code: IssueTypeCode, input: UpdateProjectIssueTypeInput): Promise<ProjectIssueType>;
+  deleteProjectIssueType(projectId: string, code: IssueTypeCode): Promise<void>;
+  reorderProjectIssueTypes(projectId: string, codes: readonly IssueTypeCode[]): Promise<ProjectIssueType[]>;
   /**
    * `POST /projects/{projectId}/workflows`. Refused in the server's order: the
    * role; the whole body ("Workflow creation failed: …", 400 — on create a
@@ -1782,12 +1903,13 @@ export interface TaskaApi {
   /**
    * The six routes of backend PR #225 (TAS-384, develop `6ba4ed6`), read from
    * workflow-service's `WorkflowMutationService`. The gateway checks a body's
-   * shape only — an unknown field, an explicit `null`, a number that is not a
-   * whole int, a category outside the enum: "Invalid request parameters" — and
-   * not the yml's bounds; the deletes' query parameters it does check
-   * (`version ≥ 1`, the key's pattern). Then a body `version` below 1 is 400
-   * "version must be positive" before the role is looked at. Then each route
-   * is refused as an add is (role, archive, unknown workflow 404, the shared
+   * shape — an unknown field, an explicit `null`, a number that is not a whole
+   * int, a category outside the enum — and, since backend TAS-427, its bounds:
+   * a name of 1–100 characters (the rename's not blank, and required),
+   * `sortOrder ≥ 0`, `version ≥ 1`; the deletes' query parameters too
+   * (`version ≥ 1`, the key's pattern). Each is 400 `INVALID_ARGUMENT` "Invalid
+   * request parameters" before the role is looked at. Then each route is
+   * refused as an add is (role, archive, unknown workflow 404, the shared
    * default 400 `FAILED_PRECONDITION`, another project's workflow 404), then:
    *
    * - a `version` that is not the server's → 409 `ABORTED` "Workflow version
@@ -1800,14 +1922,22 @@ export interface TaskaApi {
    *   edit's prefix, 400 "Workflow update failed: …" — a blank or over-100
    *   name, a negative `sortOrder`, a `sortOrder` another status (or
    *   transition) holds ("Status sort order is not unique: N");
+   * - a delete that would move more than 5000 issues → issue-service's 400
+   *   `FAILED_PRECONDITION` "Synchronous workflow migration is limited to 5000
+   *   issues; reduce the migration scope", `details` `{reason:
+   *   "WORKFLOW_MIGRATION_LIMIT", limit: "5000"}` (backend TAS-427; a 429
+   *   before it), checked first;
    * - a delete that leaves issues of the workflow's types in a status it no
-   *   longer has → issue-service's 400 `FAILED_PRECONDITION` "Workflow statuses
-   *   have N issues; supply a target status mapping", `details`
-   *   `{issueCount, statusKeys}` as strings. That the details survive the hop
-   *   from issue-service through workflow-service to the gateway is **not
-   *   verified**; the dialog offers its move or mapping step only when they
-   *   came, and says any other refusal as one. Over 5000 issues →
-   *   `RESOURCE_EXHAUSTED`. Each moved issue gets a `TRANSITIONED` history entry.
+   *   longer has → 400 `FAILED_PRECONDITION` "Workflow statuses have N issues;
+   *   supply a target status mapping", `details` `{reason:
+   *   "WORKFLOW_ISSUES_UNMAPPED", issueCount, statusKeys, targetStatusKeys}` as
+   *   strings (backend TAS-427: code and a gateway test, not measured on the
+   *   stand). A status delete counts only the deleted status's issues and
+   *   names the statuses the workflow keeps as targets; a workflow delete
+   *   counts every issue in a status the shared default lacks and names the
+   *   default's statuses this workflow also has. The dialog branches on
+   *   `details.reason` only. Each moved issue gets a `TRANSITIONED` history
+   *   entry.
    *
    * Every edit raises `version` by one.
    */

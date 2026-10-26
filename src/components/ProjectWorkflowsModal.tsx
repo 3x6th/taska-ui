@@ -17,17 +17,15 @@ import { taskaApi } from "../api/client";
 import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
 import { refusalWords } from "../lib/projectArchive";
 import type {
-  DictionaryEntry,
-  IssueTypeCode,
+  ProjectIssueType,
   ProjectRole,
   ProjectWorkflowEntry,
   WorkflowDefinition,
   WorkflowDefinitionTransition,
   WorkflowStatus,
 } from "../domain/types";
-import { useMeta } from "../hooks/useMeta";
 import { useUnanswered } from "../hooks/useUnanswered";
-import { issueTypeInSentence, issueTypeLabel, keyBadgeStyle, statusLabel } from "../lib/format";
+import { issueTypeInSentence, issueTypeLabel, keyBadgeStyle, statusLabel, type IssueTypeRegistry } from "../lib/format";
 import { boardKey } from "../lib/boardQuery";
 import { projectContextKey } from "../lib/projectContext";
 import {
@@ -42,9 +40,10 @@ import {
   defaultTransitionPair,
   firstTargetFrom,
   isIssueCountRefusal,
+  isMigrationLimitRefusal,
   issueCountOf,
   issueCountWords,
-  namedStatusKeys,
+  migrationLimitOf,
   nextTransitionSortOrder,
   normalizeStatusKey,
   orderWorkflowEntries,
@@ -53,9 +52,9 @@ import {
   statusCategoriesOf,
   statusEditPositions,
   statusKeyFromName,
-  statusesInBoth,
   statusesInColumnOrder,
   statusesToMap,
+  targetStatusKeysOf,
   transitionBetween,
   transitionButtonLabel,
   transitionEditPositions,
@@ -294,8 +293,12 @@ interface ProjectWorkflowsModalProps {
    * line says why in place of the role's.
    */
   archived?: boolean;
-  /** The board's issue types in its own order (`allowedIssueTypes`), which orders the project's own cards. */
-  issueTypeOrder: readonly IssueTypeCode[];
+  /**
+   * The project's issue-type registry off the board's context (TAS-417), or
+   * `undefined` before it has answered: the names, the chips and the order of
+   * the project's own cards — and nothing read for them here.
+   */
+  issueTypes: readonly ProjectIssueType[] | undefined;
   onClose: () => void;
 }
 
@@ -336,16 +339,18 @@ export function ProjectWorkflowsModal({
   projectColor,
   readerRole,
   archived = false,
-  issueTypeOrder,
+  issueTypes: registry,
   onClose,
 }: ProjectWorkflowsModalProps) {
   const queryClient = useQueryClient();
-  const served = useMeta()?.issueTypes;
   const workflowsQuery = useQuery(projectWorkflowsOptions(projectId));
   const unread = useUnanswered(workflowsQuery);
   const undeployed = unread.unanswered && isUndeployedRoute(unread.error, UNDEPLOYED_ROUTE_MESSAGE);
   const listed = workflowsQuery.data;
-  const entries = useMemo(() => orderWorkflowEntries(listed ?? [], issueTypeOrder), [listed, issueTypeOrder]);
+  const entries = useMemo(
+    () => orderWorkflowEntries(listed ?? [], (registry ?? []).map((entry) => entry.code)),
+    [listed, registry],
+  );
   const categories = useMemo(() => statusCategoriesOf(listed ?? []), [listed]);
   const shared = entries.find((entry) => entry.shared);
   const isAdmin = readerRole === "ADMIN" && !archived;
@@ -441,8 +446,12 @@ export function ProjectWorkflowsModal({
         return;
       }
       if (isGoneOrTaken(error)) void queryClient.invalidateQueries({ queryKey: listKey });
-      if ((sent.kind === "delete-status" || sent.kind === "delete-workflow") && isIssueCountRefusal(error)) {
-        // The strip becomes its move step, which says the refusal itself.
+      if (
+        (sent.kind === "delete-status" || sent.kind === "delete-workflow") &&
+        (isIssueCountRefusal(error) || isMigrationLimitRefusal(error))
+      ) {
+        // The strip becomes its move step — or, over the migration limit, its
+        // dead end — which says the refusal itself.
         setForm((current) => (current && isFormOf(current, sent) ? { ...current, refusal: error } : current));
         // Its first field — or, with nowhere to move the issues and so no
         // answer, its Cancel.
@@ -590,7 +599,7 @@ export function ProjectWorkflowsModal({
         {isAdmin && listed && listed.length > 0 ? (
           canCreate && shared ? (
             form?.kind === "create" ? (
-              <NewWorkflowForm {...formProps} served={served} shared={shared} send={send} />
+              <NewWorkflowForm {...formProps} registry={registry} shared={shared} send={send} />
             ) : (
               <AddTrigger
                 focusKey="trigger:create"
@@ -630,7 +639,7 @@ export function ProjectWorkflowsModal({
                   onOpenForm={openForm}
                   register={register}
                   send={send}
-                  served={served}
+                  registry={registry}
                   shared={shared}
                 />
               ))}
@@ -704,7 +713,7 @@ function WorkflowCard({
   form,
   formProps,
   highlight,
-  served,
+  registry,
   register,
   onOpenForm,
   send,
@@ -719,7 +728,7 @@ function WorkflowCard({
   form: OpenForm | null;
   formProps: FormProps;
   highlight: Highlight | null;
-  served: readonly DictionaryEntry[] | null | undefined;
+  registry: IssueTypeRegistry;
   register: Register;
   onOpenForm: (form: OpenForm) => void;
   send: (sent: WorkflowWrite) => void;
@@ -744,7 +753,7 @@ function WorkflowCard({
   const formHere = editable && form && form.kind !== "create" && form.workflowId === workflow.id ? form : null;
   const lit = (kind: Highlight["kind"], id: string) => highlight?.kind === kind && highlight.id === id;
   const controls: RowControls = { form: formHere, inFlight, register, onOpenForm };
-  const typesInWords = andList(issueTypes.map((code) => issueTypeLabel(code, served)));
+  const typesInWords = andList(issueTypes.map((code) => issueTypeLabel(code, registry)));
   const sharedName = shared?.workflow.name.trim() || "the shared workflow";
   const deleteStripId = `${ids}-delete`;
   const renaming = formHere?.kind === "rename";
@@ -798,7 +807,6 @@ function WorkflowCard({
           name={name}
           refusal={formHere.refusal}
           send={send}
-          shared={shared?.workflow}
           sharedName={sharedName}
           typeCount={issueTypes.length}
           typesInWords={typesInWords}
@@ -815,8 +823,8 @@ function WorkflowCard({
           <ul className="workflow-type-list">
             {issueTypes.map((code) => (
               <li className="workflow-type" key={code}>
-                <TypeChip type={code} />
-                <span>{issueTypeLabel(code, served)}</span>
+                <TypeChip registry={registry} type={code} />
+                <span>{issueTypeLabel(code, registry)}</span>
               </li>
             ))}
           </ul>
@@ -865,7 +873,7 @@ function WorkflowCard({
         // issue-service creates every issue in `TODO` whatever its workflow.
         <p className="workflow-fact">
           {`New issues always start in TODO, which this workflow does not have, so new ${
-            issueTypes.length ? `${andList(issueTypes.map((code) => issueTypeInSentence(code, served)))} ` : ""
+            issueTypes.length ? `${andList(issueTypes.map((code) => issueTypeInSentence(code, registry)))} ` : ""
           }issues will land outside their workflow on the board.`}
         </p>
       ) : null}
@@ -1546,13 +1554,29 @@ const strandedSentence = (keys: readonly string[], workflowName: string) =>
   } issues cannot be moved from here.`;
 
 /**
+ * The terminal sentence of a delete refused by the migration limit (backend
+ * TAS-427: 400 `FAILED_PRECONDITION`, `details.reason`
+ * `WORKFLOW_MIGRATION_LIMIT`, `details.limit`): no mapping helps and trying
+ * again does not either, so the strip offers no answer. Not the rate-limit
+ * wording — nothing here eases with time. `details.limit` that is not a whole
+ * number is left out of the words rather than guessed.
+ */
+const migrationLimitSentence = (refusal: unknown, subject: string) => {
+  const limit = migrationLimitOf(refusal);
+  return limit === null
+    ? `Too many issues would have to move at once, so ${subject} cannot be deleted.`
+    : `More than ${limit.toLocaleString("en-US")} issues would have to move, and the server moves at most ${limit.toLocaleString("en-US")} at once, so ${subject} cannot be deleted.`;
+};
+
+/**
  * Delete status (§4.28): the status and every transition from or to it. A
- * status with issues is refused with their count, and the strip then asks
- * where they go — any other status of this workflow — and sends the delete
- * again with that target. issue-service counts every issue of the workflow's
- * types in a status it will not keep, those already outside the workflow
- * included; when `details.statusKeys` names such a status, a target cannot
- * help, and the strip says so and offers no answer, as the workflow's does.
+ * status with issues is refused with their count (`WORKFLOW_ISSUES_UNMAPPED`),
+ * and the strip then asks where they go — a status the refusal names in
+ * `details.targetStatusKeys`, which for a status delete are the workflow's
+ * other statuses — and sends the delete again with that target. Since backend
+ * TAS-427 the server counts only the deleted status's issues, so every issue
+ * it names can be moved from here. A delete over the migration limit is a
+ * dead end, said once.
  */
 function DeleteStatusStrip({
   id,
@@ -1573,13 +1597,14 @@ function DeleteStatusStrip({
   send: (sent: WorkflowWrite) => void;
 }) {
   const [target, setTarget] = useState("");
-  const others = statusesInColumnOrder(workflow.statuses).filter((item) => item.id !== status.id);
+  const limited = refusal ? isMigrationLimitRefusal(refusal) : false;
+  const named = refusal ? targetStatusKeysOf(refusal) : [];
+  const others = statusesInColumnOrder(workflow.statuses).filter(
+    (item) => item.id !== status.id && (named.length === 0 || named.includes(item.statusKey)),
+  );
   const options = others.map((item) => ({ key: item.statusKey, label: statusLabel(item.statusKey, workflow.statuses) }));
   const chosen = options.find((option) => option.key === target);
-  const count = refusal ? issueCountOf(refusal) : null;
-  const stranded = refusal
-    ? namedStatusKeys(apiErrorFacts(refusal).details).filter((key) => key !== status.statusKey)
-    : [];
+  const count = refusal && !limited ? issueCountOf(refusal) : null;
   const left = `${count === null ? "Issues" : issueCountWords(count)} would be left in a status this workflow no longer has.`;
 
   return (
@@ -1588,7 +1613,7 @@ function DeleteStatusStrip({
       answerLabel={refusal ? "Move and delete" : "Delete status"}
       id={id}
       onAnswer={
-        stranded.length
+        limited
           ? null
           : () =>
               send({
@@ -1610,24 +1635,24 @@ function DeleteStatusStrip({
       sentence={`Delete ${label}? Its transitions are deleted with it.`}
       step={
         refusal
-          ? {
-              refusal,
-              sentence: stranded.length ? left : `${left} Move ${label}’s issues to delete it.`,
-              blocked: !chosen,
-              fields: stranded.length ? (
-                <p className="workflow-confirm-note">{strandedSentence(stranded, workflowName)}</p>
-              ) : (
-                <TargetSelect
-                  inFlight={formProps.inFlight}
-                  label="Move its issues to"
-                  onChange={setTarget}
-                  focusKey="step"
-                  options={options}
-                  register={formProps.register}
-                  value={chosen ? target : ""}
-                />
-              ),
-            }
+          ? limited
+            ? { refusal, sentence: migrationLimitSentence(refusal, label), blocked: false, fields: null }
+            : {
+                refusal,
+                sentence: `${left} Move ${label}’s issues to delete it.`,
+                blocked: !chosen,
+                fields: (
+                  <TargetSelect
+                    inFlight={formProps.inFlight}
+                    label="Move its issues to"
+                    onChange={setTarget}
+                    focusKey="step"
+                    options={options}
+                    register={formProps.register}
+                    value={chosen ? target : ""}
+                  />
+                ),
+              }
           : undefined
       }
     />
@@ -1636,22 +1661,21 @@ function DeleteStatusStrip({
 
 /**
  * Delete workflow (§4.28): its types go back to the shared default. Issues in
- * a status the shared default does not have are refused with their count and
- * their statuses (`details.statusKeys`), and the strip then asks, per such
- * status, which status of **both** workflows they go to — or says there is
- * none, and offers no answer. A refusal that names no status is said as one.
- *
- * When every type has a workflow of its own the list leaves the shared
- * default out, and its statuses are not known here. The sources still are —
- * each named status is one the shared default lacks — so the targets offered
- * are this workflow's other statuses, under a line that says the server takes
- * only one both workflows have; it judges, in its own words.
+ * a status the shared default does not have are refused
+ * (`WORKFLOW_ISSUES_UNMAPPED`) with their count, their statuses
+ * (`details.statusKeys`) and the statuses they may go to
+ * (`details.targetStatusKeys`: the shared default's statuses this workflow
+ * also has — the server moves issues only to one of **both**, backend
+ * TAS-427). The strip then asks, per named status of this workflow, which of
+ * those targets its issues go to — or says there is none, and offers no
+ * answer. A named status this workflow does not have cannot be a mapping's
+ * source, and is said as such (the workflow delete still counts them, A12). A
+ * delete over the migration limit is a dead end, said once.
  */
 function DeleteWorkflowStrip({
   id,
   workflow,
   name,
-  shared,
   sharedName,
   typeCount,
   typesInWords,
@@ -1662,7 +1686,6 @@ function DeleteWorkflowStrip({
   id: string;
   workflow: WorkflowDefinition;
   name: string;
-  shared: WorkflowDefinition | undefined;
   sharedName: string;
   typeCount: number;
   typesInWords: string;
@@ -1670,28 +1693,24 @@ function DeleteWorkflowStrip({
   send: (sent: WorkflowWrite) => void;
 }) {
   const [mapping, setMapping] = useState<Record<string, string>>({});
-  const toMap = refusal ? statusesToMap(workflow, apiErrorFacts(refusal).details) : null;
+  const limited = refusal ? isMigrationLimitRefusal(refusal) : false;
+  const toMap = refusal && !limited ? statusesToMap(workflow, apiErrorFacts(refusal).details) : null;
   // A refusal that names no status to map is not one a mapping answers: it is
   // said as a refusal, and the question stays as it was.
   const step = toMap && (toMap.mappable.length > 0 || toMap.unmappable.length > 0) ? toMap : null;
-  const sources = new Set(step?.mappable.map((status) => status.statusKey) ?? []);
-  // A source is a status the shared default lacks, so without the shared
-  // default's statuses the candidates are the others of this workflow.
-  const candidates = shared
-    ? statusesInBoth(workflow, shared)
-    : statusesInColumnOrder(workflow.statuses).filter((status) => !sources.has(status.statusKey));
-  const targets = candidates.map((status) => ({
-    key: status.statusKey,
-    label: statusLabel(status.statusKey, workflow.statuses),
-  }));
+  // The targets are the server's, labelled from this workflow's statuses and
+  // drawn in its column order.
+  const named = refusal && !limited ? targetStatusKeysOf(refusal) : [];
+  const targets = statusesInColumnOrder(workflow.statuses)
+    .filter((status) => named.includes(status.statusKey))
+    .map((status) => ({ key: status.statusKey, label: statusLabel(status.statusKey, workflow.statuses) }));
   const chosen = (key: string) => (targets.some((target) => target.key === mapping[key]) ? mapping[key] : "");
   const sent = step ? Object.fromEntries(step.mappable.map((status) => [status.statusKey, chosen(status.statusKey)])) : {};
   const blocked = step ? step.mappable.some((status) => chosen(status.statusKey) === "") : false;
-  const count = refusal ? issueCountOf(refusal) : null;
-  // Every candidate gone is a true "no status in common" either way: without
-  // the shared default, each remaining status was named as one it lacks.
+  const count = refusal && !limited ? issueCountOf(refusal) : null;
+  // No target named is the server saying the two workflows share no status.
   const nowhere = step && step.unmappable.length === 0 && targets.length === 0;
-  const answerable = !step || (step.unmappable.length === 0 && targets.length > 0);
+  const answerable = !limited && (!step || (step.unmappable.length === 0 && targets.length > 0));
   const left = `${count === null ? "Issues" : issueCountWords(count)} would be left in statuses ${sharedName} does not have.`;
   const one = typeCount === 1;
   const back = typesInWords
@@ -1721,29 +1740,23 @@ function DeleteWorkflowStrip({
       refusedSentence="The workflow was not deleted."
       sentence={`Delete ${name}? ${back}`}
       step={
-        step
-          ? {
-              refusal,
-              // Without the shared default its line already says "Choose".
-              sentence: answerable && shared ? `${left} Choose where each status’s issues go.` : left,
-              blocked,
-              fields: (
-                <>
-                  {step.unmappable.length ? (
-                    <p className="workflow-confirm-note">{strandedSentence(step.unmappable, name)}</p>
-                  ) : nowhere ? (
-                    <p className="workflow-confirm-note">
-                      {`${name} shares no status with ${sharedName}, so these issues have nowhere to go. Add one of ${sharedName}’s statuses to ${name} first.`}
-                    </p>
-                  ) : (
-                    <>
-                      {shared ? null : (
-                        <p className="workflow-confirm-note">
-                          The shared workflow is not in this list, so its statuses are not known here. Choose one it also has:
-                          the server moves issues only to a status both workflows have.
-                        </p>
-                      )}
-                      {step.mappable.map((status, index) => (
+        limited
+          ? { refusal, sentence: migrationLimitSentence(refusal, name), blocked: false, fields: null }
+          : step
+            ? {
+                refusal,
+                sentence: answerable ? `${left} Choose where each status’s issues go.` : left,
+                blocked,
+                fields: (
+                  <>
+                    {step.unmappable.length ? (
+                      <p className="workflow-confirm-note">{strandedSentence(step.unmappable, name)}</p>
+                    ) : nowhere ? (
+                      <p className="workflow-confirm-note">
+                        {`${name} shares no status with ${sharedName}, so these issues have nowhere to go. Add one of ${sharedName}’s statuses to ${name} first.`}
+                      </p>
+                    ) : (
+                      step.mappable.map((status, index) => (
                         <TargetSelect
                           inFlight={formProps.inFlight}
                           key={status.id}
@@ -1754,13 +1767,12 @@ function DeleteWorkflowStrip({
                           register={formProps.register}
                           value={chosen(status.statusKey)}
                         />
-                      ))}
-                    </>
-                  )}
-                </>
-              ),
-            }
-          : undefined
+                      ))
+                    )}
+                  </>
+                ),
+              }
+            : undefined
       }
     />
   );
@@ -1774,12 +1786,12 @@ function DeleteWorkflowStrip({
  */
 function NewWorkflowForm({
   shared,
-  served,
+  registry,
   send,
   ...formProps
 }: FormProps & {
   shared: ProjectWorkflowEntry;
-  served: readonly DictionaryEntry[] | null | undefined;
+  registry: IssueTypeRegistry;
   send: (sent: WorkflowWrite) => void;
 }) {
   const ids = useId();
@@ -1800,7 +1812,7 @@ function NewWorkflowForm({
         event.preventDefault();
         if (formProps.inFlight || blocked) return;
         const trimmed = name.trim();
-        const types = andList(chosen.map((code) => issueTypeLabel(code, served)));
+        const types = andList(chosen.map((code) => issueTypeLabel(code, registry)));
         send({
           kind: "create",
           input: workflowCopyInput(shared.workflow, trimmed, chosen),
@@ -1836,8 +1848,8 @@ function NewWorkflowForm({
                 }
                 type="checkbox"
               />
-              <TypeChip type={code} />
-              <span>{issueTypeLabel(code, served)}</span>
+              <TypeChip registry={registry} type={code} />
+              <span>{issueTypeLabel(code, registry)}</span>
             </label>
           ))}
         </div>

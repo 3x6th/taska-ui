@@ -1,27 +1,115 @@
-import { X } from "lucide-react";
-import type { Label } from "../domain/types";
+import {
+  BookOpen,
+  Bug,
+  FileText,
+  Flag,
+  Headset,
+  Layers,
+  Megaphone,
+  SquareCheckBig,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+import { createElement, type CSSProperties } from "react";
+import type { IssueSearchHit, IssueTypeColor, IssueTypeIcon, Label } from "../domain/types";
 import { useMeta } from "../hooks/useMeta";
-import { issueTypeLabel, issueTypeVisual, labelChipStyle, priorityLabel, priorityVisual, statusColor } from "../lib/format";
+import {
+  issueTypeColorValue,
+  issueTypeEntry,
+  issueTypeLabel,
+  labelChipStyle,
+  priorityLabel,
+  priorityVisual,
+  readableTextOn,
+  statusColor,
+  type IssueTypeRegistry,
+} from "../lib/format";
 
 /**
- * §4.6. Takes any code the server sent (TAS-173): a type this build has no
- * colour for is the same 14px square in `--fg-3` — no shift in the row, and
- * neutral rather than a hollow box that reads as a checkbox — named in `title`
- * by the one label rule (`issueTypeLabel`).
+ * DESIGN.md §4.6 (TAS-417): the contract's icon key → the `lucide-react` glyph
+ * drawn for it. The one table, statically imported so the bundle carries
+ * exactly these eight; a value off the wire is read only through
+ * `IssueTypeGlyph`, never by indexing.
  */
-export function TypeChip({ type }: { type: string }) {
-  const served = useMeta()?.issueTypes;
-  const visual = issueTypeVisual(type);
+const issueTypeIcons: Record<IssueTypeIcon, LucideIcon> = {
+  "check-square": SquareCheckBig,
+  bug: Bug,
+  "book-open": BookOpen,
+  headset: Headset,
+  megaphone: Megaphone,
+  "file-text": FileText,
+  flag: Flag,
+  layers: Layers,
+};
+
+/**
+ * The glyph for an icon key, read through the table only by value — a key
+ * outside the eight draws nothing (§4.6). `chip` is the type chip's stroke:
+ * 1.5, absolute, so the 12px glyph is not drawn thinner than its neighbours.
+ */
+export function IssueTypeGlyph({ icon, size, chip = false }: { icon: IssueTypeIcon | null; size: number; chip?: boolean }) {
+  if (icon === null || !Object.hasOwn(issueTypeIcons, icon)) return null;
+  return createElement(issueTypeIcons[icon], {
+    "aria-hidden": true,
+    size,
+    ...(chip ? { absoluteStrokeWidth: true, strokeWidth: 1.5 } : {}),
+  });
+}
+
+/**
+ * The 16×16 tile of §4.6 for a look: the fill of the type's colour with its
+ * glyph in `readableTextOn` of that fill, the two set together in one inline
+ * style (§4.4's pair rule). A colour outside the seven is the neutral fill with
+ * a `--fg` glyph, by class; an icon outside the eight leaves the tile without a
+ * glyph. Used where a look is drawn without a stored type behind it as well —
+ * the Issue types form's live preview.
+ */
+export function TypeTile({
+  color,
+  icon,
+  title,
+  className = "",
+}: {
+  color: IssueTypeColor | null;
+  icon: IssueTypeIcon | null;
+  title?: string;
+  className?: string;
+}) {
+  const fill = color === null ? null : issueTypeColorValue(color);
+  const style: CSSProperties | undefined = fill ? { backgroundColor: fill, color: readableTextOn(fill) } : undefined;
   return (
-    <span
-      className={`type-chip ${visual.known ? "" : "is-unknown"}`}
-      style={{
-        backgroundColor: visual.color,
-        borderRadius: visual.radius,
-      }}
-      title={issueTypeLabel(type, served)}
-    />
+    <span className={`type-chip ${fill ? "" : "is-unknown-color"} ${className}`} style={style} title={title}>
+      <IssueTypeGlyph chip icon={icon} size={12} />
+    </span>
   );
+}
+
+/**
+ * §4.6 (TAS-417, TAS-418). Takes any key the server sent and where its look
+ * comes from: the project's registry — an entry of the context in the cache —
+ * or, for a global-search hit, the hit's own `issueTypeName`, `issueTypeColor`
+ * and `issueTypeIcon`. A key the registry does not hold, a hit that carries no
+ * look, or neither source at all is the same 16px slot filled `--fg-3` with no
+ * glyph, so nothing in the row moves. `title` is the label of §6.
+ */
+export function TypeChip({
+  type,
+  registry,
+  hit,
+}: {
+  type: string;
+  registry?: IssueTypeRegistry;
+  hit?: Pick<IssueSearchHit, "issueTypeName" | "issueTypeColor" | "issueTypeIcon">;
+}) {
+  const title = issueTypeLabel(type, registry, hit?.issueTypeName);
+  // A hit whose type has left its registry carries none of the three (TAS-418).
+  const hitLook =
+    hit && (hit.issueTypeName != null || hit.issueTypeColor != null || hit.issueTypeIcon != null)
+      ? { color: hit.issueTypeColor ?? null, icon: hit.issueTypeIcon ?? null }
+      : null;
+  const look = registry ? issueTypeEntry(type, registry) : hitLook;
+  if (!look) return <span className="type-chip is-unknown" title={title} />;
+  return <TypeTile color={look.color} icon={look.icon} title={title} />;
 }
 
 /**
@@ -78,7 +166,7 @@ export function CategoryDot({ category }: { category: string }) {
 
 /**
  * One label, as a pill (§4.5). The name is always text: colour carries no
- * meaning on its own here for the same reason the BUG type chip is a circle
+ * meaning on its own here, as a type chip carries its glyph beside its colour
  * (§4.6), and a label whose name the gateway omitted says so rather than
  * rendering as a bare swatch nobody can read or search for.
  *

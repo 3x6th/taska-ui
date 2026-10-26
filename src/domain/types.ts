@@ -45,7 +45,6 @@ export type UserStatus = "INVITED" | "ACTIVE" | "BLOCKED" | "LOCKED";
  */
 export type GlobalRole = "USER" | "GLOBAL_ADMIN";
 export type ProjectRole = "ADMIN" | "MEMBER" | "VIEWER";
-export type IssueType = "TASK" | "BUG" | "STORY";
 export type IssuePriority = "LOW" | "MEDIUM" | "HIGH";
 export type IssueStatus = "TODO" | "IN_PROGRESS" | "DONE";
 export type IssueLinkType = "BLOCKS" | "RELATES_TO" | "DUPLICATES";
@@ -62,7 +61,13 @@ export type IssueLinkType = "BLOCKS" | "RELATES_TO" | "DUPLICATES";
  * `src/lib/format.ts`, which answer for a code they do not know instead of
  * indexing a table with it — the index that threw is what blanked a screen.
  */
-export type IssueTypeCode = IssueType | (string & {});
+/**
+ * An issue type is a key of the project's own registry since backend #226
+ * (TAS-386; `IssueTypeDto` is `^[A-Z][A-Z0-9_]{1,31}$`), not a member of a
+ * closed set: there is no union of types this build knows (TAS-417). Its name,
+ * colour and icon come from `ProjectContext.issueTypes`.
+ */
+export type IssueTypeCode = string;
 export type IssuePriorityCode = IssuePriority | (string & {});
 export type IssueStatusKey = IssueStatus | (string & {});
 export type IssueLinkTypeCode = IssueLinkType | (string & {});
@@ -154,6 +159,8 @@ export type NotificationType =
   | "MEMBER_ADDED"
   | "MEMBER_UPDATED"
   | "MEMBER_REMOVED"
+  | "PERSONAL_ACCESS_TOKEN_CREATED"
+  | "PERSONAL_ACCESS_TOKEN_REVOKED"
   | "UNKNOWN";
 
 export interface User {
@@ -629,15 +636,44 @@ export interface WorkflowDefinition extends Omit<Workflow, "transitions"> {
 /**
  * `ProjectWorkflowDto` (backend PR #208): one workflow the project runs on, the
  * project's issue types that run on it, and whether it is the shared default.
- * `issueTypes` as sent — may include types the project does not allow
- * (workflow-service ignores `allowedIssueTypes`, docs/ai/BACKLOG.md), and no
- * reader intersects it with the context. `shared` is `true` for anything but an
- * explicit `false`, so a value nobody stated is read-only.
+ * `issueTypes` as sent. The list route filters them through the project's
+ * registry (backend #226, `ProjectWorkflowListService`); the TAS-416 write
+ * answers list the workflow's bindings, which may still name a type deleted
+ * from the registry (backend ask A4, TAS-418), and no reader intersects them
+ * with the context. `shared` is `true` for anything but an explicit `false`,
+ * so a value nobody stated is read-only.
  */
 export interface ProjectWorkflowEntry {
   workflow: WorkflowDefinition;
   issueTypes: IssueTypeCode[];
   shared: boolean;
+}
+
+/** `ProjectIssueTypeColorDto` — closed in the contract (backend #212). */
+export type IssueTypeColor = "blue" | "red" | "green" | "amber" | "purple" | "teal" | "slate";
+/** `ProjectIssueTypeIconDto` — closed in the contract (backend #212). */
+export type IssueTypeIcon =
+  | "check-square"
+  | "bug"
+  | "book-open"
+  | "headset"
+  | "megaphone"
+  | "file-text"
+  | "flag"
+  | "layers";
+
+/**
+ * One entry of a project's issue-type registry — `ProjectIssueTypeDto`
+ * (backend #212, TAS-385). `color` and `icon` are `null` when the server sent a
+ * value outside the sets this build can draw (TAS-173's precedent): the chip
+ * then draws its neutral form (DESIGN.md §4.6) rather than guessing.
+ */
+export interface ProjectIssueType {
+  code: IssueTypeCode;
+  name: string;
+  color: IssueTypeColor | null;
+  icon: IssueTypeIcon | null;
+  sortOrder: number;
 }
 
 /**
@@ -675,9 +711,18 @@ export interface ProjectContext {
    */
   labels: Label[];
   /**
-   * Keyed by issue type, **and only the types the project allows**: one, two,
-   * all three or none. A type that is not here is not a failure; it is a type
-   * this project does not offer. Keyed by the code as sent, a type this build
+   * The project's issue-type registry (backend #212, TAS-385), **in the
+   * server's order** — `sortOrder`, then `code` byte-wise (backend TAS-418) —
+   * which is the order every picker, filter and list draws; the first is the
+   * type a new issue starts as. Never re-sorted here (DESIGN.md §6). Empty is
+   * a real answer: a project nobody can create an issue in.
+   */
+  issueTypes: ProjectIssueType[];
+  /**
+   * Keyed by issue type: one entry per type of the registry (backend #226),
+   * its own binding or the shared default. A type that is not here is not a
+   * failure; it is a type this project does not offer. Keyed by the code as
+   * sent, a type this build
    * has no name for included (TAS-173); only an entry with no type at all (the
    * wire's `null`) is dropped by the API layer. Read through `workflowFor`
    * (src/lib/projectContext.ts), never by indexing — a code is a string the
@@ -858,6 +903,17 @@ export interface IssueSearchHit {
   id: string;
   issueKey: string;
   issueType: IssueTypeCode;
+  /**
+   * The type's look as the hit's own project registry holds it now (backend
+   * TAS-418, `IssueShortResponseDto.issueTypeName/Color/Icon`): what global
+   * search draws the type with, so it never reads a project context per hit
+   * (DESIGN.md §4.6, §4.20). Each `null` when absent — a type deleted from
+   * the registry since — and the colour and the icon `null` too for a value
+   * outside the contract's sets, which the chip draws neutral.
+   */
+  issueTypeName: string | null;
+  issueTypeColor: IssueTypeColor | null;
+  issueTypeIcon: IssueTypeIcon | null;
   summary: string;
   priority: IssuePriorityCode;
   /** `""` on the wire for an unassigned issue; normalised to `null` like `Issue.assigneeId`. */
@@ -955,18 +1011,33 @@ export interface BoardColumn {
   name: string;
   category: string;
   sortOrder: number;
+  /** The first page of the column: at most `pageSizePerColumn` issues (backend TAS-392). */
   issues: BoardIssue[];
+  /**
+   * Every issue of the column that matches the read's filters, before the page
+   * was cut — the count pill's number (DESIGN.md §4.9). `null` when the answer
+   * did not state it as a whole number: then the pill says `Unknown`, never the
+   * length of `issues`.
+   */
+  totalCount: number | null;
+  /**
+   * Whether issues of the column lie past `issues`. Stated by the server; when
+   * it is not a boolean, `totalCount > issues.length` if the count is known, and
+   * `null` — no foot, no claim — if it is not.
+   */
+  hasMore: boolean | null;
 }
 
 /**
  * `GET /projects/{projectId}/board` — `BoardResponseDto` since backend #205
  * (TAS-213), the board screen's one issue read (TAS-202).
  *
- * Without `issueType` the gateway reads the workflows of TASK, BUG and STORY —
- * a constant in `BoardServiceImpl`, not the project's allowed types (backend
- * A4) — skips a type whose workflow is not found, and merges their statuses
- * into `columns` by key, the first type to state a key winning, then stably by
- * `sortOrder`. It reads the issues of those three types only.
+ * Without `issueType` the gateway reads the workflows of the project's
+ * issue-type registry in its order (backend #226, TAS-393) — skipping a type
+ * whose workflow is not found — and merges their statuses into `columns` by
+ * key, the first type to state a key winning, then stably by `sortOrder`. It
+ * reads the issues of those types only: an issue of a type the registry does
+ * not hold is on no column and not in `unplacedIssues`.
  *
  * `unplacedIssues` holds every issue read whose status is not in **its own
  * type's** workflow — a status that stands as a column only because another
@@ -974,13 +1045,21 @@ export interface BoardColumn {
  * of a type whose workflow was not found. The board draws it as the group
  * «Outside their workflow» (DESIGN.md §4.9) and never recomputes it.
  *
- * No paging and no cap: the answer is the whole board, which is what lets the
- * screen filter locally (backend A3 is the day that changes).
+ * **Capped since backend TAS-392**: each column, and `unplacedIssues` as one
+ * bucket, carries at most `pageSizePerColumn` issues (the board screen asks for
+ * 200, the most it may), with the true count and whether more lie past the
+ * page. Nothing continues a column in its own order yet (backend A1, TAS-430),
+ * so the board says how many it shows of how many and the filters — which the
+ * server applies before the cap — find the rest (DESIGN.md §4.9, §5.4).
  */
 export interface Board {
   projectId: string;
   columns: BoardColumn[];
   unplacedIssues: BoardIssue[];
+  /** As a column's `totalCount`, for «Outside their workflow». */
+  unplacedTotalCount: number | null;
+  /** As a column's `hasMore`, for «Outside their workflow». */
+  unplacedHasMore: boolean | null;
 }
 
 /**
@@ -1074,6 +1153,15 @@ export interface IssueHistoryEvent {
   issueId: string;
   eventType: IssueEventType;
   actorUserId: string;
+  /**
+   * Who did it, as the server names them (backend TAS-398): the profile behind
+   * `actorUserId` — a former member of the project included — or `null` when no
+   * profile was found. Only the details read carries it; the transition
+   * answer's history never does, and absent reads as `null`. A blank name is
+   * `null` (§4.21), so the Activity row falls through to the member list and
+   * then to "Unknown" (`personFor`, DESIGN.md §4.26).
+   */
+  actor?: UserSummary | null;
   occurredAt: string;
   /** The channel mark (`ActionVia`): mock only until TAS-411. */
   via?: ActionVia | null;
@@ -1426,6 +1514,29 @@ export interface IssueWorklog {
   comment: string | null;
   createdAt: string;
   updatedAt: string | null;
+  /**
+   * Who logged it, as the list names them (backend TAS-421): the profile behind
+   * `authorUserId` — a former member included — or `null` when no profile was
+   * found. **Absent** — the key not there — on a write's answer, which does not
+   * name the author: a row that already knew its author keeps it.
+   */
+  author?: UserSummary | null;
+}
+
+/**
+ * One page of an issue's work log (`ListIssueWorklogsResponseDto`, backend
+ * TAS-421): newest first — `workDate`, `createdAt`, `id`, all descending.
+ * `totalCount` (every live entry of the issue) and `hasMore` are `null` when
+ * the answer did not state them as a number and a boolean: an unstated count is
+ * never the length of the page, and an unstated `hasMore` never means the list
+ * is complete.
+ */
+export interface IssueWorklogPage {
+  items: IssueWorklog[];
+  page: number;
+  pageSize: number;
+  totalCount: number | null;
+  hasMore: boolean | null;
 }
 
 export interface IssueComment {
@@ -1814,19 +1925,25 @@ export interface TelegramLink {
   linkId: string;
   url: string;
   expiresAt: string;
+  /**
+   * The reader's settings as the server holds them after it issued this link,
+   * in the same transaction (`TelegramLinkDto.preferences`, required since
+   * backend TAS-387). The section draws from it; there is no separate read.
+   */
+  preferences: NotificationPreferences;
 }
 
 /**
- * One of the reader's personal access tokens (TAS-412, for backend TAS-402) —
- * what the list shows and the create answer describes. **Never the secret**:
- * the token's value is shown once, in `IssuedAccessToken`, and nothing that
- * holds this type holds it. `tokenPrefix` is the token's first characters
- * (`tsk_pat_3fA9`), which is all the reader is shown of it afterwards.
+ * One of the reader's personal access tokens (TAS-412; `PersonalAccessTokenDto`
+ * of backend TAS-402) — what the list shows and the create answer describes.
+ * **Never the secret**: the token's value is shown once, in
+ * `IssuedAccessToken`, and nothing that holds this type holds it.
+ * `tokenPrefix` is the token's first characters (`tsk_pat_3fA9`), which is all
+ * the reader is shown of it afterwards.
  *
  * `scopes` is an open list, like every other value set the server names
  * (TAS-173): `["read"]` and `["read", "write"]` are the two this build asks
- * for and names; anything else is printed as it came. The shape is the
- * frontend's proposal on TAS-402, not the contract (see `RestTaskaApi`).
+ * for and names; anything else is printed as it came.
  */
 export interface AccessToken {
   id: string;
@@ -1837,6 +1954,27 @@ export interface AccessToken {
   expiresAt: string;
   /** `null`: the token has never been used. */
   lastUsedAt: string | null;
+}
+
+/**
+ * `PersonalTokenPolicyDto`: the longest lifetime a new token may have, in
+ * days, and how many unexpired tokens an account may hold at once. The list
+ * read carries it; the create form offers lifetimes up to the first.
+ */
+export interface AccessTokenPolicy {
+  maxLifetimeDays: number;
+  maxActiveTokens: number;
+}
+
+/**
+ * `GET /users/me/access-tokens`: the reader's tokens that are not revoked —
+ * expired ones included — in the server's order (`createdAt`, then `id`, both
+ * newest first), and the policy; `null` when the answer carried none this
+ * build can read.
+ */
+export interface AccessTokenList {
+  tokens: AccessToken[];
+  policy: AccessTokenPolicy | null;
 }
 
 /**

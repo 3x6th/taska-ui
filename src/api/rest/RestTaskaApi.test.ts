@@ -11,6 +11,7 @@ import {
   isConflict,
   isMissingOrForbidden,
   isProjectArchived,
+  isTransitionConflict,
   isUndeployedRoute,
 } from "../errors";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
@@ -2336,6 +2337,10 @@ describe("RestTaskaApi issue search", () => {
         projectId: null,
         projectKey: null,
         statusKey: null,
+        // Nor TAS-418's look — absent, as for a type deleted from the registry.
+        issueTypeName: null,
+        issueTypeColor: null,
+        issueTypeIcon: null,
       },
       {
         id: "issue-2",
@@ -2348,11 +2353,33 @@ describe("RestTaskaApi issue search", () => {
         projectId: null,
         projectKey: null,
         statusKey: null,
+        issueTypeName: null,
+        issueTypeColor: null,
+        issueTypeIcon: null,
       },
     ]);
     // The count is of the whole matching set, not of the page.
     expect(page.totalCount).toBe(42);
     expect(page.page).toBe(0);
+  });
+
+  it("carries the type's look TAS-418 put on the hit, a blank name and a value outside the sets read as none", async () => {
+    stubFetch({
+      items: [
+        { id: "issue-1", issueKey: "TAS-101", summary: "s", issueType: "REQUEST", priority: "HIGH", issueTypeName: "Request", issueTypeColor: "teal", issueTypeIcon: "headset" },
+        { id: "issue-2", issueKey: "TAS-102", summary: "s", issueType: "SPIKE", priority: "HIGH", issueTypeName: "  ", issueTypeColor: "pink", issueTypeIcon: "rocket" },
+        { id: "issue-3", issueKey: "TAS-103", summary: "s", issueType: "OLD", priority: "HIGH", issueTypeName: null, issueTypeColor: null, issueTypeIcon: null },
+      ],
+      totalCount: 3,
+    });
+
+    const { items } = await new RestTaskaApi().searchIssues({ query: "board" });
+
+    expect(items.map(({ issueTypeName, issueTypeColor, issueTypeIcon }) => [issueTypeName, issueTypeColor, issueTypeIcon])).toEqual([
+      ["Request", "teal", "headset"],
+      [null, null, null],
+      [null, null, null],
+    ]);
   });
 
   it("carries the project and the status key TAS-218 put on the hit, blank read as absent", async () => {
@@ -2626,7 +2653,7 @@ describe("RestTaskaApi board", () => {
     expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1/board?includeDone=true");
   });
 
-  it("sends every filter the route takes, `includeDone` only when true and `query` only when not blank", async () => {
+  it("sends every filter the route takes, the page size, `includeDone` only when true and `query` as given", async () => {
     const fetchStub = stubFetch(emptyBoard);
 
     await new RestTaskaApi().getBoard("project-1", {
@@ -2636,6 +2663,7 @@ describe("RestTaskaApi board", () => {
       includeDone: true,
       priority: "HIGH",
       query: "Board",
+      pageSizePerColumn: 200,
     });
 
     const url = new URL(String(fetchStub.mock.calls[0][0]), "http://localhost");
@@ -2646,14 +2674,57 @@ describe("RestTaskaApi board", () => {
       includeDone: "true",
       priority: "HIGH",
       query: "Board",
+      pageSizePerColumn: "200",
     });
 
-    // `false` is the same request as saying nothing, and a blank `query` is one
-    // the contract's `minLength: 1` would refuse.
+    // `false` is the same request as saying nothing. `query` goes as given —
+    // the board screen trims it and never sends a blank one; the gateway
+    // refuses an empty one (`minLength: 1`), as the mock does.
     vi.unstubAllGlobals();
     const second = stubFetch(emptyBoard);
-    await new RestTaskaApi().getBoard("project-1", { includeDone: false, query: "  " });
-    expect(second.mock.calls[0][0]).toBe("/api/v1/projects/project-1/board");
+    await new RestTaskaApi().getBoard("project-1", { includeDone: false, query: " qa " });
+    expect(second.mock.calls[0][0]).toBe("/api/v1/projects/project-1/board?query=+qa+");
+  });
+
+  // Backend TAS-392: each column and the unplaced bucket state their true count
+  // and whether more lie past the page; read defensively — a count that is not
+  // a whole number is unknown, never the cards drawn, and `hasMore` that is not
+  // a boolean is worked out from a known count, else unknown.
+  it("reads the counts of a capped board, and an unreadable one as unknown", async () => {
+    const card = {
+      id: "issue-1",
+      issueKey: "API-1",
+      summary: "One",
+      issueType: "TASK",
+      priority: "HIGH",
+      statusKey: "TODO",
+      createdAt: "2026-10-20T09:00:00Z",
+      updatedAt: "2026-10-21T09:00:00Z",
+      version: 1,
+    };
+    stubFetch({
+      projectId: "project-1",
+      columns: [
+        { statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10, issues: [card], totalCount: 250, hasMore: true },
+        { statusKey: "DOING", name: "Doing", category: "IN_PROGRESS", sortOrder: 20, issues: [], totalCount: "7", hasMore: "yes" },
+        { statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30, issues: [card], totalCount: 4 },
+        { statusKey: "LATER", name: "Later", category: "TODO", sortOrder: 40, issues: [], totalCount: -1, hasMore: false },
+      ],
+      unplacedIssues: [],
+      unplacedTotalCount: 0,
+      unplacedHasMore: false,
+    });
+
+    const board = await new RestTaskaApi().getBoard("project-1", { includeDone: true, pageSizePerColumn: 200 });
+
+    expect(board.columns.map((column) => [column.statusKey, column.totalCount, column.hasMore])).toEqual([
+      ["TODO", 250, true],
+      ["DOING", null, null],
+      // No `hasMore`: the count says there are more than drawn.
+      ["DONE", 4, true],
+      ["LATER", null, false],
+    ]);
+    expect(board).toMatchObject({ unplacedTotalCount: 0, unplacedHasMore: false });
   });
 
   it("maps the columns, the cards outside their workflow, the joined people and the labels", async () => {
@@ -2724,9 +2795,12 @@ describe("RestTaskaApi board", () => {
     };
     expect(board).toEqual({
       projectId: "c9594240-4c60-478d-8eb1-9c8986cd39c1",
+      // No counts on this wire: unknown, never the cards drawn.
+      unplacedTotalCount: null,
+      unplacedHasMore: null,
       columns: [
-        { statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10, issues: [mapped] },
-        { statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30, issues: [] },
+        { statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10, issues: [mapped], totalCount: null, hasMore: null },
+        { statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30, issues: [], totalCount: null, hasMore: null },
       ],
       unplacedIssues: [
         {
@@ -2754,6 +2828,8 @@ describe("RestTaskaApi board", () => {
       projectId: "project-1",
       columns: [],
       unplacedIssues: [],
+      unplacedTotalCount: null,
+      unplacedHasMore: null,
     });
   });
 });
@@ -3739,6 +3815,9 @@ describe("RestTaskaApi issue planning fields", () => {
       "id",
       "issueKey",
       "issueType",
+      "issueTypeColor",
+      "issueTypeIcon",
+      "issueTypeName",
       "priority",
       "projectId",
       "projectKey",
@@ -3831,6 +3910,53 @@ describe("RestTaskaApi issue writes", () => {
     expect(init?.method).toBe("PATCH");
     expect(init?.headers?.["If-Match"]).toBe('"4"');
     expect(sentBody(fetchStub)).toEqual({ summary: "Revisited" });
+  });
+
+  // Backend TAS-422: a transition carries the version too, and a stale one is
+  // 409 ABORTED with the current version and status in `details`.
+  it("sends a transition with If-Match when it holds a version, and only then", async () => {
+    const fetchStub = stubFetch(() => ({ status: 200, body: { issue: issueBody({ status: "DONE", version: 6 }), history: [] } }));
+    const api = new RestTaskaApi();
+
+    await api.transitionIssue("project-1", "issue-1", "t-close", 5);
+    await api.transitionIssue("project-1", "issue-1", "t-close");
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/issues/issue-1/transition/t-close");
+    expect(fetchStub.mock.calls[0][1]?.method).toBe("PUT");
+    expect(fetchStub.mock.calls[0][1]?.headers?.["If-Match"]).toBe('"5"');
+    expect(fetchStub.mock.calls[1][1]?.headers?.["If-Match"]).toBeUndefined();
+  });
+
+  it("carries a stale transition's 409 ABORTED as the code, details and request id, and refuses an unusable version unsent", async () => {
+    const fetchStub = stubFetch(() => ({
+      status: 409,
+      requestId: "req-422",
+      body: {
+        code: "ABORTED",
+        message: "Issue version does not match expected version",
+        details: { currentVersion: "7", currentStatus: "IN_PROGRESS" },
+      },
+    }));
+    const api = new RestTaskaApi();
+
+    const refused = await api.transitionIssue("project-1", "issue-1", "t-close", 5).catch((error: unknown) => error);
+
+    expect(apiErrorFacts(refused)).toMatchObject({
+      status: 409,
+      code: "ABORTED",
+      requestId: "req-422",
+      details: { currentVersion: "7", currentStatus: "IN_PROGRESS" },
+    });
+    expect(isTransitionConflict(refused)).toBe(true);
+    // Never retried here, with the current version or otherwise.
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+
+    await expect(api.transitionIssue("project-1", "issue-1", "t-close", 0)).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+    });
+    await expect(api.transitionIssue("project-1", "issue-1", "t-close", 1.5)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(fetchStub).toHaveBeenCalledTimes(1);
   });
 
   it("keeps null for every clearable key, leaves undefined out, and sends a zero", async () => {
@@ -4837,6 +4963,33 @@ describe("RestTaskaApi issue details and the key lookup", () => {
     expect(history).toEqual([expect.objectContaining({ id: "h-1", issueId: ISSUE })]);
   });
 
+  // Backend TAS-398: each history event may name its actor — a nullable
+  // `UserSummaryDto`, read field by field, absent and null alike as `null`.
+  it("maps each history event's actor field by field, absent and null as null", async () => {
+    const body = details();
+    const event = { eventType: "CREATED", actorUserId: ANNA, occurredAt: "2026-10-07T09:00:00Z", payload: {} };
+    body.history = [
+      { ...event, id: "h-named", actor: { id: ANNA, displayName: "Anna Ivanova", avatarUrl: "https://store.example/a.png" } },
+      { ...event, id: "h-null", actor: null },
+      { ...event, id: "h-absent" },
+      // A blank name is none; a missing id is the event's own; an avatar that
+      // is not a link is none.
+      { ...event, id: "h-blank", actor: { displayName: "  ", avatarUrl: 7 } },
+      { ...event, id: "h-garbage", actor: "Anna" },
+    ] as typeof body.history;
+    stubFetch(body);
+
+    const { history } = await new RestTaskaApi().getIssue(PROJECT, ISSUE);
+
+    expect(history.map((item) => [item.id, item.actor])).toEqual([
+      ["h-named", { id: ANNA, displayName: "Anna Ivanova", avatarUrl: "https://store.example/a.png" }],
+      ["h-null", null],
+      ["h-absent", null],
+      ["h-blank", { id: ANNA, displayName: null, avatarUrl: null }],
+      ["h-garbage", null],
+    ]);
+  });
+
   it("reads a blank name as nobody named, which is what auth-service being down looks like", async () => {
     // The gateway answers 200 with `displayName: ""` rather than failing the
     // read (`IssueDetailsServiceImpl.getProfiles` falls back to no profiles).
@@ -4994,12 +5147,57 @@ describe("RestTaskaApi worklogs", () => {
   });
 
   it("reads the list, with an absent comment and update stamp as null", async () => {
-    const fetchStub = stubFetch({ items: [entry] });
+    const fetchStub = stubFetch({ items: [entry], page: 0, pageSize: 20, totalCount: 1, hasMore: false });
 
     const worklogs = await new RestTaskaApi().listIssueWorklogs(PROJECT, ISSUE);
 
     expect(fetchStub.mock.calls[0][0]).toBe(base);
-    expect(worklogs).toEqual([{ ...entry, comment: null, updatedAt: null }]);
+    expect(worklogs).toEqual({
+      items: [{ ...entry, comment: null, updatedAt: null }],
+      page: 0,
+      pageSize: 20,
+      totalCount: 1,
+      hasMore: false,
+    });
+  });
+
+  // Backend TAS-421: the list pages, and states its count and whether more follow.
+  it("asks for a page, and reads the count and hasMore only as a number and a boolean", async () => {
+    const fetchStub = stubFetch({ items: [entry], page: 2, pageSize: 100, totalCount: "205", hasMore: "yes" });
+
+    const page = await new RestTaskaApi().listIssueWorklogs(PROJECT, ISSUE, { page: 2, pageSize: 100 });
+
+    expect(fetchStub.mock.calls[0][0]).toBe(`${base}?page=2&pageSize=100`);
+    // Unstated as the contract types them: neither a count nor "complete".
+    expect(page).toMatchObject({ page: 2, pageSize: 100, totalCount: null, hasMore: null });
+  });
+
+  // Backend TAS-421: `author` on the list's rows, a nullable summary; absent
+  // from a write's answer, and kept absent so the row keeps the one it knew.
+  it("reads each row's author field by field, null as nobody named, and leaves an absent one absent", async () => {
+    stubFetch({
+      items: [
+        { ...entry, id: "w-named", author: { id: ANNA, displayName: "Anna Ivanova", avatarUrl: null } },
+        { ...entry, id: "w-null", author: null },
+        { ...entry, id: "w-blank", author: { id: ANNA, displayName: " " } },
+        { ...entry, id: "w-absent" },
+      ],
+      page: 0,
+      pageSize: 100,
+      totalCount: 4,
+      hasMore: false,
+    });
+
+    const { items } = await new RestTaskaApi().listIssueWorklogs(PROJECT, ISSUE, { page: 0, pageSize: 100 });
+
+    expect(items[0].author).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: null });
+    expect(items[1].author).toBeNull();
+    expect(items[2].author).toEqual({ id: ANNA, displayName: null, avatarUrl: null });
+    expect(Object.hasOwn(items[3], "author")).toBe(false);
+
+    stubFetch(entry, 201);
+    const added = await new RestTaskaApi().addIssueWorklog(PROJECT, ISSUE, { spentMinutes: 90, workDate: "2026-10-09" });
+    expect(Object.hasOwn(added, "author")).toBe(false);
   });
 
   it("adds with the three fields, leaving out a comment it was not given", async () => {
@@ -5424,5 +5622,150 @@ describe("RestTaskaApi project workflows", () => {
     const failure = await new RestTaskaApi().listProjectWorkflows(PROJECT).catch((error: unknown) => error);
 
     expect(isUndeployedRoute(failure, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+  });
+});
+
+/**
+ * The issue-type registry on the wire (backend #212, TAS-418; DESIGN.md
+ * §4.30): the context carries it, the four writes are their routes with
+ * exactly their bodies, and the reorder's answer is the whole registry.
+ */
+describe("RestTaskaApi issue-type registry", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string, _init?: { method?: string; body?: string }) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+  const sent = (fetchStub: ReturnType<typeof stubFetch>) => {
+    const [url, init] = fetchStub.mock.calls[0];
+    return { url, method: init?.method, body: init?.body === undefined ? undefined : JSON.parse(init.body) };
+  };
+  const entry = { code: "EPIC", name: "Epic", color: "purple", icon: "layers", sortOrder: 40 };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the context's registry in the order sent, through the registry mapper", async () => {
+    stubFetch({
+      project: { id: "project-1", projectKey: "TAS", name: "T", createdBy: "u", createdAt: "x", updatedAt: "x", currentUserRole: "ADMIN" },
+      members: [],
+      labels: [],
+      issueTypes: [
+        { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 5 },
+        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
+        { code: "TASK", name: "Again", color: "red", icon: "bug", sortOrder: 20 },
+        { code: "", name: "Blank" },
+        entry,
+      ],
+      workflows: [],
+    });
+
+    const context = await new RestTaskaApi().getProjectContext("project-1");
+
+    expect(context.issueTypes.map((type) => type.code)).toEqual(["STORY", "TASK", "EPIC"]);
+    expect(context.issueTypes[2]).toEqual(entry);
+  });
+
+  it("creates with the five declared fields at the registry path, and reads the 201 as an entry", async () => {
+    const fetchStub = stubFetch(entry, 201);
+
+    const created = await new RestTaskaApi().createProjectIssueType("project-1", {
+      code: "EPIC",
+      name: "Epic",
+      color: "purple",
+      icon: "layers",
+      sortOrder: 40,
+    });
+
+    expect(sent(fetchStub)).toEqual({
+      url: "/api/v1/projects/project-1/issue-types",
+      method: "POST",
+      body: { code: "EPIC", name: "Epic", color: "purple", icon: "layers", sortOrder: 40 },
+    });
+    expect(created).toEqual(entry);
+  });
+
+  it("patches only what was stated, never null and never the code, and refuses an empty patch unsent", async () => {
+    const fetchStub = stubFetch({ ...entry, name: "Epics" });
+
+    await new RestTaskaApi().updateProjectIssueType("project-1", "EPIC", {
+      name: "Epics",
+      color: undefined,
+      ...({ icon: null, code: "OTHER" } as object),
+    });
+
+    expect(sent(fetchStub)).toEqual({
+      url: "/api/v1/projects/project-1/issue-types/EPIC",
+      method: "PATCH",
+      body: { name: "Epics" },
+    });
+
+    fetchStub.mockClear();
+    await expect(new RestTaskaApi().updateProjectIssueType("project-1", "EPIC", {})).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "At least one field is required",
+    });
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("deletes at the code's path and keeps the refusal's reason and count for the dialog to branch on", async () => {
+    const fetchStub = stubFetch(
+      { code: "FAILED_PRECONDITION", message: "Issue type EPIC has 3 issues", details: { reason: "ISSUE_TYPE_IN_USE", issueCount: "3" } },
+      400,
+    );
+
+    await expect(new RestTaskaApi().deleteProjectIssueType("project-1", "EPIC")).rejects.toMatchObject({
+      code: "FAILED_PRECONDITION",
+      details: { reason: "ISSUE_TYPE_IN_USE", issueCount: "3" },
+    });
+    expect(sent(fetchStub)).toMatchObject({ url: "/api/v1/projects/project-1/issue-types/EPIC", method: "DELETE" });
+  });
+
+  it("reorders with one PUT of the whole permutation and answers the registry as the server renumbered it", async () => {
+    const fetchStub = stubFetch({
+      items: [
+        { ...entry, sortOrder: 10 },
+        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 20 },
+      ],
+    });
+
+    const registry = await new RestTaskaApi().reorderProjectIssueTypes("project-1", ["EPIC", "TASK"]);
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(sent(fetchStub)).toEqual({
+      url: "/api/v1/projects/project-1/issue-types/order",
+      method: "PUT",
+      body: { codes: ["EPIC", "TASK"] },
+    });
+    expect(registry.map((type) => [type.code, type.sortOrder])).toEqual([
+      ["EPIC", 10],
+      ["TASK", 20],
+    ]);
+  });
+
+  it("refuses a type change it can see is malformed, unsent, in the gateway's own words", async () => {
+    const fetchStub = stubFetch({});
+    const api = new RestTaskaApi();
+
+    await expect(
+      api.updateIssue("project-1", "issue-1", { issueType: "epic" }, 3),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "Invalid issue type key", status: 400 });
+    await expect(
+      api.updateIssue("project-1", "issue-1", { issueType: null } as unknown as UpdateIssueInput, 3),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "issueType cannot be cleared", status: 400 });
+    expect(fetchStub).not.toHaveBeenCalled();
   });
 });

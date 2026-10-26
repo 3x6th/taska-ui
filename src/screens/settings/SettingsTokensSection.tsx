@@ -1,12 +1,10 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import {
-  ACCESS_TOKEN_EXPIRY_DAYS,
   ACCESS_TOKEN_NAME_MAX_LENGTH,
-  DEFAULT_ACCESS_TOKEN_EXPIRY_DAYS,
-  isAccessTokenGone,
-  type AccessTokenExpiryDays,
+  accessTokenLifetimes,
+  defaultAccessTokenLifetime,
   type AccessTokenScopes,
 } from "../../api/accessTokens";
 import { taskaApi } from "../../api/client";
@@ -15,7 +13,7 @@ import { UNDEPLOYED_ROUTE_MESSAGE } from "../../api/TaskaApi";
 import { ApiNotice } from "../../components/ApiNotice";
 import { ErrorNote } from "../../components/ErrorNote";
 import { Modal } from "../../components/Modal";
-import type { AccessToken, IssuedAccessToken } from "../../domain/types";
+import type { AccessToken, AccessTokenList, IssuedAccessToken } from "../../domain/types";
 import { useCopied } from "../../hooks/useCopied";
 import { ME_QUERY_KEY } from "../../lib/ownAvatarLink";
 import { accessTokensKey, accessTokensOptions } from "./accessTokensQuery";
@@ -27,7 +25,6 @@ import {
   expiryDayFromNow,
   expiryLabel,
   revokeRefusalWords,
-  sortAccessTokens,
 } from "./accessTokenText";
 import { McpConnect } from "./McpConnect";
 
@@ -59,7 +56,8 @@ const ACCESS_OPTIONS: readonly { value: Access; label: string; description: stri
  * not outlive the moment it is shown. So the create call is not a
  * `useMutation` — whose result would stay in the mutation cache after the
  * dialog closed — but a plain call whose answer lives only in the dialog's own
- * state; the list is re-read afterwards and carries no value. Closing the
+ * state; the answer's token, never its value, is put at the top of the list
+ * (the server's order is newest first), with no re-read. Closing the
  * dialog, by Done, ✕, `Esc` or the scrim, unmounts that state with it: no
  * cache, no browser storage, no address, no log, no node left in the page.
  * `Esc` is the one way out that waits: until the value or a snippet carrying it
@@ -71,9 +69,11 @@ const ACCESS_OPTIONS: readonly { value: Access; label: string; description: stri
  * of it, and its row says the same for as long as it is listed — the id is
  * kept in memory here, never stored.
  *
- * Ships ahead of the gateway, against the mock (AGENTS.md): no gateway serves
- * these routes yet, and there every one answers the static-resource 404, which
- * this section states in one line with nothing to create.
+ * Against backend TAS-401/402 (`openapi.yml` at develop `be5085e5`). A
+ * gateway without the routes answers the static-resource 404, which this
+ * section still states in one line with nothing to create — kept until the
+ * stand's three token probes are recorded (docs/ai/API-DIVERGENCE.md,
+ * "TAS-412").
  */
 export function SettingsTokensSection() {
   const meQuery = useQuery({
@@ -212,7 +212,8 @@ function AccessTokens({
   const read = accessTokensOptions(userId);
   const query = useQuery(read);
   const undeployed = query.isError && isUndeployedRoute(query.error, UNDEPLOYED_ROUTE_MESSAGE);
-  const tokens = useMemo(() => sortAccessTokens(query.data ?? []), [query.data]);
+  // The server's order (`createdAt`, then `id`, newest first), as it came.
+  const tokens = query.data?.tokens ?? [];
   const confirmPrefix = useId();
   const revokeKey = ["access-tokens", "revoke", userId] as const;
   const revoking = useIsMutating({ mutationKey: revokeKey }) > 0;
@@ -256,35 +257,31 @@ function AccessTokens({
   const revoke = useMutation({
     mutationKey: revokeKey,
     mutationFn: (token: AccessToken) => taskaApi.revokeAccessToken(token.id),
-    // Optimistic: the row leaves at once (§1, §5.6).
+    // Optimistic: the row leaves at once (§1, §5.6), and nothing is read
+    // again — a revoke is 204 for any id (backend TAS-401), so its success says
+    // everything a re-read would.
     onMutate: async (token) => {
       await queryClient.cancelQueries({ queryKey: read.queryKey });
-      queryClient.setQueryData<AccessToken[]>(read.queryKey, (current) =>
-        current?.filter((item) => item.id !== token.id),
+      const index = queryClient.getQueryData<AccessTokenList>(read.queryKey)?.tokens.findIndex((item) => item.id === token.id);
+      queryClient.setQueryData<AccessTokenList>(read.queryKey, (current) =>
+        current ? { ...current, tokens: current.tokens.filter((item) => item.id !== token.id) } : current,
       );
+      return { index: index ?? -1 };
     },
-    // And comes back on a refusal, with a note under it. Only this row: another
-    // revoke still out keeps its own row gone.
-    onError: (error, token) => {
-      if (isAccessTokenGone(error)) {
-        // Not a refusal to revoke: this account has no such token (a list read
-        // before it went), so the row stays gone and the re-read below is the
-        // server's word on what is left.
-        say(`The token “${tokenLabel(token)}” is already gone.`);
-        return;
-      }
-      queryClient.setQueryData<AccessToken[]>(read.queryKey, (current) =>
-        current && !current.some((item) => item.id === token.id) ? [...current, token] : current,
-      );
+    // And comes back on a refusal, where it was, with a note under it. Only
+    // this row: another revoke still out keeps its own row gone.
+    onError: (error, token, context) => {
+      queryClient.setQueryData<AccessTokenList>(read.queryKey, (current) => {
+        if (!current || current.tokens.some((item) => item.id === token.id)) return current;
+        const tokens = [...current.tokens];
+        const at = context && context.index >= 0 ? Math.min(context.index, tokens.length) : tokens.length;
+        tokens.splice(at, 0, token);
+        return { ...current, tokens };
+      });
       setRefusals((current) => ({ ...current, [token.id]: error }));
       say(`The token “${tokenLabel(token)}” was not revoked.`);
     },
     onSuccess: (_answer, token) => say(`The token “${tokenLabel(token)}” was revoked.`),
-    // A re-read landing between two revokes would put the second one's row back.
-    onSettled: () => {
-      if (queryClient.isMutating({ mutationKey: revokeKey }) > 1) return;
-      void queryClient.invalidateQueries({ queryKey: read.queryKey });
-    },
   });
 
   const forget = (tokenId: string) =>
@@ -478,9 +475,18 @@ function CreateTokenModal({
 }) {
   const queryClient = useQueryClient();
   const formId = useId();
+  /**
+   * The lifetimes the list's policy allows (backend TAS-402), read from the
+   * list already in the cache — no read of its own. Without a policy there is
+   * no choice to offer, and the create sends no lifetime: the server's default
+   * applies.
+   */
+  const [lifetimes] = useState(() =>
+    accessTokenLifetimes(queryClient.getQueryData<AccessTokenList>(accessTokensKey(userId))?.policy ?? null),
+  );
   const [name, setName] = useState("");
   const [access, setAccess] = useState<Access>("read");
-  const [days, setDays] = useState<AccessTokenExpiryDays>(DEFAULT_ACCESS_TOKEN_EXPIRY_DAYS);
+  const [days, setDays] = useState<number | null>(() => defaultAccessTokenLifetime(lifetimes));
   const [attempted, setAttempted] = useState(false);
   const [sending, setSending] = useState(false);
   const [refusal, setRefusal] = useState<unknown>(null);
@@ -521,21 +527,41 @@ function CreateTokenModal({
     try {
       const scopes = ACCESS_OPTIONS.find((option) => option.value === access)!.scopes;
       // Deliberately not a `useMutation`: see `SettingsTokensSection`.
-      const answer = await taskaApi.createAccessToken({ name: trimmed, scopes, expiresInDays: days });
+      const answer = await taskaApi.createAccessToken({
+        name: trimmed,
+        scopes,
+        ...(days === null ? {} : { expiresInDays: days }),
+      });
+      placeCreated(answer.token);
       // Closed while it was out: nobody saw the value and nobody will, so it
       // goes no further than this line, and the section says the token exists.
       if (open.current) setIssued(answer);
       else onCreatedUnseen(answer.token);
     } catch (error) {
       setRefusal(error);
+      // A refusal whose answer was lost may follow a token the server did
+      // make, and the list is the server's word on it.
+      void queryClient.invalidateQueries({ queryKey: accessTokensKey(userId) });
     } finally {
       sendingRef.current = false;
       setSending(false);
-      // Either way: a refusal whose answer was lost may follow a token the
-      // server did make, and the list is the server's word on it. The list
-      // never carries the value.
-      void queryClient.invalidateQueries({ queryKey: accessTokensKey(userId) });
     }
+  };
+
+  /**
+   * The 201's token at the top of the list — newest first is the server's
+   * order — with no re-read; never its value. A token the answer gave no
+   * usable id, or a list never read, is left to a re-read instead.
+   */
+  const placeCreated = (token: AccessToken) => {
+    const key = accessTokensKey(userId);
+    const current = queryClient.getQueryData<AccessTokenList>(key);
+    if (!token.id || !current) {
+      void queryClient.invalidateQueries({ queryKey: key });
+      return;
+    }
+    if (current.tokens.some((item) => item.id === token.id)) return;
+    queryClient.setQueryData<AccessTokenList>(key, { ...current, tokens: [token, ...current.tokens] });
   };
 
   if (issued) {
@@ -606,34 +632,39 @@ function CreateTokenModal({
           </div>
         </fieldset>
 
-        <div className="token-expiry">
-          <p className="token-expiry-label" id={`${formId}-expires`}>
-            Expires
-          </p>
-          <div
-            aria-describedby={`${formId}-expires-on`}
-            aria-labelledby={`${formId}-expires`}
-            className="segmented fit"
-            role="group"
-          >
-            {ACCESS_TOKEN_EXPIRY_DAYS.map((option) => (
-              <button
-                aria-pressed={days === option}
-                className={days === option ? "is-active" : ""}
-                key={option}
-                onClick={() => {
-                  if (days !== option) setDays(option);
-                }}
-                type="button"
-              >
-                {expiryLabel(option)}
-              </button>
-            ))}
+        {/* The lifetimes the policy allows (backend TAS-402): 7, 30 and 90 days
+            up to its maximum, and the maximum itself when it is none of them.
+            No policy, no choice — the server's default applies. */}
+        {days !== null ? (
+          <div className="token-expiry">
+            <p className="token-expiry-label" id={`${formId}-expires`}>
+              Expires
+            </p>
+            <div
+              aria-describedby={`${formId}-expires-on`}
+              aria-labelledby={`${formId}-expires`}
+              className="segmented fit"
+              role="group"
+            >
+              {lifetimes.map((option) => (
+                <button
+                  aria-pressed={days === option}
+                  className={days === option ? "is-active" : ""}
+                  key={option}
+                  onClick={() => {
+                    if (days !== option) setDays(option);
+                  }}
+                  type="button"
+                >
+                  {expiryLabel(option)}
+                </button>
+              ))}
+            </div>
+            <p className="field-note" id={`${formId}-expires-on`}>
+              Expires on {expiryDayFromNow(days)}.
+            </p>
           </div>
-          <p className="field-note" id={`${formId}-expires-on`}>
-            Expires on {expiryDayFromNow(days)}.
-          </p>
-        </div>
+        ) : null}
 
         {/* The request id under the sentence (§5.6, TAS-397). */}
         {refusal ? (

@@ -86,7 +86,7 @@ class Refusal {
 }
 
 /** A plausible gateway: enough of each answer for both screens and the panel to draw. */
-function respond(path: string): unknown {
+function respond(path: string, search = new URLSearchParams()): unknown {
   if (path === "/projects") {
     return {
       items: projectIds.map((id, index) => ({
@@ -143,21 +143,40 @@ function respond(path: string): unknown {
         { userId: TOM, role: "MEMBER", displayName: "Tom Baker", email: "tom@example.com", avatar: null, addedAt: NOW },
       ],
       labels: [{ id: LABEL, name: "ui", color: "#0052cc" }],
+      issueTypes: [
+        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
+        { code: "BUG", name: "Bug", color: "red", icon: "bug", sortOrder: 20 },
+        { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 30 },
+      ],
       workflows: ["TASK", "BUG", "STORY"].map((issueType) => ({ issueType, workflow })),
     };
   }
   if (path === `/projects/${PROJECT}/board`) {
+    // The four filters, applied the way the server applies them (TAS-392),
+    // and the counts it states; nothing here is cut.
+    const query = search.get("query")?.toLowerCase();
+    const keep = (item: ReturnType<typeof card>) =>
+      (!search.has("issueType") || item.issueType === search.get("issueType")) &&
+      (!search.has("assigneeId") || item.assignee?.id === search.get("assigneeId")) &&
+      (!search.has("labelId") || item.labels.some((label) => (label as { id?: string }).id === search.get("labelId"))) &&
+      (query === undefined || [item.issueKey, item.summary, item.description ?? ""].some((text) => text.toLowerCase().includes(query)));
+    const counted = (issues: ReturnType<typeof card>[]) => ({ issues, totalCount: issues.length, hasMore: false });
+    const unplaced = [card(4, "TASK", "BLOCKED_BY_QA", TOM)].filter(keep);
     return {
       projectId: PROJECT,
       columns: [
         {
           ...statuses[0],
-          issues: [card(1, "TASK", "TODO", ANNA, [{ id: LABEL, name: "ui", color: "#0052cc" }]), card(2, "BUG", "TODO", TOM)],
+          ...counted(
+            [card(1, "TASK", "TODO", ANNA, [{ id: LABEL, name: "ui", color: "#0052cc" }]), card(2, "BUG", "TODO", TOM)].filter(keep),
+          ),
         },
-        { ...statuses[1], issues: [card(3, "STORY", "IN_PROGRESS", null)] },
-        { ...statuses[2], issues: [] },
+        { ...statuses[1], ...counted([card(3, "STORY", "IN_PROGRESS", null)].filter(keep)) },
+        { ...statuses[2], ...counted([]) },
       ],
-      unplacedIssues: [card(4, "TASK", "BLOCKED_BY_QA", TOM)],
+      unplacedIssues: unplaced,
+      unplacedTotalCount: unplaced.length,
+      unplacedHasMore: false,
     };
   }
   if (path === `/issues/${ISSUE}`) {
@@ -181,7 +200,9 @@ function respond(path: string): unknown {
     };
   }
   if (path === `/projects/${PROJECT}/issues/${ISSUE}/comments`) return { items: [], totalCount: 0 };
-  if (path === `/projects/${PROJECT}/issues/${ISSUE}/worklogs`) return { items: [] };
+  if (path === `/projects/${PROJECT}/issues/${ISSUE}/worklogs`) {
+    return { items: [], page: 0, pageSize: 100, totalCount: 0, hasMore: false };
+  }
   // Anything else is a request this budget does not expect: answered as the
   // gateway answers a route it does not serve, and recorded all the same.
   return new Refusal(404, { code: "NOT_FOUND", message: `No route ${path}` });
@@ -207,9 +228,9 @@ describe("the request budget of /projects and the board, and of coming back to t
       vi.fn(async (input: string, init?: RequestInit) => {
         const url = String(input).replace(/^\/api\/v1/, "");
         requested.push(`${init?.method ?? "GET"} ${url}`);
-        const path = url.split("?")[0];
+        const [path, query = ""] = url.split("?");
         if (path === "/notifications" && server.holdNotifications) await server.holdNotifications;
-        return answer(respond(path));
+        return answer(respond(path, new URLSearchParams(query)));
       }),
     );
   });
@@ -334,39 +355,75 @@ describe("the request budget of /projects and the board, and of coming back to t
     expect([...requested].sort()).toEqual(
       [
         `GET /projects/${PROJECT}/context`,
-        `GET /projects/${PROJECT}/board?includeDone=true`,
+        // Pass 2b's request table (TAS-392): the page size joins the URL.
+        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
         "GET /users/me",
         "GET /notifications",
         "GET /meta",
       ].sort(),
     );
-    for (const replaced of [/\/issues\?|\/issues$/, /\/issues\/search/, /\/members/, /\/labels/, /\/workflows?\b/, /\/membership/]) {
+    for (const replaced of [
+      /\/issues\?|\/issues$/,
+      /\/issues\/search/,
+      /\/members/,
+      /\/labels/,
+      /\/workflows?\b/,
+      /\/membership/,
+      // The registry rides the context (TAS-417): no read of its own.
+      /\/issue-types/,
+    ]) {
       expect(requested.filter((request) => replaced.test(request)), String(replaced)).toEqual([]);
     }
     expect(requested.some((request) => request.includes("issueType="))).toBe(false);
   });
 
-  it("asks nothing for any of the four filters", async () => {
+  // Pass 2b's request table (TAS-392): one read per filter change, none for a
+  // combination already read and fresh, none for Clear — and the text after
+  // its pause only, trimmed, so a word typed is one read and not one a key.
+  it("asks once for each new combination of filters, and nothing for one already read or for Clear", async () => {
     const queryClient = renderAt(`/projects/${PROJECT}/board`);
     await screen.findByRole("button", { name: /TAS-101/ });
     await settled(queryClient);
     const mark = requested.length;
 
-    fireEvent.click(screen.getByRole("button", { name: "Bug" }));
-    expect(screen.getByText("1 of 4")).toBeVisible();
-    // The type filter's "All"; the second is the assignee filter's.
-    fireEvent.click(screen.getAllByRole("button", { name: "All" })[0]);
+    const type = screen.getByRole("combobox", { name: "Type" });
+    fireEvent.change(type, { target: { value: "BUG" } });
+    expect(await screen.findByText("1 of 4")).toBeVisible();
+    fireEvent.change(type, { target: { value: "" } });
     fireEvent.click(within(document.querySelector(".assignee-row") as HTMLElement).getByRole("button", { name: "Tom Baker" }));
-    expect(screen.getByText("2 of 4")).toBeVisible();
+    expect(await screen.findByText("2 of 4")).toBeVisible();
     fireEvent.change(screen.getByRole("combobox", { name: "Label" }), { target: { value: LABEL } });
-    expect(screen.getByText("0 of 4")).toBeVisible();
+    expect(await screen.findByText("0 of 4")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Filter issues by key, summary or description" }), {
-      target: { value: "wire" },
-    });
-    expect(screen.getByText("1 of 4")).toBeVisible();
-    // Well past any debounce the board used to have.
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 400)));
+    expect(await screen.findByText("4 of 4")).toBeVisible();
+    const box = screen.getByRole("textbox", { name: "Filter issues by key, summary or description" });
+    for (const typed of ["w", "wi", "wir", " wire "]) fireEvent.change(box, { target: { value: typed } });
+    expect(await screen.findByText("1 of 4")).toBeVisible();
+    await settled(queryClient);
+    // Back to a type already read: from the cache.
+    fireEvent.change(box, { target: { value: "" } });
+    fireEvent.change(type, { target: { value: "BUG" } });
+    expect(await screen.findByText("1 of 4")).toBeVisible();
+    await settled(queryClient);
+
+    const board = `GET /projects/${PROJECT}/board`;
+    expect(since(mark)).toEqual([
+      `${board}?issueType=BUG&includeDone=true&pageSizePerColumn=200`,
+      `${board}?assigneeId=${TOM}&includeDone=true&pageSizePerColumn=200`,
+      `${board}?assigneeId=${TOM}&labelId=${LABEL}&includeDone=true&pageSizePerColumn=200`,
+      `${board}?includeDone=true&query=wire&pageSizePerColumn=200`,
+    ]);
+  });
+
+  it("opens Issue types from the board's context, asking nothing (TAS-417)", async () => {
+    const queryClient = renderAt(`/projects/${PROJECT}/board`);
+    await screen.findByRole("button", { name: /TAS-101/ });
+    await settled(queryClient);
+    const mark = requested.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Issue types" }));
+    const dialog = await screen.findByRole("dialog", { name: "Issue types" });
+    expect(within(dialog).getAllByRole("listitem")).toHaveLength(3);
     await settled(queryClient);
 
     expect(since(mark)).toEqual([]);
@@ -398,7 +455,7 @@ describe("the request budget of /projects and the board, and of coming back to t
       [
         `GET /issues/${ISSUE}`,
         `GET /projects/${PROJECT}/issues/${ISSUE}/comments?page=0&pageSize=50`,
-        `GET /projects/${PROJECT}/issues/${ISSUE}/worklogs`,
+        `GET /projects/${PROJECT}/issues/${ISSUE}/worklogs?page=0&pageSize=100`,
       ].sort(),
     );
     expect(since(mark)).toEqual([]);
@@ -425,7 +482,7 @@ describe("the request budget of /projects and the board, and of coming back to t
       [
         `GET /issues/${ISSUE}`,
         `GET /projects/${PROJECT}/issues/${ISSUE}/comments?page=0&pageSize=50`,
-        `GET /projects/${PROJECT}/issues/${ISSUE}/worklogs`,
+        `GET /projects/${PROJECT}/issues/${ISSUE}/worklogs?page=0&pageSize=100`,
       ].sort(),
     );
   });

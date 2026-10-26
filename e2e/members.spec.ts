@@ -198,6 +198,39 @@ test("the only admin cannot step down until there is another, and then the contr
   await expect(page.getByRole("button", { name: "Manage labels" })).toHaveCount(0);
 });
 
+// Backend TAS-394: a stale list — two admins on screen, one on the server —
+// is how the last-admin refusal reaches a dialog that hides the control. The
+// mock's second actor (`MOCK_PROJECT_TRIGGERS.adminsLeftMeanwhile`, a project
+// description) makes the other admin step down without the dialog knowing; the
+// refusal is then told by `details.reason`, in the dialog's own words.
+test("the last-admin refusal of a stale list says so, puts the role back and freezes the row", async ({ page }) => {
+  let dialog = await openMembers(page);
+  await row(dialog, "Mark Lee").getByRole("combobox", { name: "Role of Mark Lee" }).selectOption("ADMIN");
+  await expect(row(dialog, "Anna Ivanova").getByRole("combobox", { name: "Your role" })).toBeVisible();
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // Mark steps down "in another session".
+  await page.getByRole("button", { name: "Edit project", exact: true }).click();
+  const edit = page.getByRole("dialog", { name: "Edit project" });
+  await edit.getByLabel("Description").fill("Core services [admins left meanwhile]");
+  await edit.getByRole("button", { name: "Save changes" }).click();
+  await expect(edit).toBeHidden();
+
+  // The list on screen is the one read before: two admins, so Anna may step down.
+  await page.getByRole("button", { name: "Members", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "Members" });
+  const anna = row(dialog, "Anna Ivanova");
+  await anna.getByRole("combobox", { name: "Your role" }).selectOption("MEMBER");
+  await anna.getByRole("button", { name: "Change to Member" }).click();
+
+  await expect(dialog.getByText("You are this project’s only admin, so your role did not change.")).toBeVisible();
+  // The list read again: Mark is a member, and Anna's row is the frozen one.
+  await expect(anna.getByText(/You are this project’s only admin, so your role cannot change/)).toBeVisible();
+  await expect(anna.getByRole("combobox")).toHaveCount(0);
+  await expect(row(dialog, "Mark Lee").getByRole("combobox", { name: "Role of Mark Lee" })).toHaveValue("MEMBER");
+});
+
 test("an admin who removes themselves is taken to their projects, where this one is gone", async ({ page }) => {
   const dialog = await openMembers(page);
   await row(dialog, "Mark Lee").getByRole("combobox", { name: "Role of Mark Lee" }).selectOption("ADMIN");

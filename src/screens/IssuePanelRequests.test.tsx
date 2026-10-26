@@ -202,7 +202,10 @@ function respond(url: string, init?: RequestInit): unknown {
     worklogs = [entry];
     return entry;
   }
-  if (path === `/projects/${PROJECT}/issues/${ISSUE}/worklogs`) return { items: worklogs };
+  if (path === `/projects/${PROJECT}/issues/${ISSUE}/worklogs`) {
+    // One page of 100 (backend TAS-421), the whole list.
+    return { items: worklogs, page: 0, pageSize: 100, totalCount: worklogs.length, hasMore: false };
+  }
   return { items: [], totalCount: 0 };
 }
 
@@ -452,7 +455,7 @@ describe("the issue panel's request budget against the REST implementation", () 
     expect(issueReads(write.slice(1))).toBe(1);
   });
 
-  it("re-reads the issue once after a transition", async () => {
+  it("re-reads the issue once after a transition, which leaves with If-Match", async () => {
     const { queryClient, panel, before } = await openPanel();
 
     fireEvent.click(within(panel).getByRole("button", { name: "Start progress, move to In Progress" }));
@@ -460,7 +463,8 @@ describe("the issue panel's request budget against the REST implementation", () 
     await waitFor(() => expect(within(panel).getByText("In Progress")).toBeVisible());
     await settled(queryClient);
     const write = sent.slice(before);
-    expect(write[0]).toEqual({ path: `/api/v1/issues/${ISSUE}/transition/start`, method: "PUT", ifMatch: undefined });
+    // The version the panel read (backend TAS-422; pass 2b's request table).
+    expect(write[0]).toEqual({ path: `/api/v1/issues/${ISSUE}/transition/start`, method: "PUT", ifMatch: '"1"' });
     expect(issueReads(write.slice(1))).toBe(1);
   });
 });

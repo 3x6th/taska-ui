@@ -343,9 +343,12 @@ export function GlobalSearch() {
  * row does not blur the input and close the panel out from under the click.
  *
  * Everything drawn here is a field the hit actually carries — the status
- * among them since TAS-218. The type, the priority and the status are printed
- * by the one label rule (TAS-173): the build's word, a served English name, or
- * the code as received. The assignee is a bare id with no member list to
+ * among them since TAS-218. The priority and the status are printed by the one
+ * label rule (TAS-173). The type is drawn from the hit's own `issueTypeName`,
+ * `issueTypeColor` and `issueTypeIcon` (backend TAS-418) and named by §6's
+ * type rule — never from a project context read for it, which would be a
+ * fan-out on every keystroke (DESIGN.md §4.6, §4.20), and never from `/meta`.
+ * The assignee is a bare id with no member list to
  * resolve it against outside a project, so it is left out rather than printed
  * as a UUID.
  */
@@ -378,11 +381,11 @@ function GlobalSearchOption({
       onMouseEnter={onHover}
       role="option"
     >
-      <TypeChip type={hit.issueType} />
+      <TypeChip hit={hit} type={hit.issueType} />
       <span className="global-search-key">{hit.issueKey}</span>
       <span className="global-search-summary">{hit.summary}</span>
       <span className="visually-hidden">
-        {issueTypeLabel(hit.issueType, meta?.issueTypes)},{" "}
+        {issueTypeLabel(hit.issueType, null, hit.issueTypeName)},{" "}
         {hit.priority ? `${priorityInSentence(hit.priority, meta?.priorities)} priority` : "no priority"}
       </span>
       {status ? <span className="global-search-note">{status}</span> : null}

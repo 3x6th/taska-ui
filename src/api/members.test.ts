@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, PROJECT_ROLES, isUserId } from "./members";
-import { apiErrorFacts, isConflict } from "./errors";
-import { MockTaskaApi } from "./mock/MockTaskaApi";
+import { apiErrorFacts, isConflict, isLastAdmin } from "./errors";
+import { MOCK_PROJECT_TRIGGERS, MockTaskaApi } from "./mock/MockTaskaApi";
 import { ApiError, RestTaskaApi } from "./rest/RestTaskaApi";
 import type { Project } from "../domain/types";
 
@@ -213,9 +213,26 @@ describe("MockTaskaApi member writes", () => {
       expect(apiErrorFacts(error)).toMatchObject({
         code: "FAILED_PRECONDITION",
         message: `Can't modify last admin: ${ANNA} in project: ${TASKA}`,
+        // The one key a reader may branch on (backend TAS-394).
+        details: { reason: "LAST_ADMIN" },
       });
+      expect(isLastAdmin(error)).toBe(true);
       expect(isConflict(error)).toBe(true);
       await expect(rowFor(ANNA)).resolves.toMatchObject({ role: "ADMIN" });
+    });
+
+    // The mock's second actor (`MOCK_PROJECT_TRIGGERS.adminsLeftMeanwhile`):
+    // the other admins step down as a description holding the text is saved,
+    // so a list read before then still shows them — the stale list the
+    // last-admin refusal exists for.
+    it("lets a project description marked [admins left meanwhile] demote the other admins", async () => {
+      await api.changeProjectMemberRole(TASKA, MARK, "ADMIN");
+      await api.updateProject(TASKA, { description: `Core ${MOCK_PROJECT_TRIGGERS.adminsLeftMeanwhile}` });
+
+      await expect(rowFor(MARK)).resolves.toMatchObject({ role: "MEMBER" });
+      await expect(rowFor(ANNA)).resolves.toMatchObject({ role: "ADMIN" });
+      const facts = await refusal(api.changeProjectMemberRole(TASKA, ANNA, "MEMBER"));
+      expect(facts.details).toEqual({ reason: "LAST_ADMIN" });
     });
 
     it("lets an ADMIN demote themselves once another ADMIN exists, and then refuses them as a MEMBER", async () => {
@@ -251,6 +268,7 @@ describe("MockTaskaApi member writes", () => {
     it("refuses to remove the last ADMIN, and lets them leave once there is another", async () => {
       const facts = await refusal(api.removeProjectMember(TASKA, ANNA));
       expect(facts.code).toBe("FAILED_PRECONDITION");
+      expect(facts.details).toEqual({ reason: "LAST_ADMIN" });
 
       await api.changeProjectMemberRole(TASKA, MARK, "ADMIN");
       await expect(api.removeProjectMember(TASKA, ANNA)).resolves.toBeUndefined();

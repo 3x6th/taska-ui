@@ -162,8 +162,8 @@ test.describe("filter bar wrap band, 821-882px", () => {
     await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
     await expect(page.locator(".counter")).toHaveText(/^\d+ of \d+$/);
 
-    const typeAll = page.locator(".filterbar .segmented button", { hasText: "All" });
-    const typeBug = page.locator(".filterbar .segmented button", { hasText: "Bug" });
+    // A select since TAS-417 (§4.13): "" is All.
+    const typeFilter = page.getByRole("combobox", { name: "Type" });
     const clearButton = page.getByRole("button", { name: /Clear/ });
 
     for (const width of [830, 880, 940]) {
@@ -182,7 +182,7 @@ test.describe("filter bar wrap band, 821-882px", () => {
       // Filtering by type is local (DESIGN.md §5.4), but the click still goes
       // through a render; the "Clear" button mounting is the honest signal
       // that `hasFilters` flipped and the bar has re-laid-out around it.
-      await typeBug.click();
+      await typeFilter.selectOption("BUG");
       await expect(clearButton).toBeVisible();
 
       const filtered = await measureBar(page);
@@ -203,7 +203,7 @@ test.describe("filter bar wrap band, 821-882px", () => {
         expect(filtered.height, "940px filtered: the bar is not one row of §2.7's floor").toBe(46);
       }
 
-      await typeAll.click();
+      await typeFilter.selectOption("");
       await expect(clearButton).toHaveCount(0);
     }
   });

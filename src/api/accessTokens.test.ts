@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { INSUFFICIENT_SCOPE_CODE, isAccessTokenGone, isInsufficientScope, isRateLimited } from "./accessTokens";
+import {
+  accessTokenLifetimes,
+  defaultAccessTokenLifetime,
+  isActiveTokenLimit,
+  isRateLimited,
+  isSessionRequired,
+} from "./accessTokens";
 import { apiErrorFacts, isUndeployedRoute } from "./errors";
 import { MockAccessTokens } from "./mock/MockAccessTokens";
 import { MockTaskaApi } from "./mock/MockTaskaApi";
@@ -7,9 +13,10 @@ import { RestTaskaApi } from "./rest/RestTaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "./TaskaApi";
 
 /**
- * Personal access tokens (TAS-412). Against a provisional shape — the
- * frontend's proposal on TAS-402, not the contract — so these pin what this
- * build sends and reads, never what the gateway does.
+ * Personal access tokens (TAS-412) against backend TAS-401/402 as the contract
+ * states them at develop `be5085e5`: what this build sends and reads, and the
+ * mock's reproduction of the server's order, refusals and words. Nothing here
+ * was measured with a token.
  */
 const wireToken = {
   id: "0b1d3c4e-5f60-4a71-8b92-a3b4c5d6e7f8",
@@ -20,18 +27,9 @@ const wireToken = {
   expiresAt: "2026-11-23T10:00:00Z",
   lastUsedAt: null,
 };
+const policy = { maxLifetimeDays: 90, maxActiveTokens: 10 };
 
 afterEach(() => vi.unstubAllGlobals());
-
-/** The code a call refused with, or `null` for one that did not refuse. */
-const refusalCode = (call: () => unknown): string | null => {
-  try {
-    call();
-    return null;
-  } catch (error) {
-    return (error as { code?: string }).code ?? "no code";
-  }
-};
 
 /**
  * Everything an object holds, as one string to search — `Map`s and `Set`s by
@@ -43,38 +41,69 @@ const dump = (value: unknown) =>
     item instanceof Map ? [...item.entries()] : item instanceof Set ? [...item] : item,
   );
 
+/** The refusal a call threw, or `null` for one that did not refuse. */
+const refusalOf = (call: () => unknown): unknown => {
+  try {
+    call();
+    return null;
+  } catch (error) {
+    return error;
+  }
+};
+
 describe("the REST transport for access tokens", () => {
-  it("calls the three TAS-402 paths with the proposed bodies", async () => {
-    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+  it("calls the three paths, reads the list with its policy, and sends the lifetime only when there is one", async () => {
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
       if (init.method === "DELETE") return new Response(null, { status: 204 });
       if (init.method === "POST") {
-        return new Response(JSON.stringify({ token: wireToken, secret: "tsk_pat_3fA9abcdefghijklmnopqrstuvwxyz12" }), {
-          status: 201,
-        });
+        return new Response(JSON.stringify({ token: wireToken, secret: "tsk_pat_3fA9" + "a".repeat(39) }), { status: 201 });
       }
-      return new Response(JSON.stringify({ items: [wireToken] }), { status: 200, headers: { "X-Url": url } });
+      return new Response(JSON.stringify({ items: [wireToken], policy }), { status: 200 });
     });
     vi.stubGlobal("fetch", fetch);
     const api = new RestTaskaApi();
 
     const list = await api.listAccessTokens();
     const issued = await api.createAccessToken({ name: "Cursor on laptop", scopes: ["read", "write"], expiresInDays: 30 });
+    await api.createAccessToken({ name: "No policy", scopes: ["read"] });
     await api.revokeAccessToken(wireToken.id);
 
     expect(fetch.mock.calls.map((call) => call[0])).toEqual([
       "/api/v1/users/me/access-tokens",
       "/api/v1/users/me/access-tokens",
+      "/api/v1/users/me/access-tokens",
       `/api/v1/users/me/access-tokens/${wireToken.id}`,
     ]);
     const options = fetch.mock.calls.map((call) => call[1]);
-    expect(options.map((value) => value.method)).toEqual(["GET", "POST", "DELETE"]);
-    expect(JSON.parse(options[1].body as string)).toEqual({
-      name: "Cursor on laptop",
-      scopes: ["read", "write"],
-      expiresInDays: 30,
-    });
-    expect(list).toEqual([wireToken]);
-    expect(issued).toEqual({ token: wireToken, secret: "tsk_pat_3fA9abcdefghijklmnopqrstuvwxyz12" });
+    expect(options.map((value) => value.method)).toEqual(["GET", "POST", "POST", "DELETE"]);
+    expect(JSON.parse(options[1].body as string)).toEqual({ name: "Cursor on laptop", scopes: ["read", "write"], expiresInDays: 30 });
+    // No policy, no lifetime: the key is absent, not null — the server's default applies.
+    expect(JSON.parse(options[2].body as string)).toEqual({ name: "No policy", scopes: ["read"] });
+    expect(list).toEqual({ tokens: [wireToken], policy });
+    expect(issued).toEqual({ token: wireToken, secret: "tsk_pat_3fA9" + "a".repeat(39) });
+  });
+
+  it("keeps the server's order, drops a row without a usable id, and reads a malformed policy as none", async () => {
+    const older = { ...wireToken, id: "1a1a1a1a-0000-4000-8000-000000000001", createdAt: "2026-10-01T10:00:00Z" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              // Oldest first on purpose: nothing here re-sorts.
+              items: [older, { ...wireToken, id: "" }, { ...wireToken, id: 7 }, wireToken],
+              policy: { maxLifetimeDays: "90", maxActiveTokens: 10 },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const { tokens, policy: read } = await new RestTaskaApi().listAccessTokens();
+
+    expect(tokens.map((token) => token.id)).toEqual([older.id, wireToken.id]);
+    expect(read).toBeNull();
   });
 
   it("reads a token field by field, so nothing else the body carries reaches the domain object", async () => {
@@ -86,20 +115,23 @@ describe("the REST transport for access tokens", () => {
             JSON.stringify({
               items: [
                 { ...wireToken, secret: "tsk_pat_should_never_ride_along", lastUsedAt: "2026-10-24T11:00:00Z" },
-                { id: 7, scopes: ["read", 3], lastUsedAt: 0 },
+                { id: "2b2b2b2b-0000-4000-8000-000000000002", scopes: ["read", 3], lastUsedAt: 0 },
               ],
+              policy,
             }),
             { status: 200 },
           ),
       ),
     );
 
-    const [first, second] = await new RestTaskaApi().listAccessTokens();
+    const {
+      tokens: [first, second],
+    } = await new RestTaskaApi().listAccessTokens();
 
     expect(first).toEqual({ ...wireToken, lastUsedAt: "2026-10-24T11:00:00Z" });
     expect(first).not.toHaveProperty("secret");
     expect(second).toEqual({
-      id: "",
+      id: "2b2b2b2b-0000-4000-8000-000000000002",
       name: "",
       tokenPrefix: "",
       scopes: ["read"],
@@ -116,47 +148,44 @@ describe("the REST transport for access tokens", () => {
     expect((fetch.mock.calls[0] as unknown[])[0]).toBe("/api/v1/users/me/access-tokens/a%2F..%2Fb");
   });
 
-  it("carries the token-scope 403 and the 429 with their request ids, and reads each by its own predicate", async () => {
+  it("carries the session-only 403, the cap and the 429 with their request ids, each read by its own predicate", async () => {
     const refuse = (status: number, body: object) =>
-      vi.fn(
-        async () => new Response(JSON.stringify(body), { status, headers: { "X-Request-Id": `request-${status}` } }),
-      );
-
-    vi.stubGlobal("fetch", refuse(403, { code: INSUFFICIENT_SCOPE_CODE, message: "Token management requires a session" }));
-    const scope = await new RestTaskaApi()
-      .createAccessToken({ name: "x", scopes: ["read"], expiresInDays: 7 })
-      .catch((error: unknown) => error);
-    expect(scope).toMatchObject({ status: 403, code: "insufficient_scope", requestId: "request-403" });
-    expect(isInsufficientScope(scope)).toBe(true);
-    expect(isRateLimited(scope)).toBe(false);
+      vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { "X-Request-Id": `request-${status}` } }));
+    const create = () =>
+      new RestTaskaApi().createAccessToken({ name: "x", scopes: ["read"], expiresInDays: 7 }).catch((error: unknown) => error);
 
     vi.stubGlobal(
       "fetch",
-      refuse(429, { code: "RESOURCE_EXHAUSTED", message: "Too many requests", details: { retryAfterSeconds: "42" } }),
+      refuse(403, { code: "PERMISSION_DENIED", message: "Session required", details: { reason: "SESSION_REQUIRED" } }),
     );
-    const limited = await new RestTaskaApi()
-      .createAccessToken({ name: "x", scopes: ["read"], expiresInDays: 7 })
-      .catch((error: unknown) => error);
+    const session = await create();
+    expect(session).toMatchObject({ status: 403, code: "PERMISSION_DENIED", requestId: "request-403" });
+    expect([isSessionRequired(session), isActiveTokenLimit(session), isRateLimited(session)]).toEqual([true, false, false]);
+
+    vi.stubGlobal(
+      "fetch",
+      refuse(400, {
+        code: "FAILED_PRECONDITION",
+        message: "Active token limit reached",
+        details: { reason: "ACTIVE_TOKEN_LIMIT", limit: "10" },
+      }),
+    );
+    const cap = await create();
+    expect([isSessionRequired(cap), isActiveTokenLimit(cap), isRateLimited(cap)]).toEqual([false, true, false]);
+    expect(apiErrorFacts(cap).details).toEqual({ reason: "ACTIVE_TOKEN_LIMIT", limit: "10" });
+
+    vi.stubGlobal(
+      "fetch",
+      refuse(429, {
+        code: "RESOURCE_EXHAUSTED",
+        message: "Token issuance rate limit reached; try later",
+        details: { retryAfterSeconds: "3412" },
+      }),
+    );
+    const limited = await create();
     expect(limited).toMatchObject({ status: 429, requestId: "request-429" });
-    expect(isRateLimited(limited)).toBe(true);
-    // The wait reaches the section as the mock's does, in `details`.
-    expect(apiErrorFacts(limited).details?.retryAfterSeconds).toBe("42");
-    expect(isInsufficientScope(limited)).toBe(false);
-  });
-
-  it("reads a revoke's 404 NOT_FOUND as a token already gone, but not the static-resource 404 of a gateway without the routes", async () => {
-    const answer = (body: object) =>
-      vi.fn(async () => new Response(JSON.stringify(body), { status: 404, headers: { "X-Request-Id": "request-404" } }));
-
-    vi.stubGlobal("fetch", answer({ code: "NOT_FOUND", message: "Access token not found" }));
-    const gone = await new RestTaskaApi().revokeAccessToken("token-1").catch((error: unknown) => error);
-    expect(gone).toMatchObject({ status: 404, requestId: "request-404" });
-    expect(isAccessTokenGone(gone)).toBe(true);
-
-    vi.stubGlobal("fetch", answer({ code: "NOT_FOUND", message: "No static resource api/v1/users/me/access-tokens/token-1." }));
-    const undeployed = await new RestTaskaApi().revokeAccessToken("token-1").catch((error: unknown) => error);
-    expect(isUndeployedRoute(undeployed, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
-    expect(isAccessTokenGone(undeployed)).toBe(false);
+    expect([isSessionRequired(limited), isActiveTokenLimit(limited), isRateLimited(limited)]).toEqual([false, false, true]);
+    expect(apiErrorFacts(limited).details?.retryAfterSeconds).toBe("3412");
   });
 
   it("meets a gateway without the routes with the static-resource 404 the section reads as not deployed", async () => {
@@ -172,6 +201,32 @@ describe("the REST transport for access tokens", () => {
     );
     const error = await new RestTaskaApi().listAccessTokens().catch((caught: unknown) => caught);
     expect(isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+  });
+});
+
+/**
+ * The lifetimes the form offers (backend TAS-402): 7, 30 and 90 up to the
+ * policy's maximum, and the maximum itself when it is none of them. On the
+ * stand "1 year" was a 400 on every click.
+ */
+describe("the lifetimes a policy allows", () => {
+  const lifetimes = (maxLifetimeDays: number) => accessTokenLifetimes({ maxLifetimeDays, maxActiveTokens: 10 });
+
+  it("offers the presets up to the maximum, and the maximum when it is not one", () => {
+    expect(lifetimes(90)).toEqual([7, 30, 90]);
+    expect(lifetimes(60)).toEqual([7, 30, 60]);
+    expect(lifetimes(365)).toEqual([7, 30, 90, 365]);
+    expect(lifetimes(30)).toEqual([7, 30]);
+    expect(lifetimes(5)).toEqual([5]);
+    expect(lifetimes(1)).toEqual([1]);
+    expect(accessTokenLifetimes(null)).toEqual([]);
+  });
+
+  it("starts on the server's default of 30 when offered, else the longest, else none", () => {
+    expect(defaultAccessTokenLifetime([7, 30, 90])).toBe(30);
+    expect(defaultAccessTokenLifetime([7, 14])).toBe(14);
+    expect(defaultAccessTokenLifetime([5])).toBe(5);
+    expect(defaultAccessTokenLifetime([])).toBeNull();
   });
 });
 
@@ -221,20 +276,24 @@ describe("the channel mark on the REST wire (TAS-411)", () => {
 });
 
 describe("the mock's access tokens", () => {
-  it("seeds the suite's account with a read token and a read-and-write one, one of them never used", () => {
-    const tokens = new MockAccessTokens("anna").list("anna");
+  const create = (store: MockAccessTokens, overrides: Partial<Parameters<MockAccessTokens["create"]>[1]> = {}) =>
+    store.create("anna", { name: "Token", scopes: ["read"], expiresInDays: 30, ...overrides });
+
+  it("seeds the suite's account with a read token and a read-and-write one, one of them never used, and the policy", () => {
+    const { tokens, policy: stated } = new MockAccessTokens("anna").list("anna");
     expect(tokens.map((token) => token.scopes)).toEqual(expect.arrayContaining([["read"], ["read", "write"]]));
     expect(tokens).toHaveLength(2);
     expect(tokens.filter((token) => token.lastUsedAt === null)).toHaveLength(1);
-    expect(new MockAccessTokens("anna").list("somebody-else")).toEqual([]);
+    expect(stated).toEqual(policy);
+    expect(new MockAccessTokens("anna").list("somebody-else").tokens).toEqual([]);
   });
 
-  it("answers a create with a fresh secret once and keeps only its prefix", () => {
+  it("answers a create with a 43-character base64url secret once, and keeps only its 12-character prefix", () => {
     const store = new MockAccessTokens();
-    const first = store.create("anna", { name: "  Cursor on laptop  ", scopes: ["read"], expiresInDays: 7 });
-    const second = store.create("anna", { name: "Script", scopes: ["read", "write"], expiresInDays: 365 });
+    const first = create(store, { name: "  Cursor on laptop  ", expiresInDays: 7 });
+    const second = create(store, { name: "Script", scopes: ["read", "write"], expiresInDays: 90 });
 
-    expect(first.secret).toMatch(/^tsk_pat_[0-9A-Za-z]{32}$/);
+    expect(first.secret).toMatch(/^tsk_pat_[A-Za-z0-9_-]{43}$/);
     expect(first.secret).not.toBe(second.secret);
     expect(first.token.name).toBe("Cursor on laptop");
     expect(first.token.tokenPrefix).toBe(first.secret.slice(0, 12));
@@ -245,7 +304,6 @@ describe("the mock's access tokens", () => {
     const listed = JSON.stringify(store.list("anna"));
     expect(listed).not.toContain(first.secret);
     expect(listed).not.toContain(second.secret);
-    expect(store.list("anna").map((token) => token.name)).toEqual(["Script", "Cursor on laptop"]);
     // …and not what it keeps, read through its Maps. The dump does reach the
     // tokens — it holds their ids and prefixes — so its silence is a finding.
     const held = dump(store);
@@ -255,71 +313,147 @@ describe("the mock's access tokens", () => {
     expect(held).not.toContain(second.secret);
   });
 
-  it("refuses a blank or long name, a scope it does not offer and a lifetime off the list", () => {
+  it("lists createdAt, then id, both newest first, and gives a create with no lifetime the server's 30 days", () => {
     const store = new MockAccessTokens();
-    const refusal = (input: Parameters<MockAccessTokens["create"]>[1]) => {
-      try {
-        store.create("anna", input);
-        return null;
-      } catch (error) {
-        return (error as { code?: string }).code;
-      }
-    };
-    expect(refusal({ name: "   ", scopes: ["read"], expiresInDays: 30 })).toBe("INVALID_ARGUMENT");
-    expect(refusal({ name: "x".repeat(101), scopes: ["read"], expiresInDays: 30 })).toBe("INVALID_ARGUMENT");
-    expect(refusal({ name: "x".repeat(100), scopes: ["read"], expiresInDays: 30 })).toBeNull();
-    expect(refusal({ name: "x", scopes: ["write"] as unknown as ["read"], expiresInDays: 30 })).toBe("INVALID_ARGUMENT");
-    expect(refusal({ name: "x", scopes: ["read"], expiresInDays: 14 as unknown as 30 })).toBe("INVALID_ARGUMENT");
+    const now = Date.parse("2026-10-24T10:00:00Z");
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const ids = [create(store), create(store), create(store, { expiresInDays: undefined })].map((issued) => issued.token);
+    vi.restoreAllMocks();
+
+    // Same instant for all three: the ids decide, newest (largest) first.
+    expect(store.list("anna").tokens.map((token) => token.id)).toEqual(ids.map((token) => token.id).sort().reverse());
+    expect(Date.parse(ids[2].expiresAt) - now).toBe(30 * 24 * 60 * 60 * 1000);
   });
 
-  it("answers the 429's code after five creates in a minute (a mock-only number), with the wait as a string in details", () => {
+  it("refuses in the server's order and words: body, name, scopes, lifetime against the policy", () => {
     const store = new MockAccessTokens();
-    for (let index = 0; index < 5; index += 1) store.create("anna", { name: `t${index}`, scopes: ["read"], expiresInDays: 7 });
-    let caught: unknown;
-    try {
-      store.create("anna", { name: "one more", scopes: ["read"], expiresInDays: 7 });
-    } catch (error) {
-      caught = error;
+    const facts = (input: Partial<Parameters<MockAccessTokens["create"]>[1]>) =>
+      apiErrorFacts(refusalOf(() => create(store, input)));
+
+    expect(facts({ name: "" })).toMatchObject({ code: "INVALID_ARGUMENT", message: "Invalid request parameters" });
+    expect(facts({ name: "x".repeat(101) })).toMatchObject({ message: "Invalid request parameters" });
+    expect(facts({ name: "   " })).toMatchObject({ code: "INVALID_ARGUMENT", message: "Token name must contain 1 to 100 characters" });
+    expect(facts({ scopes: ["write"] as unknown as ["read"] })).toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "Token scopes must be read or read,write",
+    });
+  });
+
+  it("refuses a lifetime past the policy, naming its maximum, and takes the maximum itself", () => {
+    const store = new MockAccessTokens();
+    expect(apiErrorFacts(refusalOf(() => create(store, { expiresInDays: 91 })))).toEqual(
+      expect.objectContaining({
+        code: "INVALID_ARGUMENT",
+        message: "Token lifetime is outside policy",
+        details: { maxLifetimeDays: "90" },
+      }),
+    );
+    expect(refusalOf(() => create(store, { expiresInDays: 90 }))).toBeNull();
+  });
+
+  // Five attempts an hour per account, refused ones counted, checked before
+  // the body is looked at (`PersonalTokenCreationLimiter`).
+  it("answers the 429 on the sixth attempt in an hour, refused attempts counted, with the wait in whole seconds", () => {
+    const store = new MockAccessTokens();
+    const start = Date.parse("2026-10-24T10:00:00Z");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+    for (let index = 0; index < 4; index += 1) create(store);
+    expect(refusalOf(() => create(store, { name: "" }))).not.toBeNull();
+
+    clock.mockReturnValue(start + 10 * 60 * 1000 + 500);
+    const limited = refusalOf(() => create(store));
+    expect(isRateLimited(limited)).toBe(true);
+    expect(apiErrorFacts(limited)).toMatchObject({
+      code: "RESOURCE_EXHAUSTED",
+      message: "Token issuance rate limit reached; try later",
+      details: { retryAfterSeconds: "3000" },
+    });
+    // Even a body that would be refused is refused for the rate first.
+    expect(isRateLimited(refusalOf(() => create(store, { name: "" })))).toBe(true);
+
+    clock.mockReturnValue(start + 60 * 60 * 1000);
+    expect(refusalOf(() => create(store))).toBeNull();
+    vi.restoreAllMocks();
+  });
+
+  it("refuses an eleventh active token with the cap's reason, counting unexpired tokens only", () => {
+    const store = new MockAccessTokens();
+    const start = Date.parse("2026-10-24T10:00:00Z");
+    const clock = vi.spyOn(Date, "now");
+    // Two hours apart, so the limiter's window never closes on these.
+    for (let index = 0; index < 10; index += 1) {
+      clock.mockReturnValue(start + index * 2 * 60 * 60 * 1000);
+      create(store, { expiresInDays: index === 0 ? 1 : 30 });
     }
-    expect(isRateLimited(caught)).toBe(true);
-    // The invitation resend's shape: whole seconds, as a string, within the window.
-    const wait = apiErrorFacts(caught).details?.retryAfterSeconds;
-    expect(wait).toMatch(/^[1-9][0-9]*$/);
-    expect(Number(wait)).toBeLessThanOrEqual(60);
+    clock.mockReturnValue(start + 20 * 60 * 60 * 1000);
+    // Twenty hours in, the one-day token has not expired yet: ten active.
+    const cap = refusalOf(() => create(store));
+    expect(isActiveTokenLimit(cap)).toBe(true);
+    expect(apiErrorFacts(cap)).toMatchObject({
+      code: "FAILED_PRECONDITION",
+      message: "Active token limit reached",
+      details: { reason: "ACTIVE_TOKEN_LIMIT", limit: "10" },
+    });
+
+    // Once the one-day token has expired it no longer counts — and it is still listed.
+    clock.mockReturnValue(start + 26 * 60 * 60 * 1000);
+    expect(refusalOf(() => create(store))).toBeNull();
+    expect(store.list("anna").tokens).toHaveLength(11);
+    vi.restoreAllMocks();
   });
 
-  it("takes a revoked token out at once, answers a repeated revoke as the first (TAS-401), and refuses an id never issued", () => {
+  it("revokes at once, and answers any other id — unknown, another account's, already revoked — as the same 204", () => {
     const store = new MockAccessTokens("anna");
-    const [first, second] = store.list("anna");
-    store.revoke("anna", first.id);
-    expect(store.list("anna").map((token) => token.id)).toEqual([second.id]);
+    const [first, second] = store.list("anna").tokens;
+    expect(store.revoke("anna", first.id)).toMatchObject({ id: first.id });
+    expect(store.list("anna").tokens.map((token) => token.id)).toEqual([second.id]);
 
-    // Idempotent: the same success again, and nothing else changes.
-    expect(refusalCode(() => store.revoke("anna", first.id))).toBeNull();
-    expect(store.list("anna").map((token) => token.id)).toEqual([second.id]);
-
-    // NOT_FOUND only for an id this account was never issued — another
-    // account's revoked token included.
-    expect(refusalCode(() => store.revoke("anna", "never-issued"))).toBe("NOT_FOUND");
-    expect(refusalCode(() => store.revoke("boris", first.id))).toBe("NOT_FOUND");
-    expect(isAccessTokenGone(Object.assign(new Error("Access token not found"), { code: "NOT_FOUND" }))).toBe(true);
+    expect(refusalOf(() => store.revoke("anna", first.id))).toBeNull();
+    expect(store.revoke("anna", first.id)).toBeNull();
+    expect(store.revoke("anna", "never-issued")).toBeNull();
+    expect(store.revoke("boris", second.id)).toBeNull();
+    expect(store.list("anna").tokens.map((token) => token.id)).toEqual([second.id]);
   });
 
-  it("serves the signed-in account's tokens through MockTaskaApi", async () => {
+  it("serves the signed-in account's tokens through MockTaskaApi, and writes the owner's inbox row for each", async () => {
     window.localStorage.clear();
     const api = new MockTaskaApi();
     await api.login({ email: "anna@example.com", password: "anything" });
+    const unread = (await api.listNotifications()).unreadCount;
 
     const before = await api.listAccessTokens();
     const issued = await api.createAccessToken({ name: "New one", scopes: ["read"], expiresInDays: 30 });
     const after = await api.listAccessTokens();
     await api.revokeAccessToken(issued.token.id);
-
-    expect(before).toHaveLength(2);
-    expect(after.map((token) => token.id)).toContain(issued.token.id);
-    expect(JSON.stringify(after)).not.toContain(issued.secret);
-    expect((await api.listAccessTokens()).map((token) => token.id)).not.toContain(issued.token.id);
+    // A second revoke is the same success, and raises nothing.
     await expect(api.revokeAccessToken(issued.token.id)).resolves.toBeUndefined();
+
+    expect(before.tokens).toHaveLength(2);
+    expect(before.policy).toEqual(policy);
+    expect(after.tokens[0].id).toBe(issued.token.id);
+    expect(JSON.stringify(after)).not.toContain(issued.secret);
+    expect((await api.listAccessTokens()).tokens.map((token) => token.id)).not.toContain(issued.token.id);
+
+    const inbox = await api.listNotifications();
+    expect(inbox.unreadCount).toBe(unread + 2);
+    const rows = inbox.items.filter((item) => item.notificationType.startsWith("PERSONAL_ACCESS_TOKEN_"));
+    expect(rows.map((row) => [row.notificationType, row.title, row.body])).toEqual(
+      expect.arrayContaining([
+        [
+          "PERSONAL_ACCESS_TOKEN_CREATED",
+          "Personal access token created",
+          `Personal access token ${issued.token.tokenPrefix}... was created.`,
+        ],
+        [
+          "PERSONAL_ACCESS_TOKEN_REVOKED",
+          "Personal access token revoked",
+          `Personal access token ${issued.token.tokenPrefix}... was revoked.`,
+        ],
+      ]),
+    );
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(row).toMatchObject({ issueId: null, issueKey: null, projectId: null });
+    expect(JSON.stringify(inbox)).not.toContain(issued.secret);
     window.localStorage.clear();
   });
 
@@ -329,22 +463,16 @@ describe("the mock's access tokens", () => {
     await api.login({ email: "anna@example.com", password: "anything" });
 
     const outcomes: string[] = [];
-    const revoke = api.revokeAccessToken("never-issued").then(
-      () => "revoked",
-      (error: { code?: string }) => error.code ?? "no code",
-    );
     const create = api.createAccessToken({ name: "  ", scopes: ["read"], expiresInDays: 30 }).then(
       () => "created",
       (error: { code?: string }) => error.code ?? "no code",
     );
-    void revoke.then((outcome) => outcomes.push(outcome));
     void create.then((outcome) => outcomes.push(outcome));
 
     // A macrotask later every microtask has run: a refusal thrown before the
     // wait would be here already.
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(outcomes).toEqual([]);
-    expect(await revoke).toBe("NOT_FOUND");
     expect(await create).toBe("INVALID_ARGUMENT");
     window.localStorage.clear();
   });

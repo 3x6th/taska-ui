@@ -613,11 +613,9 @@ describe("ProjectMembersModal", () => {
     state.members = state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" } : member));
     // The list said two admins; the server counted one. A stale list is exactly
     // how the last-admin refusal reaches a dialog that hides the control.
-    state.roleFailure = refusal(
-      "FAILED_PRECONDITION",
-      400,
-      `Can't modify last admin: ${MARK} in project: ${PROJECT}`,
-      "req-last-admin",
+    state.roleFailure = Object.assign(
+      refusal("FAILED_PRECONDITION", 400, `Can't modify last admin: ${MARK} in project: ${PROJECT}`, "req-last-admin"),
+      { details: { reason: "LAST_ADMIN" } },
     );
     state.held = true;
     renderPanel();
@@ -645,6 +643,31 @@ describe("ProjectMembersModal", () => {
     expect(within(dialog()).getByRole("combobox", { name: "Role of Mark Lee" })).toHaveValue("ADMIN");
     expect(within(dialog()).getByText(`Can't modify last admin: ${MARK} in project: ${PROJECT}`)).toBeVisible();
     expect(within(dialog()).getByRole("button", { name: "Copy request id req-last-admin" })).toBeVisible();
+  });
+
+  // Backend TAS-394: the last-admin refusal is told by `details.reason` alone.
+  // The same code without that reason is just this action's refusal — read as
+  // last-admin, it would tell an admin of a two-admin project they are alone.
+  it("does not read a FAILED_PRECONDITION without the LAST_ADMIN reason as the last-admin one", async () => {
+    state.members = state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" } : member));
+    state.roleFailure = refusal("FAILED_PRECONDITION", 400, "Some other precondition", "req-other-precondition");
+    state.removeFailure = Object.assign(
+      refusal("FAILED_PRECONDITION", 400, "Another precondition", "req-other-remove"),
+      { details: { reason: "SOMETHING_ELSE" } },
+    );
+    renderPanel();
+
+    fireEvent.change(await within(dialog()).findByRole("combobox", { name: "Role of Mark Lee" }), {
+      target: { value: "MEMBER" },
+    });
+    expect(await within(dialog()).findByText("The role did not change for Mark Lee.")).toBeVisible();
+    expect(within(dialog()).queryByText(/only admin/)).toBeNull();
+    expect(within(dialog()).getByText("Some other precondition")).toBeVisible();
+
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Remove Mark Lee from this project" }));
+    fireEvent.click(within(rowOf("Mark Lee")).getByRole("button", { name: "Remove" }));
+    expect(await within(dialog()).findByText("Mark Lee was not removed from this project.")).toBeVisible();
+    expect(within(dialog()).queryByText(/only admin, so they were not removed/)).toBeNull();
   });
 
   // Backend PR #159: an archived project refuses with the last-admin
@@ -1219,13 +1242,16 @@ describe("ProjectMembersModal", () => {
       expect(screen.queryByText("Projects page")).toBeNull();
     });
 
-    it("a FAILED_PRECONDITION on a removal puts the row back and names the last-admin reason", async () => {
+    it("a LAST_ADMIN refusal of a removal puts the row back and names the last-admin reason", async () => {
       state.members = state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" } : member));
-      state.removeFailure = refusal(
-        "FAILED_PRECONDITION",
-        400,
-        `Can't modify last admin: ${MARK} in project: ${PROJECT}`,
-        "req-last-admin-remove",
+      state.removeFailure = Object.assign(
+        refusal(
+          "FAILED_PRECONDITION",
+          400,
+          `Can't modify last admin: ${MARK} in project: ${PROJECT}`,
+          "req-last-admin-remove",
+        ),
+        { details: { reason: "LAST_ADMIN" } },
       );
       renderPanel();
 

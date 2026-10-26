@@ -28,6 +28,12 @@ describe("current-user delivery preferences", () => {
     expect(store.update(anna, { emailEnabled: true })).toMatchObject({ emailEnabled: true, telegramEnabled: false });
   });
 
+  it("answers a new link with the row as it stands after the link was issued (TelegramLinkDto.preferences)", () => {
+    const link = store.createLink(anna);
+    expect(link.preferences).toEqual(store.get(anna));
+    expect(link.preferences).toMatchObject({ telegramStatus: "PENDING", telegramLinkId: link.linkId });
+  });
+
   it("keeps links and preferences per user and rejects a different user's link", () => {
     const link = store.createLink(anna);
     store.receiveStart(anna, link.linkId, "Anna", null);

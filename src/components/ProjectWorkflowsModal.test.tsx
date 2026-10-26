@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
-import type { ProjectRole, ProjectWorkflowEntry, WorkflowDefinition } from "../domain/types";
+import type { ProjectIssueType, ProjectRole, ProjectWorkflowEntry, WorkflowDefinition } from "../domain/types";
 import { boardKey } from "../lib/boardQuery";
 import { projectContextKey } from "../lib/projectContext";
 import { ProjectWorkflowsModal } from "./ProjectWorkflowsModal";
@@ -96,13 +96,20 @@ const sharedEntry: ProjectWorkflowEntry = { workflow: sharedWorkflow, issueTypes
 const ownWorkflow: WorkflowDefinition = { ...sharedWorkflow, id: "wf-own", name: "Development" };
 const ownEntry: ProjectWorkflowEntry = { workflow: ownWorkflow, issueTypes: ["STORY"], shared: false };
 
+/** The registry every project is seeded with (backend #212), in its order. */
+const SEEDED_TYPES: ProjectIssueType[] = [
+  { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
+  { code: "BUG", name: "Bug", color: "red", icon: "bug", sortOrder: 20 },
+  { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 30 },
+];
+
 function renderDialog(readerRole: ProjectRole | null | undefined = "ADMIN", archived = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const onClose = vi.fn();
   render(
     <QueryClientProvider client={queryClient}>
       <ProjectWorkflowsModal
-        issueTypeOrder={["TASK", "BUG", "STORY"]}
+        issueTypes={SEEDED_TYPES}
         onClose={onClose}
         projectId={PROJECT}
         projectKey="TAS"
@@ -206,7 +213,7 @@ describe("the Workflows dialog's states", () => {
     expect(within(own).getByText("Unknown status")).toBeVisible();
     // In Progress and Review are reached by nothing visible; Done is reached by Ship.
     expect(within(own).getAllByText("No transition on the board leads here.")).toHaveLength(2);
-    expect(within(own).getByText(/New issues always start in TODO, which this workflow does not have, so new story issues/)).toBeVisible();
+    expect(within(own).getByText(/New issues always start in TODO, which this workflow does not have, so new Story issues/)).toBeVisible();
     // A category this build cannot colour is the hollow ring, said in words beside it.
     expect(within(own).getByText("QA")).toBeVisible();
     expect(own.querySelector(".status-dot.is-unknown")).not.toBeNull();
@@ -833,8 +840,10 @@ describe("Delete status", () => {
   it("turns a refusal for its issues into a move step, then deletes with the target chosen", async () => {
     state.failQueue = [
       refusal("Workflow statuses have 2 issues; supply a target status mapping", 400, "FAILED_PRECONDITION", {
+        reason: "WORKFLOW_ISSUES_UNMAPPED",
         issueCount: "2",
         statusKeys: "IN_PROGRESS",
+        targetStatusKeys: "TODO,DONE",
       }),
     ];
     state.answer = withoutProgress;
@@ -867,10 +876,16 @@ describe("Delete status", () => {
     expect(state.listCalls).toBe(1);
   });
 
-  // api-contract-guard, TAS-416: the deletes have other FAILED_PRECONDITIONs,
-  // and the message is never read — only the details make a step.
-  it("says a FAILED_PRECONDITION without details as an ordinary refusal, in the server's words", async () => {
-    state.failQueue = [refusal("Workflow statuses have 3 issues; supply a target status mapping", 400, "FAILED_PRECONDITION")];
+  // The deletes have other FAILED_PRECONDITIONs, and the message is never
+  // read — only `details.reason` makes a step (backend TAS-427). The keys
+  // without the reason are not this refusal either.
+  it.each([
+    ["without details", null],
+    ["with the keys but not the reason", { issueCount: "3", statusKeys: "IN_PROGRESS" }],
+  ])("says a FAILED_PRECONDITION %s as an ordinary refusal, in the server's words", async (_case, details) => {
+    state.failQueue = [
+      refusal("Workflow statuses have 3 issues; supply a target status mapping", 400, "FAILED_PRECONDITION", details),
+    ];
     const strip = await openStrip();
     fireEvent.click(within(strip).getByRole("button", { name: "Delete status" }));
 
@@ -884,7 +899,9 @@ describe("Delete status", () => {
   it("names no count when only the statuses came", async () => {
     state.failQueue = [
       refusal("Workflow statuses have 3 issues; supply a target status mapping", 400, "FAILED_PRECONDITION", {
+        reason: "WORKFLOW_ISSUES_UNMAPPED",
         statusKeys: "IN_PROGRESS",
+        targetStatusKeys: "TODO,DONE",
       }),
     ];
     const strip = await openStrip();
@@ -896,38 +913,51 @@ describe("Delete status", () => {
     expect(within(strip).getByRole("combobox", { name: "Move its issues to" })).toBeVisible();
   });
 
-  // issue-service counts issues already outside the workflow too; a target
-  // moves only the deleted status's, so the move would be refused forever.
-  it("stops offering the move once the refusal names issues in a status the workflow does not have", async () => {
+  // Backend TAS-427: a status delete counts only the deleted status's issues,
+  // so the "is not a status of" dead end the strip used to draw for issues
+  // already outside the workflow cannot happen; the targets are the server's.
+  it("offers the targets the refusal names, and keeps the move even when the keys name another status", async () => {
     state.failQueue = [
-      refusal("Workflow statuses have 2 issues; supply a target status mapping", 400, "FAILED_PRECONDITION", {
-        issueCount: "2",
-        statusKeys: "IN_PROGRESS",
-      }),
       refusal("Workflow statuses have 1 issues; supply a target status mapping", 400, "FAILED_PRECONDITION", {
+        reason: "WORKFLOW_ISSUES_UNMAPPED",
         issueCount: "1",
-        statusKeys: "BLOCKED_BY_QA",
+        statusKeys: "BLOCKED_BY_QA,IN_PROGRESS",
+        targetStatusKeys: "DONE",
       }),
     ];
     const strip = await openStrip();
     fireEvent.click(within(strip).getByRole("button", { name: "Delete status" }));
-    fireEvent.change(await within(strip).findByRole("combobox", { name: "Move its issues to" }), { target: { value: "TODO" } });
-    fireEvent.click(within(strip).getByRole("button", { name: "Move and delete" }));
 
-    await waitFor(() =>
-      expect(within(strip).getByRole("alert")).toHaveTextContent(/^1 issue would be left in a status this workflow no longer has\.$/),
+    const target = await within(strip).findByRole("combobox", { name: "Move its issues to" });
+    expect(within(target).getAllByRole("option").map((option) => option.textContent)).toEqual(["Choose a status", "Done"]);
+    expect(within(strip).queryByText(/is not a status of/)).toBeNull();
+    expect(within(strip).getByRole("button", { name: "Move and delete" })).toBeVisible();
+  });
+
+  // Backend TAS-427: over the migration limit the delete is a 400 with its own
+  // reason (a 429 before). Nothing the reader can choose helps, and trying
+  // again later does not either: the strip says so once and offers no answer.
+  it("ends at the migration limit with one sentence, the server's words and the id, and no answer", async () => {
+    state.failQueue = [
+      refusal(
+        "Synchronous workflow migration is limited to 5000 issues; reduce the migration scope",
+        400,
+        "FAILED_PRECONDITION",
+        { reason: "WORKFLOW_MIGRATION_LIMIT", limit: "5000" },
+      ),
+    ];
+    const strip = await openStrip();
+    fireEvent.click(within(strip).getByRole("button", { name: "Delete status" }));
+
+    expect(await within(strip).findByRole("alert")).toHaveTextContent(
+      "More than 5,000 issues would have to move, and the server moves at most 5,000 at once, so In Progress cannot be deleted.",
     );
-    const why = within(strip).getByText("BLOCKED_BY_QA is not a status of Development, so its issues cannot be moved from here.");
-    expect(why).toBeVisible();
-    // A dead end reads sentence, why, then the server's words and the id, then Cancel.
-    const words = within(strip).getByText("Workflow statuses have 1 issues; supply a target status mapping");
-    expect(why.compareDocumentPosition(words) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(strip).getByText("Synchronous workflow migration is limited to 5000 issues; reduce the migration scope")).toBeVisible();
     expect(within(strip).getByText("req-382")).toBeVisible();
     expect(within(strip).queryByRole("combobox")).toBeNull();
     expect(within(strip).queryByRole("button", { name: /Move and delete|Delete status/ })).toBeNull();
+    expect(within(strip).queryByText(/Try again/)).toBeNull();
     await waitFor(() => expect(within(strip).getByRole("button", { name: "Cancel" })).toHaveFocus());
-    expect(state.writes).toHaveLength(2);
-    expect(state.listCalls).toBe(1);
   });
 
   it("says any other refusal in the strip, and Esc closes it with focus back on Delete", async () => {
@@ -966,6 +996,7 @@ describe("Delete workflow", () => {
   const withQa: ProjectWorkflowEntry = { ...ownEntry, workflow: { ...ownWorkflow, statuses: [...statuses, qa] } };
   const issuesRefusal = (details: Record<string, string> | null) =>
     refusal("Workflow statuses have 1 issues; supply a target status mapping", 400, "FAILED_PRECONDITION", details);
+  const unmapped = (details: Record<string, string>) => ({ reason: "WORKFLOW_ISSUES_UNMAPPED", ...details });
   const openStrip = async () => {
     await openDialog();
     const trigger = within(card("Development")).getByRole("button", { name: "Delete Development" });
@@ -989,9 +1020,9 @@ describe("Delete workflow", () => {
     expect(screen.getByText("Workflow Development deleted. Story uses Default workflow again.")).toBeInTheDocument();
   });
 
-  it("maps the statuses the details name to statuses of both workflows, then deletes with the mapping", async () => {
+  it("maps the statuses the details name to the targets it names, then deletes with the mapping", async () => {
     state.lists = [[withQa, sharedEntry], [{ ...sharedEntry, issueTypes: ["TASK", "BUG", "STORY"] }]];
-    state.failQueue = [issuesRefusal({ issueCount: "1", statusKeys: "QA" })];
+    state.failQueue = [issuesRefusal(unmapped({ issueCount: "1", statusKeys: "QA", targetStatusKeys: "TODO,IN_PROGRESS,DONE" }))];
     state.answer = { workflow: sharedWorkflow, issueTypes: ["STORY"], shared: true };
     const strip = await openStrip();
     fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
@@ -1003,7 +1034,7 @@ describe("Delete workflow", () => {
     expect(within(strip).queryByText("req-382")).toBeNull();
     const select = within(strip).getByRole("combobox", { name: "Move QA issues to" });
     await waitFor(() => expect(select).toHaveFocus());
-    // Only what both workflows have: QA is not among them.
+    // Only what the server named — both workflows have them: QA is not among them.
     expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual([
       "Choose a status",
       "To Do",
@@ -1022,7 +1053,8 @@ describe("Delete workflow", () => {
 
   it("says a refusal without the statuses it names as an ordinary refusal, and keeps the question", async () => {
     state.lists = [[withQa, sharedEntry]];
-    for (const details of [null, { issueCount: "1" }]) {
+    // No reason, or the reason naming no status: neither is a mapping question.
+    for (const details of [null, { issueCount: "1", statusKeys: "QA" }, unmapped({ issueCount: "1" })]) {
       state.failQueue = [issuesRefusal(details)];
       const strip = await openStrip();
       fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
@@ -1041,7 +1073,8 @@ describe("Delete workflow", () => {
       workflow: { ...ownWorkflow, statuses: [{ ...qa, id: "s-todo", statusKey: "TODO_LOCAL" }] },
     };
     state.lists = [[apart, sharedEntry]];
-    state.failQueue = [issuesRefusal({ issueCount: "1", statusKeys: "TODO_LOCAL" })];
+    // The server names no target: the two share no status.
+    state.failQueue = [issuesRefusal(unmapped({ issueCount: "1", statusKeys: "TODO_LOCAL", targetStatusKeys: "" }))];
     const strip = await openStrip();
     fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
 
@@ -1057,31 +1090,25 @@ describe("Delete workflow", () => {
     await waitFor(() => expect(within(strip).getByRole("button", { name: "Cancel" })).toHaveFocus());
   });
 
-  // Every type with a workflow of its own: the list leaves the shared default out.
-  it("without the shared default in the list, offers its own other statuses and says the server takes only shared ones", async () => {
+  // Every type with a workflow of its own: the list leaves the shared default
+  // out. The targets still come from the server (backend TAS-427), so nothing
+  // is guessed and no line explains a guess.
+  it("without the shared default in the list, offers the targets the server names", async () => {
     state.lists = [[withQa]];
-    state.failQueue = [issuesRefusal({ issueCount: "1", statusKeys: "QA" })];
+    state.failQueue = [issuesRefusal(unmapped({ issueCount: "1", statusKeys: "QA", targetStatusKeys: "TODO,DONE" }))];
     state.answer = { workflow: sharedWorkflow, issueTypes: ["STORY"], shared: true };
     const strip = await openStrip();
     expect(strip).toHaveTextContent("Delete Development? Story goes back to the shared workflow.");
     fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
 
-    // The line under it says "Choose" already; the sentence does not say it twice.
     expect(await within(strip).findByRole("alert")).toHaveTextContent(
-      /^1 issue would be left in statuses the shared workflow does not have\.$/,
+      "1 issue would be left in statuses the shared workflow does not have. Choose where each status’s issues go.",
     );
-    expect(
-      within(strip).getByText(
-        "The shared workflow is not in this list, so its statuses are not known here. Choose one it also has: the server moves issues only to a status both workflows have.",
-      ),
-    ).toBeVisible();
-    expect(within(strip).queryByText(/shares no status/)).toBeNull();
+    expect(within(strip).queryByText(/not in this list|shares no status/)).toBeNull();
     const select = within(strip).getByRole("combobox", { name: "Move QA issues to" });
-    // QA is the status the server named as one the shared default lacks.
     expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual([
       "Choose a status",
       "To Do",
-      "In Progress",
       "Done",
     ]);
     fireEvent.change(select, { target: { value: "DONE" } });
@@ -1101,6 +1128,25 @@ describe("Delete workflow", () => {
     expect(within(strip).queryByText(/shares no status|not in this list/)).toBeNull();
     expect(within(strip).queryByRole("combobox")).toBeNull();
     expect(within(strip).getByRole("button", { name: "Delete workflow" })).toBeVisible();
+  });
+
+  it("ends at the migration limit with one sentence and no answer, the stranded and mapping steps aside", async () => {
+    state.lists = [[withQa, sharedEntry]];
+    state.failQueue = [
+      refusal("Synchronous workflow migration is limited to 5000 issues; reduce the migration scope", 400, "FAILED_PRECONDITION", {
+        reason: "WORKFLOW_MIGRATION_LIMIT",
+        limit: "5000",
+      }),
+    ];
+    const strip = await openStrip();
+    fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
+
+    expect(await within(strip).findByRole("alert")).toHaveTextContent(
+      "More than 5,000 issues would have to move, and the server moves at most 5,000 at once, so Development cannot be deleted.",
+    );
+    expect(within(strip).getByText("req-382")).toBeVisible();
+    expect(within(strip).queryByRole("combobox")).toBeNull();
+    expect(within(strip).queryByRole("button", { name: /Move and delete|Delete workflow/ })).toBeNull();
   });
 
   it("says a refusal that names nothing to map as a refusal, and keeps the question", async () => {

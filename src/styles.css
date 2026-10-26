@@ -5198,7 +5198,7 @@ h1 {
 .notification-list {
   max-height: 340px;
   overflow: auto;
-  /* At six seed rows, Tab scrolls a non-last row ("Added to a project") flush
+  /* At six seed rows, Tab scrolls a non-last row ("You were added to a project") flush
      against the panel's rounded bottom edge: only `:last-child` gets the
      inner-radius treatment above, so a scrolled-to row short of that lands its
      focus ring's bottom corners 4.79px outside the panel's clip
@@ -5356,6 +5356,22 @@ h1 {
 .filterbar > .assignee-all,
 .filterbar > .clear-button {
   flex: none;
+}
+
+/* §4.13 (TAS-417): the Type select and the Issue types trigger are one
+   unwrappable group — a wrap never separates the filter from its settings.
+   The bar's own column gap inside, so the group reads as two of its children. */
+.filter-type-group {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 14px;
+}
+
+/* An admin's names are up to 50 characters (§4.30): the select is capped at
+   120 and ellipsizes inside, where the label picker's is 148. */
+.filter-select.filter-type select {
+  max-width: 120px;
 }
 
 /* `.topbar-spacer` is a `flex: 1` box, and pushing everything after it to the
@@ -5846,10 +5862,39 @@ h1 {
   font-size: 11px;
 }
 
+/* §4.6 (TAS-417): one shape for every type — a 16px tile, radius 4 — filled
+   with the registry colour and carrying its glyph; fill and glyph colour come
+   together in one inline style (§4.4's pair rule). The BUG circle is gone. */
 .type-chip {
-  width: 14px;
-  height: 14px;
+  display: inline-flex;
   flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+
+.type-chip svg {
+  display: block;
+  flex: none;
+}
+
+/* The card's meta row measured 15.94 high before TAS-417 (its line box, not
+   the ≈17 §4.6 estimated), and the 16 tile would push it to 16. The tile keeps
+   its 16 on screen and lays out at 14 — the old chip's — so the card's height
+   does not change (§4.6's gate, measured after `document.fonts.ready`). */
+.issue-card-meta .type-chip {
+  margin-block: -1px;
+}
+
+/* Out of the dictionary (§4.6): no registry entry for the key, or a hit that
+   carries no look — `--fg-3` and no glyph; a colour outside the seven — the
+   same fill, and the glyph in `--fg` (5.69:1 light / 5.16:1 dark). */
+.type-chip.is-unknown,
+.type-chip.is-unknown-color {
+  background: var(--fg-3);
+  color: var(--fg);
 }
 
 /* The chip's slot with nothing in it, where a row could not be drawn: the key
@@ -6317,6 +6362,82 @@ h1 {
   font-size: 12px;
 }
 
+/* §5.5 (TAS-417): the type select — native, 30 high like the Priority
+   segments beside it — with the chosen type's tile inside the field. */
+.meta-grid > .type-select,
+.meta-grid > .type-static {
+  color: var(--fg);
+  font-size: 12.5px;
+}
+
+.type-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.type-select > .type-chip {
+  position: absolute;
+  left: 8px;
+  pointer-events: none;
+}
+
+.type-select select {
+  max-width: 100%;
+  height: 30px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 0 8px 0 30px;
+  background: var(--surface);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+
+.type-select select:focus {
+  border-color: var(--accent);
+}
+
+.type-select select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* §4.1's steadily unavailable, once the project was archived under the form. */
+.type-select select[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+/* In New issue the select takes its half of `.form-two`. */
+.form-two .type-select,
+.form-two .type-select select {
+  width: 100%;
+}
+
+/* For a reader who cannot write: the type as text, in a row as tall as the
+   select, so nothing shifts when the role arrives (§5.5, §4.3). */
+.type-static {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 30px;
+}
+
+.type-static strong {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chip-row,
 .person-line {
   display: flex;
@@ -6628,6 +6749,16 @@ h1 {
    a line of its own. */
 .issue-link-form > .issue-link-field:first-child {
   flex-basis: 100%;
+}
+
+/* §5.4: under the picker's row, on a line of its own — the board read it
+   offers from is cut at 200 a status (TAS-392). A state, in `--fg-2`. */
+.issue-link-cut {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
 }
 
 .issue-link-field > span {
@@ -7419,6 +7550,57 @@ button.attachment-open:hover:not(:disabled) {
   list-style: none;
 }
 
+/* §4.9 «Колонка не целиком», shared by a capped board column and the work
+   log (§4.24): the list's last item, "{n} of {total} shown" on the left on the
+   line of the status dot, and «Show more» on the right. `--fg-2`, not `--fg-3`:
+   on `--surface-2` the latter gives 2.76. The board's foot has no button yet
+   (backend A1) and lets its sentence wrap instead (`.list-more-note`). */
+.list-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-left: 2px;
+  list-style: none;
+}
+
+.list-more-count {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-more-note {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  text-wrap: pretty;
+}
+
+.list-more-button {
+  position: relative;
+  flex: none;
+}
+
+/* §4.1 in flight: no dimming, the progress cursor. */
+.list-more-button[data-busy="true"] {
+  cursor: progress;
+}
+
+@media (max-width: 820px) {
+  /* The 44 touch height without growing the 29 box (§4.9, §7). */
+  .list-more-button::before {
+    position: absolute;
+    inset: -8px 0;
+    content: "";
+  }
+}
+
 .worklog-row {
   display: flex;
   gap: 11px;
@@ -8003,6 +8185,21 @@ button.attachment-open:hover:not(:disabled) {
   font-size: 11.5px;
   line-height: 1.45;
   text-wrap: pretty;
+}
+
+/* The column "+" form when every type lacks the column's status (§5.5, P3′):
+   the line above the footer, and Create issue steadily unavailable (§4.1). */
+.modal-unavailable-note {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.primary-button.is-unavailable[aria-disabled="true"] {
+  opacity: 0.58;
+  cursor: not-allowed;
 }
 
 /* In the labels dialog it takes the form's place, and the form's 16 below. */
@@ -8825,6 +9022,8 @@ button.attachment-open:hover:not(:disabled) {
    the list because the dialog focuses it. */
 .members-panel .primary-button:focus-visible,
 .members-panel .secondary-button:focus-visible,
+.issue-types-panel .primary-button:focus-visible,
+.issue-types-panel .secondary-button:focus-visible,
 .member-role-field select:focus-visible,
 .member-role-select:focus-visible,
 .members-heading:focus-visible {
@@ -9286,13 +9485,15 @@ button.attachment-open:hover:not(:disabled) {
    alone collapses at 820 for the create dialog's segmented pairs; two short
    boxes fit a 480 modal at any viewport that can hold one. */
 @media (max-width: 820px) {
-  .form-two.workflow-form-two {
+  .form-two.workflow-form-two,
+  .form-two.issue-type-form-two {
     grid-template-columns: 1fr 1fr;
   }
 }
 
 @media (max-width: 479px) {
-  .form-two.workflow-form-two {
+  .form-two.workflow-form-two,
+  .form-two.issue-type-form-two {
     grid-template-columns: 1fr;
   }
 }
@@ -9485,19 +9686,291 @@ button.attachment-open:hover:not(:disabled) {
    that is already taken — takes `button:disabled`'s look by hand. Either way
    the control keeps focus, and a secondary one does not light up on hover as
    if it would answer. */
-.workflows-panel [aria-disabled="true"] {
+.workflows-panel [aria-disabled="true"],
+.issue-types-panel [aria-disabled="true"] {
   cursor: progress;
 }
 
-.workflows-panel .is-unavailable[aria-disabled="true"] {
+.workflows-panel .is-unavailable[aria-disabled="true"],
+.issue-types-panel .is-unavailable[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.58;
 }
 
+.issue-types-panel .secondary-button[aria-disabled="true"]:hover,
 .workflows-panel .secondary-button[aria-disabled="true"]:hover {
   border-color: var(--border-strong);
   background: var(--surface);
   color: var(--fg-2);
+}
+
+/* §4.30 Issue types (TAS-417). The panel is Workflows' (§4.28): a column of
+   blocks 14 apart, `position: relative` for the same reason — the hidden
+   spans in the rows must not escape the scrolling body. */
+.issue-types-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.issue-types-add {
+  align-self: flex-start;
+}
+
+.issue-types-note {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+/* 10 above the intro (§4.30), not the panel's 14. */
+.issue-types-intro {
+  margin-top: -4px;
+}
+
+.issue-types-slot.member-note {
+  margin: 0;
+}
+
+/* The slot stays mounted with nothing in it (a live region has to exist
+   before its first sentence, §7) — without taking a second panel gap. */
+.issue-types-slot:not(.member-note) {
+  margin-top: -14px;
+}
+
+.issue-types-empty {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+}
+
+.issue-type-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* `.member-row`'s recipe at 44 (§4.30): wraps, so the lone type's line and the
+   delete strip take a full line under the controls rather than squeezing the
+   name. */
+.issue-type-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-height: 44px;
+  border-radius: 7px;
+  padding: 6px 0;
+}
+
+/* §4.28's highlight on the row a write made, held two seconds, no animation. */
+.issue-type-row.is-highlighted {
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+}
+
+.issue-type-row.is-editing {
+  display: block;
+}
+
+.issue-type-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.issue-type-name-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.issue-type-name {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The `default` marker sits in the name's 18px line rather than growing it:
+   without this the first row stood 2px taller than the rest. */
+.issue-type-name-line .workflow-marker {
+  margin-block: -1px;
+}
+
+/* Meta: `--fg-3` (3.14:1 / 3.05:1), mono like every key. */
+.issue-type-code {
+  overflow: hidden;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-type-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.issue-type-action svg {
+  flex: none;
+}
+
+/* §4.1's destructive ghost: `--danger` only under the pointer or while its
+   question is open. */
+.issue-type-row .issue-type-delete:hover,
+.issue-type-row .issue-type-delete[aria-expanded="true"] {
+  background: var(--surface-2);
+  color: var(--danger);
+}
+
+/* Where Delete would be on the lone type, so its Edit stays in the column. */
+.issue-type-action-slot {
+  width: 32px;
+  flex: none;
+}
+
+/* Under the text column: 24 is the tile (16) and the row's gap (8). */
+.issue-type-row-note {
+  flex-basis: 100%;
+  margin: 0;
+  padding-left: 24px;
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+/* §4.22's strip, indented 24 rather than Members' 32. */
+.member-confirm.issue-type-confirm {
+  flex-basis: calc(100% - 24px);
+  margin-left: 24px;
+}
+
+.issue-type-row.is-skeleton {
+  pointer-events: none;
+}
+
+.issue-type-skeleton-tile {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+
+.issue-type-row.is-skeleton .issue-type-text {
+  gap: 4px;
+}
+
+.issue-type-skeleton-name {
+  width: 120px;
+  height: 12px;
+}
+
+.issue-type-skeleton-code {
+  width: 60px;
+  height: 10px;
+}
+
+/* The add and edit form (§4.30): a box, no fill. */
+.issue-type-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 14px;
+}
+
+.issue-type-form-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.issue-type-form-head h3 {
+  min-width: 0;
+  margin: 0;
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.issue-type-code-static {
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  line-height: 32px;
+}
+
+.issue-types-panel .issue-type-hint {
+  margin: 0;
+}
+
+/* The icon picker: §4.2's segments, as a group of 28×28 icon buttons. */
+.issue-type-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 9px;
+  padding: 3px;
+  background: var(--surface-2);
+}
+
+.issue-type-icon-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+.issue-type-icon-option:hover {
+  color: var(--fg);
+}
+
+.issue-type-icon-option.is-active {
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--fg);
+}
+
+.issue-type-icon-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+/* Below 820 every row button takes a 44-high hit area; the visible size
+   stays 32 (§4.30, §1's touch floor). */
+@media (max-width: 820px) {
+  .issue-type-action::before {
+    position: absolute;
+    inset: -6px 0;
+    content: "";
+  }
 }
 
 /* §4.28's loading card: the card's frame with §5.6's pulse inside. */

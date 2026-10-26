@@ -11,6 +11,7 @@ import type {
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
+  CreateProjectIssueTypeInput,
   CreateProjectLabelInput,
   CreateProjectWorkflowInput,
   DeleteProjectWorkflowInput,
@@ -18,6 +19,7 @@ import type {
   DeleteWorkflowTransitionParams,
   InviteUserInput,
   ListCommentsParams,
+  ListWorklogsParams,
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
@@ -29,6 +31,7 @@ import type {
   UpdateIssueWorklogInput,
   UpdateIssueInput,
   UpdateProjectInput,
+  UpdateProjectIssueTypeInput,
   UpdateProjectLabelInput,
   UpdateProjectWorkflowInput,
   UpdateWorkflowStatusInput,
@@ -53,7 +56,15 @@ import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES, avatarRefusal } from "../avatars";
 import { IssueVersionConflictError, errorDetails, type ErrorDetails } from "../errors";
 import { toViewLinkType } from "../linkViewTypes";
-import { blankSummaryRefusal, ifMatch, issuePatchBody, issueVersionRefusal } from "../issuePatch";
+import { blankSummaryRefusal, ifMatch, issuePatchBody, issueTypePatchRefusal, issueVersionRefusal } from "../issuePatch";
+import {
+  ISSUE_TYPE_EMPTY_PATCH_MESSAGE,
+  isIssueTypeColor,
+  isIssueTypeIcon,
+  projectIssueTypePatchBody,
+  toProjectIssueType,
+  toProjectIssueTypes,
+} from "../issueTypes";
 import {
   OBJECT_STORE_REJECTED_CODE,
   OBJECT_STORE_UNREACHABLE_CODE,
@@ -71,6 +82,8 @@ import {
 import { SessionExpiredSignal } from "../session";
 import type {
   AccessToken,
+  AccessTokenList,
+  AccessTokenPolicy,
   AdminCatalog,
   AdminPagination,
   AdminRow,
@@ -104,6 +117,7 @@ import type {
   IssueWatcher,
   IssueWatchers,
   IssueWorklog,
+  IssueWorklogPage,
   IssueDetails,
   IssueDetailsWithHistory,
   IssuedAccessToken,
@@ -122,6 +136,7 @@ import type {
   ProblematicOutboxSummary,
   Project,
   ProjectContext,
+  ProjectIssueType,
   ProjectLabel,
   ProjectMember,
   ProjectWorkflow,
@@ -246,10 +261,16 @@ interface RestProjectContext {
   project: Project;
   members?: RestProjectMember[];
   labels?: RestLabel[];
+  /** `ProjectIssueTypeDto[]` (backend #212); read by `toProjectIssueTypes`. */
+  issueTypes?: unknown;
   workflows?: RestProjectWorkflowEntry[];
 }
 
-/** `ProjectWorkflowEntryDto`. `issueType` is `null` for a type the gateway's mapper does not know. */
+/**
+ * `ProjectWorkflowEntryDto`. `issueType` is the registry key as sent — the
+ * gateway passes it through since backend #226 — and read as `unknown` so a
+ * `null` or a blank is dropped rather than trusted.
+ */
 interface RestProjectWorkflowEntry {
   issueType?: unknown;
   workflow?: {
@@ -454,9 +475,10 @@ interface RestListIssueLabelsResponse {
 
 /**
  * `IssueHistoryResponseDto` without `via`: the channel mark (TAS-411) is not on
- * the wire, and a wire type that declared it would say it is.
+ * the wire, and a wire type that declared it would say it is. `actor` is a
+ * nullable `UserSummaryDto` (backend TAS-398), read field by field.
  */
-type RestIssueHistoryEvent = Omit<IssueHistoryEvent, "issueId" | "via">;
+type RestIssueHistoryEvent = Omit<IssueHistoryEvent, "issueId" | "via" | "actor"> & { actor?: unknown };
 
 interface RestIssueWithHistory {
   issue: RestIssue;
@@ -528,6 +550,11 @@ interface RestIssueShortItem {
   projectId?: string | null;
   projectKey?: string | null;
   statusKey?: string | null;
+  // Backend TAS-418 (develop `be5085e5`): the type's look from the hit's
+  // project registry, all three nullable. Read as `unknown` and narrowed.
+  issueTypeName?: unknown;
+  issueTypeColor?: unknown;
+  issueTypeIcon?: unknown;
 }
 
 /**
@@ -602,13 +629,15 @@ interface RestBoardIssue {
   labels?: RestLabel[] | null;
 }
 
-/** `BoardColumnDto`. All five properties are in the schema's `required` block. */
+/** `BoardColumnDto`. Every property is in the schema's `required` block; the counts are read defensively. */
 interface RestBoardColumn {
   statusKey: string;
   name: string;
   category: string;
   sortOrder: number;
   issues: RestBoardIssue[];
+  totalCount?: unknown;
+  hasMore?: unknown;
 }
 
 /**
@@ -623,6 +652,8 @@ interface RestBoardResponse {
   projectId: string;
   columns: RestBoardColumn[];
   unplacedIssues?: RestBoardIssue[];
+  unplacedTotalCount?: unknown;
+  unplacedHasMore?: unknown;
 }
 
 /**
@@ -790,14 +821,24 @@ type RestComment = Omit<IssueComment, "updatedAt" | "author" | "via"> & {
   author?: RestUserSummary | null;
 };
 
-/** `IssueWorklogResponseDto` (backend PR #178); `comment` and `updatedAt` are nullable and may be absent. */
-type RestWorklog = Omit<IssueWorklog, "comment" | "updatedAt"> & {
+/**
+ * `IssueWorklogResponseDto` (backend PR #178); `comment` and `updatedAt` are
+ * nullable and may be absent; `author` (TAS-421) is a nullable summary on the
+ * list's rows and absent from a write's answer.
+ */
+type RestWorklog = Omit<IssueWorklog, "comment" | "updatedAt" | "author"> & {
   comment?: string | null;
   updatedAt?: string | null;
+  author?: unknown;
 };
 
+/** `ListIssueWorklogsResponseDto` (backend TAS-421), every field read as optional. */
 interface RestWorklogsListResponse {
-  items: RestWorklog[];
+  items?: RestWorklog[];
+  page?: unknown;
+  pageSize?: unknown;
+  totalCount?: unknown;
+  hasMore?: unknown;
 }
 
 interface RestCommentsListResponse {
@@ -983,8 +1024,25 @@ export class RestTaskaApi implements TaskaApi {
     );
   }
 
-  createTelegramLink(): Promise<TelegramLink> {
-    return this.request<TelegramLink>("/users/me/telegram/link", { method: "POST" });
+  /**
+   * `POST /users/me/telegram/link`. The answer carries the reader's settings as
+   * they stand after the link was issued (`TelegramLinkDto.preferences`,
+   * required by the contract and always filled by the gateway), read through
+   * the same mapper as every other settings answer — so the section draws from
+   * it and asks for nothing more. A missing field is a contract violation, not
+   * a case to recover from here.
+   */
+  async createTelegramLink(): Promise<TelegramLink> {
+    const response = await this.request<Omit<TelegramLink, "preferences"> & { preferences: RestNotificationPreferences }>(
+      "/users/me/telegram/link",
+      { method: "POST" },
+    );
+    return {
+      linkId: response.linkId,
+      url: response.url,
+      expiresAt: response.expiresAt,
+      preferences: toNotificationPreferences(response.preferences),
+    };
   }
 
   async confirmTelegramLink(linkId: string): Promise<NotificationPreferences> {
@@ -1003,39 +1061,42 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /*
-   * Personal access tokens (TAS-412). **PROVISIONAL — not the contract.** The
-   * three paths are backend TAS-402's; nothing else here is specified anywhere
-   * yet, and backend develop `92a00dbc` serves none of them, so on the stand
-   * each answers the static-resource 404 the section reads as "not on this
-   * gateway yet". The bodies are the frontend's proposal on TAS-402:
+   * Personal access tokens (TAS-412; backend TAS-401/402, `openapi.yml` at
+   * develop `be5085e5`):
    *
-   *   POST   /users/me/access-tokens  {name, scopes, expiresInDays}
-   *          → 201 {token: AccessTokenDto, secret}
-   *   GET    /users/me/access-tokens  → 200 {items: AccessTokenDto[]}
-   *   DELETE /users/me/access-tokens/{tokenId} → 204, and 204 again for a
-   *          token already revoked (TAS-401: a repeated revoke is idempotent)
+   *   GET    /users/me/access-tokens → 200 {items: PersonalAccessTokenDto[], policy}
+   *   POST   /users/me/access-tokens {name, scopes, expiresInDays?} → 201 {token, secret}
+   *   DELETE /users/me/access-tokens/{tokenId} → 204, for any id
    *
-   * `AccessTokenDto` is {id, name, tokenPrefix, scopes, createdAt, expiresAt,
-   * lastUsedAt|null}; refusals are the gateway's flat {code, message}, 403
-   * `insufficient_scope` for a request made with a token, 429 for creating
-   * too often, and 404 `NOT_FOUND` for an id the caller was never issued —
-   * which the section reads as "already gone" (`isAccessTokenGone`). The list
-   * takes `GET /projects`' shape (`listMyProjects`: the caller's own
-   * collection, unpaginated, `{items}`) — the nearest precedent.
-   * Recorded with what removes it in docs/ai/API-DIVERGENCE.md, "TAS-412".
+   * Each DTO is read field by field (`toAccessToken`), and a row without a
+   * usable id is dropped: nothing could revoke it, and an empty id would be one
+   * row's key for every such row. The list is drawn in the server's order —
+   * `createdAt`, then `id`, newest first — and never re-sorted here.
    */
-  async listAccessTokens(): Promise<AccessToken[]> {
-    const response = await this.request<{ items?: unknown }>("/users/me/access-tokens");
-    return Array.isArray(response?.items) ? response.items.map(toAccessToken) : [];
+  async listAccessTokens(): Promise<AccessTokenList> {
+    const response = await this.request<{ items?: unknown; policy?: unknown }>("/users/me/access-tokens");
+    const tokens = Array.isArray(response?.items)
+      ? response.items.map(toAccessToken).filter((token): token is AccessToken => token !== null)
+      : [];
+    return { tokens, policy: toAccessTokenPolicy(response?.policy) };
   }
 
   async createAccessToken(input: CreateAccessTokenInput): Promise<IssuedAccessToken> {
     const response = await this.request<{ token?: unknown; secret?: unknown }>("/users/me/access-tokens", {
       method: "POST",
-      body: { name: input.name, scopes: input.scopes, expiresInDays: input.expiresInDays },
+      // No lifetime at all when the form had no policy to offer one from: the
+      // server's default applies, rather than a number this build made up.
+      body: {
+        name: input.name,
+        scopes: input.scopes,
+        ...(input.expiresInDays === undefined ? {} : { expiresInDays: input.expiresInDays }),
+      },
     });
-    // The secret is handed straight to the caller and kept nowhere here.
-    return { token: toAccessToken(response?.token), secret: typeof response?.secret === "string" ? response.secret : "" };
+    // The secret is handed straight to the caller and kept nowhere here. A
+    // token without a usable id still comes back with its value — the one
+    // showing of it matters more than the row — and the caller reads the list
+    // again for the row rather than placing one nothing could revoke.
+    return { token: toAccessTokenFields(response?.token), secret: typeof response?.secret === "string" ? response.secret : "" };
   }
 
   async revokeAccessToken(tokenId: string): Promise<void> {
@@ -1199,9 +1260,9 @@ export class RestTaskaApi implements TaskaApi {
    * Each part goes through the mapper its own route uses, so the board draws a
    * context member exactly as it drew a `/members` row: blank names become an
    * unnamed row, idless rows are dropped, and `compareMembers` decides the
-   * order. Workflows are keyed by issue type as the server sent it, a type
-   * this build has no name for included (TAS-173) — that is how an issue of a
-   * new type keeps its columns. Only an entry with no type at all — `null` on
+   * order. The issue-type registry is read by `toProjectIssueTypes` in the
+   * order sent (backend #212, never re-sorted). Workflows are keyed by issue
+   * type as the server sent it. Only an entry with no type at all — `null` on
    * the wire — is dropped rather than guessed, and so is one with no workflow
    * in it.
    */
@@ -1234,6 +1295,7 @@ export class RestTaskaApi implements TaskaApi {
         .map((member) => toProjectMember(member))
         .sort(compareMembers),
       labels: (response.labels ?? []).map(toLabel),
+      issueTypes: toProjectIssueTypes(response.issueTypes),
       workflows,
     };
   }
@@ -1454,7 +1516,10 @@ export class RestTaskaApi implements TaskaApi {
     if (params.labelId) search.set("labelId", params.labelId);
     if (params.includeDone) search.set("includeDone", "true");
     if (params.priority) search.set("priority", params.priority);
-    if (params.query?.trim()) search.set("query", params.query);
+    // As given: the gateway refuses an empty one (`minLength: 1`), as the
+    // mock does. The board screen never sends a blank one.
+    if (params.query !== undefined) search.set("query", params.query);
+    if (params.pageSizePerColumn !== undefined) search.set("pageSizePerColumn", String(params.pageSizePerColumn));
     const response = await this.request<RestBoardResponse>(
       `/projects/${this.segment(projectId)}/board${this.query(search)}`,
     );
@@ -1600,6 +1665,8 @@ export class RestTaskaApi implements TaskaApi {
     refusePlanningFields(input);
     const summaryRefusal = blankSummaryRefusal(input);
     if (summaryRefusal) throw new ApiError(summaryRefusal.message, summaryRefusal.code, 400);
+    const typeRefusal = issueTypePatchRefusal(input);
+    if (typeRefusal) throw new ApiError(typeRefusal.message, typeRefusal.code, 400);
 
     try {
       const answer = await this.request<RestIssue>(`/issues/${this.segment(issueId)}`, {
@@ -1616,11 +1683,18 @@ export class RestTaskaApi implements TaskaApi {
     }
   }
 
-  async transitionIssue(_projectId: string, issueId: string, transitionId: string): Promise<Issue> {
+  async transitionIssue(_projectId: string, issueId: string, transitionId: string, expectedVersion?: number): Promise<Issue> {
+    if (expectedVersion !== undefined) {
+      const versionRefusal = issueVersionRefusal(expectedVersion);
+      if (versionRefusal) throw new ApiError(versionRefusal.message, versionRefusal.code, 400);
+    }
     const response = await this.request<RestIssueWithHistory>(
       `/issues/${this.segment(issueId)}/transition/${this.segment(transitionId)}`,
       {
         method: "PUT",
+        // Backend TAS-422: the compare is atomic with the move. Without it the
+        // server validates against one read and executes against another.
+        ...(expectedVersion !== undefined ? { headers: { "If-Match": ifMatch(expectedVersion) } } : {}),
       },
     );
     return this.toIssue(response.issue);
@@ -1992,9 +2066,26 @@ export class RestTaskaApi implements TaskaApi {
     await this.request<void>("/users/me/avatar", { method: "DELETE" });
   }
 
-  async listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]> {
-    const response = await this.request<RestWorklogsListResponse>(this.worklogsPath(projectId, issueId));
-    return (response.items ?? []).map((worklog) => this.toWorklog(worklog));
+  /**
+   * One page of the work log (backend TAS-421). `totalCount` and `hasMore` are
+   * read only as the number and the boolean the contract states; anything
+   * else is `null`, which the section never reads as a complete list.
+   */
+  async listIssueWorklogs(projectId: string, issueId: string, params: ListWorklogsParams = {}): Promise<IssueWorklogPage> {
+    const search = new URLSearchParams();
+    if (params.page !== undefined) search.set("page", String(params.page));
+    if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
+    const response = await this.request<RestWorklogsListResponse>(
+      `${this.worklogsPath(projectId, issueId)}${this.query(search)}`,
+    );
+    const whole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+    return {
+      items: (Array.isArray(response?.items) ? response.items : []).map((worklog) => this.toWorklog(worklog)),
+      page: whole(response?.page) ? response.page : (params.page ?? 0),
+      pageSize: whole(response?.pageSize) ? response.pageSize : (params.pageSize ?? 0),
+      totalCount: whole(response?.totalCount) ? response.totalCount : null,
+      hasMore: typeof response?.hasMore === "boolean" ? response.hasMore : null,
+    };
   }
 
   async addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): Promise<IssueWorklog> {
@@ -2049,6 +2140,77 @@ export class RestTaskaApi implements TaskaApi {
   async listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]> {
     const response = await this.request<RestProjectWorkflows>(this.workflowsPath(projectId));
     return (response.items ?? []).flatMap((item) => (item.workflow ? [toProjectWorkflowEntry(item)] : []));
+  }
+
+  /**
+   * `POST /projects/{projectId}/issue-types` — see
+   * `TaskaApi.createProjectIssueType`. The five declared fields and nothing
+   * else; `sortOrder` only when the caller states one. The 201 is read as a
+   * registry entry is.
+   */
+  async createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): Promise<ProjectIssueType> {
+    const response = await this.request<unknown>(this.issueTypesPath(projectId), {
+      method: "POST",
+      body: {
+        code: input.code,
+        name: input.name,
+        color: input.color,
+        icon: input.icon,
+        ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+      },
+    });
+    return this.toIssueTypeAnswer(response, input.code);
+  }
+
+  /**
+   * `PATCH /projects/{projectId}/issue-types/{code}`. The body is whitelisted
+   * (`projectIssueTypePatchBody`): no `code`, no `null`. An empty one is
+   * refused here in the server's own words — the service refuses `{}` before
+   * it looks at anything else, so the request would say nothing new.
+   */
+  async updateProjectIssueType(
+    projectId: string,
+    code: string,
+    input: UpdateProjectIssueTypeInput,
+  ): Promise<ProjectIssueType> {
+    const body = projectIssueTypePatchBody(input);
+    if (Object.keys(body).length === 0) throw new ApiError(ISSUE_TYPE_EMPTY_PATCH_MESSAGE, "INVALID_ARGUMENT", 400);
+    const response = await this.request<unknown>(`${this.issueTypesPath(projectId)}/${this.segment(code)}`, {
+      method: "PATCH",
+      body,
+    });
+    return this.toIssueTypeAnswer(response, code);
+  }
+
+  /** `DELETE /projects/{projectId}/issue-types/{code}` — 204. */
+  async deleteProjectIssueType(projectId: string, code: string): Promise<void> {
+    await this.request<void>(`${this.issueTypesPath(projectId)}/${this.segment(code)}`, { method: "DELETE" });
+  }
+
+  /**
+   * `PUT /projects/{projectId}/issue-types/order` (backend TAS-418) — see
+   * `TaskaApi.reorderProjectIssueTypes`. `codes` is sent as given, repeats
+   * included: refusing one is the server's, in its own words. The 200 is
+   * `ListProjectIssueTypesDto`, the whole registry in its new order.
+   */
+  async reorderProjectIssueTypes(projectId: string, codes: readonly string[]): Promise<ProjectIssueType[]> {
+    const response = await this.request<{ items?: unknown }>(`${this.issueTypesPath(projectId)}/order`, {
+      method: "PUT",
+      body: { codes: [...codes] },
+    });
+    return toProjectIssueTypes(response?.items);
+  }
+
+  /**
+   * A registry write's 2xx as a registry entry, through the registry's own
+   * reader. Both routes are about one code — the one the create sent, the one
+   * in the PATCH path — so an answer that leaves `code` out is still about
+   * that code, and is keyed by it rather than dropped.
+   */
+  private toIssueTypeAnswer(response: unknown, sentCode: string): ProjectIssueType {
+    const wire = typeof response === "object" && response !== null ? (response as Record<string, unknown>) : {};
+    const code = typeof wire.code === "string" && wire.code.trim() !== "" ? wire.code : sentCode;
+    return toProjectIssueType({ ...wire, code }) ?? { code, name: code, color: null, icon: null, sortOrder: 0 };
   }
 
   /**
@@ -2632,6 +2794,10 @@ export class RestTaskaApi implements TaskaApi {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/worklogs`;
   }
 
+  private issueTypesPath(projectId: string) {
+    return `/projects/${this.segment(projectId)}/issue-types`;
+  }
+
   private workflowsPath(projectId: string) {
     return `/projects/${this.segment(projectId)}/workflows`;
   }
@@ -2776,17 +2942,31 @@ export class RestTaskaApi implements TaskaApi {
    * here: the server decides the board's shape, and a client that quietly
    * re-ordered would hide the day it stops agreeing.
    */
+  /**
+   * The board, its counts read defensively (backend TAS-392): a `totalCount`
+   * that is not a whole number is `null` — `Unknown` on screen, never the
+   * number of cards drawn — and a `hasMore` that is not a boolean is worked out
+   * from the count when there is one, else `null`.
+   */
   private toBoard(response: RestBoardResponse): Board {
+    const unplacedIssues = (response.unplacedIssues ?? []).map((issue) => this.toBoardIssue(issue));
+    const unplaced = boardCounts(response.unplacedTotalCount, response.unplacedHasMore, unplacedIssues.length);
     return {
       projectId: response.projectId,
-      columns: (response.columns ?? []).map((column) => ({
-        statusKey: column.statusKey,
-        name: column.name,
-        category: column.category,
-        sortOrder: column.sortOrder,
-        issues: (column.issues ?? []).map((issue) => this.toBoardIssue(issue)),
-      })),
-      unplacedIssues: (response.unplacedIssues ?? []).map((issue) => this.toBoardIssue(issue)),
+      columns: (response.columns ?? []).map((column) => {
+        const issues = (column.issues ?? []).map((issue) => this.toBoardIssue(issue));
+        return {
+          statusKey: column.statusKey,
+          name: column.name,
+          category: column.category,
+          sortOrder: column.sortOrder,
+          issues,
+          ...boardCounts(column.totalCount, column.hasMore, issues.length),
+        };
+      }),
+      unplacedIssues,
+      unplacedTotalCount: unplaced.totalCount,
+      unplacedHasMore: unplaced.hasMore,
     };
   }
 
@@ -2840,6 +3020,13 @@ export class RestTaskaApi implements TaskaApi {
       id: item.id,
       issueKey: item.issueKey,
       issueType: item.issueType,
+      // TAS-418: the look the hit's project registry gives its type. A blank
+      // name is no name; a colour or an icon outside the contract's sets is
+      // `null`, drawn neutral (DESIGN.md §4.6) rather than guessed.
+      issueTypeName:
+        typeof item.issueTypeName === "string" && item.issueTypeName.trim() !== "" ? item.issueTypeName : null,
+      issueTypeColor: isIssueTypeColor(item.issueTypeColor) ? item.issueTypeColor : null,
+      issueTypeIcon: isIssueTypeIcon(item.issueTypeIcon) ? item.issueTypeIcon : null,
       summary: item.summary,
       priority: item.priority,
       // `""` for unassigned, exactly as the list endpoint answers — same
@@ -2896,6 +3083,7 @@ export class RestTaskaApi implements TaskaApi {
       history: (response.history ?? []).map((event) => ({
         ...event,
         issueId,
+        actor: toNullableUserSummary(event.actor, event.actorUserId),
         // No channel mark from this gateway: TAS-411 has not said what the
         // field is called or what it holds, so whatever a key of that name
         // might carry is not read (docs/ai/API-DIVERGENCE.md, "TAS-412").
@@ -3005,6 +3193,12 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /** Field by field, for the reason `toNotification` gives. */
+  /**
+   * `author` is kept apart three ways (backend TAS-421): absent — a write's
+   * answer, which never names the author — stays absent, so the row that knew
+   * its author keeps it; `null` (or not an object) is nobody named; a summary
+   * is read field by field like a history event's actor.
+   */
   private toWorklog(worklog: RestWorklog): IssueWorklog {
     return {
       id: worklog.id,
@@ -3016,6 +3210,7 @@ export class RestTaskaApi implements TaskaApi {
       comment: worklog.comment ?? null,
       createdAt: worklog.createdAt,
       updatedAt: worklog.updatedAt ?? null,
+      ...(Object.hasOwn(worklog, "author") ? { author: toNullableUserSummary(worklog.author, worklog.authorUserId) } : {}),
     };
   }
 
@@ -3176,12 +3371,19 @@ function toNotificationPreferences(wire: RestNotificationPreferences): Notificat
 }
 
 /**
- * One `AccessTokenDto` of the provisional shape (see `listAccessTokens`), field
- * by field, so nothing else the body carries rides into the domain object — a
- * secret least of all. A field that is not what the proposal says arrives as
- * the empty string, `[]` or `null`, never as whatever it was.
+ * One `PersonalAccessTokenDto`, field by field, so nothing else the body
+ * carries rides into the domain object — a secret least of all. `null` for a
+ * row without a usable id (the contract requires a UUID): it could be neither
+ * revoked nor told apart. Any other field that is not what the contract says
+ * arrives as the empty string, `[]` or `null`, never as whatever it was.
  */
-function toAccessToken(value: unknown): AccessToken {
+function toAccessToken(value: unknown): AccessToken | null {
+  const token = toAccessTokenFields(value);
+  return token.id.trim() ? token : null;
+}
+
+/** `toAccessToken` without the id check: what the create answer said, `id: ""` included. */
+function toAccessTokenFields(value: unknown): AccessToken {
   const wire = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
   const text = (key: string) => (typeof wire[key] === "string" ? (wire[key] as string) : "");
   return {
@@ -3193,6 +3395,18 @@ function toAccessToken(value: unknown): AccessToken {
     expiresAt: text("expiresAt"),
     lastUsedAt: typeof wire.lastUsedAt === "string" ? wire.lastUsedAt : null,
   };
+}
+
+/**
+ * `PersonalTokenPolicyDto`: both numbers whole and at least 1, or `null` —
+ * a policy this build cannot read is no policy, and the form then offers no
+ * lifetime rather than one the server might refuse.
+ */
+function toAccessTokenPolicy(value: unknown): AccessTokenPolicy | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { maxLifetimeDays, maxActiveTokens } = value as Record<string, unknown>;
+  const whole = (item: unknown): item is number => typeof item === "number" && Number.isSafeInteger(item) && item >= 1;
+  return whole(maxLifetimeDays) && whole(maxActiveTokens) ? { maxLifetimeDays, maxActiveTokens } : null;
 }
 
 /**
@@ -3510,6 +3724,33 @@ function toUserSummary(summary: RestUserSummary, fallbackId: string | null): Use
     id: summary.id || fallbackId || "",
     displayName: summary.displayName?.trim() ? summary.displayName : null,
     avatarUrl: summary.avatarUrl || null,
+  };
+}
+
+/** A column's (or the unplaced bucket's) `totalCount` and `hasMore`, read as `Board` states them. */
+function boardCounts(total: unknown, more: unknown, drawn: number): { totalCount: number | null; hasMore: boolean | null } {
+  const totalCount = typeof total === "number" && Number.isSafeInteger(total) && total >= 0 ? total : null;
+  const hasMore = typeof more === "boolean" ? more : totalCount === null ? null : totalCount > drawn;
+  return { totalCount, hasMore };
+}
+
+/**
+ * A nullable `UserSummaryDto` — a history event's `actor` (backend TAS-398),
+ * a work log row's `author` (TAS-421) —
+ * `null` when absent, `null` or not an object; otherwise each field on its own:
+ * an id that is not a non-empty string falls back to the id beside it
+ * (`actorUserId`, `authorUserId`), a name that is not a non-blank string is `null` (the gateway
+ * answers `""` when auth-service is down), and so is an avatar link that is
+ * not a non-empty string. Nothing here consults the member list — that is
+ * `personFor`'s second step, on screen.
+ */
+function toNullableUserSummary(actor: unknown, actorUserId: unknown): UserSummary | null {
+  if (typeof actor !== "object" || actor === null || Array.isArray(actor)) return null;
+  const { id, displayName, avatarUrl } = actor as Record<string, unknown>;
+  return {
+    id: typeof id === "string" && id ? id : typeof actorUserId === "string" ? actorUserId : "",
+    displayName: typeof displayName === "string" && displayName.trim() ? displayName : null,
+    avatarUrl: typeof avatarUrl === "string" && avatarUrl ? avatarUrl : null,
   };
 }
 
