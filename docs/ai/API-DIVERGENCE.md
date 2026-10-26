@@ -816,6 +816,7 @@ Same rule as above: "Closed by" is settled, the rest is live.
     as the removal line said. TAS-262's refusal (`sentWithoutStatuses` in
     `BoardScreen`) stays: it is what the board says for any workflow that
     arrives empty, not a stand-in for the missing lists.
+  - **TAS-417 (2026-10-26):** closed — the context carries `issueTypes` (backend TAS-385), `workflows` has one entry per registry type, and type keys pass through as open strings (TAS-386).
 
     The bullet as it stood: **On stage every workflow arrives with
     `statuses: []` and `transitions: []`** (measured 2026-10-15 with a token,
@@ -864,6 +865,7 @@ Same rule as above: "Closed by" is settled, the rest is live.
   project reads stay looser than the gateway — `getMembership` still answers
   VIEWER for a non-member — so the read-only e2e cases now sign in as Tom, a
   real VIEWER of Taska Platform and, since TAS-251, of Mobile.
+- **TAS-417 (2026-10-26):** closed — issue-service checks the type against the project registry on create («Issue type {KEY} is not defined in this project», backend TAS-386); the mock does the same.
 - **Removal:** done for the contract — #169 merged, the pending extract is
   deleted and the snapshot refreshed to develop `fa90b51`; the route answers on
   stage (2026-10-12, without a token). The `workflows` part was measured with a
@@ -929,6 +931,8 @@ Same rule as above: "Closed by" is settled, the rest is live.
   record of what the contract leaves unsaid until `required` lands.
 
 ### Backend PR #178 (TAS-118), merged: the work log, and what the panel makes up for
+
+- **TAS-417 (2026-10-26):** rows carry `author` (backend TAS-421), so the member join is gone; the list is paged (100 per page, «Show more»), its order and `id` tie-break are in the contract. The time total is the live entry «The work log total is a client sum» above.
 
 - **Endpoint:** `GET|POST /api/v1/projects/{projectId}/issues/{issueId}/worklogs`,
   `PUT|DELETE …/worklogs/{worklogId}`, in
@@ -1718,6 +1722,8 @@ Everything below is the entry as it stood, in the past tense.
 
 ### TAS-412: personal access tokens and the channel mark ship ahead of the gateway, on shapes nobody has specified
 
+- **TAS-417 (2026-10-26):** the token routes are deployed (401 without a token, rid `76b3a012-99c3-429f-9d31-40a29ef7f543`) and specified at develop `be5085e5`; TAS-417 removed the provisional mapping and follows the real shapes (policy, server order, `ACTIVE_TOKEN_LIMIT`, `SESSION_REQUIRED`, 204 on any revoke). Still open on the token half: the three PAT probes behind the lead's promise, and the kept not-deployed branch they unlock. The channel half stays (TAS-411, backend PR #242 open).
+
 - **Endpoints:** `GET /api/v1/users/me/access-tokens`,
   `POST /api/v1/users/me/access-tokens`,
   `DELETE /api/v1/users/me/access-tokens/{tokenId}` — the paths are backend
@@ -1966,6 +1972,7 @@ Everything below is the entry as it stood, in the past tense.
   - Members at the moment of archiving, minus the archiver, get `PROJECT_ARCHIVED` (title
     "Project archived", body "Project {name} was archived", `projectId` set, no `issueId`);
     `/meta` lists it.
+- **TAS-417 (2026-10-26):** backend TAS-394 gives the last-admin refusal `details.reason = LAST_ADMIN`; the members dialog keys on it, and any other `FAILED_PRECONDITION` gets the action's generic refusal.
 - **Compensation:** none. The board reads `archivedAt` from `/context` and offers no write
   on an archived project — the contract states the server enforces it, so this is the
   project's property, not a workaround (DESIGN.md §5.7).
@@ -1989,6 +1996,7 @@ Everything below is the entry as it stood, in the past tense.
     changed» and «You were removed from a project» read «Nothing to open»: for the first two that
     means no `projectId` (asked as [TAS-415](https://jira.ozero.dev/browse/TAS-415)); removal reads
     that way by design (§4.12 excludes it).
+  * **TAS-417 (2026-10-26):** backend TAS-415 (#227) puts `projectId` on «added to a project» and «role changed», so those rows open the board now; rows written before the deploy keep none.
 
 ### Closed by TAS-202 (2026-10-24): `RestTaskaApi.getBoard` mapped the board shape from before backend #205
 
@@ -1999,7 +2007,40 @@ Everything below is the entry as it stood, in the past tense.
   and mock, and draws `columns` and `unplacedIssues` as sent (DESIGN.md §4.9). What the
   merged Java says that the yml does not is in the four board entries below.
 
-### The yml and the server name different rules for the board's `unplacedIssues`
+### Creating from a column's «+» cannot choose the status: «+» only on the `TODO` column
+
+- **Endpoint:** `POST /api/v1/projects/{projectId}/issues` (develop `be5085e5`).
+- **Observed:** `CreateIssueRequestDto` has no status; issue-service always creates in `TODO` (`IssueServiceImpl`, `INIT_STATUS`). «+» on In Review used to create the issue in To Do (owner, 2026-10-26).
+- **What the UI does:** «+» only on the column whose `statusKey` is `TODO`; no such column — no «+», «New» stays. The form from «+» is titled «New issue in {Status}» and disables types whose workflow lacks the status (DESIGN.md §4.9, §5.5). No create-then-transition.
+- **Switch-off:** when the vendored contract gains `statusKey` on create — «+» on every column and the form sends it (DESIGN.md pairs gated on TAS-428).
+- **Jira:** [TAS-428](https://jira.ozero.dev/browse/TAS-428).
+
+### The board is capped at 200 per column and no route continues a column
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/board?pageSizePerColumn=…` (backend TAS-392).
+- **Observed:** a column (and «Outside their workflow») holds at most `pageSizePerColumn` issues (max 200) with `totalCount`/`hasMore`. The yml's advice to continue through issue search does not work: search is newest first, matches `statusKey` across types, has no `labelId`, needs `query` ≥ 3 and returns cards without labels, assignee profile or version.
+- **What the UI does:** sends 200, filters on the server, shows true counts and the foot «{n} of {total} shown. Filter to find the rest.» with no «Show more»; the link picker offers the unfiltered board's first 200 per status with a note.
+- **Switch-off:** a keyset continuation route — then «Show more» per DESIGN.md §4.9.
+- **Jira:** [TAS-430](https://jira.ozero.dev/browse/TAS-430).
+
+### The work log total is a client sum, shown only when the list is complete
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/issues/{issueId}/worklogs` (paged since backend TAS-421); the issue reads carry no time spent.
+- **What the UI does:** «Xh Ym logged» is summed on the client and drawn only when the last loaded page says `hasMore: false`; otherwise no total.
+- **Switch-off:** `timeSpentMinutes` on the issue DTOs — then the header reads it.
+- **Jira:** [TAS-431](https://jira.ozero.dev/browse/TAS-431).
+
+### A stale issue-type reorder is refused like a bad request
+
+- **Endpoint:** `PUT /api/v1/projects/{projectId}/issue-types/order` (backend TAS-418).
+- **Observed:** a code set that no longer matches the registry is 400 `INVALID_ARGUMENT` «codes must contain every current issue type exactly once», no `details` — the same code as a malformed body.
+- **What the UI does:** the client builds the set from its own registry, so it treats any refusal of this route as stale: the dialog's generic sentence, the request id, a context re-read.
+- **Switch-off:** a 409 `ABORTED` or `details.reason = ISSUE_TYPES_CHANGED` — then a dedicated sentence.
+- **Jira:** [TAS-429](https://jira.ozero.dev/browse/TAS-429).
+
+### Closed by TAS-417 (2026-10-26): The yml and the server name different rules for the board's `unplacedIssues`
+
+- **Closed:** backend TAS-392 states the own-type rule in the contract (`BoardResponseDto.unplacedIssues`: a status missing from the workflow of the issue's own type, including a type without a workflow).
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/board`.
 - **Contract** (`docs/contract/openapi.yml`, `BoardResponseDto.unplacedIssues`): «Задачи, чей
@@ -2013,7 +2054,9 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** asked on TAS-213 on 2026-10-24 to correct the yml description to the own-type
   rule (the code is the intended behaviour; the group's name depends on it).
 
-### The board's card order inside a column depends on the issue type, and the contract does not state it
+### Closed by TAS-417 (2026-10-26): The board's card order inside a column depends on the issue type, and the contract does not state it
+
+- **Closed:** backend TAS-392 orders a column `createdAt` asc, then `id` asc, regardless of type, and the contract states it; the client comparator and the mock follow, and `TYPE_RANK` is gone.
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/board`.
 - **Read at develop `562d84de`, not probed:** inside a column the issues come grouped by type —
@@ -2028,7 +2071,9 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** asked on TAS-213 on 2026-10-24 — `createdAt ASC, id ASC` across types, stated in
   the yml. Then the comparator drops its type rank.
 
-### A failed enrichment on the board arrives as "no labels" and "no name"
+### Closed by TAS-417 (2026-10-26): A failed enrichment on the board arrives as "no labels" and "no name"
+
+- **Closed:** backend TAS-392 answers a failed enrichment with 503 (read in `BoardServiceImpl.java:234,256` at `be5085e5`), not with empty labels and names. Read, not probed.
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/board`.
 - **Read, not probed:** when label-service or the profile read fails, `BoardServiceImpl`
@@ -2039,7 +2084,9 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** asked on TAS-213 on 2026-10-24 — fail the read with a 5xx and a request id, or
   make both fields nullable with "null = not loaded" in the yml.
 
-### The board read is unbounded, and the board filters it locally because it is complete
+### Closed by TAS-417 (2026-10-26): The board read is unbounded, and the board filters it locally because it is complete
+
+- **Closed:** the board now sends `pageSizePerColumn=200` and its filters to the server, and reads true counts; what is left is the cap without a continuation — the live entry «The board is capped at 200 per column and no route continues a column» above.
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/board?includeDone=true`.
 - **Read, not probed:** the gateway never passes issue-service's page size per column, so the
@@ -2052,6 +2099,8 @@ Everything below is the entry as it stood, in the past tense.
 
 ### History events name their actor by id only
 
+- **TAS-417 (2026-10-26):** the actor half is closed — backend TAS-398 puts `actor` (a user summary, former members included, `null` when unavailable) on each history event, and Activity names it through the summary, then the members map, then «Unknown». Still live: people inside an `ASSIGNED` payload are ids only and are matched against members (ask in [TAS-431](https://jira.ozero.dev/browse/TAS-431)).
+
 - **Endpoint:** `GET /api/v1/issues/{issueId}`.
 - **Contract:** each history item carries `actorUserId` and nothing else about the person; the
   people named in an `ASSIGNED` payload are ids too.
@@ -2063,6 +2112,8 @@ Everything below is the entry as it stood, in the past tense.
   2026-10-24: an `actor` `UserSummary` on each history item. Then the actor join goes; the assignee ids inside an `ASSIGNED` payload (`assigneeId`, `previousAssigneeId`) stay joined against members unless TAS-398 takes its optional second half.
 
 ### `GET /project-stats`: what the yml does not say
+
+- **TAS-417 (2026-10-26):** backend TAS-394 orders `GET /projects` and `GET /project-stats` by `createdAt`, then `id`, and the yml says so — the «unordered» half below is settled; the mock follows.
 
 - **Read at develop `562d84de`, not probed** (`ProjectStatsService`): the answer covers
   `listMyProjects` (archived projects excluded) and, like `GET /projects`, is unordered (no ORDER
@@ -2827,6 +2878,7 @@ kept below as it stood.
 - **The order-of-operations worry is spent.** TAS-104 landed before the tables
   opened, which is the sequence this entry asked for. The hashes never rendered
   in clear.
+- **TAS-417 (2026-10-26):** backend TAS-395 shows emails in full in every Data table; nothing is partially masked any more.
 - **Note `auth.users.email` is *not* flagged** while `notification…email` is.
   That is the config's decision and the console follows it either way, but it
   means the same address is printed whole on one table and starred on another.
@@ -5457,7 +5509,7 @@ the contract leaves open:
 | `includeDone` absent or `false` | the `DONE` column is returned **empty** — the flag filters issues, never columns |
 | `includeDone=true` | the `DONE` column carries its issues |
 | `assigneeId` / `labelId` | filtered server-side; an id nobody holds gives `200` with every column empty |
-| `issueType=EPIC`, `issueType=SUBTASK` | `400 INVALID_ARGUMENT` — correct, the contract's `IssueTypeDto` is `TASK`/`BUG`/`STORY` and nothing else |
+| `issueType=EPIC`, `issueType=SUBTASK` | `400 INVALID_ARGUMENT` — correct, the contract's `IssueTypeDto` is `TASK`/`BUG`/`STORY` and nothing else — **superseded (TAS-417 (2026-10-26)):** a malformed or unregistered `issueType` now answers 200 with an empty board. |
 
 **Dead: the review was open on an access-control gap.** PR #118 merged, and the
 gap it was held for is closed one level below the gateway rather than in it. The
@@ -5982,7 +6034,9 @@ nothing but `BACKLOG.md` for now.
   TAS-381 for the Other-statuses effect; it is not part of this entry.) Blocking remark on TAS-381
   (comment, 2026-10-21). The copy-only create stays as the default either way.
 
-### Workflow deletes: the "issues would be left" refusal is told only by `details`, whose way to the gateway is unmeasured
+### Closed by TAS-417 (2026-10-26): Workflow deletes: the "issues would be left" refusal is told only by `details`, whose way to the gateway is unmeasured
+
+- **Closed:** backend TAS-427 gives the refusal `details.reason = WORKFLOW_ISSUES_UNMAPPED` with `issueCount`, `statusKeys` and `targetStatusKeys`, and carries it to the gateway (`WorkflowMigrationErrorIntegrationTest`); the dialog keys on the reason and takes the targets from the server. Code and test, not measured — a stand probe (a status delete with one issue in it) is still advisable.
 
 - **Endpoints:** `DELETE /api/v1/projects/{projectId}/workflows/{workflowId}/statuses/{statusId}`
   and `DELETE /api/v1/projects/{projectId}/workflows/{workflowId}` (backend #225, develop
@@ -6014,7 +6068,9 @@ nothing but `BACKLOG.md` for now.
   refusals in the contract. Or a stand probe that shows the keys arriving today (a status delete
   with one issue in it), which would make this entry a documentation gap only.
 
-### The gateway does not enforce the workflow edit DTOs' bounds the contract states
+### Closed by TAS-417 (2026-10-26): The gateway does not enforce the workflow edit DTOs' bounds the contract states
+
+- **Closed:** the gateway enforces the edit DTOs' bounds before the role (backend TAS-427, `WorkflowMutationControllerTest.dtoBoundariesAreRejectedAtGatewayWithInvalidArgument`); the mock refuses the same bodies with «Invalid request parameters» before the role.
 
 - **Endpoints:** the four TAS-384 bodies — `PatchWorkflowRequestDto`,
   `PatchWorkflowStatusRequestDto`, `PatchWorkflowTransitionRequestDto`,

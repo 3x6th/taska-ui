@@ -1642,7 +1642,7 @@ TAS-204); добавления по id нет — оно и создавало �
 «Show more work log entries»; страница 100; кнопка — рецепт §4.9, не «Load older comments»: та `disabled` и меняет подпись на «Loading», роняя фокус, §4.1 — BACKLOG); записи дописываются в порядке ответа (новые сверху: `workDate`,
 `createdAt`, `id`), без повторов; фокус — на первую новую строку (`li`, `tabIndex=-1`, цель
 скрипта, не остановка Tab); отказ — в слоте уведомлений раздела «More work log entries could not
-be loaded.» + `X-Request-Id`, фокус остаётся на кнопке. Запись, которая по порядку встаёт ниже
+be loaded.» + слова сервера и `X-Request-Id` (как §4.9), фокус остаётся на кнопке. Запись, которая по порядку встаёт ниже
 последней нарисованной, не рисуется — её считает pill (как §5.3). Форма над списком: Time spent (текст,
 «1h 30m», «90m», «1.5h») и Date — поля §4.3 высотой 32; Comment optional; primary
 compact «Log work». Строка: аватар 24 · имя 12.5/650 `--fg` · длительность 12.5/600
@@ -2113,61 +2113,61 @@ transition is not offered on the board.» (`aria-describedby`). Безымянн
 ниже в ней выбор, который нельзя терять, и все полосы диалога ведут себя одинаково. `ErrorNote`
 (`--surface`) на `--surface-2` полосы — те же два уровня §1, не третий.
 
-**Шаг переноса (статус).** Отказ `FAILED_PRECONDITION` (не `PROJECT_ARCHIVED`) с
-`details.issueCount` или `details.statusKeys` превращает полосу в шаг. Текст отказа не
-разбирается никогда. Отказ без `details` — обычный отказ (`ErrorNote` словами сервера с id),
-шага нет: что ключи переживают переход issue-service → workflow-service → гейтвей, не замерено, а
-по одному `code` этот отказ не отличить от других (API-DIVERGENCE, TAS-427). Колонка сверху
-вниз:
+**Шаг переноса (статус).** Отказ `FAILED_PRECONDITION` с `details.reason` `WORKFLOW_ISSUES_UNMAPPED`
+(backend TAS-427: `issueCount`, `statusKeys`, `targetStatusKeys` — строки через запятую) превращает
+полосу в шаг. Текст отказа не разбирается никогда; иной отказ, в том числе без этой `reason`, —
+обычный (`ErrorNote` словами сервера с id), шага нет. Колонка сверху вниз:
 - предложение 12 `--fg`, `role="alert"`: «{N} issue(s) would be left in a status this workflow
   no longer has. Move {status}’s issues to delete it.»; без счётчика — «Issues would be left…»;
 - слов сервера и `X-Request-Id` в шаге с ответом нет: шаг — вопрос, а не отчёт об отказе, а
   строка сервера («…supply a target status mapping») — инструкция клиенту API между вопросом и
   его полем;
-- select «Move its issues to»: остальные статусы workflow в порядке колонок, первым `disabled`
+- select «Move its issues to»: статусы из `details.targetStatusKeys` (у удаления статуса это остальные
+  статусы workflow; пусто — все остальные) в порядке колонок и с подписями этого workflow, первым `disabled`
   «Choose a status», заранее ничего не выбрано — переносится каждая задача статуса;
 - ответ «Move and delete» — ответ §4.22, не primary: это всё ещё подтверждение разрушительного
   действия. `aria-disabled` без фразы, пока цель не выбрана.
 
 Появление шага ставит фокус на select; ответ — тот же DELETE с `targetStatusKey`. Тот же отказ
 повторно обновляет шаг; отказ иного рода — `ErrorNote` «The status was not deleted.» над
-действиями, шаг остаётся. Если `details.statusKeys` называет ключ, кроме удаляемого статуса
-(issue-service считает и задачи этих типов, уже стоящие вне workflow), — «{KEY} is not a status
-of {workflow}, so its issues cannot be moved from here.», select'а и ответа нет, фокус на Cancel;
-предложение шага без «Move {status}’s issues to delete it.». Колонка шага без ответа:
-предложение → строка-причина → слова сервера и `X-Request-Id` (`.error-note-detail`) — полоса тут
-и есть отказ, и id нужен, чтобы о нём сообщить.
+действиями, шаг остаётся. С TAS-427 сервер считает только задачи удаляемого статуса
+(`source_status_keys`), поэтому каждую названную задачу отсюда можно перенести — ветки «is not a
+status of» у удаления статуса нет.
 
-**Шаг сопоставления (workflow).** Отказ `FAILED_PRECONDITION` (не `PROJECT_ARCHIVED`) с
+**Предел переноса** (статус и workflow). Отказ `FAILED_PRECONDITION` `WORKFLOW_MIGRATION_LIMIT`
+(`details.limit`, сейчас 5000; сервер проверяет его до несопоставленных) — тупик, сказанный один раз:
+предложение 12 `--fg` `role="alert"` «More than {limit} issues would have to move, and the server moves
+at most {limit} at once, so {subject} cannot be deleted.» ({limit} — `toLocaleString("en-US")`; `limit`
+не целое — «Too many issues would have to move at once, so {subject} cannot be deleted.»); select'а,
+ответа и повтора нет, фокус на Cancel. Не формулировка частоты (§5.8): со временем ничего не меняется.
+Колонка шага без ответа: предложение → строка-причина (если есть) → слова сервера и `X-Request-Id`
+(`.error-note-detail`) — полоса тут и есть отказ, и id нужен, чтобы о нём сообщить.
+
+**Шаг сопоставления (workflow).** Отказ `FAILED_PRECONDITION` `WORKFLOW_ISSUES_UNMAPPED` с
 `details.statusKeys`. Сопоставляются ровно названные ключи (ключ, которого у этого workflow нет,
-сопоставить нельзя — источник обязан быть его статусом). Отказ без `statusKeys` (только
-`issueCount` или без `details`) — обычный отказ «The workflow was not deleted.» словами сервера,
-вопрос прежний. Содержимое:
+сопоставить нельзя — источник обязан быть его статусом). Отказ без `statusKeys` или без этой
+`reason` — обычный отказ «The workflow was not deleted.» словами сервера, вопрос прежний. Содержимое:
 - предложение (`role="alert"`): «{N} issue(s) would be left in statuses {shared} does not have.
-  Choose where each status’s issues go.» (вторая фраза — только когда ответ предложен и общий
-  default в списке);
+  Choose where each status’s issues go.» (вторая фраза — всегда, когда ответ предложен);
 - слов сервера и id в шаге с ответом нет (как у шага переноса);
-- по select на статус «Move {status} issues to»: варианты — статусы, которые есть в обоих
-  workflow (сервер принимает цель только из обоих), первым `disabled` «Choose a status»;
+- по select на статус «Move {status} issues to»: варианты — `details.targetStatusKeys` (статусы общего
+  default, которые есть и у этого workflow; клиент их не вычисляет), в порядке колонок и с подписями
+  этого workflow, первым `disabled` «Choose a status»;
 - ответ «Move and delete» `aria-disabled`, пока не выбраны все; тело `{version, statusMappings}`.
 
 Особые случаи:
-- Общих статусов нет — вместо select'ов 12 `--fg` «{name} shares no status with {shared}, so
-  these issues have nowhere to go. Add one of {shared}’s statuses to {name} first.»; ответа нет,
-  фокус на Cancel. Говорится, только когда это правда: статусы общего default известны и не
-  пересекаются, либо все оставшиеся статусы workflow названы как отсутствующие у default.
-- `statusKeys` называет ключ не из этого workflow — «{KEY} is not a status of {name}, so its
-  issues cannot be moved from here.», ответа нет.
+- `targetStatusKeys` пуст — workflows не делят ни одного статуса: вместо select'ов 12 `--fg` «{name}
+  shares no status with {shared}, so these issues have nowhere to go. Add one of {shared}’s statuses
+  to {name} first.»; ответа нет, фокус на Cancel. {shared} — имя общего default, без него в списке —
+  «the shared workflow».
+- `statusKeys` называет ключ не из этого workflow (задача в статусе, которого нет ни в одном из двух:
+  удаление workflow их ещё считает, backend A12) — «{KEY} is not a status of {name}, so its issues
+  cannot be moved from here.», ответа нет. Уходит вместе с A12 ([TAS-429](https://jira.ozero.dev/browse/TAS-429)).
 - По отказу сопоставлять нечего — обычный `ErrorNote` «The workflow was not deleted.», вопрос
   прежний.
-- Общего default нет в списке (у каждого типа свой workflow, сервер его не перечисляет). С
-  `statusKeys` источники известны; варианты — остальные статусы этого workflow без названных; над
-  select'ами «The shared workflow is not in this list, so its statuses are not known here. Choose
-  one it also has: the server moves issues only to a status both workflows have.»; ответ
-  предложен, неверный выбор — 400 сервера его словами. Вопрос полосы тогда — «…goes/go back to the
-  shared workflow.».
-- Каждый вариант без ответа («shares no status», «is not a status of») — колонка шага без ответа:
-  предложение → строка-причина → слова сервера и id.
+- Предел переноса — как у статуса выше.
+- Каждый вариант без ответа («shares no status», «is not a status of», предел) — колонка шага без
+  ответа: предложение → строка-причина → слова сервера и id.
 
 **Порядок колонок.** Доска сводит статусы всех workflow проекта и сортирует их по
 `sortOrder` поперёк workflow (`mergeWorkflowStatuses`). Поэтому копия при создании несёт
@@ -3697,14 +3697,16 @@ disconnect Telegram and connect again.» и одно действие, «Disconn
 
 **Access tokens (TAS-412).** Свои персональные токены читателя для AI-агента или скрипта (эпик
 TAS-399, MCP-сервер, фаза 1); ролевого гейта нет — `VIEWER` выпускает их так же, как `ADMIN`, а
-права токена всё равно не шире прав человека. Пока на моке: ручек на гейтвее нет, форма запросов —
-предложение фронта (`docs/ai/API-DIVERGENCE.md`, «TAS-412»). Сверху `.settings-lead` «Tokens let an AI
+права токена всё равно не шире прав человека. Маршруты — backend TAS-401/402 (`be5085e5`, задеплоены:
+`GET /users/me/access-tokens` без токена — 401); мок повторяет их формы, порядок отказов и слова.
+Обещание лида ниже держится до пробы TAS-412 (API-DIVERGENCE). Сверху `.settings-lead` «Tokens let an AI
 agent or a script work in Taska as you. A token never has more access than you do and cannot open the
 admin console.» (обещание — из TAS-399/401/402, не из контракта), через 14 — primary «Create token».
 
 Список — `ul` «Your access tokens», строки по рецепту Settings: сетка `minmax(0,1fr) auto`,
-`column-gap:22`, padding `14 0`, волосяная `1px --border` только между строками; новые сверху по
-`createdAt` (порядок сервера не задан). Слева имя 13/600 `--fg`; под ним мета 11.5 `--fg-2`: префикс
+`column-gap:22`, padding `14 0`, волосяная `1px --border` только между строками; порядок — сервера
+(`createdAt` desc, затем `id` desc; истёкшие в списке, отозванных нет), клиент не пересортировывает
+(§6); строка без пригодного `id` не рисуется. Слева имя 13/600 `--fg`; под ним мета 11.5 `--fg-2`: префикс
 моно 11/500 с «…» (читалке — «Starts with …») · «Read» / «Read and write» (незнакомый scope — как
 пришёл); строкой ниже «Created {d} · Expires {d}» (в прошлом — «Expired {d}», дата остаётся) · «Last
 used {d}» или «Never used». Вся мета страницы `--fg-2`: `--fg-3` на `--bg` даёт 2.91:1 в светлой.
@@ -3713,30 +3715,43 @@ used {d}» или «Never used». Вся мета страницы `--fg-2`: `--
 
 Состояния. Пусто — «No tokens yet.» 12.5 `--fg-2`. Загрузка — две полосы `.value-skeleton` (140×13,
 220×11) и скрытый `role="status"`, без кнопки и без спиннера. Отказ чтения — `ApiNotice` «Your access
-tokens could not be loaded.» (не живая область) и secondary «Try again». Ручек нет на гейтвее — одна
-строка «Access tokens are not on this gateway yet, so they cannot be shown here.», без «Create token».
+tokens could not be loaded.» (не живая область) и secondary «Try again». Гейтвей без маршрута (404 о
+маршруте) — одна строка «Access tokens are not on this gateway yet, so they cannot be shown here.», без
+«Create token»; ветка-страховка, снимается после пробы TAS-412.
 
 Revoke спрашивает полосой §4.22 под строкой, от левого края текста: «The token “{name}” will stop
 working at once for every agent and script that uses it.», Cancel (фокус первым) и «Revoke token»;
 `Esc` и Cancel возвращают фокус на Revoke. Ответ оптимистичен: строка уходит сразу, фокус — на Revoke
-строки, вставшей на её место, иначе предыдущей, иначе на «Create token». Отказ — строка возвращается,
-под ней `ErrorNote` «The token “{name}” was not revoked.» со словами сервера и request id. Токена уже
-нет (404 не о маршруте; повторный отзыв по TAS-401 идемпотентен) — строка не возвращается, статус
-«The token “{name}” is already gone.», список перечитывается. Итог любого отзыва говорит постоянная
+строки, вставшей на её место, иначе предыдущей, иначе на «Create token»; перечитывания нет — отзыв
+отвечает 204 на любой id (свой, чужой, уже отозванный; backend TAS-401), ветки «already gone» нет.
+Отказ — строка возвращается на своё место, под ней `ErrorNote` «The token “{name}” was not revoked.» со
+словами сервера и request id; 403 `PERMISSION_DENIED` `SESSION_REQUIRED` — словами «Tokens can be
+revoked only from a signed-in session, not with another token.». Итог любого отзыва говорит постоянная
 скрытая `role="status"` раздела.
 
 Создание — модалка §4.11 «New access token». Name — поле с автофокусом, до 100 знаков, края
 обрезаются; это значение, а не текст-работа, поэтому `Esc` закрывает. Access — радио-пара с
-описаниями, по умолчанию Read (наименьшие права). Expires — `.segmented.fit` с `aria-pressed` (7 days ·
-30 days · 90 days · 1 year, по умолчанию 30) и строка «Expires on {date}.» 11.5 `--fg-2`, а не `--fg-3`
+описаниями, по умолчанию Read (наименьшие права). Expires — `.segmented.fit` с `aria-pressed`: из 7 · 30
+· 90 days — не длиннее `policy.maxLifetimeDays` ответа списка (сервер по умолчанию 90), и сам максимум,
+если его среди них нет («{N} days»); по умолчанию 30, иначе самый длинный; группа `aria-labelledby`
+«Expires», `aria-describedby` — строка даты. Ответа без `policy` — ни группы, ни строки, `expiresInDays`
+не шлётся (срок сервера). Строка «Expires on {date}.» 11.5 `--fg-2`, а не `--fg-3`
 подписи: это единственное место, где видна сама дата. Без имени «Create token» `aria-disabled` с
 притемнением, нажатие говорит «Name the token before creating it.» В полёте — рецепт §4.1 для всех
 контролов, Cancel тоже; `Esc` держится (§4.11), ✕ и скрим закрывают. Отказ — `ErrorNote` (alert) с
-request id: 429 — «Too many tokens were created just now. Try again in {N} seconds.» (ожидание —
-`details.retryAfterSeconds` сервера, слова единиц — как у повторной отправки приглашения, §5.8; без
-него — «…Try again later.»); 403
-`insufficient_scope` — «Tokens can be created only from a signed-in session, not with another
-token.»; иначе слова сервера. Список перечитывается после каждой попытки.
+request id; ветка по `code` + `details.reason`, никогда по тексту (порядок отказов — backend TAS-402:
+лимит выпуска стоит до проверки тела и считает каждую попытку):
+- 429 `RESOURCE_EXHAUSTED` — «Too many tokens were created recently. Try again in {N} minutes.»
+  (`details.retryAfterSeconds` ≤ 3600 в целых минутах вверх, «1 minute»; без него — «…Try again
+  later.»; без обратного отсчёта);
+- 400 `FAILED_PRECONDITION` `ACTIVE_TOKEN_LIMIT` — «You already have {limit} active tokens. Revoke one
+  to create another.» (без `details.limit` — «You already have as many active tokens as you can.
+  Revoke one to create another.»); счётчика «x of N» нет, считает сервер (истёкшие не в счёт);
+- 403 `PERMISSION_DENIED` `SESSION_REQUIRED` — «Tokens can be created only from a signed-in session,
+  not with another token.» (паритет: браузер PAT не держит);
+- иначе слова сервера (в том числе «Token lifetime is outside policy»).
+201 — токен встаёт первым в кэш списка (`setQueryData`), без перечитывания; отказ список перечитывает
+(ответ мог потеряться после выпуска).
 
 Ответ пришёл, когда модалку уже закрыли ✕ или скримом: значение отбрасывается и нигде не рисуется, а
 под новой строкой списка, во всю её ширину через 10, — `p.token-unseen` 11.5/400 `--fg` «Its value was

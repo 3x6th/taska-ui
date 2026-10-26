@@ -4050,7 +4050,7 @@ Frontend notes:
 
 ### Left by TAS-202 (projects from /project-stats, board from /board, 2026-10-24)
 
-- **The board's types are a constant, the context's come from the registry** — **graduated to [TAS-393](https://jira.ozero.dev/browse/TAS-393)** (2026-10-24)
+- ~~**The board's types are a constant, the context's come from the registry**~~ — **closed by TAS-417** (2026-10-26): backend #226 builds the unfiltered board from the registry (read in `BoardServiceImpl.java:100-118`); the stand probe is part of TAS-417's run. — **graduated to [TAS-393](https://jira.ozero.dev/browse/TAS-393)** (2026-10-24)
   (`api-contract-guard`, A4): `BoardServiceImpl.java:48` iterates TASK, BUG, STORY while the
   context reads the project's type registry (TAS-385). Latent until custom types can hold issues
   (TAS-386); then an issue of a type outside the three is on no column and not in «Outside their workflow»
@@ -4080,12 +4080,12 @@ Frontend notes:
   `aria-disabled={createLabel.isPending || undefined}`, refuse in the submit handler.
 - **The lost-focus check lives in three places** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (board archive effect, `EditProjectModal`,
   `ProjectLabelsModal`); a shared helper could replace them.
-- **Label chip order on a card is not stated** — **graduated to [TAS-392](https://jira.ozero.dev/browse/TAS-392)** (2026-10-24): `findLabelIdsByIssueIds`
+- ~~**Label chip order on a card is not stated**~~ — **closed by TAS-417** (2026-10-26): backend TAS-392 orders card labels by binding time, then `labelId`, and the mock follows (the details read stays by name — TAS-431). — **graduated to [TAS-392](https://jira.ozero.dev/browse/TAS-392)** (2026-10-24): `findLabelIdsByIssueIds`
   (`IssueRepositoryImpl.java:338`) has no ORDER BY.
 
 ### Left by TAS-149 (archive and the read-only archived board, frontend for backend #155/#159, 2026-10-23)
 
-- **The last-admin refusal carries no reason** — **graduated to [TAS-394](https://jira.ozero.dev/browse/TAS-394)** (2026-10-24) (`api-contract-guard`): 400
+- ~~**The last-admin refusal carries no reason**~~ — **closed by TAS-417** (2026-10-26): backend TAS-394 sends `details.reason = LAST_ADMIN`; the members dialog keys on it. — **graduated to [TAS-394](https://jira.ozero.dev/browse/TAS-394)** (2026-10-24) (`api-contract-guard`): 400
   `FAILED_PRECONDITION` "Can't modify last admin: …" without `details`, so the Members
   dialog tells it apart only as "FAILED_PRECONDITION and not `PROJECT_ARCHIVED`" — a set that
   can grow. Backend ask: `details.reason: "LAST_ADMIN"` (ProjectMemberValidatorImpl:107,
@@ -4119,7 +4119,7 @@ Frontend notes:
   widths — a §5.8 change that needs its own ruling.
 - **No e2e covers the audit actor column or the email line under the profile name** — **graduated to [TAS-396](https://jira.ozero.dev/browse/TAS-396)** (2026-10-24)
   (`release-reviewer`): row height 30, the 180 cap and the 390 wrap rest on screenshots.
-- **Emails in the Data view are masked inconsistently** — **graduated to [TAS-395](https://jira.ozero.dev/browse/TAS-395)** (2026-10-24) (`api-contract-guard`):
+- ~~**Emails in the Data view are masked inconsistently**~~ — **closed by TAS-417** (2026-10-26): backend TAS-395 shows emails in full in every Data table. — **graduated to [TAS-395](https://jira.ozero.dev/browse/TAS-395)** (2026-10-24) (`api-contract-guard`):
   `auth.users.email` and `admin_audit_log.actor_email` are plain, while
   `notification_preferences.email`, `invitation_email_deliveries.email` and
   `email_delivery_attempts.to_email` are `MASK_PARTIAL` (admin-service
@@ -4131,7 +4131,7 @@ The code came from the backend developer's Codex run (PR #101); this repository'
 roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fixes.
 TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
 
-- **A compensation outlived its cause** (orchestrator, 2026-10-26).
+- ~~**A compensation outlived its cause**~~ — **closed by TAS-417** (2026-10-26): the guard and the refetch fallback are gone; the link answer's `preferences` go straight into the cache. (orchestrator, 2026-10-26).
   `SettingsNotificationsSection.tsx` shows the `telegramError` sentence only while
   `telegramAvailable`, because before backend #218 a disabled integration reported every
   binding as `BOT_CHANGED`. #218 (develop `3a2644f7`) reports `BOT_CHANGED` only with the
@@ -4180,7 +4180,7 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
   `admin-users.spec.ts:90` [desktop] (the "Users" heading not visible within 5 s after sign-in),
   `admin-users.spec.ts:57` [mobile], `admin-console.spec.ts:555` [laptop] — the CPU-contention
   class recorded above under "The e2e suite flakes under CPU contention" (release-reviewer).
-- **Stale after the 2026-10-23 snapshot refresh, no false behaviour** (api-contract-guard):
+- ~~**Stale after the 2026-10-23 snapshot refresh, no false behaviour**~~ — **closed by TAS-417** (2026-10-26): the snapshot is at `be5085e5`, `issueTypes` is read, and the board order follows the contract. (api-contract-guard):
   `API-DIVERGENCE.md` still gives `ProjectContextResponseDto` as project, members, labels,
   workflows — the snapshot now requires `issueTypes`, and since #212 `workflows` comes from the
   registry filtered to the three known types; `JIRA-WORKFLOW.md` still has TAS-211 in progress
@@ -4196,7 +4196,7 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
 
 ### Left by TAS-412 (Settings → Access tokens and the channel mark, ahead of the gateway, 2026-10-24)
 
-- **`toAccessToken` draws a non-string `lastUsedAt` as "Never used"**, a claim the server did
+- ~~**`toAccessToken` draws a non-string `lastUsedAt` as "Never used"**~~ — **closed by TAS-417** (2026-10-26): the contract makes `lastUsedAt` nullable and the mapper follows it., a claim the server did
   not make. Revisit when TAS-402 puts the token on the contract (release-reviewer).
 - **The Claude Code snippet puts the token on the command line**, so it lands in shell
   history. An env-var form (`Bearer $TASKA_TOKEN`) only moves the secret into the `export`
@@ -4206,8 +4206,8 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
 - **TAS-414 is not started:** it waits for ADR TAS-400 to say who serves the OAuth consent
   screen. GitHub Pages cannot send `frame-ancestors` / `X-Frame-Options`, so "consent cannot
   be framed" is unmeetable from this repository as hosted (comment on TAS-414, 2026-10-24).
-- **`isAccessTokenGone` reads every revoke 404 but the static-resource one as "already
-  gone".** Re-check it against TAS-402's real refusal codes when the routes deploy
+- ~~**`isAccessTokenGone` reads every revoke 404 but the static-resource one as "already
+  gone".**~~ — **closed by TAS-417** (2026-10-26): revoke is always 204 on the server; `isAccessTokenGone` and the «already gone» branch are removed. Re-check it against TAS-402's real refusal codes when the routes deploy
   (release-reviewer, round 2).
 - **At 390 the Claude Code snippet breaks inside `--header`** ("--" / "header"): `pre-wrap` breaks
   after a hyphen. Copy is exact, so only the reading suffers (art-director).
@@ -4221,6 +4221,7 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
   TAS-400/401; the "already gone" status drops the 404's request id; `ScreenRequests.test.tsx` does
   not pin Settings → Access tokens' request count; ~~the vendored `openapi.yml` is at `562d84de`, develop
   at `92a00dbc` — refresh~~ — refreshed to `6ba4ed6` by TAS-416.
+  **TAS-417 (2026-10-26):** `insufficient_scope`, the missing id, duplicate names, the cap and the «already gone» request id are done; `actionViaText` (TAS-411) and the unpinned request count stay.
 - **Three notes from release-reviewer's last pass on `2cad7f2`** (non-blocking, left for speed):
   the `if (revoking) return;` guard that keeps the unseen line through a refused revoke has no test
   that can fail (`mockRejectedValueOnce` rejects before the optimistic removal renders — use a
@@ -4247,6 +4248,7 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
   the named key takes those issues out of the count, and the delete then goes through
   (api-contract-guard r2) — but the strip does not point to it; art-director's call whether it
   should. Asked on TAS-427 whether the counting is intended (art-director N3, api-contract-guard A7).
+  **TAS-417 (2026-10-26):** closed for status delete (backend TAS-427 migrates only the deleted status); it stays for workflow delete — [TAS-429](https://jira.ozero.dev/browse/TAS-429). The «asked on TAS-427» clause is answered.
 - **The mock cannot produce a true «shares no status»** (an own copy always shares `TODO`), so that
   variant was reviewed by its copy only (art-director N3).
 - **Optional backend ask, not filed:** create and delete-workflow could answer the whole
@@ -4261,3 +4263,20 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
   once when the strip mounts; near the bottom edge only focusing the select scrolls, so the answer
   below it could sit off-screen. Not reproduced (131px to spare in art-director's run); re-run the
   reveal when the step first appears (art-director, TAS-416 r2).
+
+
+### Left by TAS-417 (issue-type registry and the rest of develop `be5085e5`, 2026-10-26)
+
+Reviews on `1c75409`: api-contract-guard, art-director and release-reviewer APPROVE WITH NOTES (docs/ai/reviews/tas417-verdicts-r1.md, local). Backend asks from this pass: [TAS-428](https://jira.ozero.dev/browse/TAS-428) (status on create), [TAS-429](https://jira.ozero.dev/browse/TAS-429) (stale reorder as conflict, `issueCount` in the yml, workflow delete of its own statuses), [TAS-430](https://jira.ozero.dev/browse/TAS-430) (continue a board column), [TAS-431](https://jira.ozero.dev/browse/TAS-431) (time spent, transition on one read, people in ASSIGNED, one label order, worklog snapshot, unfiltered total).
+
+- **The PAT lead promise is unmeasured** (api-contract-guard, high): Settings → Access tokens says a token «cannot open the admin console» (`SettingsTokensSection.tsx` ~110) and keeps the not-deployed branch (~214, `accessTokensQuery.ts`) though the routes are measured as deployed. Run the three probes from API-DIVERGENCE «TAS-412» with the owner, then remove the branch (and the clause if a probe fails).
+- **Tests that pass without the behaviour** (release-reviewer, break-and-restore): the rollback of a failed move across every board cache entry (`BoardScreen.tsx` ~664), the version stamped on a card after a successful move (~676), the panel guard that drops a transition clicked before a conflict (~2576). One test each.
+- **A drag of the open panel's issue during a panel edit sends the old version** (release-reviewer): board moves queue per project, panel writes per issue; the result is a 409 «changed elsewhere» about the reader's own edit. No data loss (If-Match).
+- **`placeCreated` races an in-flight list read** (release-reviewer, `SettingsTokensSection.tsx` ~556): `cancelQueries` before `setQueryData`.
+- **e2e flake risks** (release-reviewer): `members.spec.ts` «last-admin refusal of a stale list» depends on the 20 s members cache (`src/lib/queryClient.ts:8`); `column-create.spec.ts:29` measures heads without `document.fonts.ready`.
+- **Reason checks without the code** (api-contract-guard): `STATUS_NOT_IN_TARGET_WORKFLOW` (`BoardScreen.tsx` ~2510), `LAST_ISSUE_TYPE` / `ISSUE_TYPE_IN_USE` (`ProjectIssueTypesModal.tsx` ~298, `src/lib/issueTypes.ts` ~85, ~95) — use `hasRefusalReason(error, "FAILED_PRECONDITION", …)`.
+- **A type delete answered 404 reads as «already deleted»** even when the 404 is «Project not found» (`ProjectIssueTypesModal.tsx` ~247).
+- **The mock lets anyone transition an issue** (api-contract-guard, medium, pre-existing): `transitionIssue` has no membership or role check (`MockTaskaApi.ts` ~4808).
+- **Small:** `toNullableUserSummary` yields `id: ""` when both ids are missing; a board filtered by a type whose workflow is not found gets the server's 404 as a board read failure (untested); the move mutation awaits the board re-read, so a second drag waits for it (latency only); Settings → Access tokens is not pinned in `ScreenRequests.test.tsx`.
+- **Design review notes** (art-director, APPROVE WITH NOTES on `1c75409`): at 375 on OPS the Members trigger wraps alone onto the second filter row, away from its people chips — group the chips and the trigger in one `flex:none` group like `.filter-type-group` (§4.13); below 820 the Issue types icon buttons are 28 and the swatches 20 (`::after` 28) — add `::before{inset:-8px 0}` to `[role=group][aria-label=Icon] button` in the next touch pass; the TAS-107 mock seed pushes the Jun 15 `WORKLOG_ADDED` after Jun 16/17 (`MockTaskaApi.ts` ~2681); MOB's INCIDENT statuses sort Triage before To Do, so the unfiltered mock board opens on an INCIDENT-only column (seed choice); not seen in the browser yet — the VIEWER static Type row, the Issue types empty / single-type / read-failure / skeleton states, the «+» form with every type disabled, the LAST_ADMIN refusal (code matches §5.5 and §4.30).
+- **Can wait (art-director):** drag to reorder types; per-type usage counts and pre-disabling Delete; a warning before a type change takes an issue out of its workflow; roving tabindex in the types list; a hint when two types share colour and icon; activity wording for a type change; the project settings page at the next settings surface (§4.28); a search-backed link picker; align «Load older comments» with the §4.9 foot; «New» with a type whose workflow lacks `TODO` lands in «Outside their workflow» with no moves; Done shows its oldest issues under the cap (TAS-430's option).
