@@ -4238,3 +4238,20 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
   as an open key) changes what a binding is. File it under TAS-384's successor when the owner asks.
 - **Editing from the diagram** (drag-to-connect, §4.28 "Редактирование потом") stays out: the rows and
   forms carry every operation. A story when the owner asks for the graph editor.
+- **An issue panel open during a migration keeps the old status** until it refetches: a status or
+  workflow delete with a move invalidates only the context, the board and the list
+  (frontend-builder, TAS-416).
+- **«… is not a status of {workflow}, so its issues cannot be moved from here» is a real dead end**
+  with no path in the UI: issues of the workflow's types that already sit outside it block every
+  status delete (issue-service counts them). Asked on TAS-427 whether that is intended
+  (art-director N3, api-contract-guard A7).
+- **The mock cannot produce a true «shares no status»** (an own copy always shares `TODO`), so that
+  variant was reviewed by its copy only (art-director N3).
+- **Optional backend ask, not filed:** create and delete-workflow could answer the whole
+  `ProjectWorkflowsResponseDto`, saving the list re-read after them (api-contract-guard A5).
+- **Pre-existing since TAS-382:** the Category options come from the list's open set while the
+  request enum is closed, so a gateway `UNKNOWN` category could be offered and refused 400
+  (api-contract-guard).
+- **At develop `3e5fbf0`** the workflow-delete fallback is always TASK's default and «Issue types
+  have different default workflows» is gone; the mock comment above `deleteProjectWorkflow` still
+  names it — adjust in the TAS-385/386 snapshot refresh (api-contract-guard).

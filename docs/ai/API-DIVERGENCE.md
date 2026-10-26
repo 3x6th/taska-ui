@@ -5982,6 +5982,53 @@ nothing but `BACKLOG.md` for now.
   TAS-381 for the Other-statuses effect; it is not part of this entry.) Blocking remark on TAS-381
   (comment, 2026-10-21). The copy-only create stays as the default either way.
 
+### Workflow deletes: the "issues would be left" refusal is told only by `details`, whose way to the gateway is unmeasured
+
+- **Endpoints:** `DELETE /api/v1/projects/{projectId}/workflows/{workflowId}/statuses/{statusId}`
+  and `DELETE /api/v1/projects/{projectId}/workflows/{workflowId}` (backend #225, develop
+  `6ba4ed6`); the contract's silence covers all six TAS-384 routes.
+- **Read in code, not measured (no token):** issue-service refuses a migration that would leave
+  issues behind with `FAILED_PRECONDITION` "Workflow statuses have N issues; supply a target
+  status mapping" and `details {issueCount, statusKeys}` as strings
+  (`WorkflowIssueMigrationService.java:67`), in gRPC trailers. workflow-service does not catch the
+  migrate call's error (`WorkflowMutationService.java:113`, `:144`) and `GrpcExceptionHandler`
+  passes it on; whether the keys reach `RestErrorResponse.details` is not measured. By `code` alone
+  the refusal cannot be told from the other `FAILED_PRECONDITION`s of the same routes ("Default
+  workflow is missing", "Default workflow is not usable", "Workflow is shared with another
+  project…"). The contract states only `200` and `default` for the six routes: not the ADMIN
+  requirement, not 409 `ABORTED` against `ALREADY_EXISTS`, not the `details` keys. The 5000-issue
+  limit is `RESOURCE_EXHAUSTED`, which the gateway answers as 429.
+- **The UI instead:** the move step (status) and the mapping step (workflow) appear only for a
+  `FAILED_PRECONDITION` (not `PROJECT_ARCHIVED`) carrying `details.issueCount` or
+  `details.statusKeys`; the message is never read. Without `details` the refusal is an ordinary
+  one in the server's words with its request id, so issues cannot be moved from the UI — honest,
+  not guessed (`api-contract-guard`, TAS-416). The mapping targets are the statuses both workflows
+  have, from the list already on screen; the server validates them. `ABORTED` and `ALREADY_EXISTS`
+  are told apart by `code`. The mock always sends the `details`, so mock mode always shows the
+  steps. **Compensation: none.**
+- **Removal:** [TAS-427](https://jira.ozero.dev/browse/TAS-427) — `details.reason`
+  `WORKFLOW_ISSUES_UNMAPPED` with `targetStatusKeys`, decoded by workflow-service into its own
+  refusal so the keys take one hop to the gateway, an integration test, and the six routes'
+  refusals in the contract. Or a stand probe that shows the keys arriving today (a status delete
+  with one issue in it), which would make this entry a documentation gap only.
+
+### The gateway does not enforce the workflow edit DTOs' bounds the contract states
+
+- **Endpoints:** the four TAS-384 bodies — `PatchWorkflowRequestDto`,
+  `PatchWorkflowStatusRequestDto`, `PatchWorkflowTransitionRequestDto`,
+  `DeleteProjectWorkflowRequestDto` (backend #225, `6ba4ed6`).
+- **Read in code, not measured:** the contract gives `name` 1..100, `sortOrder` ≥ 0 and
+  `version` ≥ 1, but `api-gateway/pom.xml` maps the four DTOs to hand-written classes with no
+  constraints (null rejection, exact integers and unknown-field rejection only). A body `version`
+  below 1 is refused by workflow-service ("version must be positive") before the role check; a
+  blank or long name or a negative `sortOrder` by the validator ("Workflow update failed: …") only
+  after role, 404 and version. Same 400, different message and order than a gateway check.
+- **The UI instead:** never sends such values (names are trimmed and required, positions come
+  from free numbers, `version` is omitted when unknown). The mock plays the server's order since
+  TAS-416's review (`api-contract-guard` B2). **Compensation: none.**
+- **Removal:** [TAS-427](https://jira.ozero.dev/browse/TAS-427) (constraints on the DTOs, or the
+  bounds dropped from the contract).
+
 ---
 
 ## Closed
