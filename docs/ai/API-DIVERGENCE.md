@@ -5929,20 +5929,27 @@ nothing but `BACKLOG.md` for now.
   of an undeployed route. The other two #208 entries below stay open — neither was
   fixed in #208.
 
-### Adding a status or a transition answers the workflow without its hidden transitions
+### Closed by TAS-416 — adding a status or a transition answered the workflow without its hidden transitions
 
 - **Endpoints:** `POST …/workflows/{workflowId}/statuses` and `…/transitions`
-  (#208 at `9a04e99`, merged unchanged as `594f637`).
-- **Read in code, not measured:** the 201 is built from
+  (#208 at `9a04e99`, merged unchanged as `594f637`), and the create
+  `POST …/workflows`.
+- **What it was (read in code, never measured):** the 201 was built from
   `findVisibleByWorkflowId` (`WorkflowEditService.java:184`), so a hidden
-  transition just added is missing from its own answer; the yml says the
-  workflow comes back whole. The create 201 is the bare `WorkflowResponseDto`,
-  statuses and transitions in request order, hidden ones included.
-- **The UI instead:** no write answer is read into the screen. Every successful
-  write invalidates the workflow list and the project context and re-reads
-  them. **Compensation: none** — a re-read after a write is the ordinary path.
-- **Removal:** the writes answering what the list shows. Asked on TAS-381
-  (comment, 2026-10-21); not blocking.
+  transition just added was missing from its own answer, and the create 201 was
+  the bare `WorkflowResponseDto` in request order. The UI read no write answer
+  into the screen and re-read the list after every write. Compensation: none.
+- **What closed it:** backend PR #225 (TAS-384, develop `6ba4ed6`, deployed
+  2026-10-26). `GrpcWorkflowServiceAdapter` passes the create and both adds
+  through `WorkflowMutationResponse.enrich`, which re-reads
+  `findByWorkflowIdOrderBySortOrderAsc` (hidden transitions included) and answers
+  `ProjectWorkflowDto` with the issue types and `shared: false` — the shape the
+  six new edit and delete routes answer too. Read in code at `6ba4ed6` by
+  `release-reviewer` on TAS-416; not measured with a token. Since TAS-416 the
+  dialog puts the answer of an edit, Add status and Add transition straight into
+  the list cache; create and workflow delete still re-read the list, because
+  their answer does not describe the types that moved.
+- **What is still owed here:** nothing.
 
 ### A workflow with no status or no visible transition makes the project context 404
 
@@ -5964,7 +5971,10 @@ nothing but `BACKLOG.md` for now.
   whole workflow. `api-contract-guard` ruled the copy a UI default, not a
   compensation: it reads the list already on screen, adds no request, and the
   form says it is a copy. **Compensation: none.** Any other client can still
-  send the empty body.
+  send the empty body. Since TAS-416 (backend #225) the copy can be edited and
+  pruned after creation too; every edit and delete re-validates the whole
+  workflow and refuses to leave it without `TODO` or a visible transition, but
+  the create route itself still checks no minimum at `6ba4ed6`.
 - **Removal:** [TAS-383](https://jira.ozero.dev/browse/TAS-383) (filed 2026-10-22,
   High): the validator requiring a status and a visible transition, the context
   tolerating empty lists, and one type's failed workflow no longer failing the
