@@ -52,7 +52,6 @@ import type {
   UserAvatar,
   UserStatusChange,
   WatchIssueResult,
-  WorkflowDefinition,
 } from "../domain/types";
 
 export interface LoginInput {
@@ -706,6 +705,56 @@ export interface CreateProjectWorkflowInput {
   statuses: WorkflowStatusInput[];
   transitions: WorkflowTransitionInput[];
 }
+
+/**
+ * The edit and delete routes of backend PR #225 (TAS-384) all take the
+ * workflow's `version`, and the server compares it: a version that is not the
+ * one it holds is refused 409 `ABORTED` ("Workflow version changed"). It is
+ * optional on the wire; the dialog always sends the version of the workflow it
+ * is showing. Every body is `additionalProperties: false` and refuses an
+ * explicit `null`, so a field left `undefined` here is left out of the body —
+ * never sent as `null`.
+ */
+interface WorkflowVersion {
+  version?: number;
+}
+
+/** `PatchWorkflowRequestDto`: a new name, 1–100 characters. */
+export interface UpdateProjectWorkflowInput extends WorkflowVersion {
+  name?: string;
+}
+
+/**
+ * `DeleteProjectWorkflowRequestDto`. `statusMappings` sends the issues of a
+ * status the shared default does not have to one it does: source key of this
+ * workflow → target key present in **both** workflows.
+ */
+export interface DeleteProjectWorkflowInput extends WorkflowVersion {
+  statusMappings?: Record<string, string>;
+}
+
+/** `PatchWorkflowStatusRequestDto`: at least one of the three. The key never changes. */
+export interface UpdateWorkflowStatusInput extends WorkflowVersion {
+  name?: string;
+  category?: IssueStatusKey;
+  sortOrder?: number;
+}
+
+/** `DELETE …/statuses/{statusId}`'s two query parameters, both optional. */
+export interface DeleteWorkflowStatusParams extends WorkflowVersion {
+  /** Another status of this workflow that the deleted status's issues move to first. */
+  targetStatusKey?: string;
+}
+
+/** `PatchWorkflowTransitionRequestDto`: at least one of the three. From and To never change. */
+export interface UpdateWorkflowTransitionInput extends WorkflowVersion {
+  name?: string;
+  sortOrder?: number;
+  hidden?: boolean;
+}
+
+/** `DELETE …/transitions/{transitionId}`'s one query parameter. */
+export type DeleteWorkflowTransitionParams = WorkflowVersion;
 
 export interface ListCommentsParams {
   page?: number;
@@ -1698,37 +1747,115 @@ export interface TaskaApi {
    * - The three writes are ADMIN-only, refused by workflow-service: 404
    *   "Project not found", 403 "Access denied" for a non-member, 403 "Not
    *   allowed role" for anybody else.
-   * - Nothing compares `version`: 1 on create, +1 per add, informational.
+   * - The three adds compare no `version` (1 on create, +1 per add); the six
+   *   edit and delete routes of backend PR #225 (TAS-384) do — see
+   *   `UpdateProjectWorkflowInput`.
    *
-   * Every 201 is a bare `WorkflowResponseDto` that does not say what the list
-   * says, so **no caller patches the list from one**: a write is followed by a
-   * re-read of the list and of the project context.
+   * **Every write answers `ProjectWorkflowDto`** since backend PR #225 (develop
+   * `6ba4ed6`), the three adds included: the workflow with every status and
+   * every transition, hidden ones included, both by `sortOrder`, its project's
+   * issue types and `shared` — read as the list reads it, so a `shared` nobody
+   * stated is `true`. A caller may put an edit's answer in place of that
+   * workflow's entry; a create and a workflow delete also move types on or off
+   * the shared default, which their answer does not describe, so the list is
+   * read again after those.
    */
   listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]>;
   /**
    * `POST /projects/{projectId}/workflows`. Refused in the server's order: the
    * role; the whole body ("Workflow creation failed: …", 400 — on create a
    * duplicate key or pair is 400 too); then any requested type already bound in
-   * the project, 409 `ALREADY_EXISTS`. The 201 holds no `issueTypes` and no
-   * `shared`, `version` 1, statuses and transitions in request order with the
-   * hidden ones marked.
+   * the project, 409 `ALREADY_EXISTS`. The 201 is the new workflow with its
+   * types and `shared: false`, `version` 1.
    */
-  createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<WorkflowDefinition>;
+  createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<ProjectWorkflowEntry>;
   /**
    * `POST …/workflows/{workflowId}/statuses`. After the role: an unknown
    * workflow is 404, the shared default 400 `FAILED_PRECONDITION` (not a
    * conflict), another project's workflow 404; then the whole workflow is
    * re-validated ("Workflow update failed: …") — 409 `ALREADY_EXISTS` only when
-   * every violation is a duplicate key or pair, 400 otherwise. The 201 holds
-   * the statuses by `sortOrder` and **only the visible transitions**.
+   * every violation is a duplicate key or pair, 400 otherwise.
    */
-  addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<WorkflowDefinition>;
+  addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<ProjectWorkflowEntry>;
+  /** `POST …/workflows/{workflowId}/transitions`. The same refusals as `addWorkflowStatus`. */
+  addWorkflowTransition(projectId: string, workflowId: string, input: WorkflowTransitionInput): Promise<ProjectWorkflowEntry>;
   /**
-   * `POST …/workflows/{workflowId}/transitions`. The same refusals as
-   * `addWorkflowStatus`, and the same 201: a hidden transition just added is
-   * missing from its own answer.
+   * The six routes of backend PR #225 (TAS-384, develop `6ba4ed6`), read from
+   * workflow-service's `WorkflowMutationService`. Each is refused first as an
+   * add is (role, archive, unknown workflow 404, the shared default 400
+   * `FAILED_PRECONDITION`, another project's workflow 404), then:
+   *
+   * - a `version` that is not the server's → 409 `ABORTED` "Workflow version
+   *   changed" (a concurrent write is `ABORTED` too). `ALREADY_EXISTS` is a 409
+   *   as well: tell them apart by `code`, never by message or status;
+   * - a status or transition this workflow does not have → 404;
+   * - the workflow as it would stand must keep a `TODO` status and a visible
+   *   transition → else 400 `INVALID_ARGUMENT` "Workflow requires a TODO status
+   *   and at least one visible transition"; then the create rules with the
+   *   edit's prefix — a `sortOrder` another status (or transition) holds is
+   *   400 "Workflow update failed: Status sort order is not unique: N";
+   * - a delete that leaves issues of the workflow's types in a status it no
+   *   longer has → issue-service's 400 `FAILED_PRECONDITION` "Workflow statuses
+   *   have N issues; supply a target status mapping", `details`
+   *   `{issueCount, statusKeys}` as strings. That the details survive the hop
+   *   from issue-service through workflow-service to the gateway is **not
+   *   verified**; a caller treats them as optional. Over 5000 issues →
+   *   `RESOURCE_EXHAUSTED`. Each moved issue gets a `TRANSITIONED` history entry.
+   *
+   * Every edit raises `version` by one.
    */
-  addWorkflowTransition(projectId: string, workflowId: string, input: WorkflowTransitionInput): Promise<WorkflowDefinition>;
+  updateProjectWorkflow(
+    projectId: string,
+    workflowId: string,
+    input: UpdateProjectWorkflowInput,
+  ): Promise<ProjectWorkflowEntry>;
+  /**
+   * `DELETE …/workflows/{workflowId}`, with a JSON body (a body of any other
+   * type is 415). The workflow's types go back to the shared default; issues in
+   * a status the shared default lacks need `statusMappings` — a source that is a
+   * status of this workflow, a target present in both, else 400 "Map to
+   * statuses present in both workflows; add a target status to the current
+   * workflow first if needed". Answers the **shared default** — `shared: true`,
+   * and `issueTypes` only the deleted workflow's.
+   */
+  deleteProjectWorkflow(
+    projectId: string,
+    workflowId: string,
+    input: DeleteProjectWorkflowInput,
+  ): Promise<ProjectWorkflowEntry>;
+  /** `PATCH …/statuses/{statusId}`: at least one of name, category, sortOrder (else 400). */
+  updateWorkflowStatus(
+    projectId: string,
+    workflowId: string,
+    statusId: string,
+    input: UpdateWorkflowStatusInput,
+  ): Promise<ProjectWorkflowEntry>;
+  /**
+   * `DELETE …/statuses/{statusId}?version=&targetStatusKey=`: the status and
+   * every transition from or to it. `TODO` cannot go (400 `FAILED_PRECONDITION`
+   * "The initial TODO status cannot be deleted"); a target that is not another
+   * status of this workflow is 400 "Target status is not in this workflow".
+   */
+  deleteWorkflowStatus(
+    projectId: string,
+    workflowId: string,
+    statusId: string,
+    params: DeleteWorkflowStatusParams,
+  ): Promise<ProjectWorkflowEntry>;
+  /** `PATCH …/transitions/{transitionId}`: at least one of name, sortOrder, hidden (else 400). */
+  updateWorkflowTransition(
+    projectId: string,
+    workflowId: string,
+    transitionId: string,
+    input: UpdateWorkflowTransitionInput,
+  ): Promise<ProjectWorkflowEntry>;
+  /** `DELETE …/transitions/{transitionId}?version=`. */
+  deleteWorkflowTransition(
+    projectId: string,
+    workflowId: string,
+    transitionId: string,
+    params: DeleteWorkflowTransitionParams,
+  ): Promise<ProjectWorkflowEntry>;
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>>;
   addComment(projectId: string, issueId: string, body: string): Promise<IssueComment>;

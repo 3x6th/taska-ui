@@ -5451,16 +5451,24 @@ describe("MockTaskaApi", () => {
       });
     });
 
-    it("creates from a copy: request order, hidden ones marked, version 1, and the types bound to it everywhere", async () => {
+    it("creates from a copy and answers ProjectWorkflowDto: by sortOrder, hidden ones marked, version 1, its types, not shared", async () => {
       const input = await copyWithHidden(project.id, "  Development  ", ["BUG"]);
 
-      const created = await api.createProjectWorkflow(project.id, input);
+      const answer = await api.createProjectWorkflow(project.id, input);
+      const created = answer.workflow;
 
+      // Backend PR #225: every write answers the whole workflow with its types.
+      expect(answer).toMatchObject({ issueTypes: ["BUG"], shared: false });
       expect(created).toMatchObject({ name: "Development", version: 1 });
       expect(created.statuses.map((item) => item.statusKey)).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
-      expect(created.transitions.map((item) => item.hidden)).toEqual([false, false, false, false, false, true]);
-      expect(created).not.toHaveProperty("issueTypes");
-      expect(created).not.toHaveProperty("shared");
+      expect(created.transitions.map((item) => [item.sortOrder, item.hidden])).toEqual([
+        [10, false],
+        [20, false],
+        [30, false],
+        [40, false],
+        [50, false],
+        [60, true],
+      ]);
 
       const entries = await api.listProjectWorkflows(project.id);
       expect(entries.map((entry) => [entry.workflow.id === created.id, entry.shared, entry.issueTypes])).toEqual([
@@ -5517,7 +5525,7 @@ describe("MockTaskaApi", () => {
       });
 
       const first = await api.createProjectWorkflow(project.id, input);
-      expect(first.id).toBeTruthy();
+      expect(first.workflow.id).toBeTruthy();
       await expect(api.createProjectWorkflow(project.id, { ...input, issueTypes: ["BUG", "TASK"] })).rejects.toMatchObject({
         code: "ALREADY_EXISTS",
         message: `Workflow binding already exists for project ${project.id} and issue types: [TASK]`,
@@ -5527,20 +5535,26 @@ describe("MockTaskaApi", () => {
     it("accepts a create with no status and no transition, as the server does (docs/ai/API-DIVERGENCE.md)", async () => {
       await expect(
         api.createProjectWorkflow(project.id, { name: "Empty", issueTypes: ["STORY"], statuses: [], transitions: [] }),
-      ).resolves.toMatchObject({ statuses: [], transitions: [] });
+      ).resolves.toMatchObject({ workflow: { statuses: [], transitions: [] } });
     });
 
-    it("adds a status and a transition: the 201 sorted, without hidden ones, the version up each time", async () => {
-      const created = await api.createProjectWorkflow(project.id, await copyWithHidden(project.id, "Development", ["TASK"]));
+    it("adds a status and a transition: the 201 the whole workflow by sortOrder, hidden ones included, the version up each time", async () => {
+      const { workflow: created } = await api.createProjectWorkflow(
+        project.id,
+        await copyWithHidden(project.id, "Development", ["TASK"]),
+      );
 
-      const afterStatus = await api.addWorkflowStatus(project.id, created.id, { ...status, name: "  Code Review " });
+      const statusAnswer = await api.addWorkflowStatus(project.id, created.id, { ...status, name: "  Code Review " });
+      const afterStatus = statusAnswer.workflow;
+      expect(statusAnswer).toMatchObject({ issueTypes: ["TASK"], shared: false });
       expect(afterStatus.version).toBe(2);
       expect(afterStatus.statuses.map((item) => item.statusKey)).toEqual(["TODO", "IN_PROGRESS", "CODE_REVIEW", "DONE"]);
       expect(afterStatus.statuses.find((item) => item.statusKey === "CODE_REVIEW")?.name).toBe("Code Review");
-      expect(afterStatus.transitions.some((item) => item.hidden)).toBe(false);
-      expect(afterStatus.transitions).toHaveLength(5);
+      // Since backend PR #225 the hidden transition is in the answer, as in the list.
+      expect(afterStatus.transitions.filter((item) => item.hidden)).toHaveLength(1);
+      expect(afterStatus.transitions).toHaveLength(6);
 
-      const afterTransition = await api.addWorkflowTransition(project.id, created.id, {
+      const { workflow: afterTransition } = await api.addWorkflowTransition(project.id, created.id, {
         fromStatusKey: "IN_PROGRESS",
         toStatusKey: "CODE_REVIEW",
         name: "Move to Code Review",
@@ -5562,7 +5576,7 @@ describe("MockTaskaApi", () => {
     it("refuses an add in the server's order: the path, the role, an unknown workflow, the shared one, another project's", async () => {
       const web = await projectByKey("WEB");
       const [shared] = await api.listProjectWorkflows(project.id);
-      const elsewhere = await api.createProjectWorkflow(web.id, await copyWithHidden(web.id, "Web flow", ["TASK"]));
+      const { workflow: elsewhere } = await api.createProjectWorkflow(web.id, await copyWithHidden(web.id, "Web flow", ["TASK"]));
 
       await expect(api.addWorkflowStatus(project.id, "not-a-uuid", status)).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
@@ -5601,7 +5615,10 @@ describe("MockTaskaApi", () => {
     });
 
     it("re-validates the whole workflow on an add: 409 only when every violation is a duplicate key or pair", async () => {
-      const created = await api.createProjectWorkflow(project.id, await copyWithHidden(project.id, "Development", ["TASK"]));
+      const { workflow: created } = await api.createProjectWorkflow(
+        project.id,
+        await copyWithHidden(project.id, "Development", ["TASK"]),
+      );
       const addStatus = (input: Partial<typeof status>) => api.addWorkflowStatus(project.id, created.id, { ...status, ...input });
       const addTransition = (input: { fromStatusKey: string; toStatusKey: string; sortOrder: number }) =>
         api.addWorkflowTransition(project.id, created.id, { name: "Move", hidden: false, ...input });
@@ -5648,6 +5665,291 @@ describe("MockTaskaApi", () => {
       // Nothing refused moved the version.
       const own = (await api.listProjectWorkflows(project.id)).find((entry) => !entry.shared);
       expect(own?.workflow.version).toBe(1);
+    });
+
+    /**
+     * Backend PR #225 (TAS-384, develop `6ba4ed6`): the six edit and delete
+     * routes as `WorkflowMutationService` and issue-service's
+     * `WorkflowIssueMigrationService` run them.
+     */
+    describe("edits and deletes", () => {
+      const ownWorkflow = async (types: string[] = ["TASK"]) =>
+        (await api.createProjectWorkflow(project.id, await copyWithHidden(project.id, "Development", types))).workflow;
+      const statusOf = <T extends { statusKey: string }>(workflow: { statuses: T[] }, key: string) =>
+        workflow.statuses.find((item) => item.statusKey === key)!;
+      const transitionNamed = <T extends { name: string }>(workflow: { transitions: T[] }, name: string) =>
+        workflow.transitions.find((item) => item.name === name)!;
+      const tasksIn = async (statusKey: string) =>
+        (await api.listIssues(project.id)).items.filter((item) => item.issueType === "TASK" && item.status === statusKey);
+
+      it("renames, changes a status and a transition, each answering the whole workflow one version up", async () => {
+        const created = await ownWorkflow();
+
+        const renamed = await api.updateProjectWorkflow(project.id, created.id, { version: 1, name: "  Delivery " });
+        expect(renamed).toMatchObject({ issueTypes: ["TASK"], shared: false, workflow: { name: "Delivery", version: 2 } });
+
+        const doing = statusOf(created, "IN_PROGRESS");
+        const moved = await api.updateWorkflowStatus(project.id, created.id, doing.id, {
+          version: 2,
+          name: "Doing",
+          sortOrder: 35,
+        });
+        expect(moved.workflow.version).toBe(3);
+        // By sortOrder; the key never changes.
+        expect(moved.workflow.statuses.map((item) => [item.statusKey, item.name, item.sortOrder])).toEqual([
+          ["TODO", "To Do", 10],
+          ["DONE", "Done", 30],
+          ["IN_PROGRESS", "Doing", 35],
+        ]);
+        const board = await api.getBoard(project.id, { issueType: "TASK" });
+        expect(board.columns.map((column) => [column.statusKey, column.name])).toEqual([
+          ["TODO", "To Do"],
+          ["DONE", "Done"],
+          ["IN_PROGRESS", "Doing"],
+        ]);
+
+        const close = transitionNamed(created, "Close");
+        const hidden = await api.updateWorkflowTransition(project.id, created.id, close.id, {
+          version: 3,
+          name: "Shut",
+          sortOrder: 55,
+          hidden: true,
+        });
+        expect(hidden.workflow.version).toBe(4);
+        expect(hidden.workflow.transitions.find((item) => item.id === close.id)).toMatchObject({
+          name: "Shut",
+          sortOrder: 55,
+          hidden: true,
+          fromStatusId: close.fromStatusId,
+          toStatusId: close.toStatusId,
+        });
+        // The board offers no hidden transition.
+        expect((await taskWorkflow()).transitions.map((item) => item.name)).not.toContain("Shut");
+      });
+
+      it("compares the version: a stale one is ABORTED and changes nothing, one left out is not compared", async () => {
+        const created = await ownWorkflow();
+        await api.updateProjectWorkflow(project.id, created.id, { version: 1, name: "Second" });
+
+        await expect(api.updateProjectWorkflow(project.id, created.id, { version: 1, name: "Third" })).rejects.toMatchObject({
+          code: "ABORTED",
+          message: "Workflow version changed",
+        });
+        await expect(
+          api.deleteWorkflowStatus(project.id, created.id, statusOf(created, "DONE").id, { version: 1 }),
+        ).rejects.toMatchObject({ code: "ABORTED" });
+        expect((await api.listProjectWorkflows(project.id)).find((entry) => !entry.shared)?.workflow).toMatchObject({
+          name: "Second",
+          version: 2,
+        });
+
+        await expect(api.updateProjectWorkflow(project.id, created.id, { name: "Third" })).resolves.toMatchObject({
+          workflow: { name: "Third", version: 3 },
+        });
+      });
+
+      it("refuses what the gateway would and what has nothing to change, and a row or workflow not this one's", async () => {
+        const created = await ownWorkflow();
+        const [shared] = (await api.listProjectWorkflows(project.id)).filter((entry) => entry.shared);
+        const doing = statusOf(created, "IN_PROGRESS").id;
+        const invalid = { code: "INVALID_ARGUMENT", message: "Invalid request parameters" };
+
+        // additionalProperties: false, no explicit null, the DTO's bounds.
+        for (const body of [{ name: null }, { statusKey: "DOING" }, { sortOrder: -1 }, { category: "REVIEW" }, { version: 0, name: "x" }]) {
+          await expect(
+            api.updateWorkflowStatus(project.id, created.id, doing, body as unknown as { name: string }),
+          ).rejects.toMatchObject(invalid);
+        }
+        await expect(api.updateWorkflowStatus(project.id, created.id, "not-a-uuid", { name: "x" })).rejects.toMatchObject(invalid);
+        await expect(
+          api.deleteWorkflowStatus(project.id, created.id, doing, { targetStatusKey: "to do" }),
+        ).rejects.toMatchObject(invalid);
+
+        await expect(api.updateWorkflowStatus(project.id, created.id, doing, { version: 1 })).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: "At least one status field is required",
+        });
+        await expect(
+          api.updateWorkflowTransition(project.id, created.id, created.transitions[0].id, { version: 1 }),
+        ).rejects.toMatchObject({ message: "At least one transition field is required" });
+        await expect(api.updateProjectWorkflow(project.id, created.id, { version: 1 })).rejects.toMatchObject({
+          message: "name is required",
+        });
+
+        await expect(api.updateWorkflowStatus(project.id, created.id, UNKNOWN_WORKFLOW, { name: "x" })).rejects.toMatchObject({
+          code: "NOT_FOUND",
+          message: "Status not found in this workflow",
+        });
+        await expect(api.deleteWorkflowTransition(project.id, created.id, UNKNOWN_WORKFLOW, {})).rejects.toMatchObject({
+          code: "NOT_FOUND",
+          message: "Transition not found in this workflow",
+        });
+        await expect(api.updateProjectWorkflow(project.id, shared.workflow.id, { name: "Mine" })).rejects.toMatchObject({
+          code: "FAILED_PRECONDITION",
+          message: `Default workflow is shared by all projects and cannot be modified: id=${shared.workflow.id}. Create a project workflow first`,
+        });
+        await signIn("mark@example.com");
+        await expect(api.updateProjectWorkflow(project.id, created.id, { name: "Mine" })).rejects.toMatchObject({
+          code: "PERMISSION_DENIED",
+          message: "Not allowed role",
+        });
+      });
+
+      it("keeps a TODO and a visible transition, and refuses a sortOrder another row holds as a 400", async () => {
+        const created = await ownWorkflow();
+        const prefix = "Workflow update failed: ";
+
+        await expect(
+          api.deleteWorkflowStatus(project.id, created.id, statusOf(created, "TODO").id, { version: 1 }),
+        ).rejects.toMatchObject({ code: "FAILED_PRECONDITION", message: "The initial TODO status cannot be deleted" });
+        await expect(
+          api.updateWorkflowStatus(project.id, created.id, statusOf(created, "IN_PROGRESS").id, { version: 1, sortOrder: 10 }),
+        ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: `${prefix}Status sort order is not unique: 10` });
+        await expect(
+          api.updateWorkflowTransition(project.id, created.id, transitionNamed(created, "Complete").id, {
+            version: 1,
+            sortOrder: 10,
+          }),
+        ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: `${prefix}Transition sort order is not unique: 10` });
+
+        // Hide every visible transition but one; the last one cannot go.
+        let version = 1;
+        const visible = created.transitions.filter((item) => !item.hidden);
+        for (const transition of visible.slice(0, -1)) {
+          version = (await api.updateWorkflowTransition(project.id, created.id, transition.id, { version, hidden: true }))
+            .workflow.version;
+        }
+        const last = visible.at(-1)!;
+        const requires = { code: "INVALID_ARGUMENT", message: "Workflow requires a TODO status and at least one visible transition" };
+        await expect(api.updateWorkflowTransition(project.id, created.id, last.id, { version, hidden: true })).rejects.toMatchObject(
+          requires,
+        );
+        await expect(api.deleteWorkflowTransition(project.id, created.id, last.id, { version })).rejects.toMatchObject(requires);
+        expect((await api.listProjectWorkflows(project.id)).find((entry) => !entry.shared)?.workflow.version).toBe(version);
+      });
+
+      it("deletes a status with its transitions; one with issues is refused with the count until a target takes them", async () => {
+        const created = await ownWorkflow();
+        const doing = statusOf(created, "IN_PROGRESS");
+        const moving = await tasksIn("IN_PROGRESS");
+        const bugsDoing = (await api.listIssues(project.id)).items.filter(
+          (item) => item.issueType === "BUG" && item.status === "IN_PROGRESS",
+        );
+        expect(moving.length).toBeGreaterThan(0);
+
+        const refusal = await api
+          .deleteWorkflowStatus(project.id, created.id, doing.id, { version: 1 })
+          .catch((error: unknown) => error);
+        expect(apiErrorFacts(refusal)).toMatchObject({
+          code: "FAILED_PRECONDITION",
+          message: `Workflow statuses have ${moving.length} issues; supply a target status mapping`,
+          details: { issueCount: String(moving.length), statusKeys: "IN_PROGRESS" },
+        });
+        for (const target of ["IN_PROGRESS", "NOPE"]) {
+          await expect(
+            api.deleteWorkflowStatus(project.id, created.id, doing.id, { version: 1, targetStatusKey: target }),
+          ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Target status is not in this workflow" });
+        }
+
+        const answer = await api.deleteWorkflowStatus(project.id, created.id, doing.id, { version: 1, targetStatusKey: "TODO" });
+        expect(answer.workflow.version).toBe(2);
+        expect(answer.workflow.statuses.map((item) => item.statusKey)).toEqual(["TODO", "DONE"]);
+        expect(
+          answer.workflow.transitions.filter((item) => item.fromStatusId === doing.id || item.toStatusId === doing.id),
+        ).toEqual([]);
+        expect(answer.workflow.transitions.map((item) => item.name)).toEqual(["Close", "Back to To Do"]);
+
+        // The tasks moved, with a history entry that says why; the bugs, on the shared default, did not.
+        expect((await tasksIn("TODO")).map((item) => item.id)).toEqual(expect.arrayContaining(moving.map((item) => item.id)));
+        const history = (await api.getIssue(project.id, moving[0].id)).history;
+        expect(history.at(-1)).toMatchObject({
+          eventType: "TRANSITIONED",
+          payload: { from: "IN_PROGRESS", to: "TODO", reason: "WORKFLOW_CONFIGURATION_CHANGED", workflowId: created.id },
+        });
+        const stillDoing = (await api.listIssues(project.id)).items.filter(
+          (item) => item.issueType === "BUG" && item.status === "IN_PROGRESS",
+        );
+        expect(stillDoing.map((item) => item.id)).toEqual(bugsDoing.map((item) => item.id));
+
+        // A status nobody is in goes at once.
+        const added = await api.addWorkflowStatus(project.id, created.id, status);
+        const review = statusOf(added.workflow, "CODE_REVIEW");
+        await expect(
+          api.deleteWorkflowStatus(project.id, created.id, review.id, { version: added.workflow.version }),
+        ).resolves.toMatchObject({ workflow: { statuses: [{ statusKey: "TODO" }, { statusKey: "DONE" }] } });
+      });
+
+      it("deletes a transition, which the board then no longer offers", async () => {
+        const created = await ownWorkflow();
+        const close = transitionNamed(created, "Close");
+
+        const answer = await api.deleteWorkflowTransition(project.id, created.id, close.id, { version: 1 });
+
+        expect(answer.workflow.transitions.map((item) => item.id)).not.toContain(close.id);
+        expect((await taskWorkflow()).transitions.map((item) => item.name)).not.toContain("Close");
+      });
+
+      it("deletes an own workflow: its types back on the shared default, the statuses it lacks mapped first", async () => {
+        const created = await ownWorkflow();
+        const [shared] = (await api.listProjectWorkflows(project.id)).filter((entry) => entry.shared);
+        const added = await api.addWorkflowStatus(project.id, created.id, status);
+        const withMove = await api.addWorkflowTransition(project.id, created.id, {
+          fromStatusKey: "IN_PROGRESS",
+          toStatusKey: "CODE_REVIEW",
+          name: "Move to Code Review",
+          sortOrder: 70,
+          hidden: false,
+        });
+        const [task] = await tasksIn("IN_PROGRESS");
+        const move = (await taskWorkflow()).transitions.find((item) => item.name === "Move to Code Review")!;
+        await api.transitionIssue(project.id, task.id, move.id);
+        const version = withMove.workflow.version;
+        expect(version).toBe(added.workflow.version + 1);
+
+        const refusal = await api.deleteProjectWorkflow(project.id, created.id, { version }).catch((error: unknown) => error);
+        expect(apiErrorFacts(refusal)).toMatchObject({
+          code: "FAILED_PRECONDITION",
+          message: "Workflow statuses have 1 issues; supply a target status mapping",
+          details: { issueCount: "1", statusKeys: "CODE_REVIEW" },
+        });
+        const both = {
+          code: "INVALID_ARGUMENT",
+          message: "Map to statuses present in both workflows; add a target status to the current workflow first if needed",
+        };
+        const wrong: Record<string, string>[] = [{ CODE_REVIEW: "CODE_REVIEW" }, { NOPE: "TODO" }, { CODE_REVIEW: "NOPE" }];
+        for (const statusMappings of wrong) {
+          await expect(api.deleteProjectWorkflow(project.id, created.id, { version, statusMappings })).rejects.toMatchObject(both);
+        }
+        await expect(
+          api.deleteProjectWorkflow(project.id, created.id, { version: 1, statusMappings: { CODE_REVIEW: "IN_PROGRESS" } }),
+        ).rejects.toMatchObject({ code: "ABORTED" });
+
+        const answer = await api.deleteProjectWorkflow(project.id, created.id, {
+          version,
+          statusMappings: { CODE_REVIEW: "IN_PROGRESS" },
+        });
+
+        // The shared default, with the deleted workflow's types only.
+        expect(answer).toMatchObject({ shared: true, issueTypes: ["TASK"], workflow: { id: shared.workflow.id } });
+        expect(answer.workflow.transitions).toHaveLength(6);
+        expect((await api.listProjectWorkflows(project.id)).map((entry) => [entry.shared, entry.issueTypes])).toEqual([
+          [true, ["TASK", "BUG", "STORY"]],
+        ]);
+        expect((await taskWorkflow()).id).toBe(shared.workflow.id);
+        expect((await api.getIssue(project.id, task.id)).issue.status).toBe("IN_PROGRESS");
+        await expect(api.updateProjectWorkflow(project.id, created.id, { name: "Gone" })).rejects.toMatchObject({
+          code: "NOT_FOUND",
+        });
+      });
+
+      it("refuses an edit on an archived project with the archive's reason", async () => {
+        const created = await ownWorkflow();
+        await api.archiveProject(project.id);
+
+        const refusal = await api.updateProjectWorkflow(project.id, created.id, { name: "Late" }).catch((error: unknown) => error);
+
+        expect(apiErrorFacts(refusal)).toMatchObject({ code: "FAILED_PRECONDITION", details: { reason: "PROJECT_ARCHIVED" } });
+      });
     });
   });
 });
