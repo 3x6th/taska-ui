@@ -1,4 +1,4 @@
-# Pending contract extract — backend PR #256 (TAS-432), head 1d7fe8a2 on base develop 7dc8f273.
+# Pending contract extract — backend PR #256 (TAS-432), head 1c747de7 on base develop 7dc8f273.
 # https://github.com/VladislavYurin/taska-backend/pull/256 — new or changed blocks only; see README.md.
 # The vendored snapshot (docs/contract/openapi.yml) is at be5085e5; blocks this file $refs and does not define are there.
 paths:
@@ -129,11 +129,12 @@ components:
         issueTypeIcon:
           type: string
           nullable: true
-          description: Значок из реестра проекта; отсутствует, если у типа нет значка или тип удалён.
+          description: Значок из реестра проекта; null, если у типа нет значка или тип удалён.
         issueTypeShape:
-          type: string
           nullable: true
-          description: Форма из реестра проекта — square, circle или diamond; есть всегда, когда есть issueTypeName.
+          description: Форма из реестра проекта; null только вместе с issueTypeName (тип удалён).
+          allOf:
+            - $ref: '#/components/schemas/ProjectIssueTypeShapeDto'
         priority:
           $ref: '#/components/schemas/IssuePriorityDto'
         assigneeId:
