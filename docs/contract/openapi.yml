@@ -1,6 +1,6 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: af41c322c62a7afc372032630c634bc5d12a9043 (develop, 2026-10-26)
+# Backend commit: be5085e539a49318dde4f091a40c7e8670c31689 (develop, 2026-10-26)
 # Fetched: 2026-10-26
 #
 # The backend repository is the single source of truth for this contract.
@@ -25,8 +25,120 @@ servers:
     description: Current host
 
 paths:
+  /api/v1/users/me/access-tokens:
+    post:
+      x-pat-scope: session
+      operationId: createPersonalAccessToken
+      summary: Выпустить личный API токен
+      description: Только JWT-сессия ACTIVE пользователя. Имя trim (1..100); scopes read или read+write. Secret возвращается один раз. Лимит попыток выпуска — 5 в час на пользователя на экземпляр gateway (настраивается); лимит активных токенов — отдельный отказ 400 FAILED_PRECONDITION с details.reason ACTIVE_TOKEN_LIMIT и details.limit.
+      tags: [personal-access-token]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePersonalAccessTokenRequestDto'
+      responses:
+        '201':
+          description: Токен выпущен. Не сохранять secret в логах; ответ не кэшируется.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+            Cache-Control:
+              schema: {type: string, example: 'no-store'}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePersonalAccessTokenResponseDto'
+        '400':
+          description: INVALID_ARGUMENT либо FAILED_PRECONDITION (ACTIVE_TOKEN_LIMIT); details.limit и другие значения details являются строками.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
+        '401':
+          description: JWT отсутствует, недействителен или пользователь не ACTIVE.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
+        '403':
+          description: PAT не может управлять токенами; PERMISSION_DENIED с details.reason SESSION_REQUIRED.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
+        '429':
+          description: RESOURCE_EXHAUSTED, details.retryAfterSeconds (строка) и Retry-After сообщают время ожидания в секундах. Попытка не выполняет выпуск.
+          headers:
+            Retry-After:
+              schema: {type: string, pattern: '^[1-9][0-9]*$'}
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    get:
+      x-pat-scope: session
+      operationId: listPersonalAccessTokens
+      summary: Личные API токены и политика выпуска
+      description: Только собственная JWT-сессия. Неотозванные токены, включая истёкшие, в порядке createdAt desc, id desc. Secret/hash отсутствуют. Ответ не кэшируется.
+      tags: [personal-access-token]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Собственные токены и актуальные лимиты.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+            Cache-Control:
+              schema: {type: string, example: 'no-store'}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalAccessTokensResponseDto'
+        '403':
+          description: PERMISSION_DENIED с details.reason SESSION_REQUIRED при PAT.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/users/me/access-tokens/{tokenId}:
+    delete:
+      x-pat-scope: session
+      operationId: revokePersonalAccessToken
+      summary: Отозвать личный API токен
+      description: Только собственная JWT-сессия. Отзыв идемпотентен; неизвестный, чужой и уже отозванный UUID возвращают 204. Следующий запрос отозванного PAT получает 401. Ответ не кэшируется.
+      tags: [personal-access-token]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '204':
+          description: Токен отозван либо отсутствует у пользователя.
+        '403':
+          description: PERMISSION_DENIED с details.reason SESSION_REQUIRED при PAT.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
   /api/v1/users/me/notification-preferences:
     get:
+      x-pat-scope: read
       summary: getNotificationPreferences
       description: Первое чтение создаёт запись (emailEnabled true, telegramEnabled false). Email копируется из проверенного auth-контекста; при смене адреса письма в очереди на старый адрес не отправляются. Повторное чтение ничего не меняет. Работает при выключенной интеграции.
       operationId: getNotificationPreferences
@@ -73,6 +185,7 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
     patch:
+      x-pat-scope: write
       summary: updateNotificationPreferences
       description: Неотправленный ключ сохраняет значение; отказ ничего не меняет; выключение канала не отклоняется. Уже отправленный HTTP/SMTP запрос может завершиться.
       operationId: updateNotificationPreferences
@@ -145,6 +258,7 @@ paths:
 
   /api/v1/users/me/telegram/link:
     post:
+      x-pat-scope: write
       summary: createTelegramLink
       description: Разрешено из NOT_CONNECTED, PENDING, AWAITING_CONFIRMATION. Новая ссылка заменяет текущую — прежний linkId больше не подтверждается, кандидат сбрасывается. url содержит одноразовый токен и возвращается только этим вызовом. preferences обязательны и содержат снимок настроек после создания заявки.
       operationId: createTelegramLink
@@ -202,6 +316,7 @@ paths:
 
   /api/v1/users/me/telegram/confirm:
     post:
+      x-pat-scope: write
       summary: confirmTelegramLink
       description: Привязывает кандидата текущей ссылки, включает Telegram, не меняет выбор email, потребляет ссылку. Лишние ключи тела отклоняются с 400.
       operationId: confirmTelegramLink
@@ -274,6 +389,7 @@ paths:
 
   /api/v1/users/me/telegram:
     delete:
+      x-pat-scope: write
       summary: disconnectTelegram
       description: Идемпотентно — 200 из любого статуса, в том числе NOT_CONNECTED и при выключенной интеграции; отменяет ожидающие отправки в Telegram. Уже отправленный HTTP-запрос может завершиться.
       operationId: disconnectTelegram
@@ -444,6 +560,7 @@ paths:
 
   /api/v1/auth/invitations:
     post:
+      x-pat-scope: session
       summary: Пригласить пользователя в Taska (GLOBAL_ADMIN)
       description: |
         Адрес нормализуется по пробелам и регистру; Gmail-подобные алиасы не объединяются.
@@ -497,6 +614,7 @@ paths:
 
   /api/v1/users:
     get:
+      x-pat-scope: read
       summary: Поиск пользователей рабочего пространства по имени и email
       description: |
         Доступен авторизованным пользователям единого рабочего пространства Taska.
@@ -569,6 +687,7 @@ paths:
 
   /api/v1/users/me:
     get:
+      x-pat-scope: read
       summary: Получение данных текущего пользователя
       operationId: getMyInfo
       tags:
@@ -590,6 +709,7 @@ paths:
 
   /api/v1/notifications:
     get:
+      x-pat-scope: read
       summary: Получение inbox уведомлений текущего пользователя
       operationId: listNotifications
       tags:
@@ -635,6 +755,7 @@ paths:
 
   /api/v1/notifications/{notificationId}/read:
     patch:
+      x-pat-scope: write
       summary: Отметка уведомления текущего пользователя как прочитанного
       operationId: markNotificationAsRead
       tags:
@@ -663,6 +784,7 @@ paths:
 
   /api/v1/notifications/read-all:
     post:
+      x-pat-scope: write
       summary: Отметка всех уведомлений текущего пользователя как прочитанных
       description: Операция идемпотентна. При повторном вызове статус ресурсов не меняется, а в ответе возвращается updatedCount равный 0.
       operationId: markAllNotificationsAsRead
@@ -685,6 +807,7 @@ paths:
 
   /api/v1/projects:
     post:
+      x-pat-scope: write
       summary: Создание проекта
       operationId: createProject
       tags:
@@ -711,6 +834,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     get:
+      x-pat-scope: read
       summary: Возвращает проекты текущего пользователя
       description: Доступные неархивные проекты по createdAt по возрастанию, затем по id по возрастанию.
       operationId: listMyProjects
@@ -733,6 +857,7 @@ paths:
 
   /api/v1/project-stats:
     get:
+      x-pat-scope: read
       summary: Счётчики и первые пять участников всех проектов пользователя
       description: Проекты в том же порядке, что GET /projects — createdAt по возрастанию, затем id по возрастанию.
       operationId: getProjectStats
@@ -754,6 +879,7 @@ paths:
 
   /api/v1/projects/{projectId}:
     delete:
+      x-pat-scope: write
       operationId: archiveProject
       summary: Архивировать проект — только ADMIN проекта, идемпотентно
       description: >
@@ -790,6 +916,7 @@ paths:
 
 
     get:
+      x-pat-scope: read
       summary: Возвращает проект по идентификатору
       operationId: getProject
       tags:
@@ -816,6 +943,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     patch:
+      x-pat-scope: write
       summary: Обновляет проект (имя, описание, цвет)
       description: >
         Частичное обновление проекта (PATCH-семантика): поле, отсутствующее в теле запроса,
@@ -862,6 +990,7 @@ paths:
 
   /api/v1/projects/{projectId}/context:
     get:
+      x-pat-scope: read
       summary: Контекст проекта — проект, участники, метки, все workflows
       operationId: getProjectContext
       tags:
@@ -894,8 +1023,10 @@ paths:
 
   /api/v1/projects/{projectId}/issue-types:
     get:
+      x-pat-scope: read
       operationId: listProjectIssueTypes
-      summary: Типы задач проекта, по sortOrder и code; первый тип используется по умолчанию
+      summary: Типы задач проекта; первый тип используется по умолчанию
+      description: Порядок sortOrder ASC, затем code по байтовой collation C.
       tags: [project-issue-type]
       security:
         - bearerAuth: []
@@ -916,6 +1047,7 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
     post:
+      x-pat-scope: write
       operationId: createProjectIssueType
       summary: Добавить тип задачи — только ADMIN проекта
       tags: [project-issue-type]
@@ -944,8 +1076,41 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
 
+  /api/v1/projects/{projectId}/issue-types/order:
+    put:
+      x-pat-scope: write
+      operationId: reorderProjectIssueTypes
+      summary: Атомарно переставить все типы задач — только ADMIN проекта
+      description: codes — полная перестановка текущего реестра без повторов. Записывает sortOrder 10, 20, 30 в одной транзакции; первый тип становится типом по умолчанию. Неполный или устаревший набор кодов даёт 400 INVALID_ARGUMENT без изменений.
+      tags: [project-issue-type]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderProjectIssueTypesRequestDto'
+      responses:
+        '200':
+          description: Новый порядок сохранён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProjectIssueTypesDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
   /api/v1/projects/{projectId}/issue-types/{code}:
     patch:
+      x-pat-scope: write
       operationId: updateProjectIssueType
       summary: Изменить подпись, цвет, значок или порядок типа — только ADMIN проекта
       tags: [project-issue-type]
@@ -980,8 +1145,10 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
     delete:
+      x-pat-scope: write
       operationId: deleteProjectIssueType
       summary: Удалить неиспользуемый тип — только ADMIN; последний тип удалить нельзя
+      description: Считаются только живые задачи. 400 FAILED_PRECONDITION содержит details.reason LAST_ISSUE_TYPE либо ISSUE_TYPE_IN_USE и строковое details.issueCount. Удалённые задачи не запрещают удаление типа.
       tags: [project-issue-type]
       security:
         - bearerAuth: []
@@ -1006,6 +1173,7 @@ paths:
 
   /api/v1/projects/{projectId}/members:
     get:
+      x-pat-scope: read
       description: Возвращает список участников проекта
       operationId: getProjectMembers
       tags:
@@ -1029,6 +1197,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ListProjectMemberDetailsDto'
     post:
+      x-pat-scope: write
       summary: Добавляет участника в проект
       operationId: addProjectMember
       tags:
@@ -1062,6 +1231,7 @@ paths:
 
   /api/v1/projects/{projectId}/members/{userId}:
     patch:
+      x-pat-scope: write
       summary: Меняет роль участника
       operationId: changeProjectMemberRole
       tags:
@@ -1099,6 +1269,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     delete:
+      x-pat-scope: write
       summary: Удаляет участника из проекта
       operationId: removeProjectMember
       tags:
@@ -1127,6 +1298,7 @@ paths:
 
   /api/v1/admin/users/{userId}/block:
     post:
+      x-pat-scope: session
       summary: Блокировка пользователя
       description: Изменяет статус пользователя на BLOCKED. Требует прав GLOBAL_ADMIN и указания причины.
       operationId: blockUser
@@ -1178,6 +1350,7 @@ paths:
 
   /api/v1/admin/users/{userId}/unblock:
     post:
+      x-pat-scope: session
       summary: Разблокировка пользователя
       description: Изменяет статус пользователя с BLOCKED на ACTIVE. Запрещено активировать пользователей в статусе INVITED через этот эндпоинт. Требует прав GLOBAL_ADMIN.
       operationId: unblockUser
@@ -1229,6 +1402,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues:
     post:
+      x-pat-scope: write
       summary: Создание задачи
       operationId: createIssue
       tags:
@@ -1270,6 +1444,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     get:
+      x-pat-scope: read
       summary: Возвращает задачи проекта с фильтрами и пагинацией
       operationId: listIssues
       tags:
@@ -1330,6 +1505,7 @@ paths:
 
   /api/v1/issues/{issueId}/links:
     get:
+      x-pat-scope: read
       summary: Возвращает список связей для задачи
       description: Порядок элементов — createdAt asc, id asc.
       operationId: listIssueLinks
@@ -1359,6 +1535,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     post:
+      x-pat-scope: write
       summary: Устанавливает новую связь для задачи
       operationId: createIssueLink
       tags:
@@ -1395,6 +1572,7 @@ paths:
 
   /api/v1/issues/{issueId}/links/{linkId}:
     delete:
+      x-pat-scope: write
       summary: Выполняет мягкое удаление связи между задачами
       operationId: deleteIssueLink
       tags:
@@ -1426,6 +1604,7 @@ paths:
 
   /api/v1/issues/{issueId}:
     get:
+      x-pat-scope: read
       summary: Возвращает задачу с историей
       operationId: getIssue
       tags:
@@ -1454,6 +1633,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     put:
+      x-pat-scope: write
       summary: Обновляет основные поля задачи
       description: |
         Устарел, используйте PATCH /api/v1/issues/{issueId}.
@@ -1495,6 +1675,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     delete:
+      x-pat-scope: write
       summary: Выполняет мягкое удаление задачи
       operationId: deleteIssue
       tags:
@@ -1519,6 +1700,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     patch:
+      x-pat-scope: write
       summary: Частично обновляет задачу с оптимистичной блокировкой по версии
       description: |
         Поля, которые можно передать: summary, description, priority, assigneeId, storyPoints, startDate, 
@@ -1583,6 +1765,7 @@ paths:
 
   /api/v1/issues/by-key/{issueKey}:
     get:
+      x-pat-scope: read
       summary: Возвращает задачу по ключу (без projectId)
       operationId: getIssueByKey
       tags:
@@ -1613,6 +1796,7 @@ paths:
 
   /api/v1/issues/{issueId}/assignee:
     put:
+      x-pat-scope: write
       summary: Назначает исполнителя задачи
       description: |
         Устарел, используйте PATCH /api/v1/issues/{issueId}.
@@ -1656,7 +1840,13 @@ paths:
 
   /api/v1/issues/{issueId}/transition/{transitionId}:
     put:
+      x-pat-scope: write
       summary: Выполняет переход задачи по workflow (меняет статус задачи)
+      description: >-
+        Необязательный If-Match защищает переход от изменений после чтения задачи.
+        Сравнение версии и переход атомарны. При несовпадении возвращается 409 ABORTED
+        с details.currentVersion и details.currentStatus без изменения задачи, истории и outbox.
+        Без заголовка сохраняется поведение без явной проверки ожидаемой версии.
       operationId: transitionIssue
       tags:
         - issue
@@ -1673,6 +1863,13 @@ paths:
         - name: transitionId
           in: path
           required: true
+          schema:
+            type: string
+
+        - name: If-Match
+          in: header
+          required: false
+          description: Положительная версия Issue.version, например 3 или "3".
           schema:
             type: string
 
@@ -1693,11 +1890,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IssueWithHistoryResponseDto'
+        '409':
+          description: Конфликт ожидаемой версии (ABORTED); details содержит currentVersion и currentStatus.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
   /api/v1/issues/search:
     get:
+      x-pat-scope: read
       summary: Поиск задач по ключу, summary и description с фильтрами (Все параметры применяются через логическое "AND")
       description: Порядок элементов — createdAt desc, id desc (сначала новые задачи).
       operationId: searchIssues
@@ -1791,7 +1998,9 @@ paths:
   # ============ API для worklogs ============
   /api/v1/projects/{projectId}/issues/{issueId}/worklogs:
     get:
-      summary: Получение списка worklogs задачи
+      x-pat-scope: read
+      summary: Получение страницы worklogs задачи
+      description: Активные записи в порядке workDate DESC, createdAt DESC, id DESC.
       operationId: listIssueWorklogs
       tags:
         - worklogs
@@ -1810,6 +2019,23 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: page
+          in: query
+          description: Номер страницы с нуля.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: pageSize
+          in: query
+          description: Размер страницы.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
       responses:
         '200':
           description: Worklogs задачи получены
@@ -1829,6 +2055,7 @@ paths:
         '404':
           $ref: '#/components/responses/ErrorResponse'
     post:
+      x-pat-scope: write
       summary: Добавление worklog к задаче
       operationId: addIssueWorklog
       tags:
@@ -1875,6 +2102,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues/{issueId}/worklogs/{worklogId}:
     put:
+      x-pat-scope: write
       summary: Обновление worklog
       operationId: updateIssueWorklog
       tags:
@@ -1926,6 +2154,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     delete:
+      x-pat-scope: write
       summary: Удаление worklog
       operationId: deleteIssueWorklog
       tags:
@@ -1969,6 +2198,7 @@ paths:
   # ============ API для issue attachments ============
   /api/v1/projects/{projectId}/issues/{issueId}/attachments:
     get:
+      x-pat-scope: read
       summary: Получение списка вложений к задаче
       description: Порядок элементов — createdAt asc, id asc.
       operationId: listAttachments
@@ -2008,6 +2238,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues/{issueId}/attachments/upload-url:
     post:
+      x-pat-scope: write
       summary: Запрос Presigned URL для загрузки файла в S3
       operationId: createAttachmentUploadUrl
       tags:
@@ -2054,6 +2285,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues/{issueId}/attachments/confirm:
     post:
+      x-pat-scope: write
       summary: Подтверждение успешной загрузки файла в S3
       operationId: confirmAttachmentUpload
       tags:
@@ -2100,6 +2332,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues/{issueId}/attachments/{attachmentId}/download-url:
     get:
+      x-pat-scope: read
       summary: Получение Presigned URL для скачивания файла
       operationId: getAttachmentDownloadUrl
       tags:
@@ -2144,6 +2377,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues/{issueId}/attachments/{attachmentId}:
     delete:
+      x-pat-scope: write
       summary: Удаление вложения  задачи
       operationId: deleteAttachment
       tags:
@@ -2186,6 +2420,7 @@ paths:
 
   /api/v1/projects/{projectId}/board:
     get:
+      x-pat-scope: read
       summary: Получение доски задач проекта
       operationId: getBoard
       tags:
@@ -2202,7 +2437,7 @@ paths:
         - name: issueType
           in: query
           required: false
-          description: Фильтр по ключу типа задачи проекта. Без параметра возвращаются все типы. Неизвестное значение или неверный формат дают пустую доску.
+          description: Фильтр по ключу типа задачи проекта. Без параметра возвращаются все типы. Тип, которого нет в реестре проекта, или неверный формат дают пустую доску без колонок и задач.
           schema:
             type: string
         - name: assigneeId
@@ -2262,6 +2497,7 @@ paths:
   ########################## API для issue комментариев ##################
   /api/v1/projects/{projectId}/issues/{issueId}/comments:
     get:
+      x-pat-scope: read
       summary: Получение списка комментариев к задаче
       description: Порядок элементов — createdAt desc, id desc (новые сверху).
       operationId: listComments
@@ -2311,6 +2547,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     post:
+      x-pat-scope: write
       summary: Добавление комментария к задаче
       operationId: addComment
       tags:
@@ -2352,6 +2589,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues/{issueId}/comments/{commentId}:
     put:
+      x-pat-scope: write
       summary: Обновление комментария
       operationId: updateComment
       tags:
@@ -2397,6 +2635,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     delete:
+      x-pat-scope: write
       summary: Удаление комментария
       operationId: deleteComment
       tags:
@@ -2433,6 +2672,7 @@ paths:
 
   /api/v1/projects/{projectId}/workflow:
     get:
+      x-pat-scope: read
       summary: Получение workflow проекта и типа задачи
       operationId: getWorkflowForProject
       tags:
@@ -2476,6 +2716,7 @@ paths:
 
   /api/v1/projects/{projectId}/workflows:
     get:
+      x-pat-scope: read
       summary: Все workflow проекта со всеми статусами и переходами
       description: |
         Возвращает каждый workflow, по которому работают задачи проекта, один раз: с типами задач,
@@ -2516,6 +2757,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     post:
+      x-pat-scope: write
       summary: Создание своего workflow проекта
       description: |
         Создаёт workflow проекта со своими статусами и переходами и привязывает к нему указанные типы задач.
@@ -2567,6 +2809,7 @@ paths:
 
   /api/v1/projects/{projectId}/workflows/{workflowId}/statuses:
     post:
+      x-pat-scope: write
       summary: Добавление статуса в workflow проекта
       description: |
         Добавляет статус в свой workflow проекта. Ключ статуса и sortOrder должны быть уникальны внутри workflow.
@@ -2624,6 +2867,7 @@ paths:
 
   /api/v1/projects/{projectId}/workflows/{workflowId}/transitions:
     post:
+      x-pat-scope: write
       summary: Добавление перехода в workflow проекта
       description: |
         Разрешает переход между двумя статусами своего workflow проекта. Статусы задаются ключами.
@@ -2684,6 +2928,7 @@ paths:
 
   /api/v1/projects/{projectId}/labels:
     get:
+      x-pat-scope: read
       summary: Получение списка меток проекта
       description: Порядок элементов — name asc, id asc (сравнение строк по collation БД).
       operationId: listProjectLabels
@@ -2720,6 +2965,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     post:
+      x-pat-scope: write
       summary: Добавление метки к проекту
       operationId: createProjectLabel
       tags:
@@ -2762,6 +3008,7 @@ paths:
 
   /api/v1/projects/{projectId}/labels/{labelId}:
     patch:
+      x-pat-scope: write
       summary: Обновление метки проекта
       operationId: updateProjectLabel
       tags:
@@ -2809,6 +3056,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     delete:
+      x-pat-scope: write
       summary: Удаление метки проекта (soft-delete)
       operationId: deleteProjectLabel
       tags:
@@ -2847,6 +3095,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues/{issueId}/labels:
     get:
+      x-pat-scope: read
       summary: Получение списка меток задачи
       description: Порядок элементов — name asc, id asc (сравнение строк по collation БД).
       operationId: listIssueLabels
@@ -2889,6 +3138,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     post:
+      x-pat-scope: write
       summary: Добавление метки к задаче
       operationId: addIssueLabel
       tags:
@@ -2937,6 +3187,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues/{issueId}/labels/{labelId}:
     delete:
+      x-pat-scope: write
       summary: Удаление метки у задачи
       operationId: removeIssueLabel
       tags:
@@ -2984,6 +3235,7 @@ paths:
   ########################## Начало API watchers ##################
   /api/v1/projects/{projectId}/issues/{issueId}/watchers:
     get:
+      x-pat-scope: read
       summary: Получение списка подписчиков задачи
       description: Порядок элементов — createdAt desc, id desc.
       operationId: listIssueWatchers
@@ -3026,6 +3278,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     post:
+      x-pat-scope: write
       summary: Добавление подписчика на задачу с проверкой проектной роли
       description: |
         Подписывает указанного пользователя (`userId` в body) на задачу.
@@ -3081,6 +3334,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues/{issueId}/watchers/me:
     put:
+      x-pat-scope: write
       summary: Подписка текущего пользователя на задачу
       description: |
         userId берётся из Gateway context (JWT), не из тела запроса.
@@ -3127,6 +3381,7 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
     delete:
+      x-pat-scope: write
       summary: Отписка текущего пользователя от задачи
       description: |
         userId берётся из Gateway context (JWT), не из path.
@@ -3174,6 +3429,7 @@ paths:
 
   /api/v1/projects/{projectId}/issues/{issueId}/watchers/{userId}:
     delete:
+      x-pat-scope: write
       summary: Удаление подписчика задачи с проверкой проектной роли
       description: |
         Для чужого userId проверяется роль вызывающего из `manage-watchers-roles` (по умолчанию ADMIN).
@@ -3231,6 +3487,7 @@ paths:
 
   /api/v1/readonly/{service}/{table}:
     get:
+      x-pat-scope: session
       summary: Получение строк таблицы из сервисной БД (только для GLOBAL_ADMIN)
       operationId: listTableRows
       tags:
@@ -3327,6 +3584,7 @@ paths:
 
   /api/v1/readonly/audit-entries:
     get:
+      x-pat-scope: session
       summary: Получение списка записей журнала аудита (только для GLOBAL_ADMIN)
       description: >-
         Постраничное чтение admin_audit_log с фильтрами. Записи отсортированы по createdAt по убыванию.
@@ -3433,6 +3691,7 @@ paths:
 
   /api/v1/readonly/{service}/{table}/{id}:
     get:
+      x-pat-scope: session
       summary: Получение одной строки таблицы по ID (только для GLOBAL_ADMIN)
       operationId: getTableRowById
       tags:
@@ -3482,6 +3741,7 @@ paths:
 
   /api/v1/readonly/outbox/problematic-summary:
     get:
+      x-pat-scope: session
       summary: Получение сводки проблемных outbox-событий (только для GLOBAL_ADMIN)
       operationId: getProblematicOutboxEventsSummary
       tags:
@@ -3510,6 +3770,7 @@ paths:
 
   /api/v1/readonly/catalog:
     get:
+      x-pat-scope: session
       summary: Получение каталога доступных сервисов и таблиц (только для GLOBAL_ADMIN)
       operationId: getCatalog
       tags:
@@ -3535,6 +3796,7 @@ paths:
 
   /api/v1/admin/outbox/{service}/{eventId}/retry:
     post:
+      x-pat-scope: session
       summary: Повторная обработка outbox-события (только для GLOBAL_ADMIN)
       description: >-
         Допускает FAILED либо PROCESSING с ненулевым processingStartedAt строго раньше текущего времени
@@ -3602,6 +3864,7 @@ paths:
 
   /api/v1/admin/users/{userId}/reset-lockout:
     post:
+      x-pat-scope: session
       summary: Сброс блокировки учётных данных пользователя (только GLOBAL_ADMIN)
       operationId: resetCredentialLockout
       tags:
@@ -3646,6 +3909,7 @@ paths:
 
   /api/v1/users/me/avatar/upload-url:
     post:
+      x-pat-scope: write
       summary: Запрос presigned URL для загрузки аватара текущего пользователя
       operationId: createAvatarUploadUrl
       tags:
@@ -3677,6 +3941,7 @@ paths:
 
   /api/v1/users/me/avatar/confirm:
     post:
+      x-pat-scope: write
       summary: Подтверждение загрузки аватара текущего пользователя
       description: |
         Вызывается после успешной загрузки файла в хранилище по presigned URL.
@@ -3713,6 +3978,7 @@ paths:
 
   /api/v1/users/me/avatar:
     delete:
+      x-pat-scope: write
       summary: Удаление аватара текущего пользователя
       description: |
         Идемпотентная операция. Если аватар отсутствует, завершается успешно.
@@ -3735,6 +4001,7 @@ paths:
 
   /api/v1/users/{userId}/avatar:
     get:
+      x-pat-scope: read
       summary: Получение presigned URL для скачивания аватара пользователя
       operationId: getAvatarDownloadUrl
       tags:
@@ -3772,6 +4039,7 @@ paths:
 
   /api/v1/meta:
     get:
+      x-pat-scope: read
       summary: Словари допустимых значений перечислений
       description: |
         Пять словарей (issueTypes, priorities, linkTypes, notificationTypes, userStatuses), каждый — список пар code/name. 
@@ -3816,7 +4084,9 @@ paths:
 
   /api/v1/projects/{projectId}/workflows/{workflowId}:
     patch:
+      x-pat-scope: write
       operationId: updateProjectWorkflow
+      description: Только ADMIN проекта; GLOBAL_ADMIN не обходит проектные права.
       summary: Переименовать собственный workflow проекта
       tags: [workflow-mutation]
       security:
@@ -3843,14 +4113,29 @@ paths:
       responses:
         '200':
           description: Полный workflow после изменения или default после удаления собственного workflow
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectWorkflowDto'
+        '400':
+          $ref: '#/components/responses/WorkflowMutationBadRequest'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/WorkflowMutationForbidden'
+        '404':
+          $ref: '#/components/responses/WorkflowMutationNotFound'
+        '409':
+          $ref: '#/components/responses/WorkflowMutationConflict'
         default:
           $ref: '#/components/responses/ErrorResponse'
     delete:
+      x-pat-scope: write
       operationId: deleteProjectWorkflow
+      description: Только ADMIN проекта; GLOBAL_ADMIN не обходит проектные права. Без statusMappings несовместимые статусы задач не переносятся. Целевые статусы должны присутствовать и в текущем, и в общем default workflow. Синхронная миграция ограничена 5000 выбранными задачами; это постоянный предел операции (400 FAILED_PRECONDITION, details.reason=WORKFLOW_MIGRATION_LIMIT), ожидание и повтор без изменения объёма не помогут.
       summary: Удалить собственный workflow; несовместимые статусы задач требуют statusMappings
       tags: [workflow-mutation]
       security:
@@ -3877,16 +4162,40 @@ paths:
       responses:
         '200':
           description: Полный workflow после изменения или default после удаления собственного workflow
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectWorkflowDto'
+        '400':
+          $ref: '#/components/responses/WorkflowMutationBadRequest'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/WorkflowMutationForbidden'
+        '404':
+          $ref: '#/components/responses/WorkflowMutationNotFound'
+        '409':
+          $ref: '#/components/responses/WorkflowMutationConflict'
+        '415':
+          description: Тело DELETE должно иметь Content-Type application/json; нетипизированные байты не игнорируются.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
   /api/v1/projects/{projectId}/workflows/{workflowId}/statuses/{statusId}:
     patch:
+      x-pat-scope: write
       operationId: updateWorkflowStatus
+      description: Только ADMIN проекта; GLOBAL_ADMIN не обходит проектные права.
       summary: Изменить имя, категорию или порядок статуса
       tags: [workflow-mutation]
       security:
@@ -3919,14 +4228,29 @@ paths:
       responses:
         '200':
           description: Полный workflow после изменения или default после удаления собственного workflow
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectWorkflowDto'
+        '400':
+          $ref: '#/components/responses/WorkflowMutationBadRequest'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/WorkflowMutationForbidden'
+        '404':
+          $ref: '#/components/responses/WorkflowMutationNotFound'
+        '409':
+          $ref: '#/components/responses/WorkflowMutationConflict'
         default:
           $ref: '#/components/responses/ErrorResponse'
     delete:
+      x-pat-scope: write
       operationId: deleteWorkflowStatus
+      description: Только ADMIN проекта; GLOBAL_ADMIN не обходит проектные права. Перенос затрагивает только задачи удаляемого статуса; задачи в остальных старых статусах остаются unplaced. Без targetStatusKey занятый статус не удаляется. Синхронная миграция ограничена 5000 выбранными задачами; это постоянный предел операции (400 FAILED_PRECONDITION, details.reason=WORKFLOW_MIGRATION_LIMIT), ожидание и повтор без изменения объёма не помогут.
       summary: Удалить статус и связанные переходы; задачи можно перенести в targetStatusKey
       tags: [workflow-mutation]
       security:
@@ -3966,16 +4290,31 @@ paths:
       responses:
         '200':
           description: Полный workflow после изменения или default после удаления собственного workflow
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectWorkflowDto'
+        '400':
+          $ref: '#/components/responses/WorkflowMutationBadRequest'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/WorkflowMutationForbidden'
+        '404':
+          $ref: '#/components/responses/WorkflowMutationNotFound'
+        '409':
+          $ref: '#/components/responses/WorkflowMutationConflict'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
   /api/v1/projects/{projectId}/workflows/{workflowId}/transitions/{transitionId}:
     patch:
+      x-pat-scope: write
       operationId: updateWorkflowTransition
+      description: Только ADMIN проекта; GLOBAL_ADMIN не обходит проектные права.
       summary: Изменить имя, порядок или скрытие перехода
       tags: [workflow-mutation]
       security:
@@ -4008,14 +4347,29 @@ paths:
       responses:
         '200':
           description: Полный workflow после изменения или default после удаления собственного workflow
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectWorkflowDto'
+        '400':
+          $ref: '#/components/responses/WorkflowMutationBadRequest'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/WorkflowMutationForbidden'
+        '404':
+          $ref: '#/components/responses/WorkflowMutationNotFound'
+        '409':
+          $ref: '#/components/responses/WorkflowMutationConflict'
         default:
           $ref: '#/components/responses/ErrorResponse'
     delete:
+      x-pat-scope: write
       operationId: deleteWorkflowTransition
+      description: Только ADMIN проекта; GLOBAL_ADMIN не обходит проектные права.
       summary: Удалить переход собственного workflow
       tags: [workflow-mutation]
       security:
@@ -4049,10 +4403,23 @@ paths:
       responses:
         '200':
           description: Полный workflow после изменения или default после удаления собственного workflow
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectWorkflowDto'
+        '400':
+          $ref: '#/components/responses/WorkflowMutationBadRequest'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/WorkflowMutationForbidden'
+        '404':
+          $ref: '#/components/responses/WorkflowMutationNotFound'
+        '409':
+          $ref: '#/components/responses/WorkflowMutationConflict'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
@@ -4061,7 +4428,14 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
+      bearerFormat: JWT or PAT
+      description: >-
+        JWT сохраняет прежние права. PAT ограничен scopes read/write и проектными ACL;
+        x-pat-scope каждой защищённой операции задаёт read, write или session (только JWT).
+        Недостаточный scope — 403 PERMISSION_DENIED, details.reason INSUFFICIENT_SCOPE,
+        details.requiredScope read/write. Для session — details.reason SESSION_REQUIRED.
+        PAT не допускается к admin/readonly даже у GLOBAL_ADMIN. Отзыв и статус проверяются
+        на каждом запросе. Secret не передаётся в query и не сохраняется в логах.
 
   headers:
     X-RequestId-Header:
@@ -4084,7 +4458,124 @@ components:
           schema:
             $ref: '#/components/schemas/RestErrorResponse'
 
+    WorkflowMutationBadRequest:
+      description: >-
+        INVALID_ARGUMENT — неверный JSON, неизвестное/неизменяемое поле, отсутствующее name при PATCH workflow,
+        name вне 1..100, sortOrder меньше 0, version меньше 1 либо недопустимый граф/целевой статус.
+        FAILED_PRECONDITION — нельзя менять общий workflow, удалять TODO или использовать отсутствующий/некорректный default workflow.
+        При reason=WORKFLOW_ISSUES_UNMAPPED details содержит issueCount, statusKeys и targetStatusKeys
+        (списки ключей через запятую): требуется выбрать допустимое сопоставление и повторить запрос.
+        При reason=WORKFLOW_MIGRATION_LIMIT details.limit=5000: превышен постоянный предел выбранных задач,
+        сначала уменьшите объём миграции; это не rate limit и не HTTP 429.
+        При reason=PROJECT_ARCHIVED запись запрещена для архивного проекта.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-RequestId-Header'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RestErrorResponse'
+
+    WorkflowMutationForbidden:
+      description: >-
+        PERMISSION_DENIED — требуется роль ADMIN проекта, глобальная роль не заменяет membership.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-RequestId-Header'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RestErrorResponse'
+
+    WorkflowMutationNotFound:
+      description: >-
+        NOT_FOUND — проект, собственный workflow либо вложенный статус/переход в этом workflow не найден.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-RequestId-Header'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RestErrorResponse'
+
+    WorkflowMutationConflict:
+      description: >-
+        ABORTED — ожидаемая версия workflow устарела; перечитайте workflow. ALREADY_EXISTS — конфликт ключа, ребра или sortOrder; исправьте запрос.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-RequestId-Header'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RestErrorResponse'
+
   schemas:
+    PersonalAccessTokenScopeDto:
+      type: string
+      enum: [read, write]
+    CreatePersonalAccessTokenRequestDto:
+      type: object
+      required: [name, scopes]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Имя обрезается по краям; одинаковые имена разрешены.
+        scopes:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          description: Обязателен read; write без read запрещён.
+          items:
+            $ref: '#/components/schemas/PersonalAccessTokenScopeDto'
+        expiresInDays:
+          type: integer
+          minimum: 1
+          default: 30
+          description: Не более policy.maxLifetimeDays из GET; по умолчанию 30 дней.
+    PersonalAccessTokenDto:
+      type: object
+      required: [id, name, tokenPrefix, scopes, createdAt, expiresAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        tokenPrefix:
+          type: string
+          description: Только отображаемый tsk_pat_ prefix и первые четыре случайных символа.
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonalAccessTokenScopeDto'
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        lastUsedAt: {type: string, format: date-time, nullable: true}
+    PersonalTokenPolicyDto:
+      type: object
+      required: [maxLifetimeDays, maxActiveTokens]
+      properties:
+        maxLifetimeDays: {type: integer, minimum: 1}
+        maxActiveTokens: {type: integer, minimum: 1}
+    CreatePersonalAccessTokenResponseDto:
+      type: object
+      required: [token, secret]
+      properties:
+        token:
+          $ref: '#/components/schemas/PersonalAccessTokenDto'
+        secret:
+          type: string
+          description: Полный секрет, возвращается только в этом ответе; далее доступен только prefix.
+    PersonalAccessTokensResponseDto:
+      type: object
+      required: [items, policy]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonalAccessTokenDto'
+        policy:
+          $ref: '#/components/schemas/PersonalTokenPolicyDto'
     NotificationPreferencesDto:
       type: object
       required: [emailEnabled, telegramEnabled, email, telegramAvailable, telegramStatus]
@@ -4527,6 +5018,23 @@ components:
           nullable: true
           format: uri
 
+    NullableUserSummaryDto:
+      type: object
+      nullable: true
+      required:
+        - id
+        - displayName
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        avatarUrl:
+          type: string
+          nullable: true
+          format: uri
+
     TargetIssueDto:
       type: object
       required:
@@ -4572,6 +5080,16 @@ components:
           type: string
         issueType:
           $ref: '#/components/schemas/IssueTypeDto'
+        issueTypeName:
+          type: string
+          nullable: true
+          description: Имя из текущего реестра проекта; может отсутствовать для удалённого типа.
+        issueTypeColor:
+          type: string
+          nullable: true
+        issueTypeIcon:
+          type: string
+          nullable: true
         priority:
           $ref: '#/components/schemas/IssuePriorityDto'
         assigneeId:
@@ -4644,6 +5162,7 @@ components:
         (schemaMappings в openapi-generator), который различает отсутствующее поле и явный null.
       properties:
         issueType:
+          description: При смене типа текущий статус должен быть в workflow нового типа, иначе 400 FAILED_PRECONDITION с details.reason STATUS_NOT_IN_TARGET_WORKFLOW.
           $ref: '#/components/schemas/IssueTypeDto'
         summary:
           type: string
@@ -5074,6 +5593,8 @@ components:
         - LABEL_REMOVED
         - USER_BLOCKED
         - USER_UNBLOCKED
+        - PERSONAL_ACCESS_TOKEN_CREATED
+        - PERSONAL_ACCESS_TOKEN_REVOKED
         - ISSUE_COMMENT_CREATED
         - ISSUE_COMMENT_UPDATED
         - ISSUE_COMMENT_DELETED
@@ -5471,6 +5992,18 @@ components:
     ProjectIssueTypeIconDto:
       type: string
       enum: [check-square, bug, book-open, headset, megaphone, file-text, flag, layers]
+    ReorderProjectIssueTypesRequestDto:
+      type: object
+      required: [codes]
+      properties:
+        codes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[A-Z][A-Z0-9_]{1,31}$'
+
     ProjectIssueTypeDto:
       type: object
       required: [code, name, color, icon, sortOrder]
@@ -5903,8 +6436,9 @@ components:
 
     PatchWorkflowRequestDto:
       type: object
+      required: [name]
       additionalProperties: false
-      description: Пропущенные поля не меняются; явный null запрещён. Нельзя менять ключ статуса и endpoints перехода.
+      description: name обязателен и не может быть пустым/пробельным; version необязателен. Явный null и неизвестные поля запрещены.
       properties:
         version:
           type: integer
@@ -6103,6 +6637,9 @@ components:
         authorUserId:
           type: string
           format: uuid
+        author:
+          description: Профиль автора в списке worklogs, включая бывших участников проекта. Null при недоступном профиле; authorUserId сохраняется. В ответах записи поле может отсутствовать.
+          $ref: '#/components/schemas/NullableUserSummaryDto'
         spentMinutes:
           type: integer
           format: int32
@@ -6122,12 +6659,29 @@ components:
 
     ListIssueWorklogsResponseDto:
       type: object
-      required: [ items ]
+      required: [ items, page, pageSize, totalCount, hasMore ]
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/IssueWorklogResponseDto'
+        page:
+          type: integer
+          format: int32
+          minimum: 0
+        pageSize:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+        totalCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Общее число активных записей задачи, включая записи за пределами страницы.
+        hasMore:
+          type: boolean
+          description: После этой страницы есть другие записи.
 
     AddIssueWorklogRequestDto:
       type: object
@@ -6449,6 +7003,7 @@ components:
       required: [ issueTypes, priorities, linkTypes, notificationTypes, userStatuses ]
       properties:
         issueTypes:
+          description: Имена начального посева TASK/BUG/STORY; актуальные названия, цвет и значок берутся из реестра конкретного проекта.
           type: array
           items:
             $ref: '#/components/schemas/IssueTypeMetaPairDto'
