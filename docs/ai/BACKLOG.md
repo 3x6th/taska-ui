@@ -4255,3 +4255,7 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
 - **At develop `3e5fbf0`** the workflow-delete fallback is always TASK's default and «Issue types
   have different default workflows» is gone; the mock comment above `deleteProjectWorkflow` still
   names it — adjust in the TAS-385/386 snapshot refresh (api-contract-guard).
+- **A strip that grows into a move or mapping step is not revealed again:** `useRevealOnOpen` runs
+  once when the strip mounts; near the bottom edge only focusing the select scrolls, so the answer
+  below it could sit off-screen. Not reproduced (131px to spare in art-director's run); re-run the
+  reveal when the step first appears (art-director, TAS-416 r2).
