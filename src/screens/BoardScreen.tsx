@@ -21,7 +21,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Shapes, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
 import {
   useEffect,
   useId,
@@ -59,7 +59,7 @@ import { ColorSwatches } from "../components/ColorSwatches";
 import { EditProjectModal } from "../components/EditProjectModal";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { ErrorNote } from "../components/ErrorNote";
-import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
+import { LabelChip, PriorityBars, TypeChip, TypeTile } from "../components/IssueBits";
 import { IssuePanelFrame } from "../components/IssuePanelFrame";
 import { useIssuePanelHead } from "../components/issuePanelFrameContext";
 import { IssueShare } from "../components/IssueShare";
@@ -67,6 +67,7 @@ import { IssueWorklogSection } from "../components/IssueWorklogSection";
 import { issueWorklogsOptions } from "../components/issueWorklogsQuery";
 import { Modal } from "../components/Modal";
 import { NotificationsBell } from "../components/NotificationsBell";
+import { ProjectIssueTypesModal } from "../components/ProjectIssueTypesModal";
 import { ProjectMembersModal } from "../components/ProjectMembersModal";
 import { ProjectWorkflowsModal } from "../components/ProjectWorkflowsModal";
 import { RequestId } from "../components/RequestId";
@@ -100,6 +101,7 @@ import type {
   IssueStatusKey,
   IssueTypeCode,
   ProjectContext,
+  ProjectIssueType,
   ProjectMember,
   ProjectWorkflow,
   User,
@@ -112,12 +114,12 @@ import {
   formatDateTime,
   formatDay,
   formatFileSize,
-  isKnownIssueType,
   isKnownPriority,
   isLabelColor,
   issueLinkTypeLabel,
   issueLinkTypes,
   issuePriorities,
+  issueTypeEntry,
   issueTypeInSentence,
   issueTypeLabel,
   keyBadgeStyle,
@@ -125,6 +127,7 @@ import {
   priorityLabel,
   statusColor,
   statusLabel,
+  type IssueTypeRegistry,
 } from "../lib/format";
 import { selectableCodes } from "../lib/enumLabel";
 import { transitionButtonLabel } from "../lib/workflows";
@@ -390,6 +393,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const [managingMembers, setManagingMembers] = useState(false);
   const [editingProject, setEditingProject] = useState(false);
   const [managingWorkflows, setManagingWorkflows] = useState(false);
+  const [managingIssueTypes, setManagingIssueTypes] = useState(false);
   // What `NotificationsBell` hands to `useTriggerAnchor`: the bell's own box
   // never changes size, only its position, and this is the box whose resizing
   // moves it — the bar wraps to two rows below 820 and to three at 390 when
@@ -460,10 +464,15 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const cards = useMemo(() => (board ? [...board.columns.flatMap((column) => column.issues), ...board.unplacedIssues] : []), [board]);
   const projectLabels = useMemo(() => context?.labels ?? [], [context]);
   const workflows = context?.workflows;
-  // The types this project allows — the ones the context sent a workflow for.
-  // The type filter and the create form offer these and nothing else: a type
-  // the server did not list is not one the board may invent (TAS-251).
+  // The project's issue-type registry (TAS-417), in the server's order: every
+  // type's name, colour and icon, and the order the filter, the create form
+  // and the panel offer them in. `undefined` until the context answers.
+  const registry = context?.issueTypes;
   const offeredIssueTypes = useMemo(() => allowedIssueTypes(context), [context]);
+  // A type that leaves the registry resets the filter to "All" (§5.4) — during
+  // render, like `useUnanswered`, so the board never draws a frame filtered by
+  // a type the select no longer offers.
+  if (typeFilter !== null && context && !offeredIssueTypes.includes(typeFilter)) setTypeFilter(null);
   // `undefined` until the context answers, and `null` once it has answered
   // with no role this build can act on (`ProjectContext.role`). Every
   // permission below and the unstated-role banner read this one value.
@@ -865,7 +874,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     const workflow = workflowFor(workflows, issue.issueType);
     // In running text the build's own word is lowercased and anything else is
     // printed as it came: "bug issues", "EPIC issues" (TAS-173).
-    const typeWord = issueTypeInSentence(issue.issueType, meta?.issueTypes);
+    const typeWord = issueTypeInSentence(issue.issueType, registry);
     // No fallback on this path, ever. The only transition ids this repository
     // owns are the mock's seed, and posting one to a gateway that never
     // described it invents a transition — the drop is refused instead, whether
@@ -1016,28 +1025,51 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       </header>
 
       <section className="filterbar">
-        {/* `aria-pressed` on every segmented button (§7, TAS-299): the
-            current one is otherwise said only by its fill. */}
-        <div className="segmented compact">
+        {/* The type select and the Issue types trigger, one unwrappable group
+            (§4.13, TAS-417): a select, not segments, because the set and the
+            length of its names are an admin's data. Labels and order are the
+            registry's; no tiles in a native option. Its states are the label
+            picker's: pending while the context is read, a line when it failed. */}
+        <div className="filter-type-group">
+          {contextUnread.unanswered ? (
+            <span className="filter-error">Types could not be loaded</span>
+          ) : (
+            <label className="filter-select filter-type">
+              <span className="filter-label">Type</span>
+              <select
+                disabled={contextQuery.isLoading}
+                onChange={(event) => setTypeFilter(event.target.value === "" ? null : event.target.value)}
+                // "" for All: a registry key is never blank (`toProjectIssueTypes`).
+                value={contextQuery.isLoading ? "LOADING" : (typeFilter ?? "")}
+              >
+                {contextQuery.isLoading ? (
+                  <option value="LOADING">Loading types</option>
+                ) : (
+                  <>
+                    <option value="">All</option>
+                    {(registry ?? []).map((entry) => (
+                      <option key={entry.code} value={entry.code}>
+                        {issueTypeLabel(entry.code, registry)}
+                      </option>
+                    ))}
+                  </>
+                )}
+              </select>
+            </label>
+          )}
+          {/* Every role, from the first frame, an archived project included
+              (§4.30, §5.7): the registry is read by all and written by its
+              ADMIN, and only the controls inside the dialog are gated. */}
           <button
-            aria-pressed={typeFilter === null}
-            className={typeFilter === null ? "is-active" : ""}
-            onClick={() => setTypeFilter(null)}
+            aria-haspopup="dialog"
+            aria-label="Issue types"
+            className="icon-button"
+            onClick={() => setManagingIssueTypes(true)}
+            title="Issue types"
             type="button"
           >
-            All
+            <Shapes size={15} />
           </button>
-          {offeredIssueTypes.map((type) => (
-            <button
-              aria-pressed={typeFilter === type}
-              key={type}
-              className={typeFilter === type ? "is-active" : ""}
-              onClick={() => setTypeFilter(type)}
-              type="button"
-            >
-              {issueTypeLabel(type, meta?.issueTypes)}
-            </button>
-          ))}
         </div>
         <span className="divider" />
         <span className="filter-label">Assignee</span>
@@ -1267,6 +1299,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                   offersCreate={!hidesWrites}
                   onAdd={() => setCreating(true)}
                   onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
+                  registry={registry}
                 />
               ))}
           {outsideShown ? (
@@ -1274,6 +1307,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               columns={columns}
               issues={outsideIssues}
               onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
+              registry={registry}
               userById={userById}
             />
           ) : null}
@@ -1281,7 +1315,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <DragOverlay dropAnimation={null} zIndex={1000}>
           {activeIssue ? (
             <div className="issue-card drag-overlay-card">
-              <IssueCardContent issue={activeIssue} userById={userById} />
+              <IssueCardContent issue={activeIssue} registry={registry} userById={userById} />
             </div>
           ) : null}
         </DragOverlay>
@@ -1334,6 +1368,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               archivedAt={archivedAt}
               currentUserId={meQuery.data?.id}
               workflows={workflows}
+              issueTypes={registry}
               workflowUnknown={workflowUnknown}
               onDeleted={issueDeleted}
             />
@@ -1372,7 +1407,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 
       {managingWorkflows ? (
         <ProjectWorkflowsModal
-          issueTypeOrder={offeredIssueTypes}
+          issueTypes={registry}
           onClose={() => setManagingWorkflows(false)}
           projectColor={project?.color}
           projectId={projectId}
@@ -1381,6 +1416,21 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           // `null`, so the dialog says the role is unknown rather than nothing.
           readerRole={roleUnknown ? null : role}
           archived={archived}
+        />
+      ) : null}
+
+      {managingIssueTypes ? (
+        <ProjectIssueTypesModal
+          archived={archived}
+          contextError={contextUnread.unanswered ? contextUnread.error : null}
+          issueTypes={registry}
+          onClose={() => setManagingIssueTypes(false)}
+          projectColor={project?.color}
+          projectId={projectId}
+          projectKey={project?.projectKey ?? ""}
+          // Members' reading of the role: a failed context read folded into
+          // `null`, so the dialog says the role is unknown rather than nothing.
+          readerRole={roleUnknown ? null : role}
         />
       ) : null}
 
@@ -1404,7 +1454,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       {creating ? (
         <CreateIssueModal
           archived={archived}
-          issueTypes={offeredIssueTypes}
+          issueTypes={registry ?? []}
           projectKey={project?.projectKey ?? ""}
           projectColor={project?.color}
           onClose={() => setCreating(false)}
@@ -1545,12 +1595,15 @@ function BoardColumn({
   offersCreate,
   onAdd,
   onOpenIssue,
+  registry,
 }: {
   status: ColumnStatus;
   issues: BoardIssue[];
   /** The board read never arrived: this column knows nothing about its contents. */
   issuesUnknown: boolean;
   userById: ReadonlyMap<string, Person>;
+  /** The project's issue-type registry, which names and draws each card's type (§4.6). */
+  registry: IssueTypeRegistry;
   canEdit: boolean;
   /** `canEdit`, and a project that allows at least one issue type. */
   canCreate: boolean;
@@ -1588,7 +1641,7 @@ function BoardColumn({
             key={issue.id}
             resetKey={issue}
           >
-            <IssueCard issue={issue} userById={userById} canEdit={canEdit} onOpen={onOpenIssue} />
+            <IssueCard issue={issue} registry={registry} userById={userById} canEdit={canEdit} onOpen={onOpenIssue} />
           </ErrorBoundary>
         ))}
         {/* Three different empty columns. A column whose contents are unknown
@@ -1636,10 +1689,12 @@ function OutsideWorkflowGroup({
   issues,
   userById,
   onOpenIssue,
+  registry,
 }: {
   columns: readonly ColumnStatus[];
   issues: BoardIssue[];
   userById: ReadonlyMap<string, Person>;
+  registry: IssueTypeRegistry;
   onOpenIssue: (issueId: string) => void;
 }) {
   return (
@@ -1659,6 +1714,7 @@ function OutsideWorkflowGroup({
               canEdit={false}
               issue={issue}
               onOpen={onOpenIssue}
+              registry={registry}
               statusNote={statusLabel(issue.statusKey, columns)}
               userById={userById}
             />
@@ -1693,12 +1749,14 @@ function IssueCardFailure({ issue, onOpen }: { issue: Pick<BoardIssue, "id" | "i
 
 function IssueCard({
   issue,
+  registry,
   userById,
   canEdit,
   onOpen,
   statusNote,
 }: {
   issue: BoardIssue;
+  registry: IssueTypeRegistry;
   userById: ReadonlyMap<string, Person>;
   canEdit: boolean;
   onOpen: (issueId: string) => void;
@@ -1725,7 +1783,7 @@ function IssueCard({
       {...(canEdit ? listeners : null)}
       {...(canEdit ? attributes : null)}
     >
-      <IssueCardContent issue={issue} statusNote={statusNote} userById={userById} />
+      <IssueCardContent issue={issue} registry={registry} statusNote={statusNote} userById={userById} />
     </button>
   );
 }
@@ -1762,19 +1820,20 @@ function CardFace({ assignee, userById }: { assignee: BoardIssue["assignee"]; us
 
 function IssueCardContent({
   issue,
+  registry,
   userById,
   statusNote,
 }: {
   issue: BoardIssue;
+  registry: IssueTypeRegistry;
   userById: ReadonlyMap<string, Person>;
   statusNote?: string;
 }) {
-  const served = useMeta()?.issueTypes;
-  const typeName = issueTypeLabel(issue.issueType, served);
+  const typeName = issueTypeLabel(issue.issueType, registry);
   return (
     <>
       <span className="issue-card-meta">
-        <TypeChip type={issue.issueType} />
+        <TypeChip registry={registry} type={issue.issueType} />
         <span className="issue-key">{issue.issueKey}</span>
         <span className="issue-type-label" title={typeName}>
           {typeName}

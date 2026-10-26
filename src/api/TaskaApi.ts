@@ -39,6 +39,9 @@ import type {
   ProblematicOutboxSummary,
   Project,
   ProjectContext,
+  ProjectIssueType,
+  IssueTypeColor,
+  IssueTypeIcon,
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
@@ -491,7 +494,7 @@ export interface CreateIssueInput {
  * `summary` and `priority` cannot be cleared (the gateway refuses a `null` for
  * either), so they have no `null` case. The other seven can.
  *
- * Only these nine keys ever reach the wire: `issuePatchBody` in
+ * Only these ten keys ever reach the wire: `issuePatchBody` in
  * src/api/issuePatch.ts copies them by name, so a caller spreading a wider
  * object cannot widen the request.
  *
@@ -503,6 +506,14 @@ export interface CreateIssueInput {
  * write path and one place that handles the version.
  */
 export interface UpdateIssueInput {
+  /**
+   * A key of the project's registry (backend #226). Cannot be cleared: `null`
+   * and a malformed key are refused before the request (`issueTypePatchRefusal`
+   * in src/api/issuePatch.ts), a key the registry lacks by the server after the
+   * version, and a target whose workflow lacks the issue's status by the server
+   * after that.
+   */
+  issueType?: IssueTypeCode;
   summary?: string;
   /** `null` clears it. Read back as `""`, which is how the UI spells an empty description. */
   description?: string | null;
@@ -548,6 +559,31 @@ export interface CreateIssueLinkInput {
  * types are kept apart anyway: they are two request bodies in the contract, and
  * an alias would hide it the day one of them grows a field.
  */
+/**
+ * `CreateProjectIssueTypeRequestDto` (backend #212). Every field but
+ * `sortOrder` is required; the server defaults that one to 100, which is why
+ * the dialog always sends it (DESIGN.md §4.30: a new type lands last).
+ */
+export interface CreateProjectIssueTypeInput {
+  code: IssueTypeCode;
+  name: string;
+  color: IssueTypeColor;
+  icon: IssueTypeIcon;
+  sortOrder?: number;
+}
+
+/**
+ * `PatchProjectIssueTypeRequestDto`: at least one key, never `null`, never
+ * `code` — the body is whitelisted by `projectIssueTypePatchBody`
+ * (src/api/issueTypes.ts). No version: the last write wins per field.
+ */
+export interface UpdateProjectIssueTypeInput {
+  name?: string;
+  color?: IssueTypeColor;
+  icon?: IssueTypeIcon;
+  sortOrder?: number;
+}
+
 export interface CreateProjectLabelInput {
   /** 1-50 characters, unique within the project (the server decides, not this). */
   name: string;
@@ -985,9 +1021,11 @@ export interface TaskaApi {
    *   not found. The backend ask — an unreadable avatar as `avatar: null`
    *   rather than a failed read — is a comment on TAS-212
    *   (docs/ai/API-DIVERGENCE.md).
-   * - **Only the allowed issue types.** `workflows` may hold fewer than three
-   *   entries, or none, in no fixed order; an entry with an issue type this
-   *   build does not know arrives as `issueType: null` and is dropped.
+   * - **The registry, in its order** (backend #212, #226): `issueTypes` is
+   *   the project's issue types by `sortOrder`, then `code`, read through
+   *   `toProjectIssueTypes` (src/api/issueTypes.ts) and never re-sorted; the
+   *   first is the default. `workflows` holds one entry per registry type, in
+   *   no fixed order; an entry with no type at all (`null`) is dropped.
    * - Statuses and transitions are ordered by `sortOrder` and carry no
    *   timestamps; labels carry only `id`, `name` and `color`, unordered;
    *   members come by `userId`, and a name auth-service could not supply
@@ -1194,16 +1232,14 @@ export interface TaskaApi {
    * the issues outside their own type's workflow (`Board`).
    *
    * **Complete and unbounded.** The route has no paging and no cap, so the
-   * answer holds every issue of the three types the gateway reads — which is
-   * what lets the board filter locally and count `Y` from it (backend A3 is the
-   * day that changes).
+   * answer holds every issue of the project's registry types (backend #226) —
+   * which is what lets the board filter locally and count `Y` from it (backend
+   * A3 is the day that changes).
    *
-   * Order inside a column, as read from the merged Java and not stated by the
-   * contract: grouped by type — TASK, BUG, STORY — and by `createdAt` ascending
-   * inside each, with no tiebreak (backend A1). `compareBoardIssues`
-   * (src/api/boardOrder.ts) is that order, with `id` as the tiebreak the server
-   * lacks; the mock sorts with it and the board's optimistic move places a card
-   * with it.
+   * Order inside a column and in `unplacedIssues`, as the contract states it
+   * since backend TAS-392: `createdAt` ascending, then `id`, whatever the type.
+   * `compareBoardIssues` (src/api/boardOrder.ts) is that order; the mock sorts
+   * with it and the board's optimistic move places a card with it.
    *
    * Enrichment fails silently on the server (backend A2): a label read that
    * fails sends every card's `labels` as `[]`, and a profile read that fails
@@ -1761,6 +1797,34 @@ export interface TaskaApi {
    * read again after those.
    */
   listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]>;
+  /**
+   * The issue-type registry's writes (backend #212, TAS-385; DESIGN.md §4.30).
+   * There is no read here on purpose: the registry rides the project context
+   * (`ProjectContext.issueTypes`) under the same membership rule, and a second
+   * read of the same facts would be a request per dialog for nothing.
+   *
+   * Refused in the server's order (`ProjectIssueTypeService`), with the
+   * sentences of src/api/issueTypes.ts:
+   *
+   * - create: the body (400 `INVALID_ARGUMENT` "Invalid request parameters");
+   *   a missing project (404); the role — anybody but the project's ADMIN, a
+   *   non-member included, 403 "Project ADMIN role is required"; an archived
+   *   project (400 `FAILED_PRECONDITION`, `reason: PROJECT_ARCHIVED`); a code
+   *   the project holds (409 `ALREADY_EXISTS`). The 201 is the saved entry,
+   *   its name stripped.
+   * - update: `{}` (400 "At least one field is required", before the role);
+   *   an undeclared key or `null` (400 "Invalid request parameters"); project,
+   *   role, archive as above; a code the project does not hold (404); then a
+   *   value the service refuses (400 "Invalid issue type name, color, icon or
+   *   sortOrder"). The 200 is the saved entry.
+   * - delete: project, role, archive; a code the project does not hold (404);
+   *   the last type (400 `FAILED_PRECONDITION`, no `details`); a type issues
+   *   still carry, **deleted issues counted** (400 `FAILED_PRECONDITION`,
+   *   `details.issueCount`). Read the two apart by `details`, never by prose.
+   */
+  createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): Promise<ProjectIssueType>;
+  updateProjectIssueType(projectId: string, code: IssueTypeCode, input: UpdateProjectIssueTypeInput): Promise<ProjectIssueType>;
+  deleteProjectIssueType(projectId: string, code: IssueTypeCode): Promise<void>;
   /**
    * `POST /projects/{projectId}/workflows`. Refused in the server's order: the
    * role; the whole body ("Workflow creation failed: …", 400 — on create a

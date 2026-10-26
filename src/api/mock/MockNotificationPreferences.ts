@@ -10,7 +10,7 @@ const failure = (code: string, message: string) => Object.assign(new Error(messa
  */
 export class MockNotificationPreferences {
   private readonly preferences = new Map<string, NotificationPreferences>();
-  private readonly links = new Map<string, TelegramLink>();
+  private readonly links = new Map<string, Omit<TelegramLink, "preferences">>();
   available = true;
 
   get(user: User): NotificationPreferences {
@@ -80,7 +80,9 @@ export class MockNotificationPreferences {
       telegramError: null,
     });
     this.links.set(user.id, link);
-    return structuredClone(link);
+    // The settings as they stand after the link was issued, in the same
+    // answer — `TelegramLinkDto.preferences`, as the gateway fills it.
+    return structuredClone({ ...link, preferences: this.get(user) });
   }
 
   receiveStart(user: User, linkId: string, name: string, username: string | null): void {

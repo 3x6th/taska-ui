@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DictionaryEntry } from "../domain/types";
+import type { DictionaryEntry, ProjectIssueType } from "../domain/types";
 import {
   actionViaText,
   formatDayWithYearIfOther,
@@ -10,9 +10,10 @@ import {
   formatFileSize,
   issueLinkTypeLabel,
   issueLinkTypes,
+  issueTypeColorValue,
+  issueTypeFallbackLabel,
   issueTypeInSentence,
   issueTypeLabel,
-  issueTypeVisual,
   keyBadgeStyle,
   labelColorChoices,
   priorityInSentence,
@@ -98,25 +99,16 @@ describe("labels and visuals for codes off the wire", () => {
     { code: "URGENT", name: "Срочный", selectable: true },
   ];
 
-  it("names a known type in the build's words and an unknown one by the rule", () => {
-    expect(issueTypeLabel("TASK", served)).toBe("Task");
-    expect(issueTypeLabel("EPIC", served)).toBe("Epic");
-    expect(issueTypeLabel("SPIKE", served)).toBe("SPIKE");
-  });
-
   // DESIGN.md §6: no value reads as "No …", the way a missing status reads
   // "No status" — in running text lowercased, as the build's own words are.
   it.each([[null], [undefined], [""], ["  "]])("names a type and a priority of %j as none", (code) => {
-    expect(issueTypeLabel(code)).toBe("No type");
-    expect(issueTypeInSentence(code)).toBe("no type");
+    expect(issueTypeLabel(code, [])).toBe("No type");
+    expect(issueTypeInSentence(code, null)).toBe("no type");
     expect(priorityLabel(code)).toBe("No priority");
     expect(priorityInSentence(code)).toBe("no priority");
   });
 
   it("lowercases only the build's own words in a sentence", () => {
-    expect(issueTypeInSentence("BUG")).toBe("bug");
-    expect(issueTypeInSentence("EPIC", served)).toBe("Epic");
-    expect(issueTypeInSentence("SPIKE")).toBe("SPIKE");
     expect(priorityInSentence("HIGH")).toBe("high");
     expect(priorityInSentence("URGENT", served)).toBe("URGENT");
     expect(userStatusInSentence("BLOCKED")).toBe("blocked");
@@ -154,12 +146,77 @@ describe("labels and visuals for codes off the wire", () => {
     expect(statusColor("constructor")).toBeNull();
   });
 
-  it("draws an unknown type as a neutral square and an unknown priority with no bars filled", () => {
-    expect(issueTypeVisual("BUG")).toEqual({ color: "#e5544b", radius: "50%", known: true });
-    expect(issueTypeVisual("EPIC")).toEqual({ color: "var(--fg-3)", radius: "4px", known: false });
-    expect(issueTypeVisual("toString")).toEqual({ color: "var(--fg-3)", radius: "4px", known: false });
+  it("draws an unknown priority with no bars filled", () => {
     expect(priorityVisual("HIGH")).toMatchObject({ level: 3, known: true });
     expect(priorityVisual("URGENT")).toMatchObject({ level: 0, known: false });
+  });
+});
+
+/**
+ * DESIGN.md §6 «Подпись типа» (TAS-417): one helper, one Cyrillic check, and a
+ * branch for each of the three places a label can come from.
+ */
+describe("issueTypeLabel", () => {
+  const entry = (code: string, name: string): ProjectIssueType => ({ code, name, color: "blue", icon: "flag", sortOrder: 10 });
+  const registry = [
+    entry("TASK", "Chore"),
+    entry("BUG", "Ошибка"),
+    entry("EPIC", "Epic"),
+    entry("REQUEST", "Заявка"),
+    entry("STORY", "  Story  "),
+  ];
+  const served: DictionaryEntry[] = [
+    { code: "TASK", name: "Task (meta)", selectable: true },
+    { code: "BUG", name: "Ошибка", selectable: true },
+  ];
+
+  it("prints a registry name as the project wrote it, trimmed", () => {
+    expect(issueTypeLabel("TASK", registry, served)).toBe("Chore");
+    expect(issueTypeLabel("EPIC", registry)).toBe("Epic");
+    expect(issueTypeLabel("STORY", registry)).toBe("Story");
+  });
+
+  it("puts the build's word for a seeded key, and the key for any other, in place of a Cyrillic name", () => {
+    expect(issueTypeLabel("BUG", registry)).toBe("Bug");
+    expect(issueTypeLabel("REQUEST", registry)).toBe("REQUEST");
+  });
+
+  it("prints a key the registry does not hold as it is, even a seeded one /meta names", () => {
+    expect(issueTypeLabel("SPIKE", registry)).toBe("SPIKE");
+    expect(issueTypeLabel("TASK", [entry("BUG", "Bug")], served)).toBe("TASK");
+    expect(issueTypeLabel("TASK", [], served)).toBe("TASK");
+  });
+
+  it("without a registry, names a seeded key from /meta, else in the build's word, and any other key as it is", () => {
+    expect(issueTypeLabel("TASK", null, served)).toBe("Task (meta)");
+    // A Cyrillic /meta name, and no /meta answer at all, both read as the build's word.
+    expect(issueTypeLabel("BUG", undefined, served)).toBe("Bug");
+    expect(issueTypeLabel("STORY", null, null)).toBe("Story");
+    expect(issueTypeLabel("EPIC", null, [{ code: "EPIC", name: "Epic", selectable: true }])).toBe("EPIC");
+  });
+
+  it("never finds a key on the prototype", () => {
+    expect(issueTypeLabel("constructor", null)).toBe("constructor");
+    expect(issueTypeLabel("toString", registry)).toBe("toString");
+    expect(issueTypeFallbackLabel("constructor")).toBe("constructor");
+    expect(issueTypeFallbackLabel("BUG")).toBe("Bug");
+  });
+
+  it("lowercases the build's own word in a sentence and nothing the project or the server named", () => {
+    expect(issueTypeInSentence("BUG", registry)).toBe("bug");
+    expect(issueTypeInSentence("STORY", null)).toBe("story");
+    expect(issueTypeInSentence("TASK", registry)).toBe("Chore");
+    expect(issueTypeInSentence("REQUEST", registry)).toBe("REQUEST");
+    expect(issueTypeInSentence("EPIC", null)).toBe("EPIC");
+  });
+
+  it("paints the seven colour keys with §2.2's values", () => {
+    expect(
+      (["blue", "red", "green", "amber", "purple", "teal", "slate"] as const).map((color) => issueTypeColorValue(color)),
+    ).toEqual(["#4f7cf0", "#e5544b", "#3fa863", "#e3a008", "#8b5cf6", "#0d9488", "#9aa0aa"]);
+    // §2.2's glyph column: dark on every fill but purple.
+    expect(readableTextOn(issueTypeColorValue("purple"))).toBe("#ffffff");
+    expect(readableTextOn(issueTypeColorValue("amber"))).toBe("#17171b");
   });
 });
 

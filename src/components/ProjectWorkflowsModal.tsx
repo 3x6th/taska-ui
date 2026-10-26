@@ -17,17 +17,15 @@ import { taskaApi } from "../api/client";
 import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
 import { refusalWords } from "../lib/projectArchive";
 import type {
-  DictionaryEntry,
-  IssueTypeCode,
+  ProjectIssueType,
   ProjectRole,
   ProjectWorkflowEntry,
   WorkflowDefinition,
   WorkflowDefinitionTransition,
   WorkflowStatus,
 } from "../domain/types";
-import { useMeta } from "../hooks/useMeta";
 import { useUnanswered } from "../hooks/useUnanswered";
-import { issueTypeInSentence, issueTypeLabel, keyBadgeStyle, statusLabel } from "../lib/format";
+import { issueTypeInSentence, issueTypeLabel, keyBadgeStyle, statusLabel, type IssueTypeRegistry } from "../lib/format";
 import { boardKey } from "../lib/boardQuery";
 import { projectContextKey } from "../lib/projectContext";
 import {
@@ -294,8 +292,12 @@ interface ProjectWorkflowsModalProps {
    * line says why in place of the role's.
    */
   archived?: boolean;
-  /** The board's issue types in its own order (`allowedIssueTypes`), which orders the project's own cards. */
-  issueTypeOrder: readonly IssueTypeCode[];
+  /**
+   * The project's issue-type registry off the board's context (TAS-417), or
+   * `undefined` before it has answered: the names, the chips and the order of
+   * the project's own cards — and nothing read for them here.
+   */
+  issueTypes: readonly ProjectIssueType[] | undefined;
   onClose: () => void;
 }
 
@@ -336,16 +338,18 @@ export function ProjectWorkflowsModal({
   projectColor,
   readerRole,
   archived = false,
-  issueTypeOrder,
+  issueTypes: registry,
   onClose,
 }: ProjectWorkflowsModalProps) {
   const queryClient = useQueryClient();
-  const served = useMeta()?.issueTypes;
   const workflowsQuery = useQuery(projectWorkflowsOptions(projectId));
   const unread = useUnanswered(workflowsQuery);
   const undeployed = unread.unanswered && isUndeployedRoute(unread.error, UNDEPLOYED_ROUTE_MESSAGE);
   const listed = workflowsQuery.data;
-  const entries = useMemo(() => orderWorkflowEntries(listed ?? [], issueTypeOrder), [listed, issueTypeOrder]);
+  const entries = useMemo(
+    () => orderWorkflowEntries(listed ?? [], (registry ?? []).map((entry) => entry.code)),
+    [listed, registry],
+  );
   const categories = useMemo(() => statusCategoriesOf(listed ?? []), [listed]);
   const shared = entries.find((entry) => entry.shared);
   const isAdmin = readerRole === "ADMIN" && !archived;
@@ -590,7 +594,7 @@ export function ProjectWorkflowsModal({
         {isAdmin && listed && listed.length > 0 ? (
           canCreate && shared ? (
             form?.kind === "create" ? (
-              <NewWorkflowForm {...formProps} served={served} shared={shared} send={send} />
+              <NewWorkflowForm {...formProps} registry={registry} shared={shared} send={send} />
             ) : (
               <AddTrigger
                 focusKey="trigger:create"
@@ -630,7 +634,7 @@ export function ProjectWorkflowsModal({
                   onOpenForm={openForm}
                   register={register}
                   send={send}
-                  served={served}
+                  registry={registry}
                   shared={shared}
                 />
               ))}
@@ -704,7 +708,7 @@ function WorkflowCard({
   form,
   formProps,
   highlight,
-  served,
+  registry,
   register,
   onOpenForm,
   send,
@@ -719,7 +723,7 @@ function WorkflowCard({
   form: OpenForm | null;
   formProps: FormProps;
   highlight: Highlight | null;
-  served: readonly DictionaryEntry[] | null | undefined;
+  registry: IssueTypeRegistry;
   register: Register;
   onOpenForm: (form: OpenForm) => void;
   send: (sent: WorkflowWrite) => void;
@@ -744,7 +748,7 @@ function WorkflowCard({
   const formHere = editable && form && form.kind !== "create" && form.workflowId === workflow.id ? form : null;
   const lit = (kind: Highlight["kind"], id: string) => highlight?.kind === kind && highlight.id === id;
   const controls: RowControls = { form: formHere, inFlight, register, onOpenForm };
-  const typesInWords = andList(issueTypes.map((code) => issueTypeLabel(code, served)));
+  const typesInWords = andList(issueTypes.map((code) => issueTypeLabel(code, registry)));
   const sharedName = shared?.workflow.name.trim() || "the shared workflow";
   const deleteStripId = `${ids}-delete`;
   const renaming = formHere?.kind === "rename";
@@ -815,8 +819,8 @@ function WorkflowCard({
           <ul className="workflow-type-list">
             {issueTypes.map((code) => (
               <li className="workflow-type" key={code}>
-                <TypeChip type={code} />
-                <span>{issueTypeLabel(code, served)}</span>
+                <TypeChip registry={registry} type={code} />
+                <span>{issueTypeLabel(code, registry)}</span>
               </li>
             ))}
           </ul>
@@ -865,7 +869,7 @@ function WorkflowCard({
         // issue-service creates every issue in `TODO` whatever its workflow.
         <p className="workflow-fact">
           {`New issues always start in TODO, which this workflow does not have, so new ${
-            issueTypes.length ? `${andList(issueTypes.map((code) => issueTypeInSentence(code, served)))} ` : ""
+            issueTypes.length ? `${andList(issueTypes.map((code) => issueTypeInSentence(code, registry)))} ` : ""
           }issues will land outside their workflow on the board.`}
         </p>
       ) : null}
@@ -1774,12 +1778,12 @@ function DeleteWorkflowStrip({
  */
 function NewWorkflowForm({
   shared,
-  served,
+  registry,
   send,
   ...formProps
 }: FormProps & {
   shared: ProjectWorkflowEntry;
-  served: readonly DictionaryEntry[] | null | undefined;
+  registry: IssueTypeRegistry;
   send: (sent: WorkflowWrite) => void;
 }) {
   const ids = useId();
@@ -1800,7 +1804,7 @@ function NewWorkflowForm({
         event.preventDefault();
         if (formProps.inFlight || blocked) return;
         const trimmed = name.trim();
-        const types = andList(chosen.map((code) => issueTypeLabel(code, served)));
+        const types = andList(chosen.map((code) => issueTypeLabel(code, registry)));
         send({
           kind: "create",
           input: workflowCopyInput(shared.workflow, trimmed, chosen),
@@ -1836,8 +1840,8 @@ function NewWorkflowForm({
                 }
                 type="checkbox"
               />
-              <TypeChip type={code} />
-              <span>{issueTypeLabel(code, served)}</span>
+              <TypeChip registry={registry} type={code} />
+              <span>{issueTypeLabel(code, registry)}</span>
             </label>
           ))}
         </div>

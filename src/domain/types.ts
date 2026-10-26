@@ -45,7 +45,6 @@ export type UserStatus = "INVITED" | "ACTIVE" | "BLOCKED" | "LOCKED";
  */
 export type GlobalRole = "USER" | "GLOBAL_ADMIN";
 export type ProjectRole = "ADMIN" | "MEMBER" | "VIEWER";
-export type IssueType = "TASK" | "BUG" | "STORY";
 export type IssuePriority = "LOW" | "MEDIUM" | "HIGH";
 export type IssueStatus = "TODO" | "IN_PROGRESS" | "DONE";
 export type IssueLinkType = "BLOCKS" | "RELATES_TO" | "DUPLICATES";
@@ -62,7 +61,13 @@ export type IssueLinkType = "BLOCKS" | "RELATES_TO" | "DUPLICATES";
  * `src/lib/format.ts`, which answer for a code they do not know instead of
  * indexing a table with it — the index that threw is what blanked a screen.
  */
-export type IssueTypeCode = IssueType | (string & {});
+/**
+ * An issue type is a key of the project's own registry since backend #226
+ * (TAS-386; `IssueTypeDto` is `^[A-Z][A-Z0-9_]{1,31}$`), not a member of a
+ * closed set: there is no union of types this build knows (TAS-417). Its name,
+ * colour and icon come from `ProjectContext.issueTypes`.
+ */
+export type IssueTypeCode = string;
 export type IssuePriorityCode = IssuePriority | (string & {});
 export type IssueStatusKey = IssueStatus | (string & {});
 export type IssueLinkTypeCode = IssueLinkType | (string & {});
@@ -629,15 +634,44 @@ export interface WorkflowDefinition extends Omit<Workflow, "transitions"> {
 /**
  * `ProjectWorkflowDto` (backend PR #208): one workflow the project runs on, the
  * project's issue types that run on it, and whether it is the shared default.
- * `issueTypes` as sent — may include types the project does not allow
- * (workflow-service ignores `allowedIssueTypes`, docs/ai/BACKLOG.md), and no
- * reader intersects it with the context. `shared` is `true` for anything but an
- * explicit `false`, so a value nobody stated is read-only.
+ * `issueTypes` as sent. The list route filters them through the project's
+ * registry (backend #226, `ProjectWorkflowListService`); the TAS-416 write
+ * answers list the workflow's bindings, which may still name a type deleted
+ * from the registry (backend ask A4, TAS-418), and no reader intersects them
+ * with the context. `shared` is `true` for anything but an explicit `false`,
+ * so a value nobody stated is read-only.
  */
 export interface ProjectWorkflowEntry {
   workflow: WorkflowDefinition;
   issueTypes: IssueTypeCode[];
   shared: boolean;
+}
+
+/** `ProjectIssueTypeColorDto` — closed in the contract (backend #212). */
+export type IssueTypeColor = "blue" | "red" | "green" | "amber" | "purple" | "teal" | "slate";
+/** `ProjectIssueTypeIconDto` — closed in the contract (backend #212). */
+export type IssueTypeIcon =
+  | "check-square"
+  | "bug"
+  | "book-open"
+  | "headset"
+  | "megaphone"
+  | "file-text"
+  | "flag"
+  | "layers";
+
+/**
+ * One entry of a project's issue-type registry — `ProjectIssueTypeDto`
+ * (backend #212, TAS-385). `color` and `icon` are `null` when the server sent a
+ * value outside the sets this build can draw (TAS-173's precedent): the chip
+ * then draws its neutral form (DESIGN.md §4.6) rather than guessing.
+ */
+export interface ProjectIssueType {
+  code: IssueTypeCode;
+  name: string;
+  color: IssueTypeColor | null;
+  icon: IssueTypeIcon | null;
+  sortOrder: number;
 }
 
 /**
@@ -674,6 +708,14 @@ export interface ProjectContext {
    * here. Unordered on the wire.
    */
   labels: Label[];
+  /**
+   * The project's issue-type registry (backend #212, TAS-385), **in the
+   * server's order** — `sortOrder`, then `code` by the database's collation —
+   * which is the order every picker, filter and list draws; the first is the
+   * type a new issue starts as. Never re-sorted here (DESIGN.md §6). Empty is
+   * a real answer: a project nobody can create an issue in.
+   */
+  issueTypes: ProjectIssueType[];
   /**
    * Keyed by issue type, **and only the types the project allows**: one, two,
    * all three or none. A type that is not here is not a failure; it is a type
@@ -1814,6 +1856,12 @@ export interface TelegramLink {
   linkId: string;
   url: string;
   expiresAt: string;
+  /**
+   * The reader's settings as the server holds them after it issued this link,
+   * in the same transaction (`TelegramLinkDto.preferences`, required since
+   * backend TAS-387). The section draws from it; there is no separate read.
+   */
+  preferences: NotificationPreferences;
 }
 
 /**

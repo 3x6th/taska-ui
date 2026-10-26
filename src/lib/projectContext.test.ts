@@ -3,24 +3,30 @@ import type { ProjectContext, ProjectWorkflow } from "../domain/types";
 import { allowedIssueTypes, workflowFor } from "./projectContext";
 
 const workflow = (id: string): ProjectWorkflow => ({ id, name: id, version: 1, statuses: [], transitions: [] });
-const context = (workflows: ProjectContext["workflows"]) => ({ workflows }) as ProjectContext;
+const context = (issueTypes: string[], workflows: ProjectContext["workflows"] = {}) =>
+  ({
+    issueTypes: issueTypes.map((code, index) => ({ code, name: code, color: null, icon: null, sortOrder: index })),
+    workflows,
+  }) as ProjectContext;
 
 /**
- * The project context is the one source of the issue types a board offers
- * (TAS-212). Since TAS-173 that set includes a type this build has no name
- * for, after the known ones, so a backend type is offered rather than dropped.
+ * The project's registry is the one source of the issue types a board offers
+ * (TAS-417): its keys in the order the server sent them, never re-sorted and
+ * not narrowed to the types the context sent a workflow for.
  */
 describe("allowedIssueTypes", () => {
-  it("puts the known types in the board's order, then unknown ones in the order sent", () => {
-    const types = allowedIssueTypes(
-      context(Object.fromEntries([["SPIKE", workflow("spike")], ["STORY", workflow("story")], ["EPIC", workflow("epic")], ["TASK", workflow("task")]])),
-    );
-    expect(types).toEqual(["TASK", "STORY", "SPIKE", "EPIC"]);
+  it("keeps the registry's own order, whatever the codes are", () => {
+    expect(allowedIssueTypes(context(["STORY", "SPIKE", "TASK", "EPIC"]))).toEqual(["STORY", "SPIKE", "TASK", "EPIC"]);
   });
 
-  it("answers nothing before the context, and nothing for a project that allows nothing", () => {
+  it("offers a registry type the workflows do not name, and no workflow type the registry lacks", () => {
+    const types = allowedIssueTypes(context(["TASK", "EPIC"], { TASK: workflow("task"), BUG: workflow("bug") }));
+    expect(types).toEqual(["TASK", "EPIC"]);
+  });
+
+  it("answers nothing before the context, and nothing for an empty registry", () => {
     expect(allowedIssueTypes(undefined)).toEqual([]);
-    expect(allowedIssueTypes(context({}))).toEqual([]);
+    expect(allowedIssueTypes(context([]))).toEqual([]);
   });
 });
 

@@ -11,6 +11,7 @@ import type {
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
+  CreateProjectIssueTypeInput,
   CreateProjectLabelInput,
   CreateProjectWorkflowInput,
   DeleteProjectWorkflowInput,
@@ -29,6 +30,7 @@ import type {
   UpdateIssueWorklogInput,
   UpdateIssueInput,
   UpdateProjectInput,
+  UpdateProjectIssueTypeInput,
   UpdateProjectLabelInput,
   UpdateProjectWorkflowInput,
   UpdateWorkflowStatusInput,
@@ -53,7 +55,13 @@ import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES, avatarRefusal } from "../avatars";
 import { IssueVersionConflictError, errorDetails, type ErrorDetails } from "../errors";
 import { toViewLinkType } from "../linkViewTypes";
-import { blankSummaryRefusal, ifMatch, issuePatchBody, issueVersionRefusal } from "../issuePatch";
+import { blankSummaryRefusal, ifMatch, issuePatchBody, issueTypePatchRefusal, issueVersionRefusal } from "../issuePatch";
+import {
+  ISSUE_TYPE_EMPTY_PATCH_MESSAGE,
+  projectIssueTypePatchBody,
+  toProjectIssueType,
+  toProjectIssueTypes,
+} from "../issueTypes";
 import {
   OBJECT_STORE_REJECTED_CODE,
   OBJECT_STORE_UNREACHABLE_CODE,
@@ -122,6 +130,7 @@ import type {
   ProblematicOutboxSummary,
   Project,
   ProjectContext,
+  ProjectIssueType,
   ProjectLabel,
   ProjectMember,
   ProjectWorkflow,
@@ -246,10 +255,16 @@ interface RestProjectContext {
   project: Project;
   members?: RestProjectMember[];
   labels?: RestLabel[];
+  /** `ProjectIssueTypeDto[]` (backend #212); read by `toProjectIssueTypes`. */
+  issueTypes?: unknown;
   workflows?: RestProjectWorkflowEntry[];
 }
 
-/** `ProjectWorkflowEntryDto`. `issueType` is `null` for a type the gateway's mapper does not know. */
+/**
+ * `ProjectWorkflowEntryDto`. `issueType` is the registry key as sent — the
+ * gateway passes it through since backend #226 — and read as `unknown` so a
+ * `null` or a blank is dropped rather than trusted.
+ */
 interface RestProjectWorkflowEntry {
   issueType?: unknown;
   workflow?: {
@@ -983,8 +998,25 @@ export class RestTaskaApi implements TaskaApi {
     );
   }
 
-  createTelegramLink(): Promise<TelegramLink> {
-    return this.request<TelegramLink>("/users/me/telegram/link", { method: "POST" });
+  /**
+   * `POST /users/me/telegram/link`. The answer carries the reader's settings as
+   * they stand after the link was issued (`TelegramLinkDto.preferences`,
+   * required by the contract and always filled by the gateway), read through
+   * the same mapper as every other settings answer — so the section draws from
+   * it and asks for nothing more. A missing field is a contract violation, not
+   * a case to recover from here.
+   */
+  async createTelegramLink(): Promise<TelegramLink> {
+    const response = await this.request<Omit<TelegramLink, "preferences"> & { preferences: RestNotificationPreferences }>(
+      "/users/me/telegram/link",
+      { method: "POST" },
+    );
+    return {
+      linkId: response.linkId,
+      url: response.url,
+      expiresAt: response.expiresAt,
+      preferences: toNotificationPreferences(response.preferences),
+    };
   }
 
   async confirmTelegramLink(linkId: string): Promise<NotificationPreferences> {
@@ -1199,9 +1231,9 @@ export class RestTaskaApi implements TaskaApi {
    * Each part goes through the mapper its own route uses, so the board draws a
    * context member exactly as it drew a `/members` row: blank names become an
    * unnamed row, idless rows are dropped, and `compareMembers` decides the
-   * order. Workflows are keyed by issue type as the server sent it, a type
-   * this build has no name for included (TAS-173) — that is how an issue of a
-   * new type keeps its columns. Only an entry with no type at all — `null` on
+   * order. The issue-type registry is read by `toProjectIssueTypes` in the
+   * order sent (backend #212, never re-sorted). Workflows are keyed by issue
+   * type as the server sent it. Only an entry with no type at all — `null` on
    * the wire — is dropped rather than guessed, and so is one with no workflow
    * in it.
    */
@@ -1234,6 +1266,7 @@ export class RestTaskaApi implements TaskaApi {
         .map((member) => toProjectMember(member))
         .sort(compareMembers),
       labels: (response.labels ?? []).map(toLabel),
+      issueTypes: toProjectIssueTypes(response.issueTypes),
       workflows,
     };
   }
@@ -1600,6 +1633,8 @@ export class RestTaskaApi implements TaskaApi {
     refusePlanningFields(input);
     const summaryRefusal = blankSummaryRefusal(input);
     if (summaryRefusal) throw new ApiError(summaryRefusal.message, summaryRefusal.code, 400);
+    const typeRefusal = issueTypePatchRefusal(input);
+    if (typeRefusal) throw new ApiError(typeRefusal.message, typeRefusal.code, 400);
 
     try {
       const answer = await this.request<RestIssue>(`/issues/${this.segment(issueId)}`, {
@@ -2049,6 +2084,63 @@ export class RestTaskaApi implements TaskaApi {
   async listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]> {
     const response = await this.request<RestProjectWorkflows>(this.workflowsPath(projectId));
     return (response.items ?? []).flatMap((item) => (item.workflow ? [toProjectWorkflowEntry(item)] : []));
+  }
+
+  /**
+   * `POST /projects/{projectId}/issue-types` — see
+   * `TaskaApi.createProjectIssueType`. The five declared fields and nothing
+   * else; `sortOrder` only when the caller states one. The 201 is read as a
+   * registry entry is.
+   */
+  async createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): Promise<ProjectIssueType> {
+    const response = await this.request<unknown>(this.issueTypesPath(projectId), {
+      method: "POST",
+      body: {
+        code: input.code,
+        name: input.name,
+        color: input.color,
+        icon: input.icon,
+        ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+      },
+    });
+    return this.toIssueTypeAnswer(response, input.code);
+  }
+
+  /**
+   * `PATCH /projects/{projectId}/issue-types/{code}`. The body is whitelisted
+   * (`projectIssueTypePatchBody`): no `code`, no `null`. An empty one is
+   * refused here in the server's own words — the service refuses `{}` before
+   * it looks at anything else, so the request would say nothing new.
+   */
+  async updateProjectIssueType(
+    projectId: string,
+    code: string,
+    input: UpdateProjectIssueTypeInput,
+  ): Promise<ProjectIssueType> {
+    const body = projectIssueTypePatchBody(input);
+    if (Object.keys(body).length === 0) throw new ApiError(ISSUE_TYPE_EMPTY_PATCH_MESSAGE, "INVALID_ARGUMENT", 400);
+    const response = await this.request<unknown>(`${this.issueTypesPath(projectId)}/${this.segment(code)}`, {
+      method: "PATCH",
+      body,
+    });
+    return this.toIssueTypeAnswer(response, code);
+  }
+
+  /** `DELETE /projects/{projectId}/issue-types/{code}` — 204. */
+  async deleteProjectIssueType(projectId: string, code: string): Promise<void> {
+    await this.request<void>(`${this.issueTypesPath(projectId)}/${this.segment(code)}`, { method: "DELETE" });
+  }
+
+  /**
+   * A registry write's 2xx as a registry entry, through the registry's own
+   * reader. Both routes are about one code — the one the create sent, the one
+   * in the PATCH path — so an answer that leaves `code` out is still about
+   * that code, and is keyed by it rather than dropped.
+   */
+  private toIssueTypeAnswer(response: unknown, sentCode: string): ProjectIssueType {
+    const wire = typeof response === "object" && response !== null ? (response as Record<string, unknown>) : {};
+    const code = typeof wire.code === "string" && wire.code.trim() !== "" ? wire.code : sentCode;
+    return toProjectIssueType({ ...wire, code }) ?? { code, name: code, color: null, icon: null, sortOrder: 0 };
   }
 
   /**
@@ -2630,6 +2722,10 @@ export class RestTaskaApi implements TaskaApi {
 
   private worklogsPath(projectId: string, issueId: string) {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/worklogs`;
+  }
+
+  private issueTypesPath(projectId: string) {
+    return `/projects/${this.segment(projectId)}/issue-types`;
   }
 
   private workflowsPath(projectId: string) {
