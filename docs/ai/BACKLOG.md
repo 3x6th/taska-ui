@@ -4129,7 +4129,14 @@ Frontend notes:
 
 The code came from the backend developer's Codex run (PR #101); this repository's three
 roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fixes.
+TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
 
+- **A compensation outlived its cause** (orchestrator, 2026-10-26).
+  `SettingsNotificationsSection.tsx` shows the `telegramError` sentence only while
+  `telegramAvailable`, because before backend #218 a disabled integration reported every
+  binding as `BOT_CHANGED`. #218 (develop `3a2644f7`) reports `BOT_CHANGED` only with the
+  integration on. The guard was never recorded in `API-DIVERGENCE.md`. Remove it, and drop the
+  refetch fallback for a link answer without `preferences`, which #222 (TAS-391) made required.
 - **Connect Telegram costs two requests where #218 made it one** — **graduated to [TAS-391](https://jira.ozero.dev/browse/TAS-391)** (2026-10-24) (`api-contract-guard`,
   TAS-389 pass, 2026-10-23). Backend #218 (develop `3a2644f7`) returns an optional
   `preferences` snapshot on `POST /users/me/telegram/link`; `TelegramLink`
