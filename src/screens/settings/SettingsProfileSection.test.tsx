@@ -322,10 +322,14 @@ const boardOf = (annaFace: string | null): Board => ({
         boardCard("tas-1", { id: anna.id, displayName: anna.displayName, avatarUrl: annaFace }),
         boardCard("tas-2", { id: "user-tom", displayName: "Tom Berg", avatarUrl: TOM_FACE }),
       ],
+      totalCount: 2,
+      hasMore: false,
     },
   ],
   // The server could not name the assignee here: no face is drawn, and none is written.
   unplacedIssues: [boardCard("tas-3", { id: anna.id, displayName: null, avatarUrl: null })],
+  unplacedTotalCount: 1,
+  unplacedHasMore: false,
 });
 
 const seededClient = (annaFace: string | null) => {

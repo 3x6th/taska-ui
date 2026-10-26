@@ -159,6 +159,8 @@ export type NotificationType =
   | "MEMBER_ADDED"
   | "MEMBER_UPDATED"
   | "MEMBER_REMOVED"
+  | "PERSONAL_ACCESS_TOKEN_CREATED"
+  | "PERSONAL_ACCESS_TOKEN_REVOKED"
   | "UNKNOWN";
 
 export interface User {
@@ -1009,7 +1011,21 @@ export interface BoardColumn {
   name: string;
   category: string;
   sortOrder: number;
+  /** The first page of the column: at most `pageSizePerColumn` issues (backend TAS-392). */
   issues: BoardIssue[];
+  /**
+   * Every issue of the column that matches the read's filters, before the page
+   * was cut — the count pill's number (DESIGN.md §4.9). `null` when the answer
+   * did not state it as a whole number: then the pill says `Unknown`, never the
+   * length of `issues`.
+   */
+  totalCount: number | null;
+  /**
+   * Whether issues of the column lie past `issues`. Stated by the server; when
+   * it is not a boolean, `totalCount > issues.length` if the count is known, and
+   * `null` — no foot, no claim — if it is not.
+   */
+  hasMore: boolean | null;
 }
 
 /**
@@ -1029,13 +1045,21 @@ export interface BoardColumn {
  * of a type whose workflow was not found. The board draws it as the group
  * «Outside their workflow» (DESIGN.md §4.9) and never recomputes it.
  *
- * No paging and no cap: the answer is the whole board, which is what lets the
- * screen filter locally (backend A3 is the day that changes).
+ * **Capped since backend TAS-392**: each column, and `unplacedIssues` as one
+ * bucket, carries at most `pageSizePerColumn` issues (the board screen asks for
+ * 200, the most it may), with the true count and whether more lie past the
+ * page. Nothing continues a column in its own order yet (backend A1, TAS-430),
+ * so the board says how many it shows of how many and the filters — which the
+ * server applies before the cap — find the rest (DESIGN.md §4.9, §5.4).
  */
 export interface Board {
   projectId: string;
   columns: BoardColumn[];
   unplacedIssues: BoardIssue[];
+  /** As a column's `totalCount`, for «Outside their workflow». */
+  unplacedTotalCount: number | null;
+  /** As a column's `hasMore`, for «Outside their workflow». */
+  unplacedHasMore: boolean | null;
 }
 
 /**
@@ -1129,6 +1153,15 @@ export interface IssueHistoryEvent {
   issueId: string;
   eventType: IssueEventType;
   actorUserId: string;
+  /**
+   * Who did it, as the server names them (backend TAS-398): the profile behind
+   * `actorUserId` — a former member of the project included — or `null` when no
+   * profile was found. Only the details read carries it; the transition
+   * answer's history never does, and absent reads as `null`. A blank name is
+   * `null` (§4.21), so the Activity row falls through to the member list and
+   * then to "Unknown" (`personFor`, DESIGN.md §4.26).
+   */
+  actor?: UserSummary | null;
   occurredAt: string;
   /** The channel mark (`ActionVia`): mock only until TAS-411. */
   via?: ActionVia | null;
@@ -1481,6 +1514,29 @@ export interface IssueWorklog {
   comment: string | null;
   createdAt: string;
   updatedAt: string | null;
+  /**
+   * Who logged it, as the list names them (backend TAS-421): the profile behind
+   * `authorUserId` — a former member included — or `null` when no profile was
+   * found. **Absent** — the key not there — on a write's answer, which does not
+   * name the author: a row that already knew its author keeps it.
+   */
+  author?: UserSummary | null;
+}
+
+/**
+ * One page of an issue's work log (`ListIssueWorklogsResponseDto`, backend
+ * TAS-421): newest first — `workDate`, `createdAt`, `id`, all descending.
+ * `totalCount` (every live entry of the issue) and `hasMore` are `null` when
+ * the answer did not state them as a number and a boolean: an unstated count is
+ * never the length of the page, and an unstated `hasMore` never means the list
+ * is complete.
+ */
+export interface IssueWorklogPage {
+  items: IssueWorklog[];
+  page: number;
+  pageSize: number;
+  totalCount: number | null;
+  hasMore: boolean | null;
 }
 
 export interface IssueComment {
@@ -1878,16 +1934,16 @@ export interface TelegramLink {
 }
 
 /**
- * One of the reader's personal access tokens (TAS-412, for backend TAS-402) —
- * what the list shows and the create answer describes. **Never the secret**:
- * the token's value is shown once, in `IssuedAccessToken`, and nothing that
- * holds this type holds it. `tokenPrefix` is the token's first characters
- * (`tsk_pat_3fA9`), which is all the reader is shown of it afterwards.
+ * One of the reader's personal access tokens (TAS-412; `PersonalAccessTokenDto`
+ * of backend TAS-402) — what the list shows and the create answer describes.
+ * **Never the secret**: the token's value is shown once, in
+ * `IssuedAccessToken`, and nothing that holds this type holds it.
+ * `tokenPrefix` is the token's first characters (`tsk_pat_3fA9`), which is all
+ * the reader is shown of it afterwards.
  *
  * `scopes` is an open list, like every other value set the server names
  * (TAS-173): `["read"]` and `["read", "write"]` are the two this build asks
- * for and names; anything else is printed as it came. The shape is the
- * frontend's proposal on TAS-402, not the contract (see `RestTaskaApi`).
+ * for and names; anything else is printed as it came.
  */
 export interface AccessToken {
   id: string;
@@ -1898,6 +1954,27 @@ export interface AccessToken {
   expiresAt: string;
   /** `null`: the token has never been used. */
   lastUsedAt: string | null;
+}
+
+/**
+ * `PersonalTokenPolicyDto`: the longest lifetime a new token may have, in
+ * days, and how many unexpired tokens an account may hold at once. The list
+ * read carries it; the create form offers lifetimes up to the first.
+ */
+export interface AccessTokenPolicy {
+  maxLifetimeDays: number;
+  maxActiveTokens: number;
+}
+
+/**
+ * `GET /users/me/access-tokens`: the reader's tokens that are not revoked —
+ * expired ones included — in the server's order (`createdAt`, then `id`, both
+ * newest first), and the policy; `null` when the answer carried none this
+ * build can read.
+ */
+export interface AccessTokenList {
+  tokens: AccessToken[];
+  policy: AccessTokenPolicy | null;
 }
 
 /**

@@ -9,16 +9,18 @@ import { expect, test, type Page } from "@playwright/test";
  * Mock-backed like every spec here (playwright.config.ts), which also sets
  * `VITE_TASKA_MCP_URL` to an address nothing listens on: the snippets only
  * print it. Any seeded user signs in with any password; Anna's account is
- * seeded with two tokens. No gateway serves these routes yet, so this is
- * evidence about the UI against the mock, never about the server.
+ * seeded with two tokens, Mark's with as many active ones as the policy allows
+ * and one expired. The mock reproduces backend TAS-401/402 as the contract
+ * states them; this is evidence about the UI against the mock, never about
+ * the server.
  */
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 
 const MCP_URL = "http://localhost:8087/mcp";
 
-async function signIn(page: Page) {
+async function signIn(page: Page, email = "anna@example.com") {
   await page.goto("/login");
-  await page.getByLabel("Email").fill("anna@example.com");
+  await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
@@ -67,7 +69,7 @@ test("creates a token, shows it once, and revokes one through its question", asy
   await expect(shown.getByRole("heading", { name: "Token created" })).toBeFocused();
   await expect(shown.getByText("Copy this token now. Taska shows it only once.")).toBeVisible();
   const secret = await shown.getByLabel("Cursor on laptop").inputValue();
-  expect(secret).toMatch(/^tsk_pat_[0-9A-Za-z]{32}$/);
+  expect(secret).toMatch(/^tsk_pat_[A-Za-z0-9_-]{43}$/);
   await expect(shown.locator(".mcp-snippet-code")).toHaveText(
     `claude mcp add --transport http --scope user taska ${MCP_URL} --header "Authorization: Bearer ${secret}"`,
   );
@@ -121,4 +123,41 @@ test("Esc holds the token's one showing until it is copied, then closes it, and 
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Create token" })).toBeFocused();
   expect(await everythingHeld(page)).not.toContain(secret);
+});
+
+// Backend TAS-402: a lifetime past `policy.maxLifetimeDays` (90 by default) is
+// refused, so the form offers only what the list's policy allows — "1 year"
+// was a 400 on every click on the stand.
+test("offers only the lifetimes the policy allows, 30 days first", async ({ page }) => {
+  await signIn(page);
+  await page.goto("/settings/tokens");
+  await page.getByRole("button", { name: "Create token" }).click();
+  const form = page.getByRole("dialog", { name: "New access token" });
+  const expires = form.getByRole("group", { name: "Expires" });
+
+  await expect(expires.getByRole("button")).toHaveText(["7 days", "30 days", "90 days"]);
+  await expect(expires.getByRole("button", { name: "30 days" })).toHaveAttribute("aria-pressed", "true");
+  await expect(form.getByRole("button", { name: "1 year" })).toHaveCount(0);
+});
+
+// Backend TAS-402: ten unexpired tokens at most; an expired one does not count.
+test("refuses a token past the cap on active ones, in words, and creates nothing", async ({ page }) => {
+  await signIn(page, "mark@example.com");
+  await page.goto("/settings/tokens");
+  const list = page.getByRole("list", { name: "Your access tokens" });
+  // Ten active and one expired, all listed.
+  await expect(list.getByRole("listitem")).toHaveCount(11);
+  await expect(list.getByRole("listitem").filter({ hasText: "Old laptop" })).toContainText("Expired");
+
+  await page.getByRole("button", { name: "Create token" }).click();
+  const form = page.getByRole("dialog", { name: "New access token" });
+  await form.getByLabel("Name").fill("One too many");
+  await form.getByRole("button", { name: "Create token" }).click();
+
+  await expect(form.getByRole("alert")).toHaveText("You already have 10 active tokens. Revoke one to create another.");
+  // Nothing was created, and what was typed stays.
+  await expect(form.getByLabel("Name")).toHaveValue("One too many");
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(list.getByRole("listitem")).toHaveCount(11);
+  await expect(list.getByRole("listitem").filter({ hasText: "One too many" })).toHaveCount(0);
 });

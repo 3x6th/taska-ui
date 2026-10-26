@@ -5,7 +5,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { DIRECTORY_QUERY_MAX_LENGTH, DIRECTORY_QUERY_MIN_CODE_POINTS, directoryQueryLength } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts, isMissingOrForbidden, isProjectArchived } from "../api/errors";
+import { apiErrorFacts, isLastAdmin, isMissingOrForbidden } from "../api/errors";
 import { refusalWords } from "../lib/projectArchive";
 import { PROJECT_ROLES } from "../api/members";
 import type { DirectoryUser, GlobalRole, Project, ProjectMember, ProjectRole } from "../domain/types";
@@ -200,9 +200,11 @@ interface ProjectMembersModalProps {
  *   id, and a sentence saying no account came back for it — rather than as a
  *   person this client invented.
  * - **The last ADMIN cannot be demoted or removed.** The server refuses both
- *   with `FAILED_PRECONDITION`; the dialog does not offer them for that row and
- *   says why in words, and still reads the refusal properly when a stale list
- *   let one through.
+ *   with `FAILED_PRECONDITION` and `details.reason: "LAST_ADMIN"` (backend
+ *   TAS-394); the dialog does not offer them for that row and says why in
+ *   words, and still reads the refusal properly when a stale list let one
+ *   through — by the reason alone, so another precondition is that action's
+ *   ordinary refusal (DESIGN.md §4.22).
  * - **An ADMIN may change or remove their own row** when another ADMIN exists.
  *   Afterwards the reader's role is read again, so the controls leave with it;
  *   after removing themselves the reader is taken to their projects, because
@@ -1533,16 +1535,6 @@ function frozenNoteText(subject: MemberSubject, unnamedAdmins: number): string {
 function isAlreadyMember(error: unknown): boolean {
   const { code, status } = apiErrorFacts(error);
   return code === "ALREADY_EXISTS" || status === 409;
-}
-
-/**
- * The last-admin refusal: `FAILED_PRECONDITION` with no reason. An archived
- * project's refusal shares the code (backend PR #159) and is told apart by
- * `details.reason` alone — read as last-admin it would tell the reader they
- * are the project's only admin.
- */
-function isLastAdmin(error: unknown): boolean {
-  return apiErrorFacts(error).code === "FAILED_PRECONDITION" && !isProjectArchived(error);
 }
 
 function isForbidden(error: unknown): boolean {

@@ -157,15 +157,18 @@ test.describe("on a wide screen", () => {
     expect(group.x + group.width).toBeLessThanOrEqual(2400 - 18 + 0.5);
 
     // At 1920 there is not: the columns move left by exactly what keeps the
-    // group on screen, and come back by that much when a Bug filter takes the
-    // group away.
+    // group on screen, and come back by that much when a filter takes the
+    // group away. A text filter, not a type: since TAS-392 a type filter is the
+    // server's and changes the columns too (§5.4), which would move them for
+    // another reason. "Checkout" keeps WEB-15 and drops the group's WEB-16.
     await page.setViewportSize({ width: 1920, height: 1080 });
     await expect.poll(async () => (await columns.first().boundingBox())!.x).toBeCloseTo(placed(1920, true), 0);
     const group1920 = (await others.boundingBox())!;
     expect(group1920.x + group1920.width).toBeCloseTo(1920 - 18, 0);
-    await page.getByRole("combobox", { name: "Type" }).selectOption("BUG");
+    await page.getByRole("textbox", { name: "Filter issues by key, summary or description" }).fill("checkout");
     await expect(others).toHaveCount(0);
-    expect((await columns.first().boundingBox())!.x).toBeCloseTo(placed(1920, false), 0);
+    await expect(columns).toHaveCount(4);
+    await expect.poll(async () => (await columns.first().boundingBox())!.x).toBeCloseTo(placed(1920, false), 0);
     expect(placed(1920, false) - placed(1920, true)).toBeCloseTo(29, 0);
   });
 });

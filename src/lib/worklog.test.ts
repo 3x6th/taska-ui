@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
-import type { IssueWorklog } from "../domain/types";
+import type { IssueWorklog, IssueWorklogPage } from "../domain/types";
 import {
   addDays,
   addInputOf,
   applyWorklogUpdate,
+  drawnWorklogs,
   formatWorkDate,
   localDateOnly,
   sortWorklogs,
   totalSpentMinutes,
   updateInputOf,
+  withWorklogAdded,
+  withWorklogRemoved,
+  withWriteAnswer,
   worklogDraftProblems,
+  worklogsComplete,
+  worklogsTotalCount,
 } from "./worklog";
 
 const entry = (overrides: Partial<IssueWorklog>): IssueWorklog => ({
@@ -107,5 +113,76 @@ describe("the work log list", () => {
   it("builds today from the local calendar and steps over a month end", () => {
     expect(localDateOnly(new Date(2026, 0, 5, 23, 59))).toBe("2026-01-05");
     expect(addDays("2026-10-31", 1)).toBe("2026-11-01");
+  });
+});
+
+/**
+ * The paged work log (backend TAS-421, DESIGN.md §4.24): what is drawn from the
+ * pages read so far, the count the pill shows, when the sum may be shown, and
+ * the optimistic writes' bookkeeping.
+ */
+describe("the work log in pages", () => {
+  const page = (items: IssueWorklog[], overrides: Partial<IssueWorklogPage> = {}): IssueWorklogPage => ({
+    items,
+    page: 0,
+    pageSize: 100,
+    totalCount: 10,
+    hasMore: true,
+    ...overrides,
+  });
+  const newest = entry({ id: "w-new", workDate: "2026-10-09" });
+  const middle = entry({ id: "w-mid", workDate: "2026-10-05" });
+  const oldest = entry({ id: "w-old", workDate: "2026-10-01" });
+
+  it("draws every entry once, in the server's order, across pages", () => {
+    const pages = [page([newest, middle]), page([middle, oldest], { page: 1, hasMore: false })];
+    expect(drawnWorklogs(pages).map((item) => item.id)).toEqual(["w-new", "w-mid", "w-old"]);
+  });
+
+  it("does not draw an entry that sorts past the last one drawn while more may follow", () => {
+    const older = entry({ id: "w-older", workDate: "2026-09-01" });
+    // A local add of an old day lands at the front of the first page.
+    expect(drawnWorklogs([page([older, newest, middle])]).map((item) => item.id)).toEqual(["w-new", "w-mid"]);
+    // Once the list is complete it is drawn where it sorts.
+    expect(drawnWorklogs([page([older, newest, middle], { hasMore: false })]).map((item) => item.id)).toEqual([
+      "w-new",
+      "w-mid",
+      "w-older",
+    ]);
+    // An unstated hasMore is not "complete" either.
+    expect(drawnWorklogs([page([older, newest, middle], { hasMore: null })]).map((item) => item.id)).toEqual([
+      "w-new",
+      "w-mid",
+    ]);
+  });
+
+  it("says the list is complete only when the last page said hasMore: false, and counts by the first page", () => {
+    expect(worklogsComplete([page([newest]), page([middle], { hasMore: false })])).toBe(true);
+    expect(worklogsComplete([page([newest])])).toBe(false);
+    expect(worklogsComplete([page([newest], { hasMore: null })])).toBe(false);
+    expect(worklogsComplete([])).toBe(false);
+    expect(worklogsTotalCount([page([newest], { totalCount: 205 })])).toBe(205);
+    expect(worklogsTotalCount([page([newest], { totalCount: null })])).toBeNull();
+    expect(worklogsTotalCount([])).toBeNull();
+  });
+
+  it("counts an optimistic add and delete on every page, and leaves an unstated count unstated", () => {
+    const pages = [page([newest]), page([oldest], { page: 1, totalCount: null })];
+    const added = withWorklogAdded(pages, middle);
+    expect(added[0].items.map((item) => item.id)).toEqual(["w-mid", "w-new"]);
+    expect(added.map((item) => item.totalCount)).toEqual([11, null]);
+    const removed = withWorklogRemoved(added, "w-old");
+    expect(removed[1].items).toEqual([]);
+    expect(removed.map((item) => item.totalCount)).toEqual([10, null]);
+    // Removing what no page holds changes nothing.
+    expect(withWorklogRemoved(removed, "w-gone").map((item) => item.totalCount)).toEqual([10, null]);
+  });
+
+  it("keeps the row's author when a write's answer leaves it out", () => {
+    const named = entry({ id: "w", author: { id: "u", displayName: "Former member", avatarUrl: null } });
+    const answer = entry({ id: "w", spentMinutes: 90 });
+    expect(withWriteAnswer(named, answer)).toMatchObject({ spentMinutes: 90, author: { displayName: "Former member" } });
+    expect(withWriteAnswer(named, { ...answer, author: null }).author).toBeNull();
+    expect(Object.hasOwn(withWriteAnswer(entry({ id: "w" }), answer), "author")).toBe(false);
   });
 });

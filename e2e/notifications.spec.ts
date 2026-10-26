@@ -5,8 +5,10 @@ import { expect, test, type Page } from "@playwright/test";
 // read between the press and the destination. The seed carries one row per
 // shape the gateway sends — three that open an issue (an attachment row among
 // them, since backend PR #191, TAS-245, put the issue's key and project on
-// it), and three that open nothing for the three reasons a row can: not about
-// an issue, about a deleted one, and older than the ids.
+// it), one about a project that opens its board (a member row, since backend
+// TAS-415 put the project on it), and two that open nothing for the two
+// reasons a row of these kinds can: about a deleted issue, and older than the
+// ids.
 //
 // Which rows get a route is unit-tested (src/domain/notifications.test.ts), and
 // so are the optimistic writes (src/screens/BoardScreen.test.tsx). This is what
@@ -69,17 +71,17 @@ test("a notification opens the issue it names, in the same click", async ({ page
 test("rows with nothing to open say so, mark read, and leave the reader where they were", async ({ page }) => {
   await openNotifications(page);
 
-  // Three reasons, one row each: not about an issue, a deleted issue, and an
-  // issue notification from before the gateway stated the issue.
+  // Two reasons, one row each: a deleted issue, and an issue notification from
+  // before the gateway stated the issue.
   const inert = page.locator(".notification-item.is-inert");
-  await expect(inert).toHaveCount(3);
-  for (const text of ["Sofia added you to Taska Platform", "TAS-100 was deleted", "moved to DONE"]) {
+  await expect(inert).toHaveCount(2);
+  for (const text of ["TAS-100 was deleted", "moved to DONE"]) {
     // `cursor: default` is the whole of what the class does, and there is no
     // cursor at 390 or on the keyboard path, so the row has to say it in words.
     await expect(inert.filter({ hasText: text })).toContainText("Nothing to open");
   }
   // A row that does open something must not say it.
-  await expect(page.locator(".notification-item", { hasText: "Nothing to open" })).toHaveCount(3);
+  await expect(page.locator(".notification-item", { hasText: "Nothing to open" })).toHaveCount(2);
 
   // The pre-migration row, which still has the issue's uuid in its prose: the
   // one a body-mining resolver would have opened.
@@ -95,6 +97,22 @@ test("rows with nothing to open say so, mark read, and leave the reader where th
   // And it did mark itself read.
   await expect(legacy.locator(".read-dot.is-unread")).toHaveCount(0);
   await expect(page.getByRole("button", BELL)).toHaveAccessibleName("Notifications, 2 unread");
+});
+
+// Since backend TAS-415 (#227) a member row carries the project it is about,
+// and no issue, so it opens that board — from a screen with no project of its
+// own as well. Until then it carried neither and was an inert row above.
+test("a member notification opens the board of the project it names", async ({ page }) => {
+  await signIn(page);
+  await openBell(page);
+
+  const added = page.locator(".notification-item", { hasText: "You were added to Taska Platform" });
+  await expect(added).not.toHaveClass(/is-inert/);
+  await expect(added).not.toContainText("Nothing to open");
+  await added.click();
+
+  await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
+  await expect(page.getByText("TAS-101", { exact: true })).toBeVisible();
 });
 
 // Since backend PR #191 (TAS-245) an attachment notification carries the
@@ -125,8 +143,8 @@ test("the bell's name carries the unread count, and mark all read clears it", as
   // Each unread row says so in its name, first, and a read row does not.
   const assigned = page.locator(".notification-item", { hasText: "TAS-107 was assigned to you" });
   await expect(assigned).toHaveAccessibleName(/^Unread: Issue assigned /);
-  const added = page.locator(".notification-item", { hasText: "Sofia added you" });
-  await expect(added).toHaveAccessibleName(/^Added to a project /);
+  const added = page.locator(".notification-item", { hasText: "You were added to Taska Platform" });
+  await expect(added).toHaveAccessibleName(/^You were added to a project /);
 
   await page.getByRole("button", { name: "Mark all read" }).click();
 

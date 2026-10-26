@@ -7,7 +7,9 @@ import {
   defaultTransitionPair,
   freeSortOrderBetween,
   isIssueCountRefusal,
+  isMigrationLimitRefusal,
   issueCountOf,
+  migrationLimitOf,
   namedStatusKeys,
   nextTransitionSortOrder,
   normalizeStatusKey,
@@ -17,8 +19,8 @@ import {
   statusCategoriesOf,
   statusEditPositions,
   statusKeyFromName,
-  statusesInBoth,
   statusesToMap,
+  targetStatusKeysOf,
   transitionButtonLabel,
   transitionEditPositions,
   transitionPositionValue,
@@ -305,11 +307,6 @@ describe("what a delete moves issues out of", () => {
     statuses: [...shared.statuses, status("s-qa", "QA", "IN_PROGRESS", 25, "QA"), status("s-ship", "SHIP", "DONE", 40, "Ship")],
   };
 
-  it("maps only to statuses both workflows have, in column order", () => {
-    expect(statusesInBoth(own, shared).map((item) => item.statusKey)).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
-    expect(statusesInBoth(own, undefined)).toEqual([]);
-  });
-
   it("takes the statuses the details name, and keeps apart the ones that are not this workflow's", () => {
     expect(statusesToMap(own, { issueCount: "4", statusKeys: "SHIP,BLOCKED" })).toEqual({
       mappable: [own.statuses[4]],
@@ -329,18 +326,47 @@ describe("what a delete moves issues out of", () => {
     expect(namedStatusKeys(null)).toEqual([]);
   });
 
-  it("reads the issue-count refusal off the code and the details, never the message", () => {
-    const refusal = (code: string, details: Record<string, string> | null) =>
-      Object.assign(new Error("Workflow statuses have 3 issues; supply a target status mapping"), { code, details });
-    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { issueCount: "3", statusKeys: "QA" }))).toBe(true);
-    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { statusKeys: "QA" }))).toBe(true);
-    // Without details it is any of the deletes' other FAILED_PRECONDITIONs, said as itself.
+  const refusal = (code: string, details: Record<string, string> | null) =>
+    Object.assign(new Error("Workflow statuses have 3 issues; supply a target status mapping"), { code, details });
+
+  // Backend TAS-427: the reason is the key. Before it the dialog read any
+  // FAILED_PRECONDITION carrying `issueCount` or `statusKeys` as this one.
+  it("reads the issue-count refusal off the code and details.reason, never the message or the other keys", () => {
+    const unmapped = { reason: "WORKFLOW_ISSUES_UNMAPPED", issueCount: "3", statusKeys: "QA", targetStatusKeys: "TODO,DONE" };
+    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", unmapped))).toBe(true);
+    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { reason: "WORKFLOW_ISSUES_UNMAPPED" }))).toBe(true);
+    // The keys without the reason are not it, and neither is another reason.
+    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { issueCount: "3", statusKeys: "QA" }))).toBe(false);
     expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", null))).toBe(false);
     expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { reason: "PROJECT_ARCHIVED" }))).toBe(false);
-    expect(isIssueCountRefusal(refusal("INVALID_ARGUMENT", null))).toBe(false);
+    expect(isIssueCountRefusal(refusal("FAILED_PRECONDITION", { reason: "WORKFLOW_MIGRATION_LIMIT", limit: "5000" }))).toBe(
+      false,
+    );
+    expect(isIssueCountRefusal(refusal("INVALID_ARGUMENT", { reason: "WORKFLOW_ISSUES_UNMAPPED" }))).toBe(false);
     expect(issueCountOf(refusal("FAILED_PRECONDITION", { issueCount: "3" }))).toBe(3);
     expect(issueCountOf(refusal("FAILED_PRECONDITION", { issueCount: "three" }))).toBeNull();
     expect(issueCountOf(refusal("FAILED_PRECONDITION", null))).toBeNull();
+  });
+
+  it("reads the targets the refusal names, in its order, and none when it named none", () => {
+    expect(targetStatusKeysOf(refusal("FAILED_PRECONDITION", { targetStatusKeys: "TODO, IN_PROGRESS,DONE" }))).toEqual([
+      "TODO",
+      "IN_PROGRESS",
+      "DONE",
+    ]);
+    expect(targetStatusKeysOf(refusal("FAILED_PRECONDITION", { targetStatusKeys: "" }))).toEqual([]);
+    expect(targetStatusKeysOf(refusal("FAILED_PRECONDITION", { issueCount: "3" }))).toEqual([]);
+    expect(targetStatusKeysOf(refusal("FAILED_PRECONDITION", null))).toEqual([]);
+  });
+
+  // Was a 429 RESOURCE_EXHAUSTED; a 400 with its own reason since TAS-427.
+  it("reads the migration limit off the reason, with the limit as a number only when it is a whole one", () => {
+    const limited = refusal("FAILED_PRECONDITION", { reason: "WORKFLOW_MIGRATION_LIMIT", limit: "5000" });
+    expect(isMigrationLimitRefusal(limited)).toBe(true);
+    expect(migrationLimitOf(limited)).toBe(5000);
+    expect(migrationLimitOf(refusal("FAILED_PRECONDITION", { reason: "WORKFLOW_MIGRATION_LIMIT", limit: "lots" }))).toBeNull();
+    expect(isMigrationLimitRefusal(refusal("RESOURCE_EXHAUSTED", { reason: "WORKFLOW_MIGRATION_LIMIT" }))).toBe(false);
+    expect(isMigrationLimitRefusal(refusal("FAILED_PRECONDITION", { limit: "5000" }))).toBe(false);
   });
 });
 

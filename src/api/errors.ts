@@ -155,13 +155,39 @@ export const PROJECT_ARCHIVED_REASON = "PROJECT_ARCHIVED";
  * again (DESIGN.md §5.7, «Архив пришёл отказом записи»).
  */
 export function isProjectArchived(error: unknown): boolean {
-  const { code, details } = apiErrorFacts(error);
+  return hasRefusalReason(error, "FAILED_PRECONDITION", PROJECT_ARCHIVED_REASON);
+}
+
+/**
+ * Whether a refusal carries this `code` **and** this `details.reason`, the
+ * reason read as an own property (`errorDetails`). The pair is the whole key:
+ * a reason on another code is not this refusal, and the code alone is shared by
+ * refusals that mean different things — every `FAILED_PRECONDITION` reason
+ * below is a 400. The server's message is prose and never matched.
+ */
+export function hasRefusalReason(error: unknown, code: string, reason: string): boolean {
+  const facts = apiErrorFacts(error);
   return (
-    code === "FAILED_PRECONDITION" &&
-    details !== null &&
-    Object.hasOwn(details, "reason") &&
-    details.reason === PROJECT_ARCHIVED_REASON
+    facts.code === code &&
+    facts.details !== null &&
+    Object.hasOwn(facts.details, "reason") &&
+    facts.details.reason === reason
   );
+}
+
+/** `details.reason` on the refused role change or removal of a project's only admin (backend TAS-394). */
+export const LAST_ADMIN_REASON = "LAST_ADMIN";
+
+/**
+ * Whether a member write was refused because its target is the project's last
+ * admin — 400 `FAILED_PRECONDITION`, `details.reason: "LAST_ADMIN"` since
+ * backend TAS-394 (`ProjectMemberValidatorImpl`). Only the reason says so: the
+ * archived refusal and any other precondition share the code, and reading one
+ * of them as last-admin would tell the reader they are the project's only admin
+ * (DESIGN.md §4.22).
+ */
+export function isLastAdmin(error: unknown): boolean {
+  return hasRefusalReason(error, "FAILED_PRECONDITION", LAST_ADMIN_REASON);
 }
 
 /**
@@ -271,6 +297,20 @@ export function isUndeployedRoute(error: unknown, undeployedMessage: string): bo
 export function isConflict(error: unknown): boolean {
   const { code, status } = apiErrorFacts(error);
   return status === 409 || code === "FAILED_PRECONDITION" || code === "ABORTED";
+}
+
+/**
+ * Whether a transition was refused because the issue moved on since it was
+ * read (backend TAS-422): 409 `ABORTED`, "Issue version does not match
+ * expected version" with `details.currentVersion` and `details.currentStatus`.
+ * The code alone is the key — never the words, and never the details: without
+ * `If-Match` the server's own retry can end `ABORTED` too ("Issue status was
+ * modified concurrently"), with no details, and it means the same thing to the
+ * reader. Not `isConflict`, which also answers yes to `FAILED_PRECONDITION`,
+ * the refusal of a transition that is not available from the issue's status.
+ */
+export function isTransitionConflict(error: unknown): boolean {
+  return apiErrorFacts(error).code === "ABORTED";
 }
 
 /**

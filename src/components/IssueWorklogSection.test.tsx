@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
-import type { IssueWorklog } from "../domain/types";
+import type { IssueWorklog, IssueWorklogPage } from "../domain/types";
 import { IssueWorklogSection } from "./IssueWorklogSection";
 
 /**
@@ -17,17 +17,42 @@ const ANNA = "u-anna";
 const { fakeApi, state } = vi.hoisted(() => {
   const state = {
     worklogs: [] as IssueWorklog[],
+    /** What the server states beside the entries, when a test needs other than the truth. */
+    totalCount: undefined as number | null | undefined,
+    hasMore: undefined as boolean | null | undefined,
     listFailure: null as Error | null,
+    /** A failure for every page past the first. */
+    nextPageFailure: null as Error | null,
+    /** The page reads, in order. */
+    pageReads: [] as { page?: number; pageSize?: number }[],
     writeFailure: null as Error | null,
     updates: [] as unknown[],
+    /** What a write answers with, author left out unless a test says otherwise. */
+    updateAnswer: null as IssueWorklog | null,
+    /** Every read after the first never answers: what is drawn is what the section put in the cache. */
+    rereadsHeld: false,
   };
   const api = {
     // `GET /meta` (TAS-173), answered with no dictionaries: every reader then
     // uses the build's own words and sets, which is what these tests are about.
     getMeta: async () => ({ issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null }),
-    listIssueWorklogs: async () => {
+    // The server's paging (backend TAS-421): `state.worklogs` in its order, a
+    // page at a time, with the count and `hasMore` it states.
+    listIssueWorklogs: async (_p: string, _i: string, params: { page?: number; pageSize?: number } = {}) => {
+      state.pageReads.push(params);
+      if (state.rereadsHeld && state.pageReads.length > 1) return new Promise<IssueWorklogPage>(() => {});
       if (state.listFailure) throw state.listFailure;
-      return state.worklogs;
+      const page = params.page ?? 0;
+      const pageSize = params.pageSize ?? 20;
+      if (page > 0 && state.nextPageFailure) throw state.nextPageFailure;
+      const items = state.worklogs.slice(page * pageSize, page * pageSize + pageSize);
+      return {
+        items,
+        page,
+        pageSize,
+        totalCount: state.totalCount === undefined ? state.worklogs.length : state.totalCount,
+        hasMore: state.hasMore === undefined ? page * pageSize + items.length < state.worklogs.length : state.hasMore,
+      } satisfies IssueWorklogPage;
     },
     addIssueWorklog: async () => {
       if (state.writeFailure) throw state.writeFailure;
@@ -36,6 +61,7 @@ const { fakeApi, state } = vi.hoisted(() => {
     updateIssueWorklog: async (_p: string, _i: string, _w: string, input: unknown) => {
       state.updates.push(input);
       if (state.writeFailure) throw state.writeFailure;
+      if (state.updateAnswer) return state.updateAnswer;
       throw new Error("not used");
     },
     deleteIssueWorklog: async () => {
@@ -63,7 +89,7 @@ const refusal = (message: string, status: number, code: string) =>
   Object.assign(new Error(message), { status, code, requestId: "req-251" });
 
 function renderSection(props: Partial<{ canLog: boolean; isProjectAdmin: boolean }> = {}) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
       <IssueWorklogSection
@@ -83,9 +109,15 @@ function renderSection(props: Partial<{ canLog: boolean; isProjectAdmin: boolean
 describe("the work log section", () => {
   beforeEach(() => {
     state.worklogs = [entry];
+    state.totalCount = undefined;
+    state.hasMore = undefined;
     state.listFailure = null;
+    state.nextPageFailure = null;
+    state.pageReads = [];
     state.writeFailure = null;
     state.updates = [];
+    state.updateAnswer = null;
+    state.rereadsHeld = false;
   });
 
   it("says the gateway does not serve work logs yet, and offers no form, on the static-resource 404", async () => {
@@ -198,5 +230,111 @@ describe("the work log section", () => {
     await screen.findByText("Pairing");
     expect(screen.queryByRole("form")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  /** `count` entries, newest first, one a day back from Jun 30, by Anna. */
+  const many = (count: number) =>
+    Array.from({ length: count }, (_, index) => {
+      const day = new Date(Date.UTC(2026, 5, 30 - index)).toISOString().slice(0, 10);
+      return { ...entry, id: `w-${String(index).padStart(3, "0")}`, workDate: day, comment: `Entry ${index}`, spentMinutes: 30 };
+    });
+  const heading = () => screen.getByRole("heading", { name: /^Work log/ });
+
+  // Backend TAS-421: the list is paged at 100, the pill is the server's count,
+  // and no sum is drawn until every entry is read (DESIGN.md §4.24).
+  it("reads 100 a page, counts by the server, and holds the sum back until every entry is read", async () => {
+    state.worklogs = many(105);
+    renderSection();
+
+    await waitFor(() => expect(document.querySelectorAll(".worklog-row")).toHaveLength(100));
+    expect(state.pageReads).toEqual([{ page: 0, pageSize: 100 }]);
+    expect(heading().querySelector(".count-pill")).toHaveTextContent("105");
+    expect(document.querySelector(".worklog-total")).toBeNull();
+    const foot = document.querySelector(".list-more") as HTMLElement;
+    expect(foot.tagName).toBe("LI");
+    expect(foot).toBe(document.querySelector(".worklog-list")?.lastElementChild);
+    expect(within(foot).getByText("100 of 105 shown")).toBeVisible();
+    const more = within(foot).getByRole("button", { name: "Show more work log entries" });
+    expect(more).toHaveTextContent("Show more");
+    expect(more).toHaveAccessibleDescription("100 of 105 shown");
+  });
+
+  it("appends the next page on Show more, focuses its first row, and then draws the sum and no foot", async () => {
+    state.worklogs = many(105);
+    renderSection();
+    const more = await screen.findByRole("button", { name: "Show more work log entries" });
+    more.focus();
+    fireEvent.click(more);
+
+    await waitFor(() => expect(document.querySelectorAll(".worklog-row")).toHaveLength(105));
+    expect(state.pageReads).toEqual([{ page: 0, pageSize: 100 }, { page: 1, pageSize: 100 }]);
+    const first = screen.getByText("Entry 100").closest("li") as HTMLElement;
+    await waitFor(() => expect(first).toHaveFocus());
+    expect(first).toHaveAttribute("tabindex", "-1");
+    expect(document.querySelector(".list-more")).toBeNull();
+    expect(document.querySelector(".worklog-total")).toHaveTextContent("52h 30m logged");
+    expect(heading().querySelector(".count-pill")).toHaveTextContent("105");
+  });
+
+  it("says a failed Show more in the notice slot with the request id, keeps the rows, and keeps focus on the button", async () => {
+    state.worklogs = many(105);
+    // A refusal, so the page is not asked twice (`issueWorklogsOptions`).
+    state.nextPageFailure = refusal("Not allowed role", 403, "PERMISSION_DENIED");
+    renderSection();
+    const more = await screen.findByRole("button", { name: "Show more work log entries" });
+    more.focus();
+    fireEvent.click(more);
+
+    expect(await screen.findByText("More work log entries could not be loaded. Not allowed role")).toBeVisible();
+    expect(screen.getByText("req-251")).toBeVisible();
+    expect(document.querySelectorAll(".worklog-row")).toHaveLength(100);
+    expect(screen.queryByText(/The work log could not be loaded/)).toBeNull();
+    expect(more).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Show more work log entries" })).toBeVisible();
+  });
+
+  it("names an unstated count Unknown, draws no sum, and never reads an unstated hasMore as complete", async () => {
+    state.totalCount = null;
+    state.hasMore = null;
+    renderSection();
+
+    await screen.findByText("Pairing");
+    expect(heading().querySelector(".count-pill")).toHaveTextContent("unknown");
+    expect(document.querySelector(".worklog-total")).toBeNull();
+    expect(document.querySelector(".list-more")).toBeNull();
+  });
+
+  // Backend TAS-421: each row names its author — a former member by the
+  // summary, then the member list, then Unknown (DESIGN.md §4.24).
+  it("names the author from the row's summary, then the member list, then Unknown", async () => {
+    state.worklogs = [
+      { ...entry, id: "w-a", authorUserId: "u-former", author: { id: "u-former", displayName: "Former Member", avatarUrl: null }, comment: "By a former member" },
+      { ...entry, id: "w-b", author: null, comment: "By a member" },
+      { ...entry, id: "w-c", authorUserId: "u-gone", author: null, comment: "By nobody named" },
+    ];
+    renderSection({ isProjectAdmin: false });
+
+    const row = async (text: string) => (await screen.findByText(text)).closest("li") as HTMLElement;
+    expect((await row("By a former member")).querySelector(".worklog-head strong")).toHaveTextContent("Former Member");
+    expect((await row("By a member")).querySelector(".worklog-head strong")).toHaveTextContent("Anna Ivanova");
+    const gone = await row("By nobody named");
+    expect(gone.querySelector(".worklog-head strong")).toHaveTextContent("Unknown");
+    expect(gone.querySelector(".avatar")).toHaveAttribute("aria-label", "Unknown");
+  });
+
+  it("keeps a row's author when the edit's answer leaves it out", async () => {
+    state.worklogs = [{ ...entry, authorUserId: "u-former", author: { id: "u-former", displayName: "Former Member", avatarUrl: null } }];
+    state.updateAnswer = { ...entry, authorUserId: "u-former", spentMinutes: 60 };
+    // The re-read never answers, so the row drawn is the answer laid over it.
+    state.rereadsHeld = true;
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /^Edit 45m logged/ }));
+    const editor = screen.getByRole("form", { name: /^Edit 45m logged/ });
+    fireEvent.change(within(editor).getByLabelText("Time spent"), { target: { value: "1h" } });
+    fireEvent.click(within(editor).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(state.updates).toEqual([{ spentMinutes: 60 }]));
+    await waitFor(() => expect(document.querySelector(".worklog-duration")).toHaveTextContent("1h"));
+    expect(document.querySelector(".worklog-head strong")).toHaveTextContent("Former Member");
   });
 });

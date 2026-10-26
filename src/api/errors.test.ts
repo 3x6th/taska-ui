@@ -6,6 +6,7 @@ import {
   isAccountLocked,
   isConflict,
   isIssueVersionConflict,
+  isLastAdmin,
   isMissingOrForbidden,
   isProjectArchived,
   isUndeployedRoute,
@@ -264,6 +265,35 @@ describe("isProjectArchived", () => {
   it("refuses values that are not errors", () => {
     expect(isProjectArchived({ code: "FAILED_PRECONDITION", details: archivedDetails })).toBe(false);
     expect(isProjectArchived(null)).toBe(false);
+  });
+});
+
+/**
+ * Backend TAS-394: the last-admin refusal of a member write is a 400
+ * `FAILED_PRECONDITION` with `details.reason: "LAST_ADMIN"`. Before it the
+ * dialog read every precondition that was not the archive as last-admin.
+ */
+describe("isLastAdmin", () => {
+  const lastAdmin = { reason: "LAST_ADMIN" };
+
+  it("accepts the gateway's refusal and the mock's status-less one", () => {
+    expect(
+      isLastAdmin(new ApiError("Can't modify last admin: u in project: p", "FAILED_PRECONDITION", 400, "r", undefined, lastAdmin)),
+    ).toBe(true);
+    expect(isLastAdmin(new MockLikeError("FAILED_PRECONDITION", "anything", lastAdmin))).toBe(true);
+  });
+
+  it("refuses the code without the reason, another reason, and the reason on another code", () => {
+    expect(isLastAdmin(new ApiError("Can't modify last admin: u in project: p", "FAILED_PRECONDITION", 400))).toBe(false);
+    expect(isLastAdmin(new MockLikeError("FAILED_PRECONDITION", "Project is archived", { reason: "PROJECT_ARCHIVED" }))).toBe(
+      false,
+    );
+    expect(isLastAdmin(new MockLikeError("PERMISSION_DENIED", "x", lastAdmin))).toBe(false);
+  });
+
+  it("reads the reason as an own property only", () => {
+    const inherited = new MockLikeError("FAILED_PRECONDITION", "x", Object.create(lastAdmin) as Record<string, string>);
+    expect(isLastAdmin(inherited)).toBe(false);
   });
 });
 

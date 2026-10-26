@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AccessToken, IssuedAccessToken } from "../../domain/types";
+import type { AccessToken, AccessTokenList, AccessTokenPolicy, IssuedAccessToken } from "../../domain/types";
 import { SettingsTokensSection } from "./SettingsTokensSection";
 
 /**
@@ -20,23 +20,15 @@ const { api } = vi.hoisted(() => ({
 }));
 vi.mock("../../api/client", () => ({ taskaApi: api }));
 
-const SECRET = "tsk_pat_Zq8RkW2mNcY4pLx7Hs1Jd9Vt6Bf3Ga0E";
+const SECRET = "tsk_pat_Zq8RkW2mNcY4pLx7Hs1Jd9Vt6Bf3Ga0Ek-u_Pw4";
 /** What the row of a token whose create outlived its dialog says (§5.9). */
 const UNSEEN_LINE = "Its value was never shown. Revoke this token and create another.";
 const MCP_URL = "http://localhost:8087/mcp";
 const DAY = 24 * 60 * 60 * 1000;
 const iso = (offset: number) => new Date(Date.now() + offset).toISOString();
 
+/** In the server's order: `createdAt`, then `id`, newest first (backend TAS-402). */
 const seeded = (): AccessToken[] => [
-  {
-    id: "token-older",
-    name: "Weekly report script",
-    tokenPrefix: "tsk_pat_Qm7x",
-    scopes: ["read"],
-    createdAt: iso(-10 * DAY),
-    expiresAt: iso(20 * DAY),
-    lastUsedAt: null,
-  },
   {
     id: "token-newer",
     name: "Claude Code on laptop",
@@ -46,9 +38,22 @@ const seeded = (): AccessToken[] => [
     expiresAt: iso(28 * DAY),
     lastUsedAt: iso(-1 * DAY),
   },
+  {
+    id: "token-older",
+    name: "Weekly report script",
+    tokenPrefix: "tsk_pat_Qm7x",
+    scopes: ["read"],
+    createdAt: iso(-10 * DAY),
+    expiresAt: iso(20 * DAY),
+    lastUsedAt: null,
+  },
 ];
+const weekly = () => seeded()[1];
 
+/** The server's list, as this fixture's server holds it — newest first. */
 let tokens: AccessToken[];
+/** The policy the list states (backend TAS-402's defaults unless a test says otherwise). */
+let policy: AccessTokenPolicy | null;
 let client: QueryClient;
 
 const refusal = (message: string, fields: object) => Object.assign(new Error(message), fields);
@@ -68,7 +73,7 @@ const cached = () =>
     client.getMutationCache().getAll().map((mutation) => mutation.state),
   ]);
 /** From now on every read of the list hangs: what is drawn can only be what the section itself put there. */
-const hangReads = () => api.listAccessTokens.mockImplementation(() => new Promise<AccessToken[]>(() => {}));
+const hangReads = () => api.listAccessTokens.mockImplementation(() => new Promise<AccessTokenList>(() => {}));
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -76,6 +81,7 @@ beforeEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
   tokens = seeded();
+  policy = { maxLifetimeDays: 90, maxActiveTokens: 10 };
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   api.getCurrentUser.mockResolvedValue({
     id: "user-anna",
@@ -84,18 +90,20 @@ beforeEach(() => {
     status: "ACTIVE",
     avatarUrl: null,
   });
-  api.listAccessTokens.mockImplementation(async () => tokens.map((token) => ({ ...token })));
-  api.createAccessToken.mockImplementation(async (input: { name: string; scopes: string[]; expiresInDays: number }) => {
+  api.listAccessTokens.mockImplementation(
+    async (): Promise<AccessTokenList> => ({ tokens: tokens.map((token) => ({ ...token })), policy }),
+  );
+  api.createAccessToken.mockImplementation(async (input: { name: string; scopes: string[]; expiresInDays?: number }) => {
     const token: AccessToken = {
       id: "token-new",
       name: input.name,
       tokenPrefix: SECRET.slice(0, 12),
       scopes: input.scopes,
       createdAt: new Date().toISOString(),
-      expiresAt: iso(input.expiresInDays * DAY),
+      expiresAt: iso((input.expiresInDays ?? 30) * DAY),
       lastUsedAt: null,
     };
-    tokens = [...tokens, token];
+    tokens = [token, ...tokens];
     return { token, secret: SECRET } satisfies IssuedAccessToken;
   });
   api.revokeAccessToken.mockImplementation(async (id: string) => {
@@ -110,8 +118,8 @@ afterEach(() => {
 });
 
 describe("the list of access tokens", () => {
-  it("draws skeleton rows while it is read, then each token newest first with its prefix, access and dates", async () => {
-    let answer: (value: AccessToken[]) => void = () => {};
+  it("draws skeleton rows while it is read, then each token with its prefix, access and dates", async () => {
+    let answer: (value: AccessTokenList) => void = () => {};
     api.listAccessTokens.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
     draw();
 
@@ -119,7 +127,7 @@ describe("the list of access tokens", () => {
     expect(screen.queryByRole("button", { name: "Create token" })).toBeNull();
     expect(document.querySelectorAll(".token-skeleton-row")).toHaveLength(2);
 
-    await act(async () => answer(seeded()));
+    await act(async () => answer({ tokens: seeded(), policy }));
 
     expect(await screen.findByRole("button", { name: "Create token" })).toBeVisible();
     const list = screen.getByRole("list", { name: "Your access tokens" });
@@ -135,8 +143,19 @@ describe("the list of access tokens", () => {
     expect(document.querySelectorAll(".token-skeleton-row")).toHaveLength(0);
   });
 
+  // Backend TAS-402 orders the list itself; the section draws it as it came.
+  it("draws the tokens in the server's order, never re-sorted", async () => {
+    tokens = [...seeded()].reverse();
+    draw();
+    await screen.findByText("Claude Code on laptop");
+    expect(rows().map((row) => row.querySelector(".token-name")?.textContent)).toEqual([
+      "Weekly report script",
+      "Claude Code on laptop",
+    ]);
+  });
+
   it("says a past lifetime as Expired", async () => {
-    tokens = [{ ...seeded()[0], expiresAt: iso(-DAY) }];
+    tokens = [{ ...weekly(), expiresAt: iso(-DAY) }];
     draw();
     expect((await screen.findByText("Weekly report script")).closest("li")?.querySelector(".token-dates")).toHaveTextContent(
       / · Expired \w{3} \d+/,
@@ -158,7 +177,7 @@ describe("the list of access tokens", () => {
 
     expect(await screen.findByText("Your access tokens could not be loaded.", {}, { timeout: 4000 })).toBeVisible();
     expect(api.listAccessTokens).toHaveBeenCalledTimes(2);
-    api.listAccessTokens.mockImplementation(async () => tokens.map((token) => ({ ...token })));
+    api.listAccessTokens.mockImplementation(async () => ({ tokens: tokens.map((token) => ({ ...token })), policy }));
     expect(screen.getByText("Service unavailable")).toBeVisible();
     expect(screen.getByRole("button", { name: /req-503/ })).toBeVisible();
     expect(screen.queryByText("No tokens yet.")).toBeNull();
@@ -262,15 +281,45 @@ describe("creating a token", () => {
     dialog = await openDialog();
     fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Cursor on laptop" } });
     fireEvent.click(dialog.getByRole("radio", { name: "Read and write" }));
-    fireEvent.click(dialog.getByRole("button", { name: "1 year" }));
-    expect(dialog.getByRole("group", { name: "Expires" })).toHaveAccessibleDescription(/^Expires on \w{3} \d+, \d{4}\.$/);
+    fireEvent.click(dialog.getByRole("button", { name: "90 days" }));
+    expect(dialog.getByRole("group", { name: "Expires" })).toHaveAccessibleDescription(/^Expires on \w{3} \d+(, \d{4})?\.$/);
     fireEvent.click(dialog.getByRole("button", { name: "Create token" }));
     await screen.findByRole("dialog", { name: "Token created" });
     expect(api.createAccessToken).toHaveBeenLastCalledWith({
       name: "Cursor on laptop",
       scopes: ["read", "write"],
-      expiresInDays: 365,
+      expiresInDays: 90,
     });
+  });
+
+  // Backend TAS-402: the lifetime is 1..`policy.maxLifetimeDays`; "1 year" was
+  // a 400 on every click on the stand. The presets up to the maximum, and the
+  // maximum itself when it is none of them.
+  it.each([
+    [90, ["7 days", "30 days", "90 days"], "30 days"],
+    [60, ["7 days", "30 days", "60 days"], "30 days"],
+    [365, ["7 days", "30 days", "90 days", "365 days"], "30 days"],
+    [14, ["7 days", "14 days"], "14 days"],
+  ])("offers the lifetimes a policy of %i days allows", async (maxLifetimeDays, offered, chosen) => {
+    policy = { maxLifetimeDays, maxActiveTokens: 10 };
+    draw();
+    const dialog = await openDialog();
+    const group = dialog.getByRole("group", { name: "Expires" });
+    expect(within(group).getAllByRole("button").map((button) => button.textContent)).toEqual(offered);
+    expect(within(group).getByRole("button", { name: chosen })).toHaveAttribute("aria-pressed", "true");
+    expect(within(group).queryByRole("button", { name: "1 year" })).toBeNull();
+  });
+
+  it("offers no lifetime and sends none when the list stated no policy", async () => {
+    policy = null;
+    draw();
+    const dialog = await openDialog();
+    expect(dialog.queryByRole("group", { name: "Expires" })).toBeNull();
+    expect(dialog.queryByText(/^Expires on/)).toBeNull();
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "No policy" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Create token" }));
+    await screen.findByRole("dialog", { name: "Token created" });
+    expect(api.createAccessToken).toHaveBeenLastCalledWith({ name: "No policy", scopes: ["read"] });
   });
 
   it("shows the value once, with Copy and the snippets carrying it, and leaves nothing of it after Done", async () => {
@@ -309,9 +358,11 @@ describe("creating a token", () => {
     expect(JSON.stringify({ ...window.sessionStorage })).not.toContain(SECRET);
     expect(window.location.href).not.toContain(SECRET);
     for (const spy of logs) expect(JSON.stringify(spy.mock.calls)).not.toContain(SECRET);
-    // The list was read again, and the new token is in it by its prefix only.
-    expect(api.listAccessTokens).toHaveBeenCalledTimes(2);
+    // The 201's token is at the top of the list, by its prefix only, and the
+    // list was not read again for it.
+    expect(api.listAccessTokens).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("Cursor on laptop")).toBeVisible();
+    expect(rows()[0].querySelector(".token-name")).toHaveTextContent("Cursor on laptop");
     // Focus is back on the control that opened the dialog.
     await waitFor(() => expect(create).toHaveFocus());
     for (const spy of logs) spy.mockRestore();
@@ -402,14 +453,14 @@ describe("creating a token", () => {
   });
 
   it("names the value's field as the list names a token whose name came back blank", async () => {
-    api.createAccessToken.mockResolvedValueOnce({ token: { ...seeded()[0], id: "token-new", name: "  " }, secret: SECRET });
+    api.createAccessToken.mockResolvedValueOnce({ token: { ...weekly(), id: "token-new", name: "  " }, secret: SECRET });
     draw();
     const shown = await createAndShow();
     expect(shown.getByRole("textbox", { name: "Unnamed token" })).toHaveValue(SECRET);
   });
 
   it("says a created token whose value did not come back, by the same stand-in name, never in empty quotes", async () => {
-    api.createAccessToken.mockResolvedValueOnce({ token: { ...seeded()[0], id: "token-new", name: "" }, secret: "" });
+    api.createAccessToken.mockResolvedValueOnce({ token: { ...weekly(), id: "token-new", name: "" }, secret: "" });
     draw();
     const shown = await createAndShow();
     expect(
@@ -420,23 +471,38 @@ describe("creating a token", () => {
 
   it.each([
     [
-      "the 429 with the server's wait",
-      refusal("Too many requests", {
+      "the 429 with the server's wait, in minutes",
+      refusal("Token issuance rate limit reached; try later", {
         status: 429,
         code: "RESOURCE_EXHAUSTED",
         requestId: "req-1",
-        details: { retryAfterSeconds: "42" },
+        details: { retryAfterSeconds: "3412" },
       }),
-      "Too many tokens were created just now. Try again in 42 seconds.",
+      "Too many tokens were created recently. Try again in 57 minutes.",
     ],
     [
       "the 429 without one",
-      refusal("Too many requests", { status: 429, code: "RESOURCE_EXHAUSTED", requestId: "req-1" }),
-      "Too many tokens were created just now. Try again later.",
+      refusal("Token issuance rate limit reached; try later", { status: 429, code: "RESOURCE_EXHAUSTED", requestId: "req-1" }),
+      "Too many tokens were created recently. Try again later.",
     ],
     [
-      "the token-scope 403",
-      refusal("insufficient_scope", { status: 403, code: "insufficient_scope", requestId: "req-1" }),
+      "the cap on active tokens",
+      refusal("Active token limit reached", {
+        status: 400,
+        code: "FAILED_PRECONDITION",
+        requestId: "req-1",
+        details: { reason: "ACTIVE_TOKEN_LIMIT", limit: "10" },
+      }),
+      "You already have 10 active tokens. Revoke one to create another.",
+    ],
+    [
+      "the session-only 403",
+      refusal("Session required", {
+        status: 403,
+        code: "PERMISSION_DENIED",
+        requestId: "req-1",
+        details: { reason: "SESSION_REQUIRED" },
+      }),
       "Tokens can be created only from a signed-in session, not with another token.",
     ],
     ["any other refusal", refusal("Name is already taken", { status: 409, code: "ALREADY_EXISTS", requestId: "req-1" }), "Name is already taken"],
@@ -468,7 +534,7 @@ describe("creating a token", () => {
     expect(submit).toHaveAttribute("aria-disabled", "true");
     expect(submit).toHaveAttribute("data-busy", "true");
     expect(api.createAccessToken).toHaveBeenCalledTimes(1);
-    await act(async () => answer({ token: { ...seeded()[0], id: "token-new" }, secret: SECRET }));
+    await act(async () => answer({ token: { ...weekly(), id: "token-new" }, secret: SECRET }));
     expect(await screen.findByRole("dialog", { name: "Token created" })).toBeInTheDocument();
   });
 
@@ -487,7 +553,7 @@ describe("creating a token", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.getByRole("dialog", { name: "New access token" })).toBeInTheDocument();
 
-    await act(async () => answer({ token: { ...seeded()[0], id: "token-new" }, secret: SECRET }));
+    await act(async () => answer({ token: { ...weekly(), id: "token-new" }, secret: SECRET }));
     expect(await screen.findByRole("dialog", { name: "Token created" })).toBeInTheDocument();
   });
 
@@ -522,7 +588,7 @@ describe("creating a token", () => {
         expiresAt: iso(30 * DAY),
         lastUsedAt: null,
       };
-      tokens = [...tokens, token];
+      tokens = [token, ...tokens];
       const reads = api.listAccessTokens.mock.calls.length;
       await act(async () => answer({ token, secret: SECRET }));
 
@@ -530,10 +596,12 @@ describe("creating a token", () => {
         "The token “Cursor on laptop” was created, but the dialog closed before its value was shown. Revoke it and create another.";
       expect((await screen.findByText(sentence)).closest('[role="status"]')).not.toBeNull();
       expect(screen.queryByRole("dialog")).toBeNull();
-      // The list was read again, and the row is there, by its prefix only.
-      await waitFor(() => expect(api.listAccessTokens.mock.calls.length).toBeGreaterThan(reads));
+      // The row is there, at the top, by its prefix only — the answer's
+      // token, with no re-read.
       expect(await screen.findByText("Cursor on laptop")).toBeVisible();
       expect(rows()).toHaveLength(3);
+      expect(rows()[0].querySelector(".token-name")).toHaveTextContent("Cursor on laptop");
+      expect(api.listAccessTokens.mock.calls.length).toBe(reads);
 
       // And the row says it in sight, under its own content, and no other row does.
       expect(within(rowOf("Cursor on laptop")).getByText(UNSEEN_LINE)).toHaveClass("token-unseen");
@@ -576,7 +644,7 @@ describe("creating a token", () => {
       expiresAt: iso(30 * DAY),
       lastUsedAt: null,
     };
-    tokens = [...tokens, token];
+    tokens = [token, ...tokens];
     await act(async () => answer({ token, secret: SECRET }));
     const line = await screen.findByText(UNSEEN_LINE);
     return within(line.closest("li") as HTMLElement);
@@ -610,7 +678,7 @@ describe("creating a token", () => {
     expect(screen.queryByText(UNSEEN_LINE)).toBeNull();
 
     // And it does not come back if the same id is listed again: the memory went with the row.
-    tokens = [...tokens, { ...seeded()[1], id: "token-new", name: "Cursor on laptop" }];
+    tokens = [{ ...seeded()[0], id: "token-new", name: "Cursor on laptop" }, ...tokens];
     await act(async () => {
       await client.invalidateQueries({ queryKey: ["access-tokens"] });
     });
@@ -646,11 +714,12 @@ describe("revoking a token", () => {
     expect(api.revokeAccessToken).not.toHaveBeenCalled();
   });
 
-  it("takes the row out at once, puts focus on the row that took its place, and says it was revoked", async () => {
+  it("takes the row out at once, puts focus on the row that took its place, and says it was revoked, with no re-read", async () => {
     let answer: () => void = () => {};
     api.revokeAccessToken.mockReturnValueOnce(new Promise<void>((resolve) => (answer = resolve)));
     draw();
     await screen.findByText("Claude Code on laptop");
+    const reads = api.listAccessTokens.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Revoke Claude Code on laptop" }));
     fireEvent.click(screen.getByRole("button", { name: "Revoke token" }));
 
@@ -659,14 +728,15 @@ describe("revoking a token", () => {
     expect(screen.getByRole("button", { name: "Revoke Weekly report script" })).toHaveFocus();
     expect(api.revokeAccessToken).toHaveBeenCalledWith("token-newer");
 
-    tokens = tokens.filter((token) => token.id !== "token-newer");
     await act(async () => answer());
     expect(await screen.findByText("The token “Claude Code on laptop” was revoked.")).toBeInTheDocument();
     expect(rows()).toHaveLength(1);
+    // A revoke is 204 for any id (backend TAS-401): its success says it all.
+    expect(api.listAccessTokens.mock.calls.length).toBe(reads);
   });
 
   it("gives focus to Create token when the last row goes", async () => {
-    tokens = [seeded()[0]];
+    tokens = [weekly()];
     draw();
     await screen.findByText("Weekly report script");
     fireEvent.click(screen.getByRole("button", { name: "Revoke Weekly report script" }));
@@ -696,28 +766,29 @@ describe("revoking a token", () => {
     // Said once in the section's status region, not by the note itself.
     expect(screen.getAllByText("The token “Claude Code on laptop” was not revoked.")).toHaveLength(2);
     expect(rows()).toHaveLength(2);
+    // Back where it was, not at the end.
+    expect(rows()[0].querySelector(".token-name")).toHaveTextContent("Claude Code on laptop");
   });
 
-  it("keeps the row gone and says so when the server no longer has the token", async () => {
+  it("says the session-only 403 under the row in plain words", async () => {
     api.revokeAccessToken.mockRejectedValueOnce(
-      refusal("Access token not found", { status: 404, code: "NOT_FOUND", requestId: "req-404" }),
+      refusal("Session required", {
+        status: 403,
+        code: "PERMISSION_DENIED",
+        requestId: "req-403",
+        details: { reason: "SESSION_REQUIRED" },
+      }),
     );
     draw();
     await screen.findByText("Claude Code on laptop");
-    // The re-read never answers, so what is drawn is the section's own doing.
-    hangReads();
-    const reads = api.listAccessTokens.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Revoke Claude Code on laptop" }));
     fireEvent.click(screen.getByRole("button", { name: "Revoke token" }));
 
-    const said = await screen.findByText("The token “Claude Code on laptop” is already gone.");
-    expect(said.closest('[role="status"]')).not.toBeNull();
-    expect(screen.queryByText("Claude Code on laptop")).toBeNull();
-    expect(screen.queryByText(/was not revoked/)).toBeNull();
-    expect(screen.queryByText("Access token not found")).toBeNull();
-    expect(rows()).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Revoke Weekly report script" })).toHaveFocus();
-    // And the list is asked again.
-    await waitFor(() => expect(api.listAccessTokens.mock.calls.length).toBeGreaterThan(reads));
+    const row = within(
+      (await screen.findAllByText("The token “Claude Code on laptop” was not revoked.")).find((node) => node.closest("li"))!
+        .closest("li") as HTMLElement,
+    );
+    expect(row.getByText("Tokens can be revoked only from a signed-in session, not with another token.")).toBeVisible();
+    expect(row.getByRole("button", { name: /req-403/ })).toBeVisible();
   });
 });

@@ -43,7 +43,7 @@ const { fakeApi, state } = vi.hoisted(() => {
       };
     },
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0, unreadCount: 0 }),
-    listAccessTokens: async () => [],
+    listAccessTokens: async () => ({ tokens: [], policy: { maxLifetimeDays: 90, maxActiveTokens: 10 } }),
   };
   return { fakeApi: api as unknown as TaskaApi, state };
 });

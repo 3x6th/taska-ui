@@ -1,11 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
 import { refusalWords } from "../lib/projectArchive";
 import type { AddIssueWorklogInput, UpdateIssueWorklogInput } from "../api/TaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE, WORKLOG_COMMENT_MAX_LENGTH } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
-import type { IssueWorklog, User } from "../domain/types";
+import type { IssueWorklog, IssueWorklogPage, User } from "../domain/types";
 import { personFor } from "../lib/people";
 import { formatDuration } from "../lib/planning";
 import {
@@ -13,21 +13,28 @@ import {
   addInputOf,
   applyWorklogUpdate,
   draftOf,
+  drawnWorklogs,
   formatWorkDate,
   hasProblems,
   localDateOnly,
-  sortWorklogs,
   totalSpentMinutes,
   updateInputOf,
+  withWorklogAdded,
+  withWorklogRemoved,
+  withWorklogReplaced,
+  withWriteAnswer,
   worklogDraftProblems,
+  worklogsComplete,
+  worklogsTotalCount,
   type WorklogDraft,
   type WorklogDraftField,
   type WorklogDraftProblems,
 } from "../lib/worklog";
 import { Avatar } from "./Avatar";
 import { ErrorNote } from "./ErrorNote";
-import { issueWorklogsKey, issueWorklogsOptions } from "./issueWorklogsQuery";
+import { issueWorklogsKey, issueWorklogsOptions, type IssueWorklogPages } from "./issueWorklogsQuery";
 import { RequestId } from "./RequestId";
+import { Unknown } from "./Unknown";
 
 type Person = Pick<User, "id" | "displayName" | "color" | "avatarUrl">;
 
@@ -50,6 +57,12 @@ interface WorklogNotice {
 /**
  * The issue panel's work log (TAS-251, backend PR #178): who logged how much
  * time on which day, a total for the entries listed, and a form to log more.
+ *
+ * **Paged** since backend TAS-421 (DESIGN.md §4.24): 100 entries a page. The
+ * pill is the server's `totalCount`, never the rows drawn; the total time is
+ * drawn only once the last page has said `hasMore: false`, because no route
+ * states an issue's total and a sum over part of the list is not one. Past a
+ * page the list ends in §4.9's foot — "{n} of {total} shown" and "Show more".
  *
  * Gated as issue-service gates it (`issue.allowed-roles` at the PR head): every
  * member reads it; ADMIN and MEMBER log time and change their own entries; only
@@ -101,10 +114,18 @@ export function IssueWorklogSection({
   const today = localDateOnly();
 
   const read = issueWorklogsOptions(projectId, issueId);
-  const worklogsQuery = useQuery({ ...read, retryOnMount: !prefetched });
-  const undeployed = worklogsQuery.isError && isUndeployedRoute(worklogsQuery.error, UNDEPLOYED_ROUTE_MESSAGE);
-  const worklogs = useMemo(() => sortWorklogs(worklogsQuery.data ?? []), [worklogsQuery.data]);
+  const worklogsQuery = useInfiniteQuery({ ...read, retryOnMount: !prefetched });
+  // A failed "Show more" is not a failed read: the pages already drawn stay,
+  // and the foot says what did not load (§4.9).
+  const loadFailed = worklogsQuery.isError && !worklogsQuery.isFetchNextPageError;
+  const undeployed = loadFailed && isUndeployedRoute(worklogsQuery.error, UNDEPLOYED_ROUTE_MESSAGE);
+  const pages = useMemo(() => worklogsQuery.data?.pages ?? [], [worklogsQuery.data]);
+  const worklogs = useMemo(() => drawnWorklogs(pages), [pages]);
+  const totalCount = worklogsQuery.isSuccess || pages.length ? worklogsTotalCount(pages) : null;
+  // The sum only when every entry is here (§4.24): the last page said so.
+  const complete = worklogsComplete(pages);
   const total = totalSpentMinutes(worklogs);
+  const hasMore = worklogsQuery.hasNextPage;
 
   const [draft, setDraft] = useState<WorklogDraft>(() => emptyDraft(today));
   const [addAttempted, setAddAttempted] = useState(false);
@@ -138,9 +159,10 @@ export function IssueWorklogSection({
   };
   const failed = (sentence: string, error: unknown) => setNotice(noticeOf(sentence, error));
 
-  const setList = (update: (current: IssueWorklog[]) => IssueWorklog[]) =>
-    queryClient.setQueryData<IssueWorklog[]>(issueWorklogsKey(projectId, issueId), (current) =>
-      current ? update(current) : current,
+  /** Every loaded page through one update — an optimistic write touches the count on each (§4.24). */
+  const setPages = (update: (current: IssueWorklogPage[]) => IssueWorklogPage[]) =>
+    queryClient.setQueryData<IssueWorklogPages>(issueWorklogsKey(projectId, issueId), (current) =>
+      current ? { ...current, pages: update(current.pages) } : current,
     );
 
   /**
@@ -148,9 +170,9 @@ export function IssueWorklogSection({
    * only the issue. The board is not read again: a card draws nothing a worklog
    * changes (TAS-202), and its `version` is never sent anywhere. The issue's
    * re-read is awaited, so a queued edit leaves with the version it brought.
-   * Then the list, but only once no other worklog write of this issue is in
-   * flight — a re-read landing between two optimistic writes would take the
-   * second one's row off the screen.
+   * Then the list — every loaded page, usually one — but only once no other
+   * worklog write of this issue is in flight: a re-read landing between two
+   * optimistic writes would take the second one's row off the screen.
    */
   const settleIssue = () => queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] });
   const settleList = () => {
@@ -168,9 +190,10 @@ export function IssueWorklogSection({
       setNotice(null);
       await queryClient.cancelQueries({ queryKey: read.queryKey });
       const stamp = new Date().toISOString();
-      setList((current) => [
-        ...current,
-        {
+      // Counted at once on every page (the pill moves); drawn only if it sorts
+      // among the entries already drawn (`drawnWorklogs`).
+      setPages((current) =>
+        withWorklogAdded(current, {
           id: optimisticId,
           issueId,
           projectId,
@@ -180,11 +203,11 @@ export function IssueWorklogSection({
           comment: input.comment ?? null,
           createdAt: stamp,
           updatedAt: stamp,
-        },
-      ]);
+        }),
+      );
     },
     onError: (error, { draft: sent, optimisticId }) => {
-      setList((current) => current.filter((item) => item.id !== optimisticId));
+      setPages((current) => withWorklogRemoved(current, optimisticId));
       // The reader's entry goes back in the boxes — unless they have started a
       // new one since, which is theirs too and is not overwritten.
       setDraft((current) =>
@@ -193,7 +216,7 @@ export function IssueWorklogSection({
       failed("Your work log entry was not saved.", error);
     },
     onSuccess: async (saved, { optimisticId }) => {
-      setList((current) => current.map((item) => (item.id === optimisticId ? saved : item)));
+      setPages((current) => withWorklogReplaced(current, optimisticId, (item) => withWriteAnswer(item, saved)));
       await settleIssue();
     },
     onSettled: settleList,
@@ -207,17 +230,18 @@ export function IssueWorklogSection({
     onMutate: async ({ worklog, input }) => {
       setNotice(null);
       await queryClient.cancelQueries({ queryKey: read.queryKey });
-      setList((current) => current.map((item) => (item.id === worklog.id ? applyWorklogUpdate(item, input) : item)));
+      setPages((current) => withWorklogReplaced(current, worklog.id, (item) => applyWorklogUpdate(item, input)));
     },
     onError: (error, { worklog, draft: sent }) => {
-      setList((current) => current.map((item) => (item.id === worklog.id ? worklog : item)));
+      setPages((current) => withWorklogReplaced(current, worklog.id, () => worklog));
       // Back into the editor with what the reader typed: the change is their
       // work, and a refusal is no reason to make them type it again.
       setEditing({ id: worklog.id, draft: sent, attempted: false });
       failed("Your change to the work log entry was not saved.", error);
     },
     onSuccess: async (saved) => {
-      setList((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+      // The answer leaves `author` out: the row keeps the one it knew.
+      setPages((current) => withWorklogReplaced(current, saved.id, (item) => withWriteAnswer(item, saved)));
       await settleIssue();
     },
     onSettled: settleList,
@@ -230,10 +254,12 @@ export function IssueWorklogSection({
     onMutate: async (worklog) => {
       setNotice(null);
       await queryClient.cancelQueries({ queryKey: read.queryKey });
-      setList((current) => current.filter((item) => item.id !== worklog.id));
+      setPages((current) => withWorklogRemoved(current, worklog.id));
     },
     onError: (error, worklog) => {
-      setList((current) => (current.some((item) => item.id === worklog.id) ? current : [...current, worklog]));
+      setPages((current) =>
+        current.some((page) => page.items.some((item) => item.id === worklog.id)) ? current : withWorklogAdded(current, worklog),
+      );
       failed("The work log entry was not deleted.", error);
     },
     onSuccess: settleIssue,
@@ -307,7 +333,28 @@ export function IssueWorklogSection({
   // refusals are: its sentence, then the server's. No live region: a failed
   // read is the section's state on opening, not an answer to something the
   // reader did — the same as the comments' read failure.
-  const readFailure = worklogsQuery.isError ? noticeOf("The work log could not be loaded.", worklogsQuery.error) : null;
+  const readFailure = loadFailed ? noticeOf("The work log could not be loaded.", worklogsQuery.error) : null;
+
+  /**
+   * «Show more» (§4.9, §4.24): the next page, appended in the server's order
+   * without repeats; focus goes to the first new row (a script target, not a
+   * Tab stop), the scroll stays. A press while one is out does nothing. A
+   * refusal is said in the section's notice slot with its request id, and
+   * focus stays on the button.
+   */
+  const footId = `${formId}-more`;
+  const showMore = async () => {
+    if (worklogsQuery.isFetchingNextPage) return;
+    setNotice(null);
+    const before = new Set(worklogs.map((item) => item.id));
+    const result = await worklogsQuery.fetchNextPage();
+    if (result.isFetchNextPageError) {
+      failed("More work log entries could not be loaded.", result.error);
+      return;
+    }
+    const next = drawnWorklogs(result.data?.pages ?? []).find((item) => !before.has(item.id));
+    if (next) pendingFocus.current = `row:${next.id}`;
+  };
 
   return (
     <section aria-labelledby={`${formId}-heading`} className="issue-worklogs">
@@ -316,9 +363,19 @@ export function IssueWorklogSection({
             leaves with the button that removed it. */}
         <h3 id={`${formId}-heading`} ref={headingRef} tabIndex={-1}>
           Work log
-          {worklogs.length ? <span className="count-pill">{worklogs.length}</span> : null}
+          {/* The server's count of every entry, not the rows drawn (§4.24);
+              unstated, Unknown — and then there is no sum either. */}
+          {totalCount === null ? (
+            pages.length ? (
+              <span className="count-pill">
+                <Unknown />
+              </span>
+            ) : null
+          ) : totalCount > 0 ? (
+            <span className="count-pill">{totalCount}</span>
+          ) : null}
         </h3>
-        {worklogs.length ? <p className="worklog-total">{formatDuration(total)} logged</p> : null}
+        {complete && worklogs.length ? <p className="worklog-total">{formatDuration(total)} logged</p> : null}
       </div>
 
       {showForm ? (
@@ -385,7 +442,7 @@ export function IssueWorklogSection({
       ) : null}
 
       {worklogsQuery.isPending ? <p className="issue-links-empty">Loading work log</p> : null}
-      {worklogsQuery.isSuccess && worklogs.length === 0 ? <p className="issue-links-empty">No work logged yet</p> : null}
+      {pages.length && worklogs.length === 0 && totalCount === 0 ? <p className="issue-links-empty">No work logged yet</p> : null}
 
       {worklogs.length ? (
         <ul className="worklog-list">
@@ -393,7 +450,9 @@ export function IssueWorklogSection({
             const pending = worklog.id.startsWith(optimisticWorklogPrefix);
             const mine = Boolean(currentUserId) && worklog.authorUserId === currentUserId;
             const canManage = !pending && (mine ? canLog : isProjectAdmin);
-            const author = personFor(worklog.authorUserId, null, userById);
+            // The row's own summary — a former member's too — then the member
+            // list, then "Unknown" (§4.21, TAS-421).
+            const author = personFor(worklog.authorUserId, worklog.author, userById);
             // An editor the archive caught open stays open, read-only (§5.7).
             const isEditing = (canManage || archived) && !pending && editing?.id === worklog.id;
             const confirming = canManage && confirmingId === worklog.id;
@@ -421,6 +480,26 @@ export function IssueWorklogSection({
               />
             );
           })}
+          {hasMore ? (
+            // §4.9's foot, the last item of the list: how many of how many are
+            // drawn, and the button that reads the next page.
+            <li className="list-more">
+              <span className="list-more-count" id={footId}>
+                {worklogs.length} of {totalCount === null ? <Unknown /> : totalCount} shown
+              </span>
+              <button
+                aria-describedby={footId}
+                aria-disabled={worklogsQuery.isFetchingNextPage || undefined}
+                aria-label="Show more work log entries"
+                className="secondary-button compact-button list-more-button"
+                data-busy={worklogsQuery.isFetchingNextPage || undefined}
+                onClick={() => void showMore()}
+                type="button"
+              >
+                Show more
+              </button>
+            </li>
+          ) : null}
         </ul>
       ) : null}
     </section>
@@ -476,8 +555,12 @@ function WorklogRow({
   const problems = editing?.attempted ? worklogDraftProblems(editing.draft, today, worklog.workDate) : {};
 
   return (
-    <li className={`worklog-row${pending ? " is-pending" : ""}`}>
-      <Avatar size="sm" user={author} />
+    // Focusable from script only: where focus lands on the first row a «Show
+    // more» brought in (§4.24) — not a Tab stop.
+    <li className={`worklog-row${pending ? " is-pending" : ""}`} ref={registerFocusable(`row:${worklog.id}`)} tabIndex={-1}>
+      {/* Labelled, so an author nobody names is an "Unknown" circle and not
+          the "Unassigned" an unlabelled empty one says (§4.24). */}
+      <Avatar label="Unknown" size="sm" user={author} />
       {/* Esc closes an open question from anywhere in the row's text column —
           the strip's two answers, and the Delete that asked, which Shift+Tab
           from Cancel lands on (§4.22). On the strip alone it did nothing there. */}

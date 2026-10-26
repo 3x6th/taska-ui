@@ -1,4 +1,4 @@
-import { isInsufficientScope, isRateLimited, type AccessTokenExpiryDays } from "../../api/accessTokens";
+import { activeTokenLimitOf, isActiveTokenLimit, isRateLimited, isSessionRequired } from "../../api/accessTokens";
 import { apiErrorFacts } from "../../api/errors";
 import type { AccessToken } from "../../domain/types";
 import { formatDayWithYearIfOther } from "../../lib/format";
@@ -9,7 +9,7 @@ import { retryAfterSeconds } from "../admin/users";
  * token's access, its dates, a lifetime, and the refusals said in plain text.
  */
 
-export const TOO_MANY_TOKENS_TEXT = "Too many tokens were created just now.";
+export const TOO_MANY_TOKENS_TEXT = "Too many tokens were created recently.";
 export const SESSION_ONLY_CREATE_TEXT = "Tokens can be created only from a signed-in session, not with another token.";
 export const SESSION_ONLY_REVOKE_TEXT = "Tokens can be revoked only from a signed-in session, not with another token.";
 
@@ -25,9 +25,9 @@ export function accessTokenAccessLabel(scopes: readonly string[]): string {
   return distinct.length ? distinct.join(", ") : "No access stated";
 }
 
-/** "7 days" … "1 year". */
-export function expiryLabel(days: AccessTokenExpiryDays): string {
-  return days === 365 ? "1 year" : `${days} days`;
+/** "7 days", "30 days", "90 days" — and a policy's own maximum the same way: "60 days", "1 day". */
+export function expiryLabel(days: number): string {
+  return `${days} ${days === 1 ? "day" : "days"}`;
 }
 
 /** `formatDayWithYearIfOther`, or `null` for a date nobody can read — never a thrown `RangeError`. */
@@ -67,43 +67,51 @@ export function accessTokenExpiryText(token: Pick<AccessToken, "expiresAt">, now
 }
 
 /** The day a lifetime chosen now ends on, for the create form's line under the choice. */
-export function expiryDayFromNow(days: AccessTokenExpiryDays, now: Date = new Date()): string {
+export function expiryDayFromNow(days: number, now: Date = new Date()): string {
   return formatDayWithYearIfOther(new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString(), now);
 }
 
 /**
  * The 429's sentence, with the wait the server stated in
- * `details.retryAfterSeconds` — the invitation resend's reading and its unit
- * words (`src/screens/admin/users.ts`), no countdown — or "later" when it
- * stated none: the gateway's window is not specified (TAS-402), so no number
- * of this build's own stands in for it.
+ * `details.retryAfterSeconds` (up to an hour: five attempts an hour, backend
+ * TAS-402) said in whole minutes, rounded up — "1 minute", "57 minutes", never
+ * "3412 seconds" — and no countdown; "later" when it stated none.
  */
 export function tooManyTokensText(error: unknown): string {
   const seconds = retryAfterSeconds(error);
+  const minutes = seconds === null ? null : Math.max(1, Math.ceil(seconds / 60));
   const wait =
-    seconds === null ? "Try again later." : `Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+    minutes === null ? "Try again later." : `Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
   return `${TOO_MANY_TOKENS_TEXT} ${wait}`;
 }
 
 /**
- * Why a token was not created: the two refusals the story names in plain
- * words — creating too often (429), and asking with a token rather than a
- * signed-in session (403 `insufficient_scope`) — and otherwise the server's
- * own words, which is what every other refusal in the product shows.
+ * The cap on active tokens (400 `FAILED_PRECONDITION`, `ACTIVE_TOKEN_LIMIT`),
+ * with the number the server stated in `details.limit`; without one the
+ * sentence says the same thing without a number of this build's own.
+ */
+export function activeTokenLimitText(error: unknown): string {
+  const limit = activeTokenLimitOf(error);
+  return limit === null
+    ? "You already have as many active tokens as you can. Revoke one to create another."
+    : `You already have ${limit} active ${limit === 1 ? "token" : "tokens"}. Revoke one to create another.`;
+}
+
+/**
+ * Why a token was not created: the refusals with a sentence of their own —
+ * creating too often (429), the cap on active tokens, and asking with a token
+ * rather than a signed-in session (403 `SESSION_REQUIRED`) — and otherwise the
+ * server's own words, which is what every other refusal in the product shows.
  */
 export function createRefusalText(error: unknown): string {
   if (isRateLimited(error)) return tooManyTokensText(error);
-  if (isInsufficientScope(error)) return SESSION_ONLY_CREATE_TEXT;
+  if (isActiveTokenLimit(error)) return activeTokenLimitText(error);
+  if (isSessionRequired(error)) return SESSION_ONLY_CREATE_TEXT;
   return apiErrorFacts(error).message ?? "The token was not created.";
 }
 
-/** The server's words under "The token … was not revoked.", in plain words for the token-scope 403. */
+/** The server's words under "The token … was not revoked.", in plain words for the session-only 403. */
 export function revokeRefusalWords(error: unknown): string | null {
-  if (isInsufficientScope(error)) return SESSION_ONLY_REVOKE_TEXT;
+  if (isSessionRequired(error)) return SESSION_ONLY_REVOKE_TEXT;
   return apiErrorFacts(error).message;
-}
-
-/** Newest first, by `createdAt`; the server's order is not specified (TAS-402). */
-export function sortAccessTokens(tokens: readonly AccessToken[]): AccessToken[] {
-  return [...tokens].sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
 }
