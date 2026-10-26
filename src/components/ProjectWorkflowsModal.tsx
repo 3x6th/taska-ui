@@ -44,6 +44,7 @@ import {
   isIssueCountRefusal,
   issueCountOf,
   issueCountWords,
+  namedStatusKeys,
   nextTransitionSortOrder,
   normalizeStatusKey,
   orderWorkflowEntries,
@@ -1512,10 +1513,24 @@ function TargetSelect({
 }
 
 /**
+ * "{KEY} is not a status of {workflow}, so its issues cannot be moved from
+ * here." — issues a refusal names in `details.statusKeys` that sit in a status
+ * the workflow does not have: no target of a delete reaches them, so the strip
+ * that says this offers no answer.
+ */
+const strandedSentence = (keys: readonly string[], workflowName: string) =>
+  `${andList(keys)} ${keys.length === 1 ? "is not a status" : "are not statuses"} of ${workflowName}, so ${
+    keys.length === 1 ? "its" : "their"
+  } issues cannot be moved from here.`;
+
+/**
  * Delete status (§4.28): the status and every transition from or to it. A
  * status with issues is refused with their count, and the strip then asks
  * where they go — any other status of this workflow — and sends the delete
- * again with that target.
+ * again with that target. issue-service counts every issue of the workflow's
+ * types in a status it will not keep, those already outside the workflow
+ * included; when `details.statusKeys` names such a status, a target cannot
+ * help, and the strip says so and offers no answer, as the workflow's does.
  */
 function DeleteStatusStrip({
   id,
@@ -1540,27 +1555,34 @@ function DeleteStatusStrip({
   const options = others.map((item) => ({ key: item.statusKey, label: statusLabel(item.statusKey, workflow.statuses) }));
   const chosen = options.find((option) => option.key === target);
   const count = refusal ? issueCountOf(refusal) : null;
+  const stranded = refusal
+    ? namedStatusKeys(apiErrorFacts(refusal).details).filter((key) => key !== status.statusKey)
+    : [];
+  const left = `${count === null ? "Issues" : issueCountWords(count)} would be left in a status this workflow no longer has.`;
 
   return (
     <ConfirmStrip
       {...formProps}
       answerLabel={refusal ? "Move and delete" : "Delete status"}
       id={id}
-      onAnswer={() =>
-        send({
-          kind: "delete-status",
-          workflowId: workflow.id,
-          statusId: status.id,
-          params: { version: versionOf(workflow), ...(refusal && chosen ? { targetStatusKey: chosen.key } : {}) },
-          said: {
-            done:
-              refusal && chosen
-                ? `Status ${label} deleted. Its issues moved to ${chosen.label}.`
-                : `Status ${label} deleted, with its transitions.`,
-            unread: `Status ${label} was deleted, but this list could not be read again. Reopen Workflows to see it.`,
-            staleIn: workflowName,
-          },
-        })
+      onAnswer={
+        stranded.length
+          ? null
+          : () =>
+              send({
+                kind: "delete-status",
+                workflowId: workflow.id,
+                statusId: status.id,
+                params: { version: versionOf(workflow), ...(refusal && chosen ? { targetStatusKey: chosen.key } : {}) },
+                said: {
+                  done:
+                    refusal && chosen
+                      ? `Status ${label} deleted. Its issues moved to ${chosen.label}.`
+                      : `Status ${label} deleted, with its transitions.`,
+                  unread: `Status ${label} was deleted, but this list could not be read again. Reopen Workflows to see it.`,
+                  staleIn: workflowName,
+                },
+              })
       }
       refusedSentence="The status was not deleted."
       sentence={`Delete ${label}? Its transitions are deleted with it.`}
@@ -1568,9 +1590,11 @@ function DeleteStatusStrip({
         refusal
           ? {
               refusal,
-              sentence: `${count === null ? "Issues" : issueCountWords(count)} would be left in a status this workflow no longer has. Move ${label}’s issues to delete it.`,
+              sentence: stranded.length ? left : `${left} Move ${label}’s issues to delete it.`,
               blocked: !chosen,
-              fields: (
+              fields: stranded.length ? (
+                <p className="workflow-confirm-note">{strandedSentence(stranded, workflowName)}</p>
+              ) : (
                 <TargetSelect
                   inFlight={formProps.inFlight}
                   label="Move its issues to"
@@ -1593,6 +1617,14 @@ function DeleteStatusStrip({
  * a status the shared default does not have are refused with their count, and
  * the strip then asks, per such status, which status of **both** workflows
  * they go to — or says there is none, and offers no answer.
+ *
+ * When every type has a workflow of its own the list leaves the shared
+ * default out, and its statuses are not known here. With `statusKeys` the
+ * sources are still known — each is a status the shared default lacks — so
+ * the targets offered are this workflow's other statuses, under a line that
+ * says the server takes only one both workflows have; it judges, in its own
+ * words. Without `statusKeys` not even the sources can be told, and the strip
+ * says that and offers no answer.
  */
 function DeleteWorkflowStrip({
   id,
@@ -1620,8 +1652,14 @@ function DeleteWorkflowStrip({
   const toMap = refusal ? statusesToMap(workflow, shared, apiErrorFacts(refusal).details) : null;
   // A refusal that names no status to map is not one a mapping answers: it is
   // said as a refusal, and the question stays as it was.
-  const step = toMap && (toMap.mappable.length > 0 || toMap.unmappable.length > 0) ? toMap : null;
-  const targets = statusesInBoth(workflow, shared).map((status) => ({
+  const step = toMap && (toMap.mappable.length > 0 || toMap.unmappable.length > 0 || toMap.undetermined) ? toMap : null;
+  const sources = new Set(step?.mappable.map((status) => status.statusKey) ?? []);
+  // A source is a status the shared default lacks, so without the shared
+  // default's statuses the candidates are the others of this workflow.
+  const candidates = shared
+    ? statusesInBoth(workflow, shared)
+    : statusesInColumnOrder(workflow.statuses).filter((status) => !sources.has(status.statusKey));
+  const targets = candidates.map((status) => ({
     key: status.statusKey,
     label: statusLabel(status.statusKey, workflow.statuses),
   }));
@@ -1629,8 +1667,11 @@ function DeleteWorkflowStrip({
   const sent = step ? Object.fromEntries(step.mappable.map((status) => [status.statusKey, chosen(status.statusKey)])) : {};
   const blocked = step ? step.mappable.some((status) => chosen(status.statusKey) === "") : false;
   const count = refusal ? issueCountOf(refusal) : null;
-  const nowhere = step && step.unmappable.length === 0 && targets.length === 0;
-  const answerable = !step || (step.unmappable.length === 0 && targets.length > 0);
+  // Every candidate gone is a true "no status in common" either way: without
+  // the shared default, each remaining status was named as one it lacks.
+  const nowhere = step && step.unmappable.length === 0 && !step.undetermined && targets.length === 0;
+  const answerable = !step || (step.unmappable.length === 0 && !step.undetermined && targets.length > 0);
+  const left = `${count === null ? "Issues" : issueCountWords(count)} would be left in statuses ${sharedName} does not have.`;
   const one = typeCount === 1;
   const back = typesInWords
     ? `${typesInWords} ${one ? "goes" : "go"} back to ${sharedName}.`
@@ -1662,33 +1703,41 @@ function DeleteWorkflowStrip({
         step
           ? {
               refusal,
-              sentence: `${count === null ? "Issues" : issueCountWords(count)} would be left in statuses ${sharedName} does not have. Choose where each status’s issues go.`,
+              sentence: answerable ? `${left} Choose where each status’s issues go.` : left,
               blocked,
               fields: (
                 <>
                   {step.unmappable.length ? (
+                    <p className="workflow-confirm-note">{strandedSentence(step.unmappable, name)}</p>
+                  ) : step.undetermined ? (
                     <p className="workflow-confirm-note">
-                      {`${andList(step.unmappable)} ${step.unmappable.length === 1 ? "is not a status" : "are not statuses"} of ${name}, so ${
-                        step.unmappable.length === 1 ? "its" : "their"
-                      } issues cannot be moved from here.`}
+                      The shared workflow is not in this list, so the statuses whose issues have to move cannot be told here.
                     </p>
                   ) : nowhere ? (
                     <p className="workflow-confirm-note">
                       {`${name} shares no status with ${sharedName}, so these issues have nowhere to go. Add one of ${sharedName}’s statuses to ${name} first.`}
                     </p>
                   ) : (
-                    step.mappable.map((status, index) => (
-                      <TargetSelect
-                        inFlight={formProps.inFlight}
-                        key={status.id}
-                        label={`Move ${statusLabel(status.statusKey, workflow.statuses)} issues to`}
-                        onChange={(key) => setMapping((current) => ({ ...current, [status.statusKey]: key }))}
-                        focusKey={index === 0 ? "step" : undefined}
-                        options={targets}
-                        register={formProps.register}
-                        value={chosen(status.statusKey)}
-                      />
-                    ))
+                    <>
+                      {shared ? null : (
+                        <p className="workflow-confirm-note">
+                          The shared workflow is not in this list, so its statuses are not known here. Choose one it also has:
+                          the server moves issues only to a status both workflows have.
+                        </p>
+                      )}
+                      {step.mappable.map((status, index) => (
+                        <TargetSelect
+                          inFlight={formProps.inFlight}
+                          key={status.id}
+                          label={`Move ${statusLabel(status.statusKey, workflow.statuses)} issues to`}
+                          onChange={(key) => setMapping((current) => ({ ...current, [status.statusKey]: key }))}
+                          focusKey={index === 0 ? "step" : undefined}
+                          options={targets}
+                          register={formProps.register}
+                          value={chosen(status.statusKey)}
+                        />
+                      ))}
+                    </>
                   )}
                 </>
               ),

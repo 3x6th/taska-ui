@@ -3442,10 +3442,15 @@ export class MockTaskaStore {
           const { createdAt: _createdAt, updatedAt: _updatedAt, ...workflow } = this.workflowFor(projectId, issueType);
           // `GetWorkflowForProject` reads only the visible transitions, and the
           // context's transitions carry no `hidden` at all (backend PR #208).
-          const transitions = workflow.transitions
-            .filter((transition) => !transition.hidden)
-            .map(({ hidden: _hidden, ...transition }) => transition);
-          return [issueType, { ...workflow, statuses: [...workflow.statuses], transitions }];
+          // Both by `sortOrder`, as its repositories read them (`ORDER BY
+          // sort_order ASC`): an edit renumbers a row in place (backend PR
+          // #225), and the panel's move buttons follow this order.
+          const bySortOrder = <T extends { sortOrder: number }>(items: readonly T[]) =>
+            [...items].sort((a, b) => a.sortOrder - b.sortOrder);
+          const transitions = bySortOrder(workflow.transitions.filter((transition) => !transition.hidden)).map(
+            ({ hidden: _hidden, ...transition }) => transition,
+          );
+          return [issueType, { ...workflow, statuses: bySortOrder(workflow.statuses), transitions }];
         }),
       ),
     };

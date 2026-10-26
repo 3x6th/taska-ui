@@ -865,6 +865,34 @@ describe("Delete status", () => {
     expect(within(strip).getByRole("combobox", { name: "Move its issues to" })).toBeVisible();
   });
 
+  // issue-service counts issues already outside the workflow too; a target
+  // moves only the deleted status's, so the move would be refused forever.
+  it("stops offering the move once the refusal names issues in a status the workflow does not have", async () => {
+    state.failQueue = [
+      refusal("Workflow statuses have 2 issues; supply a target status mapping", 400, "FAILED_PRECONDITION", {
+        issueCount: "2",
+        statusKeys: "IN_PROGRESS",
+      }),
+      refusal("Workflow statuses have 1 issues; supply a target status mapping", 400, "FAILED_PRECONDITION", {
+        issueCount: "1",
+        statusKeys: "BLOCKED_BY_QA",
+      }),
+    ];
+    const strip = await openStrip();
+    fireEvent.click(within(strip).getByRole("button", { name: "Delete status" }));
+    fireEvent.change(await within(strip).findByRole("combobox", { name: "Move its issues to" }), { target: { value: "TODO" } });
+    fireEvent.click(within(strip).getByRole("button", { name: "Move and delete" }));
+
+    await waitFor(() =>
+      expect(within(strip).getByRole("alert")).toHaveTextContent(/^1 issue would be left in a status this workflow no longer has\.$/),
+    );
+    expect(within(strip).getByText("BLOCKED_BY_QA is not a status of Development, so its issues cannot be moved from here.")).toBeVisible();
+    expect(within(strip).queryByRole("combobox")).toBeNull();
+    expect(within(strip).queryByRole("button", { name: /Move and delete|Delete status/ })).toBeNull();
+    await waitFor(() => expect(within(strip).getByRole("button", { name: "Cancel" })).toHaveFocus());
+    expect(state.writes).toHaveLength(2);
+  });
+
   it("says any other refusal in the strip, and Esc closes it with focus back on Delete", async () => {
     state.failQueue = [refusal("Workflow requires a TODO status and at least one visible transition", 400, "INVALID_ARGUMENT")];
     const strip = await openStrip();
@@ -981,6 +1009,56 @@ describe("Delete workflow", () => {
     ).toBeVisible();
     expect(within(strip).queryByRole("button", { name: /Move and delete|Delete workflow/ })).toBeNull();
     await waitFor(() => expect(within(strip).getByRole("button", { name: "Cancel" })).toHaveFocus());
+  });
+
+  // Every type with a workflow of its own: the list leaves the shared default out.
+  it("without the shared default in the list, offers its own other statuses and says the server takes only shared ones", async () => {
+    state.lists = [[withQa]];
+    state.failQueue = [issuesRefusal({ issueCount: "1", statusKeys: "QA" })];
+    state.answer = { workflow: sharedWorkflow, issueTypes: ["STORY"], shared: true };
+    const strip = await openStrip();
+    expect(strip).toHaveTextContent("Delete Development? Story goes back to the shared workflow.");
+    fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
+
+    expect(await within(strip).findByRole("alert")).toHaveTextContent(
+      "1 issue would be left in statuses the shared workflow does not have. Choose where each status’s issues go.",
+    );
+    expect(
+      within(strip).getByText(
+        "The shared workflow is not in this list, so its statuses are not known here. Choose one it also has: the server moves issues only to a status both workflows have.",
+      ),
+    ).toBeVisible();
+    expect(within(strip).queryByText(/shares no status/)).toBeNull();
+    const select = within(strip).getByRole("combobox", { name: "Move QA issues to" });
+    // QA is the status the server named as one the shared default lacks.
+    expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Choose a status",
+      "To Do",
+      "In Progress",
+      "Done",
+    ]);
+    fireEvent.change(select, { target: { value: "DONE" } });
+    fireEvent.click(within(strip).getByRole("button", { name: "Move and delete" }));
+
+    await waitFor(() => expect(state.writes).toHaveLength(2));
+    expect(state.writes[1].args).toEqual([PROJECT, "wf-own", { version: 1, statusMappings: { QA: "DONE" } }]);
+  });
+
+  it("without the shared default and without details, says the statuses to move cannot be told, and offers no answer", async () => {
+    state.lists = [[withQa]];
+    state.failQueue = [issuesRefusal(null)];
+    const strip = await openStrip();
+    fireEvent.click(within(strip).getByRole("button", { name: "Delete workflow" }));
+
+    expect(await within(strip).findByRole("alert")).toHaveTextContent(
+      /^Issues would be left in statuses the shared workflow does not have\.$/,
+    );
+    expect(
+      within(strip).getByText("The shared workflow is not in this list, so the statuses whose issues have to move cannot be told here."),
+    ).toBeVisible();
+    expect(within(strip).queryByText(/shares no status/)).toBeNull();
+    expect(within(strip).queryByRole("combobox")).toBeNull();
+    expect(within(strip).queryByRole("button", { name: /Move and delete|Delete workflow/ })).toBeNull();
   });
 
   it("says a refusal that names nothing to map as a refusal, and keeps the question", async () => {

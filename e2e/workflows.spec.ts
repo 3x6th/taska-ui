@@ -242,6 +242,31 @@ test("an ADMIN deletes an own workflow, mapping a status the shared default lack
   await expect(page.getByRole("region", { name: "Code Review column" })).toHaveCount(0);
 });
 
+/**
+ * The issue panel offers its moves in the order the project context sends
+ * them, which is `sortOrder` (backend repositories, `ORDER BY sort_order`): a
+ * transition moved in the dialog moves among the buttons. TAS-102 is a task in
+ * To Do, whose moves are Start Progress (10) and Close (50).
+ */
+test("moving a transition in the dialog moves it among an issue's move buttons", async ({ page }) => {
+  await openBoardAs(page, "anna@example.com");
+  const dialog = await openWorkflows(page);
+  const own = await makeWorkflow(page, dialog, "Development", "Task");
+
+  await own.getByRole("button", { name: "Edit To Do to Done", exact: true }).click();
+  const edit = own.getByRole("form", { name: "Edit To Do to Done" });
+  await edit.getByRole("combobox", { name: "Position" }).selectOption({ label: "First" });
+  await edit.getByRole("button", { name: "Save" }).click();
+  await expect(own.getByRole("button", { name: "Edit To Do to Done", exact: true })).toBeFocused();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  await page.getByRole("region", { name: "To Do column" }).getByRole("button", { name: /TAS-102/ }).click();
+  const panel = page.getByRole("dialog", { name: "TAS-102 issue" });
+  await expect(panel).not.toHaveAttribute("aria-busy", "true");
+  await expect(panel.getByRole("group", { name: "Status" }).getByRole("button")).toHaveText(["Close", "Start Progress"]);
+});
+
 test("the shared default offers no write, even to an ADMIN", async ({ page }) => {
   await openBoardAs(page, "anna@example.com");
   const dialog = await openWorkflows(page);

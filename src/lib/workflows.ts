@@ -432,32 +432,45 @@ export function statusesInBoth(own: WorkflowDefinition, shared: WorkflowDefiniti
 }
 
 /**
+ * The status keys a refusal for issues names in `details.statusKeys` — the
+ * statuses those issues sit in (issue-service, comma-joined and sorted) — or
+ * none when the details did not come. Never read out of the message.
+ */
+export function namedStatusKeys(details: ErrorDetails | null): string[] {
+  const named = details && Object.hasOwn(details, "statusKeys") ? details.statusKeys : "";
+  return named
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
+}
+
+/**
  * The statuses whose issues a workflow delete has to map, after the server
- * refused it for issues: the keys `details.statusKeys` names when it came —
+ * refused it for issues. The keys `details.statusKeys` names when it came:
  * those that are statuses of `own` can be mapped, the rest cannot be from here
- * (a mapping's source must be a status of the workflow being deleted) — and,
- * without it, every status of `own` the shared default does not have. Never
- * read out of the refusal's message.
+ * (a mapping's source must be a status of the workflow being deleted).
+ * Without it, every status of `own` the shared default does not have — which
+ * only the shared default's statuses can tell: when the list did not carry it
+ * (every type has a workflow of its own, so the list leaves it out), the
+ * answer is `undetermined` rather than every status.
  */
 export function statusesToMap(
   own: WorkflowDefinition,
   shared: WorkflowDefinition | undefined,
   details: ErrorDetails | null,
-): { mappable: WorkflowStatus[]; unmappable: string[] } {
+): { mappable: WorkflowStatus[]; unmappable: string[]; undetermined: boolean } {
   const ordered = statusesInColumnOrder(own.statuses);
-  const named = details && Object.hasOwn(details, "statusKeys") ? details.statusKeys : "";
-  const keys = named
-    .split(",")
-    .map((key) => key.trim())
-    .filter(Boolean);
+  const keys = namedStatusKeys(details);
   if (keys.length) {
     return {
       mappable: ordered.filter((status) => keys.includes(status.statusKey)),
       unmappable: keys.filter((key) => !ordered.some((status) => status.statusKey === key)),
+      undetermined: false,
     };
   }
-  const sharedKeys = new Set((shared?.statuses ?? []).map((status) => status.statusKey));
-  return { mappable: ordered.filter((status) => !sharedKeys.has(status.statusKey)), unmappable: [] };
+  if (!shared) return { mappable: [], unmappable: [], undetermined: true };
+  const sharedKeys = new Set(shared.statuses.map((status) => status.statusKey));
+  return { mappable: ordered.filter((status) => !sharedKeys.has(status.statusKey)), unmappable: [], undetermined: false };
 }
 
 /**

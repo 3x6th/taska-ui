@@ -8,6 +8,7 @@ import {
   freeSortOrderBetween,
   isIssueCountRefusal,
   issueCountOf,
+  namedStatusKeys,
   nextTransitionSortOrder,
   normalizeStatusKey,
   orderWorkflowEntries,
@@ -313,12 +314,29 @@ describe("what a delete moves issues out of", () => {
     expect(statusesToMap(own, shared, { issueCount: "4", statusKeys: "SHIP,BLOCKED" })).toEqual({
       mappable: [own.statuses[4]],
       unmappable: ["BLOCKED"],
+      undetermined: false,
     });
   });
 
   it("without the details, takes every status of its own the shared default lacks", () => {
     expect(statusesToMap(own, shared, null).mappable.map((item) => item.statusKey)).toEqual(["QA", "SHIP"]);
     expect(statusesToMap(own, shared, { issueCount: "4" }).unmappable).toEqual([]);
+  });
+
+  // The list leaves the shared default out when every type has a workflow of its own.
+  it("without the shared default's statuses, still takes the named ones, and says it cannot tell the rest", () => {
+    expect(statusesToMap(own, undefined, { statusKeys: "QA" })).toEqual({
+      mappable: [own.statuses[3]],
+      unmappable: [],
+      undetermined: false,
+    });
+    expect(statusesToMap(own, undefined, null)).toEqual({ mappable: [], unmappable: [], undetermined: true });
+  });
+
+  it("reads the named status keys as the server joins them, and none when they did not come", () => {
+    expect(namedStatusKeys({ issueCount: "3", statusKeys: "BLOCKED, QA" })).toEqual(["BLOCKED", "QA"]);
+    expect(namedStatusKeys({ issueCount: "3" })).toEqual([]);
+    expect(namedStatusKeys(null)).toEqual([]);
   });
 
   it("reads the issue-count refusal off the code and the details, never the message", () => {

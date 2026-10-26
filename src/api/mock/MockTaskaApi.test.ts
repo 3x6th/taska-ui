@@ -305,11 +305,12 @@ describe("MockTaskaApi", () => {
       const context = await api.getProjectContext(web.id);
 
       expect(Object.keys(context.workflows)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
+      // By sortOrder, as the server reads them: In Review (25) between In Progress and Done.
       expect(context.workflows.EPIC!.statuses.map((status) => status.statusKey)).toEqual([
         "TODO",
         "IN_PROGRESS",
-        "DONE",
         "IN_REVIEW",
+        "DONE",
       ]);
       expect(context.workflows.EPIC!.statuses.find((status) => status.statusKey === "IN_REVIEW")).toMatchObject({
         name: "In Review",
@@ -5417,13 +5418,14 @@ describe("MockTaskaApi", () => {
         ["Close", 50, false],
         ["Back to To Do", 60, false],
       ]);
-      // The old invented name is gone; the three new moves reach the board.
+      // The old invented name is gone; the three new moves reach the board, by
+      // sortOrder as the server's repository reads them (Reopen 30 before Stop Progress 40).
       const context = await taskWorkflow();
       expect(context.transitions.map((item) => item.name)).toEqual([
         "Start Progress",
         "Complete",
-        "Stop Progress",
         "Reopen",
+        "Stop Progress",
         "Close",
         "Back to To Do",
       ]);
@@ -5725,6 +5727,30 @@ describe("MockTaskaApi", () => {
         });
         // The board offers no hidden transition.
         expect((await taskWorkflow()).transitions.map((item) => item.name)).not.toContain("Shut");
+      });
+
+      it("serves the context's statuses and transitions by sortOrder once an edit has renumbered them", async () => {
+        const created = await ownWorkflow();
+        const close = transitionNamed(created, "Close");
+        const done = statusOf(created, "DONE");
+
+        await api.updateWorkflowTransition(project.id, created.id, close.id, { version: 1, sortOrder: 5 });
+        await api.updateWorkflowStatus(project.id, created.id, done.id, { version: 2, sortOrder: 5 });
+
+        const context = await taskWorkflow();
+        // The order the issue panel offers its move buttons in.
+        expect(context.transitions.map((item) => [item.name, item.sortOrder])).toEqual([
+          ["Close", 5],
+          ["Start Progress", 10],
+          ["Complete", 20],
+          ["Reopen", 30],
+          ["Stop Progress", 40],
+        ]);
+        expect(context.statuses.map((item) => [item.statusKey, item.sortOrder])).toEqual([
+          ["DONE", 5],
+          ["TODO", 10],
+          ["IN_PROGRESS", 20],
+        ]);
       });
 
       it("compares the version: a stale one is ABORTED and changes nothing, one left out is not compared", async () => {
