@@ -96,7 +96,7 @@ test("filters the board down to one label and back", async ({ page }) => {
   await expect(counter).toHaveText(/^\d+ of \d+$/);
   const before = await counter.textContent();
 
-  const filter = page.locator(".filter-select select");
+  const filter = page.locator(".filterbar").getByRole("combobox", { name: "Label" });
   await filter.selectOption({ label: "needs-design" });
 
   // The server applies this one (`labelId`), so the board is re-read rather
@@ -116,7 +116,7 @@ test("keeps an issue's links whole while the board is filtered by label", async 
   // project unfiltered instead.
   await openBoard(page);
 
-  const filter = page.locator(".filter-select select");
+  const filter = page.locator(".filterbar").getByRole("combobox", { name: "Label" });
   await filter.selectOption({ label: "backend" });
   // Two issues carry it, so the page behind the panel holds two of the ten.
   await expect(page.locator(".issue-card")).toHaveCount(2);
@@ -194,7 +194,7 @@ test("a viewer reads the labels and is offered no way to change them", async ({ 
   await page.goto(`/projects/${MOBILE_PROJECT_ID}/board`);
 
   // Reading is a VIEWER's right (TAS-119), so the filter and the chips stay.
-  await expect(page.locator(".filter-select select")).toBeVisible();
+  await expect(page.locator(".filterbar").getByRole("combobox", { name: "Label" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Manage labels" })).toHaveCount(0);
 
   await page.locator(".issue-card", { hasText: "MOB-5" }).click();

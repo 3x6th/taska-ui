@@ -204,8 +204,9 @@ export interface ListIssuesParams {
  * Everything `GET /projects/{projectId}/board` takes since backend #205
  * (TAS-213): six filters, every one optional and all ANDed by the server.
  *
- * Without `issueType` the board is about TASK, BUG and STORY together (see
- * `Board`); with it, about that one type. `assigneeId`, `labelId` and
+ * Without `issueType` the board is about every type of the project's registry
+ * together (see `Board`); with it, about that one type — a well-formed key
+ * the registry does not hold answers an empty board. `assigneeId`, `labelId` and
  * `priority` narrow the issues and never the columns. `query` is a literal,
  * case-insensitive substring over the key, the summary and the description,
  * `minLength: 1` in the contract — a blank one is not sent.
@@ -553,13 +554,6 @@ export interface CreateIssueLinkInput {
 }
 
 /**
- * Both label writes take the same pair, because `UpdateProjectLabelRequestDto`
- * requires `name` *and* `color` just as the create does — a PATCH that means to
- * change only the colour still has to send the name it is keeping. The two
- * types are kept apart anyway: they are two request bodies in the contract, and
- * an alias would hide it the day one of them grows a field.
- */
-/**
  * `CreateProjectIssueTypeRequestDto` (backend #212). Every field but
  * `sortOrder` is required; the server defaults that one to 100, which is why
  * the dialog always sends it (DESIGN.md §4.30: a new type lands last).
@@ -575,7 +569,9 @@ export interface CreateProjectIssueTypeInput {
 /**
  * `PatchProjectIssueTypeRequestDto`: at least one key, never `null`, never
  * `code` — the body is whitelisted by `projectIssueTypePatchBody`
- * (src/api/issueTypes.ts). No version: the last write wins per field.
+ * (src/api/issueTypes.ts). No version: the last write wins per field. The
+ * dialog never sends `sortOrder` here: a move is one `reorderProjectIssueTypes`
+ * (backend TAS-418), not a number picked between neighbours.
  */
 export interface UpdateProjectIssueTypeInput {
   name?: string;
@@ -584,6 +580,13 @@ export interface UpdateProjectIssueTypeInput {
   sortOrder?: number;
 }
 
+/**
+ * Both label writes take the same pair, because `UpdateProjectLabelRequestDto`
+ * requires `name` *and* `color` just as the create does — a PATCH that means to
+ * change only the colour still has to send the name it is keeping. The two
+ * types are kept apart anyway: they are two request bodies in the contract, and
+ * an alias would hide it the day one of them grows a field.
+ */
 export interface CreateProjectLabelInput {
   /** 1-50 characters, unique within the project (the server decides, not this). */
   name: string;
@@ -1775,10 +1778,10 @@ export interface TaskaApi {
    * which the merge took unchanged (api-contract-guard, TAS-382):
    *
    * - The list is any member's: a missing project is 404 "Project not found", a
-   *   non-member — a `GLOBAL_ADMIN` included — 403. It walks TASK, BUG and STORY
-   *   whatever the project allows, resolves each to the project's own workflow
-   *   or the shared default, and answers each workflow once, at the position of
-   *   the first type on it. Statuses and transitions by `sortOrder`, hidden
+   *   non-member — a `GLOBAL_ADMIN` included — 403. It walks the project's
+   *   issue-type registry in its order (backend #226), resolves each type to
+   *   the project's own workflow or the shared default, and answers each
+   *   workflow once, at the position of the first type on it. Statuses and transitions by `sortOrder`, hidden
    *   transitions included.
    * - The three writes are ADMIN-only, refused by workflow-service: 404
    *   "Project not found", 403 "Access denied" for a non-member, 403 "Not
@@ -1818,13 +1821,24 @@ export interface TaskaApi {
    *   value the service refuses (400 "Invalid issue type name, color, icon or
    *   sortOrder"). The 200 is the saved entry.
    * - delete: project, role, archive; a code the project does not hold (404);
-   *   the last type (400 `FAILED_PRECONDITION`, no `details`); a type issues
-   *   still carry, **deleted issues counted** (400 `FAILED_PRECONDITION`,
-   *   `details.issueCount`). Read the two apart by `details`, never by prose.
+   *   the last type (400 `FAILED_PRECONDITION`, `details.reason`
+   *   `LAST_ISSUE_TYPE`); a type live issues still carry — deleted ones do not
+   *   count since backend TAS-418 — (400 `FAILED_PRECONDITION`,
+   *   `details.reason` `ISSUE_TYPE_IN_USE`, `details.issueCount` as a string).
+   *   Read the two apart by `details.reason`, never by prose.
+   * - reorder (`PUT …/issue-types/order`, backend TAS-418): an empty or
+   *   malformed `codes` (400 "Invalid request parameters"); a code named twice
+   *   (400 `INVALID_ARGUMENT`, before the role); project, role, archive; a set
+   *   that is not exactly the registry's — stale or incomplete — (400
+   *   `INVALID_ARGUMENT`, nothing written). The 200 is the whole registry,
+   *   renumbered 10, 20, 30… in one transaction, in its new order — read by
+   *   `toProjectIssueTypes`, never re-sorted. One request per move: `codes` is
+   *   the full permutation the reader sees once the move is made.
    */
   createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): Promise<ProjectIssueType>;
   updateProjectIssueType(projectId: string, code: IssueTypeCode, input: UpdateProjectIssueTypeInput): Promise<ProjectIssueType>;
   deleteProjectIssueType(projectId: string, code: IssueTypeCode): Promise<void>;
+  reorderProjectIssueTypes(projectId: string, codes: readonly IssueTypeCode[]): Promise<ProjectIssueType[]>;
   /**
    * `POST /projects/{projectId}/workflows`. Refused in the server's order: the
    * role; the whole body ("Workflow creation failed: …", 400 — on create a

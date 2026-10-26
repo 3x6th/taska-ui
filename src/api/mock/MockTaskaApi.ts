@@ -83,9 +83,14 @@ import {
   ISSUE_TYPE_EMPTY_PATCH_MESSAGE,
   ISSUE_TYPE_INVALID_FIELDS_MESSAGE,
   ISSUE_TYPE_NAME_MAX_LENGTH,
+  ISSUE_TYPE_IN_USE_REASON,
   ISSUE_TYPE_NOT_FOUND_MESSAGE,
+  ISSUE_TYPE_ORDER_REPEATS_MESSAGE,
+  ISSUE_TYPE_ORDER_STALE_MESSAGE,
   LAST_ISSUE_TYPE_MESSAGE,
+  LAST_ISSUE_TYPE_REASON,
   STATUS_NOT_IN_TARGET_TYPE_MESSAGE,
+  STATUS_NOT_IN_TARGET_WORKFLOW_REASON,
   isIssueTypeCode,
   isIssueTypeColor,
   isIssueTypeIcon,
@@ -903,9 +908,9 @@ const SEED_ISSUE_TYPES: readonly ProjectIssueType[] = [
 ];
 
 /**
- * A registry in the server's order: `sortOrder`, then `code` (`ORDER BY
- * sort_order, code`). The code is compared as code units — the database's
- * collation is not stated (backend ask A7), and the keys are upper-case ASCII.
+ * A registry in the server's order: `sortOrder`, then `code` byte-wise
+ * (`ORDER BY sort_order, code COLLATE "C"`, backend TAS-418) — which a
+ * code-unit compare of upper-case ASCII keys is exactly.
  */
 const byRegistryOrder = (a: ProjectIssueType, b: ProjectIssueType) =>
   a.sortOrder - b.sortOrder || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0);
@@ -4116,10 +4121,10 @@ export class MockTaskaStore {
    * owns the rest. The workflow of each type is the project's own or the
    * shared default, so in this store every type read has one.
    *
-   * A type filter the gateway cannot parse answers an empty board after the
-   * membership check (`BoardController`); a well-formed key the registry does
-   * not hold resolves to the default workflow's columns and holds no issue
-   * (`BoardServiceImpl`, backend ask A9 on the yml's "empty board").
+   * A type filter the gateway cannot parse, and a well-formed key the registry
+   * does not hold, both answer an empty board — `{columns: [], unplacedIssues:
+   * []}` — after the membership check (`BoardController`, `BoardServiceImpl`
+   * at backend `be5085e5`).
    *
    * The cards carry what the gateway joins in since #205: the assignee's name
    * and face from the user store (`displayName: null` for an id nobody holds,
@@ -4131,7 +4136,9 @@ export class MockTaskaStore {
     if (!this.membersByProject[projectId]?.some((member) => member.userId === this.currentUserId)) {
       throw new MockApiError("PERMISSION_DENIED", "Access denied");
     }
-    if (params.issueType && !isIssueTypeCode(params.issueType)) return { projectId, columns: [], unplacedIssues: [] };
+    if (params.issueType && (!isIssueTypeCode(params.issueType) || !this.inRegistry(projectId, params.issueType))) {
+      return { projectId, columns: [], unplacedIssues: [] };
+    }
     const typeCodes = params.issueType ? [params.issueType] : this.registryOf(projectId).map((type) => type.code);
     const types: MockBoardType[] = typeCodes.map((issueType) => ({
       issueType,
@@ -4450,7 +4457,9 @@ export class MockTaskaStore {
       }
       const target = this.workflowFor(projectId, input.issueType);
       if (!target.statuses.some((status) => status.statusKey === issue.status)) {
-        throw new MockApiError("FAILED_PRECONDITION", STATUS_NOT_IN_TARGET_TYPE_MESSAGE);
+        throw new MockApiError("FAILED_PRECONDITION", STATUS_NOT_IN_TARGET_TYPE_MESSAGE, {
+          reason: STATUS_NOT_IN_TARGET_WORKFLOW_REASON,
+        });
       }
     }
     const next = {
@@ -4772,24 +4781,64 @@ export class MockTaskaStore {
   /**
    * `DELETE /projects/{projectId}/issue-types/{code}` in the server's order:
    * the project, the role, the archive; a code the project does not hold
-   * (404); the only type left (400 `FAILED_PRECONDITION`, **no `details`**);
-   * then a type issues carry — **soft-deleted issues counted**, as
-   * issue-service counts them (`includeDeleted`, backend ask A3) — 400
-   * `FAILED_PRECONDITION` with `details.issueCount` as a string. A workflow
-   * bound to the type keeps its binding, as on the server (backend ask A4):
-   * re-adding the code brings it back.
+   * (404); the only type left (400 `FAILED_PRECONDITION`, `details.reason`
+   * `LAST_ISSUE_TYPE`); then a type **live** issues carry — a deleted issue
+   * does not count since backend TAS-418 (`includeDeleted=false`) — 400
+   * `details.issueCount` as a string. The type's workflow binding goes with
+   * it (backend TAS-418 fences bindings by the registry's generation): a
+   * workflow left with no type leaves the list, and a code added again runs on
+   * the shared default.
    */
   deleteProjectIssueType(projectId: string, code: string): void {
     if (!ISSUE_TYPE_CODE_PATTERN.test(code)) throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
     this.requireIssueTypeAdmin(projectId);
     this.findIssueType(projectId, code);
     const registry = this.issueTypesByProject[projectId] ?? [];
-    if (registry.length <= 1) throw new MockApiError("FAILED_PRECONDITION", LAST_ISSUE_TYPE_MESSAGE);
-    const count = this.issues.filter((item) => item.projectId === projectId && item.issueType === code).length;
+    if (registry.length <= 1) {
+      throw new MockApiError("FAILED_PRECONDITION", LAST_ISSUE_TYPE_MESSAGE, { reason: LAST_ISSUE_TYPE_REASON });
+    }
+    const count = this.issues.filter(
+      (item) => item.projectId === projectId && item.issueType === code && !item.deletedAt,
+    ).length;
     if (count > 0) {
-      throw new MockApiError("FAILED_PRECONDITION", issueTypeInUseMessage(code, count), { issueCount: String(count) });
+      throw new MockApiError("FAILED_PRECONDITION", issueTypeInUseMessage(code, count), {
+        reason: ISSUE_TYPE_IN_USE_REASON,
+        issueCount: String(count),
+      });
     }
     this.issueTypesByProject[projectId] = registry.filter((type) => type.code !== code);
+    const bindings = this.workflowOverrides[projectId];
+    if (bindings && Object.hasOwn(bindings, code)) delete bindings[code];
+  }
+
+  /**
+   * `PUT /projects/{projectId}/issue-types/order` (backend TAS-418) in the
+   * server's order: the gateway's bean validation (`codes` missing, empty, or
+   * with a value outside `IssueTypeDto`'s pattern: 400 "Invalid request
+   * parameters"); a code named twice (400 `INVALID_ARGUMENT`, before the role
+   * — the gateway keeps a list, not a set, so the service sees the repeat);
+   * the project, the role, the archive; then a set that is not exactly the
+   * registry's (400 `INVALID_ARGUMENT`), and nothing is written. Otherwise
+   * every type is renumbered 10, 20, 30… in the order given, and the answer is
+   * the whole registry in that order.
+   */
+  reorderProjectIssueTypes(projectId: string, codes: unknown): ProjectIssueType[] {
+    if (!Array.isArray(codes) || codes.length === 0 || !codes.every(isIssueTypeCode)) {
+      throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
+    }
+    if (new Set(codes).size !== codes.length) {
+      throw new MockApiError("INVALID_ARGUMENT", ISSUE_TYPE_ORDER_REPEATS_MESSAGE);
+    }
+    this.requireIssueTypeAdmin(projectId);
+    const registry = this.issueTypesByProject[projectId] ?? [];
+    if (registry.length !== codes.length || !registry.every((type) => codes.includes(type.code))) {
+      throw new MockApiError("INVALID_ARGUMENT", ISSUE_TYPE_ORDER_STALE_MESSAGE);
+    }
+    codes.forEach((code, index) => {
+      const entry = registry.find((type) => type.code === code);
+      if (entry) entry.sortOrder = (index + 1) * 10;
+    });
+    return this.registryOf(projectId).map((type) => ({ ...type }));
   }
 
   listIssueLabels(projectId: string, issueId: string): Label[] {
@@ -7071,10 +7120,16 @@ export class MockTaskaStore {
    * `IssueSearchHit` exists.
    */
   private searchHit(issue: Issue): IssueSearchHit {
+    // Backend TAS-418: the type's look from the issue's project registry as it
+    // stands now; a type deleted from it since leaves all three `null`.
+    const type = (this.issueTypesByProject[issue.projectId] ?? []).find((entry) => entry.code === issue.issueType);
     return {
       id: issue.id,
       issueKey: issue.issueKey,
       issueType: issue.issueType,
+      issueTypeName: type?.name ?? null,
+      issueTypeColor: type?.color ?? null,
+      issueTypeIcon: type?.icon ?? null,
       summary: issue.summary,
       priority: issue.priority,
       assigneeId: issue.assigneeId || null,
@@ -7692,6 +7747,10 @@ export class MockTaskaApi implements TaskaApi {
   async deleteProjectIssueType(projectId: string, code: string): Promise<void> {
     this.store.deleteProjectIssueType(projectId, code);
     await wait(null);
+  }
+
+  async reorderProjectIssueTypes(projectId: string, codes: readonly string[]): Promise<ProjectIssueType[]> {
+    return wait(this.store.reorderProjectIssueTypes(projectId, [...codes]));
   }
 
   async updateProjectLabel(

@@ -13,12 +13,20 @@ const preference = {
   telegramLinkExpiresAt: "2026-10-23T12:00:00Z",
   telegramError: null,
 };
+/** `TelegramLinkDto` since backend TAS-387: the link and the row as it stands after it was issued. */
+const linkAnswer = {
+  linkId: "link",
+  url: "https://t.me/TaskaBot?start=opaque",
+  expiresAt: "2026-10-23T12:00:00Z",
+  preferences: preference,
+};
 afterEach(() => vi.unstubAllGlobals());
 
 describe("notification preference transport", () => {
   it("uses the five current-user routes and preserves partial booleans and link identity", async () => {
     const fetch = vi.fn(
-      async (_url: string, _init: RequestInit) => new Response(JSON.stringify(preference), { status: 200 }),
+      async (url: string, _init: RequestInit) =>
+        new Response(JSON.stringify(url.endsWith("/telegram/link") ? linkAnswer : preference), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetch);
     const api = new RestTaskaApi();
@@ -38,6 +46,21 @@ describe("notification preference transport", () => {
     expect(options.map((value) => value.method)).toEqual(["GET", "PATCH", "POST", "POST", "DELETE"]);
     expect(JSON.parse(options[1].body as string)).toEqual({ emailEnabled: false });
     expect(JSON.parse(options[3].body as string)).toEqual({ linkId: "7f538eb4-1584-44e1-87a6-6657343a1563" });
+  });
+
+  it("reads the row the link answer carries through the same mapper, as the section's one source", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ ...linkAnswer, preferences: { ...preference, telegramStatus: "SUSPENDED" } }), {
+            status: 200,
+          }),
+      ),
+    );
+    const link = await new RestTaskaApi().createTelegramLink();
+    expect(link).toMatchObject({ linkId: "link", url: linkAnswer.url, expiresAt: linkAnswer.expiresAt });
+    expect(link.preferences).toMatchObject({ telegramStatus: null, telegramLinkId: "link", email: "a@example.com" });
   });
 
   it("reads a Telegram status this build does not know as null on every route that answers with the row", async () => {

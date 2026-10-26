@@ -32,10 +32,9 @@ const statusColors: Record<IssueStatus, string> = {
 
 /**
  * The build's own words for the three keys every registry is seeded with —
- * **only** for §6's fallback: a registry name with Cyrillic in it, or a hit
- * whose project registry is not at hand and `/meta` did not name it. Not a
- * table of types: a project's types, their names and their look are its
- * registry's (TAS-417).
+ * **only** for §6's fallback: a name with Cyrillic in it, or a search hit
+ * whose type carries no name. Not a table of types: a project's types, their
+ * names and their look are its registry's (TAS-417).
  */
 const seededTypeLabels: KnownLabels = { TASK: "Task", BUG: "Bug", STORY: "Story" };
 
@@ -92,8 +91,8 @@ export const issuePriorities: readonly IssuePriority[] = ["LOW", "MEDIUM", "HIGH
 
 /**
  * A project's issue-type registry as a label source: the entries the context
- * sent, or `null`/`undefined` when there is none to read — a global-search hit
- * from a project whose context is not cached (DESIGN.md §6, §4.20).
+ * sent, or `null`/`undefined` when there is none to read — a global-search hit,
+ * which carries its own name instead (DESIGN.md §6, §4.20).
  */
 export type IssueTypeRegistry = readonly ProjectIssueType[] | null | undefined;
 
@@ -103,7 +102,7 @@ export const issueTypeEntry = (code: string | null | undefined, registry: IssueT
 
 /**
  * **The one Cyrillic check for type names** (DESIGN.md §6 «Подпись типа», the
- * owner's ruling of 2026-10-19): whether a registry or `/meta` name may be
+ * owner's ruling of 2026-10-19): whether a registry or a hit's name may be
  * printed in this English UI. Amending the rule is a change to this line and
  * no other.
  */
@@ -122,41 +121,39 @@ export const issueTypeFallbackLabel = (code: string) =>
 function typeLabelOf(
   code: string | null | undefined,
   registry: IssueTypeRegistry,
-  served: readonly DictionaryEntry[] | null | undefined,
+  hitName: string | null | undefined,
 ): { text: string; own: boolean } {
   if (typeof code !== "string" || code.trim() === "") return { text: "No type", own: true };
-  const seeded = Object.hasOwn(seededTypeLabels, code);
+  let name: string | null | undefined = hitName;
   if (registry) {
     const entry = issueTypeEntry(code, registry);
     // A key the registry does not hold is drawn as itself — a type the project
     // no longer has is not one to name from anywhere else.
     if (!entry) return { text: code, own: false };
-    const name = printableTypeName(entry.name);
-    if (name !== null) return { text: name, own: false };
-    return { text: issueTypeFallbackLabel(code), own: seeded };
+    name = entry.name;
   }
-  if (!seeded) return { text: code, own: false };
-  const name = printableTypeName(served?.find((item) => item.code === code)?.name);
-  return name !== null ? { text: name, own: false } : { text: issueTypeFallbackLabel(code), own: true };
+  const printable = printableTypeName(name);
+  if (printable !== null) return { text: printable, own: false };
+  return { text: issueTypeFallbackLabel(code), own: Object.hasOwn(seededTypeLabels, code) };
 }
 
 /**
- * A type's label (DESIGN.md §6 «Подпись типа», TAS-417):
+ * A type's label (DESIGN.md §6 «Подпись типа», TAS-417, TAS-418):
  *
  * - the registry was read and holds the key → its `name`; with Cyrillic in it,
  *   the build's word for TASK/BUG/STORY, else the key;
  * - the registry was read and does not hold the key → the key as it is;
- * - no registry (`null`/`undefined`) → for TASK/BUG/STORY the `/meta` name,
- *   or the build's word when it has Cyrillic or `/meta` has not answered; any
- *   other key as it is.
+ * - no registry (`null`/`undefined`: a global-search hit) → the hit's
+ *   `issueTypeName` by the same Cyrillic rule; without one, the build's word
+ *   for TASK/BUG/STORY, else the key. `/meta` is not read for types.
  *
  * No type at all reads "No type", as no status reads "No status".
  */
 export const issueTypeLabel = (
   code: string | null | undefined,
   registry: IssueTypeRegistry,
-  served?: readonly DictionaryEntry[] | null,
-) => typeLabelOf(code, registry, served).text;
+  hitName?: string | null,
+) => typeLabelOf(code, registry, hitName).text;
 
 /**
  * `issueTypeLabel` for running text: only the build's own words are lowercased
@@ -167,9 +164,9 @@ export const issueTypeLabel = (
 export const issueTypeInSentence = (
   code: string | null | undefined,
   registry: IssueTypeRegistry,
-  served?: readonly DictionaryEntry[] | null,
+  hitName?: string | null,
 ) => {
-  const label = typeLabelOf(code, registry, served);
+  const label = typeLabelOf(code, registry, hitName);
   return label.own ? label.text.toLowerCase() : label.text;
 };
 

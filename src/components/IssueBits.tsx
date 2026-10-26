@@ -10,8 +10,8 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { CSSProperties } from "react";
-import type { IssueTypeColor, IssueTypeIcon, Label } from "../domain/types";
+import { createElement, type CSSProperties } from "react";
+import type { IssueSearchHit, IssueTypeColor, IssueTypeIcon, Label } from "../domain/types";
 import { useMeta } from "../hooks/useMeta";
 import {
   issueTypeColorValue,
@@ -29,7 +29,7 @@ import {
  * DESIGN.md §4.6 (TAS-417): the contract's icon key → the `lucide-react` glyph
  * drawn for it. The one table, statically imported so the bundle carries
  * exactly these eight; a value off the wire is read only through
- * `issueTypeIcon`, never by indexing.
+ * `IssueTypeGlyph`, never by indexing.
  */
 const issueTypeIcons: Record<IssueTypeIcon, LucideIcon> = {
   "check-square": SquareCheckBig,
@@ -42,9 +42,19 @@ const issueTypeIcons: Record<IssueTypeIcon, LucideIcon> = {
   layers: Layers,
 };
 
-/** The glyph for an icon key, or `null` for one outside the eight (drawn as the coloured tile alone, §4.6). */
-export const issueTypeIcon = (icon: IssueTypeIcon | null): LucideIcon | null =>
-  icon !== null && Object.hasOwn(issueTypeIcons, icon) ? issueTypeIcons[icon] : null;
+/**
+ * The glyph for an icon key, read through the table only by value — a key
+ * outside the eight draws nothing (§4.6). `chip` is the type chip's stroke:
+ * 1.5, absolute, so the 12px glyph is not drawn thinner than its neighbours.
+ */
+export function IssueTypeGlyph({ icon, size, chip = false }: { icon: IssueTypeIcon | null; size: number; chip?: boolean }) {
+  if (icon === null || !Object.hasOwn(issueTypeIcons, icon)) return null;
+  return createElement(issueTypeIcons[icon], {
+    "aria-hidden": true,
+    size,
+    ...(chip ? { absoluteStrokeWidth: true, strokeWidth: 1.5 } : {}),
+  });
+}
 
 /**
  * The 16×16 tile of §4.6 for a look: the fill of the type's colour with its
@@ -65,29 +75,41 @@ export function TypeTile({
   title?: string;
   className?: string;
 }) {
-  const Glyph = issueTypeIcon(icon);
   const fill = color === null ? null : issueTypeColorValue(color);
   const style: CSSProperties | undefined = fill ? { backgroundColor: fill, color: readableTextOn(fill) } : undefined;
   return (
     <span className={`type-chip ${fill ? "" : "is-unknown-color"} ${className}`} style={style} title={title}>
-      {Glyph ? <Glyph absoluteStrokeWidth aria-hidden="true" size={12} strokeWidth={1.5} /> : null}
+      <IssueTypeGlyph chip icon={icon} size={12} />
     </span>
   );
 }
 
 /**
- * §4.6 (TAS-417). Takes any key the server sent and the project's registry
- * when there is one. The look comes only from the registry entry: a key the
- * registry does not hold — or no registry at all, a search hit from a project
- * whose context is not cached — is the same 16px slot filled `--fg-3` with no
+ * §4.6 (TAS-417, TAS-418). Takes any key the server sent and where its look
+ * comes from: the project's registry — an entry of the context in the cache —
+ * or, for a global-search hit, the hit's own `issueTypeName`, `issueTypeColor`
+ * and `issueTypeIcon`. A key the registry does not hold, a hit that carries no
+ * look, or neither source at all is the same 16px slot filled `--fg-3` with no
  * glyph, so nothing in the row moves. `title` is the label of §6.
  */
-export function TypeChip({ type, registry }: { type: string; registry: IssueTypeRegistry }) {
-  const served = useMeta()?.issueTypes;
-  const entry = issueTypeEntry(type, registry);
-  const title = issueTypeLabel(type, registry, served);
-  if (!entry) return <span className="type-chip is-unknown" title={title} />;
-  return <TypeTile color={entry.color} icon={entry.icon} title={title} />;
+export function TypeChip({
+  type,
+  registry,
+  hit,
+}: {
+  type: string;
+  registry?: IssueTypeRegistry;
+  hit?: Pick<IssueSearchHit, "issueTypeName" | "issueTypeColor" | "issueTypeIcon">;
+}) {
+  const title = issueTypeLabel(type, registry, hit?.issueTypeName);
+  // A hit whose type has left its registry carries none of the three (TAS-418).
+  const hitLook =
+    hit && (hit.issueTypeName != null || hit.issueTypeColor != null || hit.issueTypeIcon != null)
+      ? { color: hit.issueTypeColor ?? null, icon: hit.issueTypeIcon ?? null }
+      : null;
+  const look = registry ? issueTypeEntry(type, registry) : hitLook;
+  if (!look) return <span className="type-chip is-unknown" title={title} />;
+  return <TypeTile color={look.color} icon={look.icon} title={title} />;
 }
 
 /**

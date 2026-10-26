@@ -2,16 +2,16 @@ import type { IssueTypeColor, IssueTypeIcon, ProjectIssueType } from "../domain/
 
 /**
  * A project's issue-type registry as every implementation of `TaskaApi` has to
- * treat it (backend #212 TAS-385, #226 TAS-386; contract at develop
- * `af41c322`): the closed colour and icon sets, the key's pattern, the server's
- * sentences, and how an answer is read.
+ * treat it (backend #212 TAS-385, #226 TAS-386, TAS-418; contract at develop
+ * `be5085e5`): the closed colour and icon sets, the key's pattern, the server's
+ * sentences and reasons, and how an answer is read.
  *
  * Written once for the reason src/api/issuePatch.ts gives: the mock and the
  * REST adapter both state these refusals, and two copies drift until the mock
  * stops proving anything. Every sentence is a **code read** of
  * `ProjectIssueTypeService`, `ProjectIssueTypes`, the gateway's `IssueMapper`
- * and issue-service's `GrpcWorkflowServiceClient` at `af41c322`, not a
- * measurement.
+ * and issue-service's `GrpcWorkflowServiceClient` at `be5085e5`, not a
+ * measurement. A screen branches on a `details.reason`, never on a sentence.
  */
 
 /** `ProjectIssueTypeColorDto`, in the contract's order — also the order of the swatches (DESIGN.md §4.30). */
@@ -56,30 +56,56 @@ export const ISSUE_TYPE_ADMIN_REQUIRED_MESSAGE = "Project ADMIN role is required
 export const ISSUE_TYPE_NOT_FOUND_MESSAGE = "Issue type not found in this project";
 /** A PATCH value the hand-written DTO let through and the service refused (400 `INVALID_ARGUMENT`). */
 export const ISSUE_TYPE_INVALID_FIELDS_MESSAGE = "Invalid issue type name, color, icon or sortOrder";
-/** DELETE of the only type left (400 `FAILED_PRECONDITION`, **no `details`**). */
+/** DELETE of the only type left (400 `FAILED_PRECONDITION`, `details.reason` `LAST_ISSUE_TYPE`). */
 export const LAST_ISSUE_TYPE_MESSAGE = "Cannot delete the last issue type";
+/** `details.reason` of the refused delete of the only type left (backend TAS-418). */
+export const LAST_ISSUE_TYPE_REASON = "LAST_ISSUE_TYPE";
 /** A create whose code the project already holds (409 `ALREADY_EXISTS`). */
 export const issueTypeExistsMessage = (code: string) => `Issue type ${code} already exists in this project`;
-/** DELETE of a type issues still carry — deleted ones counted (400 `FAILED_PRECONDITION`, `details.issueCount`). */
+/**
+ * DELETE of a type live issues still carry — deleted ones no longer count
+ * since backend TAS-418 (400 `FAILED_PRECONDITION`, `details.reason`
+ * `ISSUE_TYPE_IN_USE`, `details.issueCount` as a string).
+ */
 export const issueTypeInUseMessage = (code: string, count: number) => `Issue type ${code} has ${count} issues`;
+/** `details.reason` of the refused delete of a type issues carry (backend TAS-418). */
+export const ISSUE_TYPE_IN_USE_REASON = "ISSUE_TYPE_IN_USE";
+/**
+ * `PUT …/issue-types/order` naming a code twice — the service, before the
+ * role (400 `INVALID_ARGUMENT`). An empty or malformed list is the gateway's
+ * "Invalid request parameters" before it.
+ */
+export const ISSUE_TYPE_ORDER_REPEATS_MESSAGE = "codes must be a complete permutation without duplicates";
+/**
+ * `PUT …/issue-types/order` whose codes are not exactly the registry's — one
+ * missing, one extra, or a set that went stale while the dialog was open —
+ * after the role and the archive (400 `INVALID_ARGUMENT`); nothing is written.
+ */
+export const ISSUE_TYPE_ORDER_STALE_MESSAGE = "codes must contain every current issue type exactly once";
 /** An issue write naming a well-formed key the registry does not hold (400 `INVALID_ARGUMENT`). */
 export const issueTypeNotDefinedMessage = (key: string) => `Issue type ${key} is not defined in this project`;
 /** A malformed key on an issue write — the gateway's `ResponseStatusException` (400 `BAD_REQUEST`). */
 export const INVALID_ISSUE_TYPE_KEY_MESSAGE = "Invalid issue type key";
 /** `issueType: null` on `PATCH /issues/{issueId}` — the gateway's `requireNotCleared` (400 `BAD_REQUEST`). */
 export const ISSUE_TYPE_NOT_CLEARABLE_MESSAGE = "issueType cannot be cleared";
-/** A type change whose target workflow lacks the issue's status (400 `FAILED_PRECONDITION`, no `details`). */
+/**
+ * A type change whose target workflow lacks the issue's status (400
+ * `FAILED_PRECONDITION`, `details.reason` `STATUS_NOT_IN_TARGET_WORKFLOW`
+ * since backend TAS-418).
+ */
 export const STATUS_NOT_IN_TARGET_TYPE_MESSAGE = "Current status is not available for the target issue type";
+/** `details.reason` of the refused type change above. */
+export const STATUS_NOT_IN_TARGET_WORKFLOW_REASON = "STATUS_NOT_IN_TARGET_WORKFLOW";
 
 /* --- Reading the wire ------------------------------------------------------ */
 
 /**
  * `ProjectIssueTypeDto[]` as it arrives — the context's `issueTypes` and the
- * list route's `items` alike — into the registry the screens draw:
+ * `items` of the reorder's answer alike — into the registry the screens draw:
  *
- * - **in the order sent**, never re-sorted (DESIGN.md §6): the server orders by
- *   `sortOrder`, then `code` by its database's collation, which a client
- *   comparison would not reproduce;
+ * - **in the order sent**, never re-sorted (DESIGN.md §6): the order is the
+ *   server's — `sortOrder`, then `code` byte-wise (`COLLATE "C"`, backend
+ *   TAS-418) — and the client takes it rather than restating it;
  * - an entry with no usable `code` (missing, blank, not a string) is dropped,
  *   and a repeated code keeps its first entry;
  * - a blank `name` reads as the code — a type is never drawn nameless;

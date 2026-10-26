@@ -143,6 +143,11 @@ function respond(path: string): unknown {
         { userId: TOM, role: "MEMBER", displayName: "Tom Baker", email: "tom@example.com", avatar: null, addedAt: NOW },
       ],
       labels: [{ id: LABEL, name: "ui", color: "#0052cc" }],
+      issueTypes: [
+        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
+        { code: "BUG", name: "Bug", color: "red", icon: "bug", sortOrder: 20 },
+        { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 30 },
+      ],
       workflows: ["TASK", "BUG", "STORY"].map((issueType) => ({ issueType, workflow })),
     };
   }
@@ -340,7 +345,16 @@ describe("the request budget of /projects and the board, and of coming back to t
         "GET /meta",
       ].sort(),
     );
-    for (const replaced of [/\/issues\?|\/issues$/, /\/issues\/search/, /\/members/, /\/labels/, /\/workflows?\b/, /\/membership/]) {
+    for (const replaced of [
+      /\/issues\?|\/issues$/,
+      /\/issues\/search/,
+      /\/members/,
+      /\/labels/,
+      /\/workflows?\b/,
+      /\/membership/,
+      // The registry rides the context (TAS-417): no read of its own.
+      /\/issue-types/,
+    ]) {
       expect(requested.filter((request) => replaced.test(request)), String(replaced)).toEqual([]);
     }
     expect(requested.some((request) => request.includes("issueType="))).toBe(false);
@@ -352,10 +366,10 @@ describe("the request budget of /projects and the board, and of coming back to t
     await settled(queryClient);
     const mark = requested.length;
 
-    fireEvent.click(screen.getByRole("button", { name: "Bug" }));
+    const type = screen.getByRole("combobox", { name: "Type" });
+    fireEvent.change(type, { target: { value: "BUG" } });
     expect(screen.getByText("1 of 4")).toBeVisible();
-    // The type filter's "All"; the second is the assignee filter's.
-    fireEvent.click(screen.getAllByRole("button", { name: "All" })[0]);
+    fireEvent.change(type, { target: { value: "" } });
     fireEvent.click(within(document.querySelector(".assignee-row") as HTMLElement).getByRole("button", { name: "Tom Baker" }));
     expect(screen.getByText("2 of 4")).toBeVisible();
     fireEvent.change(screen.getByRole("combobox", { name: "Label" }), { target: { value: LABEL } });
@@ -367,6 +381,20 @@ describe("the request budget of /projects and the board, and of coming back to t
     expect(screen.getByText("1 of 4")).toBeVisible();
     // Well past any debounce the board used to have.
     await act(() => new Promise<void>((resolve) => setTimeout(resolve, 400)));
+    await settled(queryClient);
+
+    expect(since(mark)).toEqual([]);
+  });
+
+  it("opens Issue types from the board's context, asking nothing (TAS-417)", async () => {
+    const queryClient = renderAt(`/projects/${PROJECT}/board`);
+    await screen.findByRole("button", { name: /TAS-101/ });
+    await settled(queryClient);
+    const mark = requested.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Issue types" }));
+    const dialog = await screen.findByRole("dialog", { name: "Issue types" });
+    expect(within(dialog).getAllByRole("listitem")).toHaveLength(3);
     await settled(queryClient);
 
     expect(since(mark)).toEqual([]);

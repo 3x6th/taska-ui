@@ -58,6 +58,8 @@ import { toViewLinkType } from "../linkViewTypes";
 import { blankSummaryRefusal, ifMatch, issuePatchBody, issueTypePatchRefusal, issueVersionRefusal } from "../issuePatch";
 import {
   ISSUE_TYPE_EMPTY_PATCH_MESSAGE,
+  isIssueTypeColor,
+  isIssueTypeIcon,
   projectIssueTypePatchBody,
   toProjectIssueType,
   toProjectIssueTypes,
@@ -543,6 +545,11 @@ interface RestIssueShortItem {
   projectId?: string | null;
   projectKey?: string | null;
   statusKey?: string | null;
+  // Backend TAS-418 (develop `be5085e5`): the type's look from the hit's
+  // project registry, all three nullable. Read as `unknown` and narrowed.
+  issueTypeName?: unknown;
+  issueTypeColor?: unknown;
+  issueTypeIcon?: unknown;
 }
 
 /**
@@ -2132,6 +2139,20 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
+   * `PUT /projects/{projectId}/issue-types/order` (backend TAS-418) — see
+   * `TaskaApi.reorderProjectIssueTypes`. `codes` is sent as given, repeats
+   * included: refusing one is the server's, in its own words. The 200 is
+   * `ListProjectIssueTypesDto`, the whole registry in its new order.
+   */
+  async reorderProjectIssueTypes(projectId: string, codes: readonly string[]): Promise<ProjectIssueType[]> {
+    const response = await this.request<{ items?: unknown }>(`${this.issueTypesPath(projectId)}/order`, {
+      method: "PUT",
+      body: { codes: [...codes] },
+    });
+    return toProjectIssueTypes(response?.items);
+  }
+
+  /**
    * A registry write's 2xx as a registry entry, through the registry's own
    * reader. Both routes are about one code — the one the create sent, the one
    * in the PATCH path — so an answer that leaves `code` out is still about
@@ -2936,6 +2957,13 @@ export class RestTaskaApi implements TaskaApi {
       id: item.id,
       issueKey: item.issueKey,
       issueType: item.issueType,
+      // TAS-418: the look the hit's project registry gives its type. A blank
+      // name is no name; a colour or an icon outside the contract's sets is
+      // `null`, drawn neutral (DESIGN.md §4.6) rather than guessed.
+      issueTypeName:
+        typeof item.issueTypeName === "string" && item.issueTypeName.trim() !== "" ? item.issueTypeName : null,
+      issueTypeColor: isIssueTypeColor(item.issueTypeColor) ? item.issueTypeColor : null,
+      issueTypeIcon: isIssueTypeIcon(item.issueTypeIcon) ? item.issueTypeIcon : null,
       summary: item.summary,
       priority: item.priority,
       // `""` for unassigned, exactly as the list endpoint answers — same

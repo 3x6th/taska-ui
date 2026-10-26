@@ -109,6 +109,7 @@ const {
   seedWatcherNames,
   seedLinks,
   seedIssueTypes,
+  seedTypeNames,
   seedContextWorkflowParts,
   seedHistory,
   seedMeta,
@@ -119,6 +120,22 @@ const {
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
+
+  /**
+   * A registry entry the way the server seeds it (backend #212) — TASK, BUG
+   * and STORY with their seeded look, EPIC as the mock's purple layers, any
+   * other code with no look this build can draw — numbered in the order given.
+   */
+  const seededLooks: Record<string, { name: string; color: "blue" | "red" | "green" | "purple"; icon: "check-square" | "bug" | "book-open" | "layers" }> = {
+    TASK: { name: "Task", color: "blue", icon: "check-square" },
+    BUG: { name: "Bug", color: "red", icon: "bug" },
+    STORY: { name: "Story", color: "green", icon: "book-open" },
+    EPIC: { name: "Epic", color: "purple", icon: "layers" },
+  };
+  const registryEntryOf = (code: string, index: number, names: Record<string, string>) => {
+    const look = Object.hasOwn(seededLooks, code) ? seededLooks[code] : { name: code, color: null, icon: null };
+    return { code, ...look, name: names[code] ?? look.name, sortOrder: (index + 1) * 10 };
+  };
 
   /**
    * The five planning fields, as `Issue` declares them — `null` being the only
@@ -166,8 +183,14 @@ const {
     membershipHeld: boolean;
     projectFailure?: Error;
     projectHeld: boolean;
-    /** The issue types the project allows — the types its context sends a workflow for. Any code (TAS-173). */
+    /**
+     * The project's issue-type registry, by code, in its order (TAS-417): the
+     * context's `issueTypes` and one workflow each, and the types the board
+     * reads. Any code (TAS-173).
+     */
     issueTypes: string[];
+    /** A registry name other than the seed's, per code — a Cyrillic one, a rename (TAS-417). */
+    typeNames: Record<string, string>;
     /**
      * The statuses and transitions the context's workflow carries, when a test
      * needs other than the default one status and no transition — an empty
@@ -395,6 +418,7 @@ const {
     membershipHeld: false,
     projectHeld: false,
     issueTypes: ["TASK", "BUG", "STORY"],
+    typeNames: {},
     workflowsByType: {},
     meta: { issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null },
     metaReads: 0,
@@ -589,6 +613,7 @@ const {
         role: state.membership.role,
         members: state.members,
         labels: state.labels,
+        issueTypes: state.issueTypes.map((code, index) => registryEntryOf(code, index, state.typeNames)),
         workflows: Object.fromEntries(state.issueTypes.map((issueType) => [issueType, contextWorkflow(issueType)])),
       };
     },
@@ -611,17 +636,16 @@ const {
       return { items, page: 0, pageSize: 100, totalCount: items.length };
     },
     // The board's one issue read since TAS-202, built the way the gateway
-    // builds it (backend #205): the workflows of TASK, BUG and STORY — the
-    // ones this fixture's context sends, whatever the project allows, since
-    // workflow-service ignores that — merged by key, first type winning, then
-    // by `sortOrder`; an issue in a status its own type's workflow lacks goes
-    // to `unplacedIssues`; an issue of any other type is not read at all
-    // (backend A4). Cards carry the assignee the server joined in.
+    // builds it (backend #205, #226): the workflows of the registry's types in
+    // its order, merged by key, first type winning, then by `sortOrder`; an
+    // issue in a status its own type's workflow lacks goes to
+    // `unplacedIssues`; an issue of a type the registry does not hold is not
+    // read at all. Cards carry the assignee the server joined in.
     getBoard: async (projectId: string) => {
       state.boardReads += 1;
       if (state.boardHeld) await new Promise<void>((resolve) => state.boardReleases.push(resolve));
       if (state.issuesFailure) throw state.issuesFailure;
-      const types = ["TASK", "BUG", "STORY"];
+      const types = [...state.issueTypes];
       const statusesOf = (type: string) => contextWorkflow(type).statuses;
       const byKey = new Map<string, { statusKey: string; name: string; category: string; sortOrder: number }>();
       for (const type of types) for (const status of statusesOf(type)) if (!byKey.has(status.statusKey)) byKey.set(status.statusKey, status);
@@ -1225,6 +1249,9 @@ const {
     seedIssueTypes: (issueTypes: typeof state.issueTypes) => {
       state.issueTypes = issueTypes;
     },
+    seedTypeNames: (names: typeof state.typeNames) => {
+      state.typeNames = names;
+    },
     seedContextWorkflowParts: (parts: NonNullable<typeof state.contextWorkflowParts>) => {
       state.contextWorkflowParts = parts;
     },
@@ -1251,6 +1278,7 @@ const {
     createCalls: () => state.createCalls,
     reset: () => {
       state.issueTypes = ["TASK", "BUG", "STORY"];
+      state.typeNames = {};
       state.workflowsByType = {};
       state.meta = { issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null };
       state.metaReads = 0;
@@ -1648,16 +1676,19 @@ describe("an archived project's board", () => {
       }
       expect(dialog.queryByRole("button", { name: "Create issue" })).not.toBeInTheDocument();
       // The choices stay legible and reachable, and a press does nothing. (Not
-      // "Low" or "Task": the first segment of each is named by its `<label>`.)
+      // "Low": the first segment is named by its `<label>`.)
       const high = dialog.getByRole("button", { name: "High" });
       fireEvent.click(high);
       expect(high).toHaveAttribute("aria-pressed", "false");
       expect(dialog.getByRole("button", { name: "Medium" })).toHaveAttribute("aria-pressed", "true");
-      for (const segment of [high, dialog.getByRole("button", { name: "Bug" })]) {
-        for (const choice of within(segment.parentElement!).getAllByRole("button")) {
-          expect(choice).toHaveAttribute("aria-disabled", "true");
-        }
+      for (const choice of within(high.parentElement!).getAllByRole("button")) {
+        expect(choice).toHaveAttribute("aria-disabled", "true");
       }
+      // The type is a select since TAS-417: the same steadily-unavailable recipe.
+      const type = dialog.getByRole("combobox", { name: "Type" });
+      expect(type).toHaveAttribute("aria-disabled", "true");
+      fireEvent.change(type, { target: { value: "BUG" } });
+      expect(type).toHaveValue("TASK");
       // The ways out stay.
       expect(dialog.getByRole("button", { name: "Cancel" })).toBeVisible();
       expect(dialog.getByRole("button", { name: "Close" })).toBeVisible();
@@ -2286,7 +2317,7 @@ describe("the board's filters", () => {
     const reads = boardReads();
     expect(screen.getByText("4 of 4")).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Bug" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Type" }), { target: { value: "BUG" } });
     expect(screen.getByText("2 of 4")).toBeVisible();
     fireEvent.click(within(document.querySelector(".assignee-row") as HTMLElement).getByRole("button", { name: "Tom Baker" }));
     expect(screen.getByText("2 of 4")).toBeVisible();
@@ -2749,19 +2780,21 @@ describe("a card dropped on another column", () => {
     transitions: [{ id: "t-start", fromStatusId: "s-todo", toStatusId: "s-progress", name: "Start Progress", sortOrder: 10 }],
   };
   /**
-   * In Progress holds, in the order the server sends it, two tasks and a bug.
-   * The seeded TAS-102 is a task made on 2026-08-01, so by the comparator it
-   * belongs between the two tasks and ahead of the bug — neither first nor
+   * In Progress holds, in the order the server sends it — `createdAt`, then
+   * `id`, whatever the type (backend TAS-392) — a bug and two tasks. The
+   * seeded TAS-102 is a task made on 2026-08-01, so by the comparator it
+   * belongs between the two tasks, after the older bug — neither first nor
    * last, which is the only place a placement by the comparator is told from
-   * an append or a prepend.
+   * an append or a prepend. With a type rank it would have gone before the
+   * bug.
    */
   const inProgress = [
+    { id: "issue-bug", issueKey: "TAS-204", summary: "A bug", issueType: "BUG", status: "IN_PROGRESS", createdAt: "2026-06-01T09:00:00Z" },
     { id: "issue-old", issueKey: "TAS-201", summary: "Oldest task", status: "IN_PROGRESS", createdAt: "2026-07-01T09:00:00Z" },
     { id: "issue-new", issueKey: "TAS-203", summary: "Newest task", status: "IN_PROGRESS", createdAt: "2026-09-01T09:00:00Z" },
-    { id: "issue-bug", issueKey: "TAS-204", summary: "A bug", issueType: "BUG", status: "IN_PROGRESS", createdAt: "2026-06-01T09:00:00Z" },
   ];
-  const BEFORE = ["TAS-201", "TAS-203", "TAS-204"];
-  const AFTER = ["TAS-201", "TAS-102", "TAS-203", "TAS-204"];
+  const BEFORE = ["TAS-204", "TAS-201", "TAS-203"];
+  const AFTER = ["TAS-204", "TAS-201", "TAS-102", "TAS-203"];
 
   beforeEach(() => {
     reset();
@@ -2869,22 +2902,20 @@ describe("a project that allows fewer issue types", () => {
     window.localStorage.clear();
   });
 
-  it("offers only the allowed types in the filter and in the create form", async () => {
+  it("offers the registry's types in its order in the filter and in the create form, the first by default", async () => {
     seedIssueTypes(["BUG", "TASK"]);
     renderBoard();
 
     await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
-    // The type filter's segmented row — the first "All"; the second is the assignee filter's.
-    const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
-    // In the board's order, whatever order the server listed them in.
-    expect(within(filter).getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Task", "Bug"]);
+    const optionsOf = (select: HTMLElement) => within(select).getAllByRole("option").map((option) => option.textContent);
+    // In the registry's order, as the server sent it — never re-sorted (TAS-417).
+    expect(optionsOf(screen.getByRole("combobox", { name: "Type" }))).toEqual(["All", "Bug", "Task"]);
 
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     const dialog = await screen.findByRole("dialog");
-    // By text: the row sits inside a `<label>`, which names its first button "Type".
-    const types = within(dialog).getByText("Task").parentElement as HTMLElement;
-    expect(within(types).getAllByRole("button").map((button) => button.textContent)).toEqual(["Task", "Bug"]);
-    expect(within(types).getByText("Task")).toHaveClass("is-active");
+    const type = within(dialog).getByRole("combobox", { name: "Type" });
+    expect(optionsOf(type)).toEqual(["Bug", "Task"]);
+    expect(type).toHaveValue("BUG");
   });
 
   it("says why an issue of a type the project no longer allows offers no move", async () => {
@@ -2896,16 +2927,14 @@ describe("a project that allows fewer issue types", () => {
     expect(within(panel).queryByText(/could not be loaded, so no move/i)).not.toBeInTheDocument();
   });
 
-  it("keeps its columns and switches creating off when the project allows no type at all", async () => {
+  it("switches creating off when the project's registry is empty", async () => {
     seedIssueTypes([]);
     renderBoard();
 
-    // The board's own columns: the server builds them from the workflows of
-    // TASK, BUG and STORY whatever the project allows, so the issues still have
-    // a place.
-    expect(await screen.findByRole("region", { name: "To Do column" })).toBeVisible();
-    await waitFor(() => expect(within(screen.getByRole("region", { name: "To Do column" })).getByText(/TAS-102/)).toBeVisible());
-    expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
+    // The server reads the registry's types (backend #226): none, so no
+    // column and no card — and nothing to create an issue as.
+    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeDisabled());
+    expect(screen.queryByRole("button", { name: /TAS-102/ })).not.toBeInTheDocument();
     // Nothing failed, so nothing says it did.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
@@ -2918,9 +2947,9 @@ describe("a project that allows fewer issue types", () => {
  * workflow that adds IN_REVIEW, and holds three issues: the seeded task, an
  * URGENT epic in review, and a task in BLOCKED_BY_QA, which no workflow lists.
  *
- * Since TAS-202 the board is the server's read, and the server reads TASK, BUG
- * and STORY only (backend A4): the epic is in the context and in its own
- * panel, and on no column of the board.
+ * Since TAS-202 the board is the server's read, and since backend #226 it
+ * reads every type of the project's registry (TAS-417): the epic is on its
+ * own workflow's In Review column.
  */
 describe("values this build does not know", () => {
   const epicWorkflow = {
@@ -2959,24 +2988,18 @@ describe("values this build does not know", () => {
     seedMeta(stand);
   });
 
-  it("offers an unknown type in the filter, and leaves its issues and its workflow's columns to the server's read", async () => {
+  it("offers a type beyond the seeds in the filter by its registry name, and draws its issues on its workflow's columns", async () => {
     renderBoard();
 
     await screen.findByRole("button", { name: /TAS-151/ });
-    // The board reads TASK, BUG and STORY (backend A4): no In Review column,
-    // no epic on it, and Y counts what the read holds.
-    expect(screen.queryByRole("region", { name: "In Review column" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /TAS-150/ })).not.toBeInTheDocument();
-    expect(screen.getByText("2 of 2")).toBeVisible();
-    // The type is still the project's, by its English /meta name.
-    const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
-    expect(within(filter).getAllByRole("button").map((button) => button.textContent)).toEqual([
-      "All",
-      "Task",
-      "Bug",
-      "Story",
-      "Epic",
-    ]);
+    // The board reads every registry type (backend #226): the epic's own
+    // In Review column, the epic on it, and Y counts what the read holds.
+    const review = screen.getByRole("region", { name: "In Review column" });
+    expect(within(review).getByRole("button", { name: /TAS-150/ })).toBeVisible();
+    expect(screen.getByText("3 of 3")).toBeVisible();
+    // Named by the registry — never by /meta, whose Russian TASK name is ignored.
+    const options = within(screen.getByRole("combobox", { name: "Type" })).getAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual(["All", "Task", "Bug", "Story", "Epic"]);
   });
 
   it("draws an unknown priority on a card by its code, before three empty bars", async () => {
@@ -2989,14 +3012,15 @@ describe("values this build does not know", () => {
     expect(within(card).getByTitle("URGENT priority")).toHaveClass("priority-bars");
   });
 
-  it("prints a type code verbatim when /meta failed", async () => {
+  it("names a type with a Cyrillic registry name by the build's word for a seed and by its code otherwise", async () => {
     seedMeta(new Error("Internal error"));
+    seedTypeNames({ TASK: "Задача", EPIC: "Эпик" });
     renderBoard();
 
     await screen.findByRole("button", { name: /TAS-151/ });
-    const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
-    expect(within(filter).getByRole("button", { name: "EPIC" })).toBeVisible();
-    // Silent (D5): a failed /meta raises no notice anywhere.
+    const options = within(screen.getByRole("combobox", { name: "Type" })).getAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual(["All", "Task", "Bug", "Story", "EPIC"]);
+    // Types never wait for /meta, and its failure raises no notice anywhere (D5).
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
@@ -3018,8 +3042,8 @@ describe("values this build does not know", () => {
       .getAllByRole("region")
       .filter((region) => region.classList.contains("board-column"))
       .map((region) => Number(region.querySelector(".count-pill")?.textContent));
-    expect(pills.reduce((sum, count) => sum + count, 0)).toBe(2);
-    expect(screen.getByText("2 of 2")).toBeVisible();
+    expect(pills.reduce((sum, count) => sum + count, 0)).toBe(3);
+    expect(screen.getByText("3 of 3")).toBeVisible();
     // A card in a column is still draggable.
     const placed = within(screen.getByRole("region", { name: "To Do column" })).getByRole("button", { name: /TAS-102/ });
     await waitFor(() => expect(placed).toHaveAttribute("aria-roledescription", "draggable"));
@@ -3107,8 +3131,9 @@ describe("values this build does not know", () => {
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-orphan`);
 
     const panel = await screen.findByRole("dialog", { name: "TAS-151 issue" });
+    // The registry's name, printed as the project wrote it (§6): "Task", not "task".
     expect(
-      await within(panel).findByText("BLOCKED_BY_QA is not in this project’s task workflow, so no move is offered."),
+      await within(panel).findByText("BLOCKED_BY_QA is not in this project’s Task workflow, so no move is offered."),
     ).toBeVisible();
     // Neutral: neither the key nor a category gives it a colour.
     expect(within(panel).getByText("BLOCKED_BY_QA", { selector: ".status-pill" })).toHaveAttribute(
@@ -3125,7 +3150,7 @@ describe("values this build does not know", () => {
 
     const panel = await screen.findByRole("dialog", { name: "TAS-151 issue" });
     expect(
-      await within(panel).findByText("BLOCKED_BY_QA is not in this project’s task workflow, so no move is offered."),
+      await within(panel).findByText("BLOCKED_BY_QA is not in this project’s Task workflow, so no move is offered."),
     ).toBeVisible();
   });
 
@@ -3179,12 +3204,12 @@ describe("values this build does not know", () => {
       "URGENT",
     ]);
     expect(within(priorities).getByRole("button", { name: "Medium" })).toHaveClass("is-active");
-    const types = within(dialog).getByRole("button", { name: "Epic" }).parentElement as HTMLElement;
-    expect(within(types).getAllByRole("button").map((button) => button.textContent)).toEqual(["Task", "Bug", "Story", "Epic"]);
+    const types = within(dialog).getByRole("combobox", { name: "Type" });
+    expect(within(types).getAllByRole("option").map((option) => option.textContent)).toEqual(["Task", "Bug", "Story", "Epic"]);
     expect(dialog.querySelector(".form-two")).toHaveClass("is-stacked");
 
     fireEvent.click(within(priorities).getByRole("button", { name: "URGENT" }));
-    fireEvent.click(within(types).getByRole("button", { name: "Epic" }));
+    fireEvent.change(types, { target: { value: "EPIC" } });
     fireEvent.change(within(dialog).getByLabelText("Summary"), { target: { value: "Quarterly plan" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Create issue" }));
     await waitFor(() => expect(createCalls()).toHaveLength(1));
@@ -3223,10 +3248,10 @@ describe("values this build does not know", () => {
     await screen.findByRole("button", { name: /TAS-151/ });
     await waitFor(() => expect(metaReads()).toBe(1));
 
-    const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
-    fireEvent.click(within(filter).getByRole("button", { name: "Bug" }));
+    const filter = screen.getByRole("combobox", { name: "Type" });
+    fireEvent.change(filter, { target: { value: "BUG" } });
     await waitFor(() => expect(screen.queryByRole("button", { name: /TAS-151/ })).not.toBeInTheDocument());
-    fireEvent.click(within(filter).getByRole("button", { name: "All" }));
+    fireEvent.change(filter, { target: { value: "" } });
     fireEvent.click(await screen.findByRole("button", { name: /TAS-151/ }));
 
     const panel = await screen.findByRole("dialog", { name: "TAS-151 issue" });
@@ -3242,7 +3267,7 @@ describe("values this build does not know", () => {
     renderBoard();
 
     // X of Y is drawn from the board read alone, so this is the board landing.
-    expect(await screen.findByText("2 of 2")).toBeVisible();
+    expect(await screen.findByText("3 of 3")).toBeVisible();
     expect(document.querySelectorAll(".skeleton-card").length).toBeGreaterThan(0);
     expect(screen.queryByRole("region", { name: "Outside their workflow" })).not.toBeInTheDocument();
   });
@@ -3322,7 +3347,7 @@ describe("a workflow the server sent without statuses", () => {
 
     const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     const note = await within(panel).findByText(
-      "The server sent this project’s task workflow without statuses, so no move is offered.",
+      "The server sent this project’s Task workflow without statuses, so no move is offered.",
     );
     expect(note).toBeVisible();
     // The third refusal, not either of the other two: the read did not fail,
@@ -6564,8 +6589,9 @@ describe("the issue panel as a dialog", () => {
   it("falls back to the board's back button when the card is not on the board either", async () => {
     renderBoard(ISSUE_PATH);
     const dialog = await panel();
-    // TAS-102 is a task; with only bugs on the board its card is gone.
-    fireEvent.click(screen.getByRole("button", { name: "Bug" }));
+    // TAS-102 is a task; with only bugs on the board its card is gone. (The
+    // board's filter, not the panel's own Type select.)
+    fireEvent.change(document.querySelector(".filter-type select") as HTMLSelectElement, { target: { value: "BUG" } });
     await waitFor(() => expect(card()).toBeNull());
     fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/board`));

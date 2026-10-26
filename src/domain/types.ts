@@ -710,16 +710,17 @@ export interface ProjectContext {
   labels: Label[];
   /**
    * The project's issue-type registry (backend #212, TAS-385), **in the
-   * server's order** — `sortOrder`, then `code` by the database's collation —
+   * server's order** — `sortOrder`, then `code` byte-wise (backend TAS-418) —
    * which is the order every picker, filter and list draws; the first is the
    * type a new issue starts as. Never re-sorted here (DESIGN.md §6). Empty is
    * a real answer: a project nobody can create an issue in.
    */
   issueTypes: ProjectIssueType[];
   /**
-   * Keyed by issue type, **and only the types the project allows**: one, two,
-   * all three or none. A type that is not here is not a failure; it is a type
-   * this project does not offer. Keyed by the code as sent, a type this build
+   * Keyed by issue type: one entry per type of the registry (backend #226),
+   * its own binding or the shared default. A type that is not here is not a
+   * failure; it is a type this project does not offer. Keyed by the code as
+   * sent, a type this build
    * has no name for included (TAS-173); only an entry with no type at all (the
    * wire's `null`) is dropped by the API layer. Read through `workflowFor`
    * (src/lib/projectContext.ts), never by indexing — a code is a string the
@@ -900,6 +901,17 @@ export interface IssueSearchHit {
   id: string;
   issueKey: string;
   issueType: IssueTypeCode;
+  /**
+   * The type's look as the hit's own project registry holds it now (backend
+   * TAS-418, `IssueShortResponseDto.issueTypeName/Color/Icon`): what global
+   * search draws the type with, so it never reads a project context per hit
+   * (DESIGN.md §4.6, §4.20). Each `null` when absent — a type deleted from
+   * the registry since — and the colour and the icon `null` too for a value
+   * outside the contract's sets, which the chip draws neutral.
+   */
+  issueTypeName: string | null;
+  issueTypeColor: IssueTypeColor | null;
+  issueTypeIcon: IssueTypeIcon | null;
   summary: string;
   priority: IssuePriorityCode;
   /** `""` on the wire for an unassigned issue; normalised to `null` like `Issue.assigneeId`. */
@@ -1004,11 +1016,12 @@ export interface BoardColumn {
  * `GET /projects/{projectId}/board` — `BoardResponseDto` since backend #205
  * (TAS-213), the board screen's one issue read (TAS-202).
  *
- * Without `issueType` the gateway reads the workflows of TASK, BUG and STORY —
- * a constant in `BoardServiceImpl`, not the project's allowed types (backend
- * A4) — skips a type whose workflow is not found, and merges their statuses
- * into `columns` by key, the first type to state a key winning, then stably by
- * `sortOrder`. It reads the issues of those three types only.
+ * Without `issueType` the gateway reads the workflows of the project's
+ * issue-type registry in its order (backend #226, TAS-393) — skipping a type
+ * whose workflow is not found — and merges their statuses into `columns` by
+ * key, the first type to state a key winning, then stably by `sortOrder`. It
+ * reads the issues of those types only: an issue of a type the registry does
+ * not hold is on no column and not in `unplacedIssues`.
  *
  * `unplacedIssues` holds every issue read whose status is not in **its own
  * type's** workflow — a status that stands as a column only because another

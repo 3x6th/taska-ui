@@ -56,7 +56,7 @@ async function openBoard(page: Page) {
   // the label picker is enabled once it has — so the walk meets the board as
   // it stays, with every control the role is given.
   await expect(page.locator("button.issue-card").first()).toBeVisible();
-  await expect(page.locator(".filter-select select")).toBeEnabled();
+  await expect(page.locator(".filterbar").getByRole("combobox", { name: "Label" })).toBeEnabled();
 }
 
 async function openPanel(page: Page, issueKey: string): Promise<Locator> {

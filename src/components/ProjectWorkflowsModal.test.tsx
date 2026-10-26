@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
-import type { ProjectRole, ProjectWorkflowEntry, WorkflowDefinition } from "../domain/types";
+import type { ProjectIssueType, ProjectRole, ProjectWorkflowEntry, WorkflowDefinition } from "../domain/types";
 import { boardKey } from "../lib/boardQuery";
 import { projectContextKey } from "../lib/projectContext";
 import { ProjectWorkflowsModal } from "./ProjectWorkflowsModal";
@@ -96,13 +96,20 @@ const sharedEntry: ProjectWorkflowEntry = { workflow: sharedWorkflow, issueTypes
 const ownWorkflow: WorkflowDefinition = { ...sharedWorkflow, id: "wf-own", name: "Development" };
 const ownEntry: ProjectWorkflowEntry = { workflow: ownWorkflow, issueTypes: ["STORY"], shared: false };
 
+/** The registry every project is seeded with (backend #212), in its order. */
+const SEEDED_TYPES: ProjectIssueType[] = [
+  { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
+  { code: "BUG", name: "Bug", color: "red", icon: "bug", sortOrder: 20 },
+  { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 30 },
+];
+
 function renderDialog(readerRole: ProjectRole | null | undefined = "ADMIN", archived = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const onClose = vi.fn();
   render(
     <QueryClientProvider client={queryClient}>
       <ProjectWorkflowsModal
-        issueTypeOrder={["TASK", "BUG", "STORY"]}
+        issueTypes={SEEDED_TYPES}
         onClose={onClose}
         projectId={PROJECT}
         projectKey="TAS"
@@ -206,7 +213,7 @@ describe("the Workflows dialog's states", () => {
     expect(within(own).getByText("Unknown status")).toBeVisible();
     // In Progress and Review are reached by nothing visible; Done is reached by Ship.
     expect(within(own).getAllByText("No transition on the board leads here.")).toHaveLength(2);
-    expect(within(own).getByText(/New issues always start in TODO, which this workflow does not have, so new story issues/)).toBeVisible();
+    expect(within(own).getByText(/New issues always start in TODO, which this workflow does not have, so new Story issues/)).toBeVisible();
     // A category this build cannot colour is the hollow ring, said in words beside it.
     expect(within(own).getByText("QA")).toBeVisible();
     expect(own.querySelector(".status-dot.is-unknown")).not.toBeNull();

@@ -72,7 +72,11 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
       if (action.type === "patch") return { preferences: await taskaApi.updateNotificationPreferences(action.input) };
       if (action.type === "confirm") return { preferences: await taskaApi.confirmTelegramLink(action.linkId) };
       if (action.type === "disconnect") return { preferences: await taskaApi.disconnectTelegram() };
-      return { link: await taskaApi.createTelegramLink() };
+      // The link's answer carries the row as it stands after the link was
+      // issued (`TelegramLinkDto.preferences`), so it is the section's next
+      // frame — no second read (TAS-387).
+      const link = await taskaApi.createTelegramLink();
+      return { link, preferences: link.preferences };
     },
     onMutate: async (action) => {
       setNotice(null);
@@ -87,13 +91,7 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
         await client.cancelQueries({ queryKey: key });
         client.setQueryData(key, result.preferences);
       }
-      if (result.link) {
-        setLink(result.link);
-        // A successful link POST says nothing about the binding state. A failed
-        // read is reported by the query as a refresh failure, never as a failed
-        // creation after the server has already issued a link.
-        await client.invalidateQueries({ queryKey: key });
-      }
+      if (result.link) setLink(result.link);
       if (action.type === "confirm" || action.type === "disconnect") {
         setLink(null);
         // The action button disappears, so place focus on the section heading.
@@ -159,11 +157,11 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
     return "Connect your account before turning Telegram notifications on.";
   };
 
-  // With the integration off and the bot username unset, the backend reports
-  // every binding as BOT_CHANGED, so the code's sentence is used only while
-  // Telegram is available.
+  // The stored delivery error's own sentence, whenever the row carries one:
+  // the backend synthesises BOT_CHANGED only while the integration is on
+  // (TAS-387), so a code on the row is the row's, available or not.
   const unavailableNote = (current: NotificationPreferences) =>
-    current.telegramAvailable && current.telegramError
+    current.telegramError
       ? telegramDeliveryErrorText(current.telegramError)
       : "The connected bot cannot deliver notifications right now. You can disconnect Telegram and connect again when it is available.";
 

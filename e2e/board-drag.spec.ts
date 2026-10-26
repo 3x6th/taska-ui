@@ -184,22 +184,24 @@ test.describe("dragging a card with a mouse", () => {
     }).toPass();
   });
 
-  // §5.3, art-director's B1 (TAS-202): the column's order is the server's —
-  // TASK, BUG, STORY, each oldest first — and the dropped card goes where the
-  // server will put it, so the re-read after the move does not reorder it.
+  // §5.3 (TAS-202, backend TAS-392): the column's order is the server's —
+  // oldest first, then id, whatever the type — and the dropped card goes where
+  // the server will put it, so the re-read after the move does not reorder it.
   test("places a dropped card in the server's order, which the re-read keeps", async ({ page }) => {
     await openBoard(page);
-    const done = column(page, "Done");
-    const keys = () => done.locator("button.issue-card .issue-key").allInnerTexts();
-    await expect.poll(keys).toEqual(["TAS-104", "TAS-109"]);
+    const todo = column(page, "To Do");
+    const keys = () => todo.locator("button.issue-card .issue-key").allInnerTexts();
+    await expect.poll(keys).toEqual(["TAS-102", "TAS-103", "TAS-106", "TAS-108", "TAS-110"]);
 
-    await dragCardTo(page, column(page, "In Progress").getByRole("button", { name: /TAS-107/ }), done);
+    await dragCardTo(page, column(page, "In Progress").getByRole("button", { name: /TAS-105/ }), todo);
 
-    // TAS-107 is a task created after TAS-104: after it, and before the story.
-    await expect.poll(keys).toEqual(["TAS-104", "TAS-107", "TAS-109"]);
+    // TAS-105 is a bug created between TAS-103 and TAS-106: there, in the
+    // middle — not after the tasks, as a type rank would have put it.
+    const placed = ["TAS-102", "TAS-103", "TAS-105", "TAS-106", "TAS-108", "TAS-110"];
+    await expect.poll(keys).toEqual(placed);
     await page.waitForLoadState("networkidle");
     await page.waitForTimeout(500);
-    expect(await keys()).toEqual(["TAS-104", "TAS-107", "TAS-109"]);
+    expect(await keys()).toEqual(placed);
   });
 
   test("leaves the card where it was when it is dropped outside every column", async ({ page }) => {
@@ -288,7 +290,8 @@ test.describe("a board with no workflow for the card's type", () => {
     // were there.
     await expect(panel.getByRole("group", { name: "Status" })).toBeVisible();
     await expect(panel.getByRole("group", { name: "Status" }).getByRole("button")).toHaveCount(0);
-    await expect(page.getByText(/This project has no workflow for task issues, so no move is\s+offered\./)).toBeVisible();
+    // The registry's name, printed as the project wrote it (DESIGN.md §6).
+    await expect(page.getByText(/This project has no workflow for Task issues, so no move is\s+offered\./)).toBeVisible();
   });
 });
 

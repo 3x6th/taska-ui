@@ -30,6 +30,17 @@ describe("compareBoardIssues", () => {
     expect(sorted.map((item) => item.id)).toEqual(["c", "a", "b"]);
   });
 
+  it("puts a card with no readable date after every dated one, then by id", () => {
+    const sorted = [
+      card("b", "TASK", ""),
+      card("z", "BUG", "2026-06-01T00:00:00Z"),
+      card("a", "STORY", "not a date"),
+      card("y", "TASK", "2026-01-01T00:00:00Z"),
+    ].sort(compareBoardIssues);
+
+    expect(sorted.map((item) => item.id)).toEqual(["y", "z", "a", "b"]);
+  });
+
   it("breaks a tie on the id across types, so the order is total", () => {
     const sorted = [card("b", "TASK", "2026-06-01T00:00:00Z"), card("a", "BUG", "2026-06-01T00:00:00Z")].sort(
       compareBoardIssues,

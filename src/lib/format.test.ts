@@ -153,8 +153,11 @@ describe("labels and visuals for codes off the wire", () => {
 });
 
 /**
- * DESIGN.md §6 «Подпись типа» (TAS-417): one helper, one Cyrillic check, and a
- * branch for each of the three places a label can come from.
+ * DESIGN.md §6 «Подпись типа» (TAS-417, TAS-418): one helper, one Cyrillic
+ * check, and a branch for each of the three places a label can come from — the
+ * registry holding the key, the registry not holding it, and no registry at
+ * all (a search hit, which carries its own `issueTypeName`). `/meta` is no
+ * longer one of them.
  */
 describe("issueTypeLabel", () => {
   const entry = (code: string, name: string): ProjectIssueType => ({ code, name, color: "blue", icon: "flag", sortOrder: 10 });
@@ -165,13 +168,9 @@ describe("issueTypeLabel", () => {
     entry("REQUEST", "Заявка"),
     entry("STORY", "  Story  "),
   ];
-  const served: DictionaryEntry[] = [
-    { code: "TASK", name: "Task (meta)", selectable: true },
-    { code: "BUG", name: "Ошибка", selectable: true },
-  ];
 
-  it("prints a registry name as the project wrote it, trimmed", () => {
-    expect(issueTypeLabel("TASK", registry, served)).toBe("Chore");
+  it("prints a registry name as the project wrote it, trimmed — and a hit's name never overrides it", () => {
+    expect(issueTypeLabel("TASK", registry, "Task from a hit")).toBe("Chore");
     expect(issueTypeLabel("EPIC", registry)).toBe("Epic");
     expect(issueTypeLabel("STORY", registry)).toBe("Story");
   });
@@ -181,18 +180,24 @@ describe("issueTypeLabel", () => {
     expect(issueTypeLabel("REQUEST", registry)).toBe("REQUEST");
   });
 
-  it("prints a key the registry does not hold as it is, even a seeded one /meta names", () => {
+  it("prints a key the registry does not hold as it is, even a seeded one", () => {
     expect(issueTypeLabel("SPIKE", registry)).toBe("SPIKE");
-    expect(issueTypeLabel("TASK", [entry("BUG", "Bug")], served)).toBe("TASK");
-    expect(issueTypeLabel("TASK", [], served)).toBe("TASK");
+    expect(issueTypeLabel("TASK", [entry("BUG", "Bug")], "Task")).toBe("TASK");
+    expect(issueTypeLabel("TASK", [])).toBe("TASK");
   });
 
-  it("without a registry, names a seeded key from /meta, else in the build's word, and any other key as it is", () => {
-    expect(issueTypeLabel("TASK", null, served)).toBe("Task (meta)");
-    // A Cyrillic /meta name, and no /meta answer at all, both read as the build's word.
-    expect(issueTypeLabel("BUG", undefined, served)).toBe("Bug");
+  it("without a registry, prints the hit's own name by the same Cyrillic rule", () => {
+    expect(issueTypeLabel("TASK", null, "Chore")).toBe("Chore");
+    expect(issueTypeLabel("EPIC", undefined, "  Epic ")).toBe("Epic");
+    // Cyrillic in the hit's name: the build's word for a seeded key, the key for any other.
+    expect(issueTypeLabel("BUG", null, "Ошибка")).toBe("Bug");
+    expect(issueTypeLabel("REQUEST", null, "Заявка")).toBe("REQUEST");
+  });
+
+  it("without a registry or a name on the hit, uses the build's word for a seeded key and the key for any other", () => {
     expect(issueTypeLabel("STORY", null, null)).toBe("Story");
-    expect(issueTypeLabel("EPIC", null, [{ code: "EPIC", name: "Epic", selectable: true }])).toBe("EPIC");
+    expect(issueTypeLabel("TASK", undefined)).toBe("Task");
+    expect(issueTypeLabel("EPIC", null, "")).toBe("EPIC");
   });
 
   it("never finds a key on the prototype", () => {
@@ -208,6 +213,7 @@ describe("issueTypeLabel", () => {
     expect(issueTypeInSentence("TASK", registry)).toBe("Chore");
     expect(issueTypeInSentence("REQUEST", registry)).toBe("REQUEST");
     expect(issueTypeInSentence("EPIC", null)).toBe("EPIC");
+    expect(issueTypeInSentence("TASK", null, "Chore")).toBe("Chore");
   });
 
   it("paints the seven colour keys with §2.2's values", () => {

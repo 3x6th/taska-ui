@@ -81,7 +81,7 @@ taskaApi.createTelegramLink = async () => {
     telegramLinkId: linkId,
     telegramLinkExpiresAt: expiresAt,
   };
-  return { linkId, url: "https://t.me/TaskaFixtureBot?start=fixture_opaque_token", expiresAt };
+  return { linkId, url: "https://t.me/TaskaFixtureBot?start=fixture_opaque_token", expiresAt, preferences: { ...f.row } };
 };
 
 taskaApi.confirmTelegramLink = async (id) => {

@@ -292,7 +292,12 @@ describe("MockTaskaApi", () => {
       const input = { summary: "Rotate the keys", description: "", priority: "LOW" as const };
       await expect(api.createIssue(ops.id, { ...input, issueType: "STORY" })).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
-        message: "Issue type STORY is not allowed in project OPS",
+        message: "Issue type STORY is not defined in this project",
+      });
+      // A key outside `IssueTypeDto`'s pattern is the gateway's, before the project.
+      await expect(api.createIssue(ops.id, { ...input, issueType: "story" })).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+        message: "Invalid issue type key",
       });
       await expect(api.createIssue(ops.id, { ...input, issueType: "BUG" })).resolves.toMatchObject({ issueType: "BUG" });
     });
@@ -339,7 +344,7 @@ describe("MockTaskaApi", () => {
 
       await expect(api.createIssue(ops.id, input)).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
-        message: "Issue type EPIC is not allowed in project OPS",
+        message: "Issue type EPIC is not defined in this project",
       });
       const epic = await api.createIssue(web.id, input);
       expect(epic).toMatchObject({ issueType: "EPIC", status: "TODO" });
@@ -416,8 +421,9 @@ describe("MockTaskaApi", () => {
     it("answers the stand's body with the two codes this build does not know", async () => {
       const meta = await api.getMeta();
 
-      expect(meta.issueTypes?.map((entry) => entry.code)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
-      expect(meta.issueTypes?.map((entry) => entry.name)).toEqual(["Task", "Bug", "Story", "Epic"]);
+      // Only the three seed names since backend #212: a project's types are its registry.
+      expect(meta.issueTypes?.map((entry) => entry.code)).toEqual(["TASK", "BUG", "STORY"]);
+      expect(meta.issueTypes?.map((entry) => entry.name)).toEqual(["Task", "Bug", "Story"]);
       expect(meta.priorities?.map((entry) => entry.code)).toEqual(["LOW", "MEDIUM", "HIGH", "URGENT"]);
       expect(meta.priorities?.find((entry) => entry.code === "URGENT")?.name).toBe("Срочный");
       expect(meta.linkTypes).toEqual([
@@ -1471,6 +1477,17 @@ describe("MockTaskaApi", () => {
       expect(open(with_)).toEqual(open(without));
     });
 
+    it("answers an empty board for a well-formed type the registry does not hold, after the membership check", async () => {
+      // OPS's registry is TASK and BUG (`BoardServiceImpl` at backend be5085e5).
+      const ops = (await api.listProjects()).find((item) => item.projectKey === "OPS")!;
+      await expect(api.getBoard(ops.id, { issueType: "STORY" })).resolves.toEqual({
+        projectId: ops.id,
+        columns: [],
+        unplacedIssues: [],
+      });
+      await expect(api.getBoard(ops.id, { issueType: "story" })).resolves.toMatchObject({ columns: [], unplacedIssues: [] });
+    });
+
     it("reads one type when it is asked for one", async () => {
       const board = await api.getBoard(project.id, { issueType: "BUG", includeDone: true });
       const { items } = await api.listIssues(project.id, { pageSize: 100 });
@@ -1480,16 +1497,12 @@ describe("MockTaskaApi", () => {
       expect(cardsOf(board).map((issue) => issue.issueKey).sort()).toEqual([...bugs].sort());
     });
 
-    it("orders a column by type — TASK, BUG, STORY — then oldest first, then id", async () => {
+    it("orders a column oldest first, then by id, whatever the type (backend TAS-392)", async () => {
       const board = await api.getBoard(project.id, { includeDone: true });
-      const rank: Record<string, number> = { TASK: 0, BUG: 1, STORY: 2 };
 
       for (const column of board.columns) {
         const sorted = [...column.issues].sort(
-          (a, b) =>
-            rank[a.issueType] - rank[b.issueType] ||
-            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() ||
-            (a.id < b.id ? -1 : 1),
+          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || (a.id < b.id ? -1 : 1),
         );
         expect(column.issues.map((issue) => issue.id)).toEqual(sorted.map((issue) => issue.id));
       }
@@ -1546,16 +1559,17 @@ describe("MockTaskaApi", () => {
       expect(cardsOf(nobody)).toEqual([]);
     });
 
-    it("leaves an issue whose own workflow lacks its status outside, and reads no type but the three (backend A4)", async () => {
+    it("reads every registry type, and leaves an issue whose own workflow lacks its status outside (backend #226)", async () => {
       const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
       const board = await api.getBoard(web.id, { includeDone: true });
       const context = await api.getProjectContext(web.id);
 
-      // The context offers EPIC, whose workflow adds In Review; the board reads
-      // TASK, BUG and STORY only, so neither the column nor the epic is on it.
+      // WEB's registry holds EPIC, whose workflow adds In Review: the board
+      // reads it, so the column is there and the epic is on it.
       expect(context.workflows.EPIC?.statuses.map((item) => item.statusKey)).toContain("IN_REVIEW");
-      expect(board.columns.map((column) => column.statusKey)).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
-      expect(cardsOf(board).some((issue) => issue.issueKey === "WEB-15")).toBe(false);
+      expect(board.columns.map((column) => column.statusKey)).toEqual(["TODO", "IN_PROGRESS", "IN_REVIEW", "DONE"]);
+      const review = board.columns.find((column) => column.statusKey === "IN_REVIEW")!;
+      expect(review.issues.map((issue) => issue.issueKey)).toContain("WEB-15");
       // A task in a status no workflow of its own lists.
       expect(board.unplacedIssues.map((issue) => [issue.issueKey, issue.statusKey])).toEqual([["WEB-16", "BLOCKED_BY_QA"]]);
     });
@@ -1585,11 +1599,11 @@ describe("MockTaskaApi", () => {
         ["TRIAGE", ["b"]],
         ["DONE", []],
       ]);
-      // By type, then status ("" before "TRIAGE" for the two tasks).
-      expect(board.unplacedIssues.map((issue) => issue.id)).toEqual(["c", "a", "d"]);
+      // One date, so by id — the type and the status play no part.
+      expect(board.unplacedIssues.map((issue) => issue.id)).toEqual(["a", "c", "d"]);
     });
 
-    it("orders unplacedIssues by type, then status, then oldest first, then id — as the server reads them", () => {
+    it("orders unplacedIssues oldest first, then by id, whatever the type or the status (backend TAS-392)", () => {
       const types = [
         { issueType: "TASK", statuses: [status("TODO", "TODO", 10)] },
         { issueType: "BUG", statuses: [status("TODO", "TODO", 10)] },
@@ -1602,7 +1616,7 @@ describe("MockTaskaApi", () => {
           card({ id: "task-zeta", issueType: "TASK", statusKey: "ZETA", createdAt: "2026-06-01T00:00:00Z" }),
           card({ id: "task-alpha-new", issueType: "TASK", statusKey: "ALPHA", createdAt: "2026-06-09T00:00:00Z" }),
           card({ id: "task-alpha-old", issueType: "TASK", statusKey: "ALPHA", createdAt: "2026-06-08T00:00:00Z" }),
-          // Oldest of all, and in the first status, yet after the tasks: the type leads.
+          // Oldest of all: first, though it is a bug and the tasks were read first.
           card({ id: "bug-alpha", issueType: "BUG", statusKey: "ALPHA", createdAt: "2026-05-01T00:00:00Z" }),
           card({ id: "task-tie-b", issueType: "TASK", statusKey: "BETA", createdAt: "2026-06-02T00:00:00Z" }),
           card({ id: "task-tie-a", issueType: "TASK", statusKey: "BETA", createdAt: "2026-06-02T00:00:00Z" }),
@@ -1611,16 +1625,16 @@ describe("MockTaskaApi", () => {
       );
 
       expect(board.unplacedIssues.map((issue) => issue.id)).toEqual([
-        "task-alpha-old",
-        "task-alpha-new",
+        "bug-alpha",
+        "task-zeta",
         "task-tie-a",
         "task-tie-b",
-        "task-zeta",
-        "bug-alpha",
+        "task-alpha-old",
+        "task-alpha-new",
       ]);
     });
 
-    it("keeps a column in type, then oldest-first order whatever order the issues arrive in", () => {
+    it("keeps a column oldest first whatever order the issues arrive in, and whatever their type", () => {
       const types = [
         { issueType: "TASK", statuses: [status("TODO", "TODO", 10)] },
         { issueType: "BUG", statuses: [status("TODO", "TODO", 10)] },
@@ -1636,7 +1650,7 @@ describe("MockTaskaApi", () => {
         { includeDone: true },
       );
 
-      expect(board.columns[0].issues.map((issue) => issue.id)).toEqual(["task-old", "task-new", "bug"]);
+      expect(board.columns[0].issues.map((issue) => issue.id)).toEqual(["bug", "task-old", "task-new"]);
     });
 
     it("merges columns by key, the first type's status winning, then stably by sortOrder", () => {
@@ -2198,7 +2212,7 @@ describe("MockTaskaApi", () => {
       await expect(api.searchIssues(params)).resolves.toMatchObject({ items: [], totalCount: 0 });
     });
 
-    it("answers with the ten fields of the short DTO and nothing else", async () => {
+    it("answers with the thirteen fields of the short DTO and nothing else", async () => {
       const created = await api.createIssue(project.id, {
         issueType: "TASK",
         summary: "Unassigned needle for the search",
@@ -2213,12 +2227,16 @@ describe("MockTaskaApi", () => {
       // No description, no labels, no version: a hit that carried them would
       // let a card or an edit claim something the gateway never sent. The
       // project and the status key are TAS-218's; `storyPoints` is the one
-      // planning field, with no dates and no estimates beside it.
+      // planning field, with no dates and no estimates beside it. The type's
+      // name, colour and icon are TAS-418's.
       expect(Object.keys(hit ?? {}).sort()).toEqual([
         "assigneeId",
         "id",
         "issueKey",
         "issueType",
+        "issueTypeColor",
+        "issueTypeIcon",
+        "issueTypeName",
         "priority",
         "projectId",
         "projectKey",
@@ -2227,6 +2245,7 @@ describe("MockTaskaApi", () => {
         "summary",
       ]);
       expect(hit).toMatchObject({ projectId: project.id, projectKey: project.projectKey, statusKey: "TODO" });
+      expect(hit).toMatchObject({ issueTypeName: "Task", issueTypeColor: "blue", issueTypeIcon: "check-square" });
       // Created without one, so this states "not estimated" rather than a value.
       expect(hit?.storyPoints).toBeNull();
       // `""` on the wire for nobody, `null` here, exactly as `Issue.assigneeId`.
@@ -5431,14 +5450,15 @@ describe("MockTaskaApi", () => {
       ]);
     });
 
-    it("walks TASK, BUG and STORY whatever the project allows, and leaves WEB's EPIC workflow out", async () => {
+    it("walks the project's registry in its order: OPS without STORY, WEB with its EPIC workflow (backend #226)", async () => {
       const ops = await projectByKey("OPS");
       const web = await projectByKey("WEB");
 
-      expect((await api.listProjectWorkflows(ops.id)).map((entry) => entry.issueTypes)).toEqual([["TASK", "BUG", "STORY"]]);
+      expect((await api.listProjectWorkflows(ops.id)).map((entry) => entry.issueTypes)).toEqual([["TASK", "BUG"]]);
       const webEntries = await api.listProjectWorkflows(web.id);
       expect(webEntries.map((entry) => [entry.workflow.name, entry.issueTypes])).toEqual([
         ["Default workflow", ["TASK", "BUG", "STORY"]],
+        ["Epic workflow", ["EPIC"]],
       ]);
     });
 
@@ -5488,7 +5508,8 @@ describe("MockTaskaApi", () => {
       const ops = await projectByKey("OPS");
       const input = await copyWithHidden(project.id, "Development", ["TASK"]);
 
-      await expect(api.createProjectWorkflow(project.id, { ...input, issueTypes: ["EPIC"] })).rejects.toMatchObject({
+      // A key outside `IssueTypeDto`'s pattern is the gateway's.
+      await expect(api.createProjectWorkflow(project.id, { ...input, issueTypes: ["epic"] })).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
         message: "Invalid request parameters",
       });
@@ -5524,6 +5545,12 @@ describe("MockTaskaApi", () => {
         message:
           "Workflow creation failed: Workflow name must not be blank, Duplicate issue type: TASK, Status key is not unique: TODO, " +
           "Transition references unknown status key:  TODO, Transition sort order must not be negative: from  TODO to TODO",
+      });
+
+      // A well-formed key the registry does not hold, after the role and the body (`WorkflowCreateService`).
+      await expect(api.createProjectWorkflow(project.id, { ...input, issueTypes: ["EPIC"] })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Issue type EPIC is not defined in this project",
       });
 
       const first = await api.createProjectWorkflow(project.id, input);
@@ -6014,6 +6041,239 @@ describe("MockTaskaApi", () => {
         const refusal = await api.updateProjectWorkflow(project.id, created.id, { name: "Late" }).catch((error: unknown) => error);
 
         expect(apiErrorFacts(refusal)).toMatchObject({ code: "FAILED_PRECONDITION", details: { reason: "PROJECT_ARCHIVED" } });
+      });
+    });
+  });
+
+  /**
+   * The issue-type registry (backend #212, TAS-418; DESIGN.md §4.30): every
+   * refusal in the server's order and words, so the dialog's branches are
+   * proven against the mock exactly as they would meet the gateway.
+   */
+  describe("the issue-type registry", () => {
+    const signIn = (email: string) => api.login({ email, password: "anything" });
+    const projectByKey = async (key: string) => (await api.listProjects()).find((item) => item.projectKey === key)!;
+    const codesOf = async (projectId: string) => (await api.getProjectContext(projectId)).issueTypes.map((type) => type.code);
+    const epic = { code: "EPIC", name: "  Epic  ", color: "purple", icon: "layers" } as const;
+
+    it("seeds every project, a new one too, and orders by sortOrder then code; /meta stays the three seed names", async () => {
+      expect((await api.getProjectContext(project.id)).issueTypes).toEqual([
+        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
+        { code: "BUG", name: "Bug", color: "red", icon: "bug", sortOrder: 20 },
+        { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 30 },
+      ]);
+      expect(await codesOf((await projectByKey("OPS")).id)).toEqual(["TASK", "BUG"]);
+      expect(await codesOf((await projectByKey("WEB")).id)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
+      const fresh = await api.createProject({ projectKey: "NEWP", name: "New project" });
+      expect(await codesOf(fresh.id)).toEqual(["TASK", "BUG", "STORY"]);
+
+      // A tie on sortOrder falls to the code, byte-wise.
+      await api.createProjectIssueType(project.id, { code: "AAA", name: "Aaa", color: "teal", icon: "flag", sortOrder: 20 });
+      expect(await codesOf(project.id)).toEqual(["TASK", "AAA", "BUG", "STORY"]);
+    });
+
+    it("refuses a create in the server's order: the body, the project, the role, the archive, a taken code", async () => {
+      const web = await projectByKey("WEB");
+      // The body first — before anything about the reader.
+      await signIn("tom@example.com");
+      await expect(
+        api.createProjectIssueType(project.id, { ...epic, color: "pink" as "purple" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Invalid request parameters" });
+      await expect(api.createProjectIssueType(project.id, { ...epic, code: "epic" })).rejects.toMatchObject({
+        message: "Invalid request parameters",
+      });
+      await expect(api.createProjectIssueType(project.id, { ...epic, name: "x".repeat(51) })).rejects.toMatchObject({
+        message: "Invalid request parameters",
+      });
+      await expect(api.createProjectIssueType("missing", epic)).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        message: "Project not found",
+      });
+      // A VIEWER, and a non-member alike.
+      await expect(api.createProjectIssueType(project.id, epic)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: "Project ADMIN role is required",
+      });
+      await signIn("mark@example.com");
+      await expect(api.createProjectIssueType(web.id, epic)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: "Project ADMIN role is required",
+      });
+
+      await signIn("anna@example.com");
+      await expect(api.createProjectIssueType(project.id, { ...epic, code: "TASK" })).rejects.toMatchObject({
+        code: "ALREADY_EXISTS",
+        message: "Issue type TASK already exists in this project",
+      });
+      const created = await api.createProjectIssueType(project.id, epic);
+      // Stored stripped; `sortOrder` the server's 100 when none is sent.
+      expect(created).toEqual({ code: "EPIC", name: "Epic", color: "purple", icon: "layers", sortOrder: 100 });
+      expect(await codesOf(project.id)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
+
+      await api.archiveProject(project.id);
+      const archived = await api
+        .createProjectIssueType(project.id, { ...epic, code: "SPIKE" })
+        .catch((error: unknown) => error);
+      expect(apiErrorFacts(archived)).toMatchObject({ code: "FAILED_PRECONDITION", details: { reason: "PROJECT_ARCHIVED" } });
+    });
+
+    it("refuses a patch in the server's order and answers the saved entry", async () => {
+      await signIn("tom@example.com");
+      // `{}` is the service's, before the role.
+      await expect(api.updateProjectIssueType(project.id, "BUG", {})).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "At least one field is required",
+      });
+      await expect(
+        api.updateProjectIssueType(project.id, "BUG", { name: null } as unknown as { name: string }),
+      ).rejects.toMatchObject({ message: "Invalid request parameters" });
+      await expect(api.updateProjectIssueType(project.id, "BUG", { name: "Defect" })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: "Project ADMIN role is required",
+      });
+
+      await signIn("anna@example.com");
+      await expect(api.updateProjectIssueType(project.id, "EPIC", { name: "Epic" })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        message: "Issue type not found in this project",
+      });
+      await expect(api.updateProjectIssueType(project.id, "BUG", { name: "   " })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Invalid issue type name, color, icon or sortOrder",
+      });
+      await expect(api.updateProjectIssueType(project.id, "BUG", { name: " Defect ", color: "amber" })).resolves.toEqual({
+        code: "BUG",
+        name: "Defect",
+        color: "amber",
+        icon: "bug",
+        sortOrder: 20,
+      });
+    });
+
+    it("reorders the whole registry in one write, renumbered 10, 20, 30, and refuses a set that is not exactly it", async () => {
+      await signIn("tom@example.com");
+      await expect(api.reorderProjectIssueTypes(project.id, [])).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Invalid request parameters",
+      });
+      // A repeat is the service's, before the role.
+      await expect(api.reorderProjectIssueTypes(project.id, ["BUG", "BUG", "TASK"])).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "codes must be a complete permutation without duplicates",
+      });
+      await expect(api.reorderProjectIssueTypes(project.id, ["BUG", "TASK", "STORY"])).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: "Project ADMIN role is required",
+      });
+
+      await signIn("anna@example.com");
+      for (const stale of [["BUG", "TASK"], ["BUG", "TASK", "STORY", "EPIC"], ["BUG", "TASK", "EPIC"]]) {
+        const refusal = await api.reorderProjectIssueTypes(project.id, stale).catch((error: unknown) => error);
+        expect(apiErrorFacts(refusal)).toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: "codes must contain every current issue type exactly once",
+          details: null,
+        });
+      }
+      // Nothing was written.
+      expect(await codesOf(project.id)).toEqual(["TASK", "BUG", "STORY"]);
+
+      const saved = await api.reorderProjectIssueTypes(project.id, ["STORY", "TASK", "BUG"]);
+      expect(saved.map((type) => [type.code, type.sortOrder])).toEqual([
+        ["STORY", 10],
+        ["TASK", 20],
+        ["BUG", 30],
+      ]);
+      expect((await api.getProjectContext(project.id)).issueTypes).toEqual(saved);
+    });
+
+    it("refuses deleting the last type with LAST_ISSUE_TYPE and no count", async () => {
+      const fresh = await api.createProject({ projectKey: "ONE", name: "One type" });
+      await api.deleteProjectIssueType(fresh.id, "BUG");
+      await api.deleteProjectIssueType(fresh.id, "STORY");
+
+      const refusal = await api.deleteProjectIssueType(fresh.id, "TASK").catch((error: unknown) => error);
+      expect(apiErrorFacts(refusal)).toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: "Cannot delete the last issue type",
+        details: { reason: "LAST_ISSUE_TYPE" },
+      });
+      expect(apiErrorFacts(refusal).details).not.toHaveProperty("issueCount");
+    });
+
+    it("refuses deleting a type live issues have with ISSUE_TYPE_IN_USE and the count; deleted issues do not count", async () => {
+      const web = await projectByKey("WEB");
+      const bugs = (await api.listIssues(web.id, { pageSize: 100 })).items.filter((issue) => issue.issueType === "BUG");
+      expect(bugs.length).toBeGreaterThan(0);
+
+      const refusal = await api.deleteProjectIssueType(web.id, "BUG").catch((error: unknown) => error);
+      expect(apiErrorFacts(refusal)).toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: `Issue type BUG has ${bugs.length} issues`,
+        details: { reason: "ISSUE_TYPE_IN_USE", issueCount: String(bugs.length) },
+      });
+
+      for (const bug of bugs) await api.deleteIssue(web.id, bug.id);
+      await expect(api.deleteProjectIssueType(web.id, "BUG")).resolves.toBeUndefined();
+      expect(await codesOf(web.id)).toEqual(["TASK", "STORY", "EPIC"]);
+      await expect(api.deleteProjectIssueType(web.id, "BUG")).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        message: "Issue type not found in this project",
+      });
+    });
+
+    it("drops a deleted type's workflow binding: the code added again runs on the shared default", async () => {
+      const web = await projectByKey("WEB");
+      const epics = (await api.listIssues(web.id, { pageSize: 100 })).items.filter((issue) => issue.issueType === "EPIC");
+      for (const item of epics) await api.deleteIssue(web.id, item.id);
+      await api.deleteProjectIssueType(web.id, "EPIC");
+
+      expect((await api.listProjectWorkflows(web.id)).map((entry) => entry.workflow.name)).toEqual(["Default workflow"]);
+      await api.createProjectIssueType(web.id, { code: "EPIC", name: "Epic", color: "purple", icon: "layers" });
+      const context = await api.getProjectContext(web.id);
+      expect(context.workflows.EPIC?.name).toBe("Default workflow");
+      expect(context.workflows.EPIC?.statuses.map((item) => item.statusKey)).not.toContain("IN_REVIEW");
+    });
+
+    it("changes an issue's type through the registry, refusing a target whose workflow lacks the status with its reason", async () => {
+      const web = await projectByKey("WEB");
+      const { items } = await api.listIssues(web.id, { pageSize: 100 });
+      const inReview = items.find((issue) => issue.issueKey === "WEB-15")!;
+      // WEB-14, a task in Done — a status the epic's workflow has too.
+      const task = items.find((issue) => issue.issueKey === "WEB-14")!;
+
+      // TASK's workflow has no In Review.
+      const refusal = await api
+        .updateIssue(web.id, inReview.id, { issueType: "TASK" }, inReview.version)
+        .catch((error: unknown) => error);
+      expect(apiErrorFacts(refusal)).toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: "Current status is not available for the target issue type",
+        details: { reason: "STATUS_NOT_IN_TARGET_WORKFLOW" },
+      });
+      await expect(api.updateIssue(web.id, task.id, { issueType: "SPIKE" }, task.version)).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Issue type SPIKE is not defined in this project",
+      });
+      await expect(api.updateIssue(web.id, task.id, { issueType: "epic" }, task.version)).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+        message: "Invalid issue type key",
+      });
+
+      const changed = await api.updateIssue(web.id, task.id, { issueType: "EPIC" }, task.version);
+      expect(changed).toMatchObject({ issueType: "EPIC", version: task.version + 1 });
+    });
+
+    it("puts the type's look as the registry holds it now on a search hit", async () => {
+      const web = await projectByKey("WEB");
+      await api.updateProjectIssueType(web.id, "EPIC", { name: "Initiative", color: "teal" });
+
+      const { items } = await api.searchIssues({ query: "checkout", projectId: web.id });
+      expect(items.find((hit) => hit.issueKey === "WEB-15")).toMatchObject({
+        issueType: "EPIC",
+        issueTypeName: "Initiative",
+        issueTypeColor: "teal",
+        issueTypeIcon: "layers",
       });
     });
   });

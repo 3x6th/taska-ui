@@ -1,80 +1,51 @@
-import { apiErrorFacts, isProjectArchived } from "../api/errors";
-import { ISSUE_TYPE_CODE_MAX_LENGTH, ISSUE_TYPE_COLORS } from "../api/issueTypes";
+import { apiErrorFacts } from "../api/errors";
+import {
+  ISSUE_TYPE_CODE_MAX_LENGTH,
+  ISSUE_TYPE_COLORS,
+  ISSUE_TYPE_IN_USE_REASON,
+  LAST_ISSUE_TYPE_REASON,
+} from "../api/issueTypes";
 import type { IssueTypeColor, ProjectIssueType } from "../domain/types";
 
 /**
  * The Issue types dialog's rules that are not drawing (DESIGN.md §4.30,
- * TAS-417): where a moved type goes in one write, how a code is spelled, what a
- * new type starts as, and how a refused delete is worded. Pure, so each is
+ * TAS-417): what one press of a move button sends, how a code is spelled, what
+ * a new type starts as, and how a refused delete is worded. Pure, so each is
  * tested on its own.
  */
 
-/** Where a move button sends a type, or why it cannot. */
-export type ReorderPlan =
-  /** The first row's Move up, the last row's Move down: unavailable, and nothing to explain. */
-  | { kind: "edge" }
-  /** One `PATCH {sortOrder}` puts the type at `index` among its new neighbours. */
-  | { kind: "move"; sortOrder: number; index: number }
-  /**
-   * No whole number fits strictly between the new neighbours (or below the
-   * first at ≥ 0), so the move would rest on the server's `code` tie-break or
-   * need a renumbering — neither of which is one write (backend ask A1).
-   * `other` is the neighbour it cannot pass; `instead` is the direction that
-   * neighbour can move to make the same swap, when it can.
-   */
-  | { kind: "blocked"; other: ProjectIssueType; instead: "up" | "down" | null };
-
 /**
- * One press of Move up / Move down as one `PATCH {sortOrder}` (§4.30): the
- * moved type gets a whole number **strictly** between its new neighbours —
- * `floor((prev + next) / 2)`; with no next one, `prev + 10`; to the top,
- * `next − 1` when that is still ≥ 0. Never a tie and never a renumbering of
- * the others: a tie would leave the order to the database's collation, and a
- * renumbering is a request per row (backend ask A1).
+ * The full order of codes one press of Move up / Move down asks for (§4.30,
+ * backend TAS-418): the registry as it stands on screen with the type at
+ * `index` swapped with its neighbour — the body of one `PUT …/order`. `null`
+ * at the list's ends, where the button is unavailable and nothing is sent.
  *
- * `registry` is in the server's order, which is the order on screen.
+ * `registry` is in the server's order, which is the order on screen; it is
+ * never re-sorted here.
  */
-export function reorderPlan(
+export function movedIssueTypeCodes(
   registry: readonly ProjectIssueType[],
   index: number,
   direction: "up" | "down",
-): ReorderPlan {
-  const plan = placeBetween(registry, index, direction);
-  if (plan.kind !== "blocked") return plan;
-  const otherIndex = direction === "up" ? index - 1 : index + 1;
-  const swap = placeBetween(registry, otherIndex, direction === "up" ? "down" : "up");
-  return { ...plan, instead: swap.kind === "move" ? (direction === "up" ? "down" : "up") : null };
-}
-
-function placeBetween(registry: readonly ProjectIssueType[], index: number, direction: "up" | "down"): ReorderPlan {
+): string[] | null {
   const target = direction === "up" ? index - 1 : index + 1;
-  if (index < 0 || index >= registry.length || target < 0 || target >= registry.length) return { kind: "edge" };
-  // The neighbours the type will stand between once it has moved.
-  const [prev, next] =
-    direction === "up" ? [registry[index - 2], registry[index - 1]] : [registry[index + 1], registry[index + 2]];
-  const other = registry[target];
-  let sortOrder: number | null;
-  if (!next) sortOrder = prev.sortOrder + 10;
-  else if (!prev) sortOrder = next.sortOrder - 1 >= 0 ? next.sortOrder - 1 : null;
-  else {
-    const middle = Math.floor((prev.sortOrder + next.sortOrder) / 2);
-    sortOrder = middle > prev.sortOrder && middle < next.sortOrder ? middle : null;
-  }
-  return sortOrder === null ? { kind: "blocked", other, instead: null } : { kind: "move", sortOrder, index: target };
+  if (index < 0 || index >= registry.length || target < 0 || target >= registry.length) return null;
+  const codes = registry.map((entry) => entry.code);
+  [codes[index], codes[target]] = [codes[target], codes[index]];
+  return codes;
 }
 
-/** The registry with one entry's `sortOrder` changed and moved to `index` — the optimistic order of a move. */
-export function withMovedType(
-  registry: readonly ProjectIssueType[],
-  code: string,
-  sortOrder: number,
-  index: number,
-): ProjectIssueType[] {
-  const moved = registry.find((entry) => entry.code === code);
-  if (!moved) return [...registry];
-  const rest = registry.filter((entry) => entry.code !== code);
-  rest.splice(Math.min(index, rest.length), 0, { ...moved, sortOrder });
-  return rest;
+/**
+ * The registry in the order of `codes`, numbered 10, 20, 30… as the server
+ * numbers it on a reorder — the optimistic frame of a move, which the answer
+ * then replaces. An entry `codes` does not name keeps its place after the
+ * named ones; a code no entry holds is skipped. Neither happens for a list
+ * `movedIssueTypeCodes` built from the same registry.
+ */
+export function withIssueTypeOrder(registry: readonly ProjectIssueType[], codes: readonly string[]): ProjectIssueType[] {
+  const named = codes.flatMap((code) => registry.filter((entry) => entry.code === code).slice(0, 1));
+  const rest = registry.filter((entry) => !codes.includes(entry.code));
+  return [...named, ...rest].map((entry, position) => ({ ...entry, sortOrder: (position + 1) * 10 }));
 }
 
 /**
@@ -101,26 +72,27 @@ export function nextIssueTypeSortOrder(registry: readonly ProjectIssueType[]): n
 }
 
 /**
- * The dialog's sentence for a refused delete (§4.30), branched on `details`
- * and never on the server's prose (backend ask A2): `PROJECT_ARCHIVED` is
- * §5.7's and is the caller's; a parsed `issueCount` names the number, deleted
- * issues included (backend ask A3); a count that does not parse still says
- * issues have the type; a `FAILED_PRECONDITION` with no details is the last
- * type; anything else is just "was not deleted".
+ * The dialog's sentence for a refused delete (§4.30), branched on
+ * `details.reason` and never on the server's prose (backend TAS-418):
+ * `ISSUE_TYPE_IN_USE` names how many live issues have the type — "issues still
+ * have this type" when `details.issueCount` does not parse; `LAST_ISSUE_TYPE`
+ * is the last type; anything else — `PROJECT_ARCHIVED` included, whose §5.7
+ * sentence is the caller's — is just "was not deleted". The server's words
+ * and the request id go under it (§5.6), which is the caller's too.
  */
 export function issueTypeDeleteRefusalText(error: unknown, name: string): string {
-  const { code, details } = apiErrorFacts(error);
-  if (details && Object.hasOwn(details, "issueCount")) {
+  const { details } = apiErrorFacts(error);
+  if (details?.reason === ISSUE_TYPE_IN_USE_REASON) {
     const raw = details.issueCount;
-    const count = /^\d+$/.test(raw) ? Number(raw) : NaN;
-    if (Number.isSafeInteger(count)) {
-      return count === 1
-        ? `${name} was not deleted: 1 issue has this type, deleted issues included.`
-        : `${name} was not deleted: ${count} issues have this type, deleted issues included.`;
-    }
-    return `${name} was not deleted: issues still have this type, deleted issues included.`;
+    const count = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN;
+    const who = !Number.isSafeInteger(count)
+      ? "issues still have this type"
+      : count === 1
+        ? "1 issue has this type"
+        : `${count} issues have this type`;
+    return `${name} was not deleted: ${who}. Change their type first.`;
   }
-  if (code === "FAILED_PRECONDITION" && !details && !isProjectArchived(error)) {
+  if (details?.reason === LAST_ISSUE_TYPE_REASON) {
     return `${name} was not deleted: a project needs at least one issue type.`;
   }
   return `${name} was not deleted.`;

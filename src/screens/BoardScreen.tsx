@@ -53,13 +53,14 @@ import {
   IssueVersionConflictError,
 } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
+import { STATUS_NOT_IN_TARGET_WORKFLOW_REASON } from "../api/issueTypes";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches } from "../components/ColorSwatches";
 import { EditProjectModal } from "../components/EditProjectModal";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { ErrorNote } from "../components/ErrorNote";
-import { LabelChip, PriorityBars, TypeChip, TypeTile } from "../components/IssueBits";
+import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
 import { IssuePanelFrame } from "../components/IssuePanelFrame";
 import { useIssuePanelHead } from "../components/issuePanelFrameContext";
 import { IssueShare } from "../components/IssueShare";
@@ -119,7 +120,6 @@ import {
   issueLinkTypeLabel,
   issueLinkTypes,
   issuePriorities,
-  issueTypeEntry,
   issueTypeInSentence,
   issueTypeLabel,
   keyBadgeStyle,
@@ -431,7 +431,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 
   // The board's whole frame in one read since TAS-251 (backend TAS-212): the
   // project, the reader's role, the members, the labels and one workflow per
-  // issue type the project allows. It replaced seven requests — the project,
+  // issue type of the project's registry, and the registry itself (TAS-417).
+  // It replaced seven requests — the project,
   // the project again for the role, the members, three workflows and the
   // labels — and it is all or nothing on the server, so every part below is
   // answered, or none is.
@@ -576,11 +577,6 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     () => board?.columns ?? predictColumns(workflows, offeredIssueTypes),
     [board, workflows, offeredIssueTypes],
   );
-  // Names for codes this build does not know (TAS-173). `undefined` while
-  // `GET /meta` is on the way or after it failed, and every reader then falls
-  // back to the build's own words — nothing waits for it.
-  const meta = useMeta();
-
   // The four filters, ANDed, all local over the complete read (§5.4): no
   // filter and no keystroke asks the server anything. Three text fields, the
   // ones the route's own `query` matches; a card with no description matches
@@ -2000,6 +1996,7 @@ function IssuePanel({
   archivedAt,
   currentUserId,
   workflows,
+  issueTypes: registry,
   workflowUnknown,
   onDeleted,
 }: {
@@ -2050,6 +2047,12 @@ function IssuePanel({
   archivedAt: string | null;
   currentUserId?: string;
   workflows?: WorkflowsByIssueType;
+  /**
+   * The project's issue-type registry off the board's context (TAS-417), in
+   * its order, or `undefined` before it answers: the type's name and look in
+   * the head, and the Type select's options.
+   */
+  issueTypes?: readonly ProjectIssueType[];
   /** The workflow read failed; these buttons are the keyboard path a drag has. */
   workflowUnknown: boolean;
   /**
@@ -2149,6 +2152,8 @@ function IssuePanel({
   // to sit under the box without joining the label's accessible name, and a
   // wrapped label would read as "Original estimate e.g. 8h, 1h 30m, 45m".
   const planningId = useId();
+  /** The Type row's label, which names its select (§5.5). */
+  const typeRowId = useId();
 
   /**
    * A write refused because the issue had moved on (TAS-246), held apart from
@@ -2263,7 +2268,15 @@ function IssuePanel({
     }
   }, [planningArchived]);
 
-  const workflow = issue ? workflowFor(workflows, issue.issueType) : undefined;
+  /**
+   * The type the reader just picked, until its write is answered (§5.5,
+   * TAS-417): the head's tile and name and the transition slot follow it in
+   * the same frame, as the select does. The answer — or its refusal — puts the
+   * issue's own type back in charge.
+   */
+  const [pendingType, setPendingType] = useState<IssueTypeCode | null>(null);
+  const shownType = pendingType ?? issue?.issueType;
+  const workflow = issue ? workflowFor(workflows, shownType ?? issue.issueType) : undefined;
   // These buttons are the drag's keyboard equivalent (§5.3), so they answer to
   // the same rule as the drop: only the server's own transitions, never the
   // fallback's. Offering a move built from an invented id would post that id.
@@ -2346,6 +2359,11 @@ function IssuePanel({
     // it — the reader who leaves the half-typed box alone and edits the
     // estimate beside it.
     onMutate: ({ patch }) => writeStarts(patch),
+    // The picked type stops standing in for the issue's own once its write is
+    // answered, whichever way — unless a later pick has replaced it.
+    onSettled: (_answer, _error, { patch }) => {
+      if (patch.issueType !== undefined) setPendingType((current) => (current === patch.issueType ? null : current));
+    },
     onSuccess: (answer) => {
       // Synchronous, and before anything is awaited: a write queued behind
       // this one reads its version from the cache the moment this returns.
@@ -2373,6 +2391,13 @@ function IssuePanel({
         // the request was in flight — see `clearDateNotice` — or a conflict
         // line was still standing for a box.
         refusalLands();
+        // A type change the server refused because the target workflow lacks
+        // the status (backend TAS-418): the options were pre-disabled from
+        // the context's workflows, so those were stale — read them again. The
+        // slot prints the server's words; nothing branches on them.
+        if (sent.issueType !== undefined && apiErrorFacts(error).details?.reason === STATUS_NOT_IN_TARGET_WORKFLOW_REASON) {
+          void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+        }
         setPlanning((current) => rollbackPlanningDrafts(current, sent, planningDrafts(issueQuery.data?.issue)));
         return;
       }
@@ -2593,10 +2618,35 @@ function IssuePanel({
   // Named by the issue read itself since TAS-246; the member list is the
   // fallback for a summary the server could not fill (`personFor`).
   const reporter = personFor(issue.reporterId, issue.reporter, userById);
-  // Every word the panel says about a code, by the one label rule (TAS-173).
-  const typeName = issueTypeLabel(issue.issueType, meta?.issueTypes);
-  const typeWord = issueTypeInSentence(issue.issueType, meta?.issueTypes);
+  // Every word the panel says about a code: the type's from the registry by
+  // §6's type rule (TAS-417), the rest by the one label rule (TAS-173).
+  const typeShown = shownType ?? issue.issueType;
+  const typeName = issueTypeLabel(typeShown, registry);
+  const typeWord = issueTypeInSentence(typeShown, registry);
   const statusName = statusLabel(issue.status, workflow?.statuses);
+  // The status as the issue's saved type names it, for the Type select's
+  // unavailable options — the workflow it is a status of.
+  const savedStatusName = statusLabel(issue.status, workflowFor(workflows, issue.issueType)?.statuses);
+  /**
+   * The Type select's options (§5.5, TAS-417): the registry in its order, and
+   * the issue's own type last, by its key, when the registry does not hold it.
+   * A type whose workflow lacks the issue's status is offered but off — the
+   * server would refuse the change (`STATUS_NOT_IN_TARGET_WORKFLOW`); a type
+   * with no workflow in the context, or an issue with no status, is left to
+   * the server.
+   */
+  const typeOptions = [
+    ...(registry ?? []).map((entry) => entry.code),
+    ...(registry?.some((entry) => entry.code === issue.issueType) ? [] : [issue.issueType]),
+  ].map((code) => {
+    const target = workflowFor(workflows, code);
+    const unavailable =
+      code !== issue.issueType && Boolean(issue.status) && target !== undefined
+        ? !target.statuses.some((status) => status.statusKey === issue.status)
+        : false;
+    const name = issueTypeLabel(code, registry);
+    return { code, unavailable, label: unavailable ? `${name} — no ${savedStatusName} status` : name };
+  });
   // What `GET /meta` lists, or the contract's three while it has not answered
   // (art-director's ruling 5) — and the issue's own value always: a priority
   // the list does not carry is still this issue's, so it is appended last and
@@ -2804,7 +2854,7 @@ function IssuePanel({
     <>
       {head.start(
         <>
-          <TypeChip type={issue.issueType} />
+          <TypeChip registry={registry} type={typeShown} />
           <span className="issue-key">{issue.issueKey}</span>
           <span className="issue-type-label" title={typeName}>
             {typeName}
@@ -3059,6 +3109,37 @@ function IssuePanel({
                 );
               })}
           </div>
+          <span id={typeRowId}>Type</span>
+          {canEdit ? (
+            // §5.5 (TAS-417): one field, one PATCH, on `change`, in the
+            // panel's queue — the tile of the chosen type inside the field.
+            <span className="type-select">
+              <TypeChip registry={registry} type={typeShown} />
+              <select
+                aria-labelledby={typeRowId}
+                onChange={(event) => {
+                  const picked = event.target.value;
+                  if (picked === typeShown) return;
+                  setPendingType(picked);
+                  editIssue({ issueType: picked });
+                }}
+                value={typeShown}
+              >
+                {typeOptions.map((option) => (
+                  <option disabled={option.unavailable} key={option.code} value={option.code}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </span>
+          ) : (
+            // Not a disabled select (§4.3's argument): the type as text, in a
+            // row as tall as the select, so the grid holds when a role arrives.
+            <span className="type-static">
+              <TypeChip registry={registry} type={typeShown} />
+              <strong>{typeName}</strong>
+            </span>
+          )}
           <span>Priority</span>
           <div className="segmented compact fit">
             {priorityChoices.map((priority) => (
@@ -4454,7 +4535,7 @@ function IssueLinksSection({
   // filter is in it — the board filters locally — so every issue of the board
   // may be linked to, whatever the bar shows. It costs nothing: the board has
   // already asked. The read is complete, so an issue missing from it is one of
-  // a type the board does not read (backend A4) or of another project, and
+  // a type the project's registry no longer holds or of another project, and
   // its row resolves to the server's own `target` or to its id.
   //
   // `refetchOnMount: false`: opening a panel past `staleTime` must not read the
@@ -6535,13 +6616,12 @@ function CreateIssueModal({
    */
   archived: boolean;
   /**
-   * The types this project allows (`allowedIssueTypes`), in the board's order —
-   * a type this build has no name for included, after the ones it knows
-   * (TAS-173). Only these are offered, and the first is the default. Empty
-   * means nothing can be created, and the form says so rather than offering a
-   * type the server did not list (TAS-251).
+   * The project's issue-type registry (TAS-417), in its order: only these are
+   * offered, and the first is the default. Empty means nothing can be created,
+   * and the form says so rather than offering a type the server did not list
+   * (TAS-251).
    */
-  issueTypes: IssueTypeCode[];
+  issueTypes: readonly ProjectIssueType[];
   projectId: string;
   projectKey: string;
   /** Same reason as `ProjectLabelsModal`: one key, one colour, on every surface. */
@@ -6553,7 +6633,14 @@ function CreateIssueModal({
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
   const meta = useMeta();
-  const [issueType, setIssueType] = useState<IssueTypeCode | null>(issueTypes[0] ?? null);
+  // The first type of the registry by default (§5.5); the reader's pick is kept
+  // for as long as the registry still holds it, so a reorder that lands while
+  // the form is open moves only a default nobody chose.
+  const [pickedType, setIssueType] = useState<IssueTypeCode | null>(null);
+  const issueType =
+    pickedType !== null && issueTypes.some((entry) => entry.code === pickedType)
+      ? pickedType
+      : (issueTypes[0]?.code ?? null);
   // The priorities `GET /meta` lists, or the contract's three until it has
   // answered (TAS-173, art-director's ruling 5). Medium by default when it is
   // offered, the first otherwise; the reader's pick is kept for as long as the
@@ -6567,11 +6654,11 @@ function CreateIssueModal({
       : offeredPriorities.includes("MEDIUM")
         ? "MEDIUM"
         : offeredPriorities[0];
-  // Stacked rather than side by side once either picker holds a value this
-  // build has no word for: its label is the code, and two such columns of
-  // half width run out of room (art-director's ruling 5).
-  const stackPickers =
-    issueTypes.some((type) => !isKnownIssueType(type)) || offeredPriorities.some((code) => !isKnownPriority(code));
+  // Stacked rather than side by side once the priority picker holds a value
+  // this build has no word for: its label is the code, and a half-width
+  // segmented control runs out of room for it (art-director's ruling 5). The
+  // type is a select since TAS-417 and takes any name in its own width.
+  const stackPickers = offeredPriorities.some((code) => !isKnownPriority(code));
   // The five planning fields, all optional (TAS-189). Held as drafts for the
   // same reason the panel holds them that way — the boxes are typed into — and
   // reduced to a request body by `planningInput`, which omits what was left
@@ -6957,25 +7044,27 @@ function CreateIssueModal({
         <div className={`form-two ${stackPickers ? "is-stacked" : ""}`}>
           <label>
             <span>Type</span>
-            {issueTypes.length ? (
-              <div className="segmented compact">
-                {issueTypes.map((type) => (
-                  <button
-                    // §4.1's steadily-unavailable `aria-disabled`: the choice
-                    // made stays legible and reachable, a press does nothing.
-                    aria-disabled={archived || undefined}
-                    aria-pressed={issueType === type}
-                    className={issueType === type ? "is-active" : ""}
-                    key={type}
-                    onClick={() => {
-                      if (!archived) setIssueType(type);
-                    }}
-                    type="button"
-                  >
-                    {issueTypeLabel(type, meta?.issueTypes)}
-                  </button>
-                ))}
-              </div>
+            {issueTypes.length && issueType ? (
+              // §5.5 (TAS-417): the panel's select, at 30, with the chosen
+              // type's tile inside the field.
+              <span className="type-select">
+                <TypeChip registry={issueTypes} type={issueType} />
+                <select
+                  // §4.1's steadily-unavailable `aria-disabled` once archived:
+                  // the choice stays legible and reachable, a change does nothing.
+                  aria-disabled={archived || undefined}
+                  onChange={(event) => {
+                    if (!archived) setIssueType(event.target.value);
+                  }}
+                  value={issueType}
+                >
+                  {issueTypes.map((entry) => (
+                    <option key={entry.code} value={entry.code}>
+                      {issueTypeLabel(entry.code, issueTypes)}
+                    </option>
+                  ))}
+                </select>
+              </span>
             ) : (
               <p className="muted-label">This project allows no issue types.</p>
             )}
@@ -7326,10 +7415,10 @@ function sentWithoutStatuses(workflow: ProjectWorkflow) {
  * read that failed (§4.9) — never for placing a card. The server's own rule
  * (`BoardServiceImpl.mergeStatusesByKey`): every status of every workflow, the
  * first type to state a key winning, walked in the order the board offers the
- * types (`allowedIssueTypes`), then sorted stably by `sortOrder`. A type this
- * build has no name for is walked too (TAS-173); where the board read differs
- * — it reads TASK, BUG and STORY only (backend A4) — its answer replaces this
- * once, like "3 → N" in §5.2.
+ * types (`allowedIssueTypes`, the registry's order since backend #226), then
+ * sorted stably by `sortOrder`. A type this build has no name for is walked
+ * too (TAS-173); where the board read differs, its answer replaces this once,
+ * like "3 → N" in §5.2.
  */
 function predictColumns(workflows: WorkflowsByIssueType | undefined, issueTypes: readonly IssueTypeCode[]): ColumnStatus[] {
   if (!workflows) return fallbackStatuses;
@@ -7392,6 +7481,7 @@ function keepUnsentText(conflict: IssueConflict | null, sent: UpdateIssueInput):
 const issueFieldNames: Record<keyof UpdateIssueInput, string> = {
   summary: "summary",
   description: "description",
+  issueType: "type",
   priority: "priority",
   assigneeId: "assignee",
   storyPoints: "story points",

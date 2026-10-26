@@ -2336,6 +2336,10 @@ describe("RestTaskaApi issue search", () => {
         projectId: null,
         projectKey: null,
         statusKey: null,
+        // Nor TAS-418's look — absent, as for a type deleted from the registry.
+        issueTypeName: null,
+        issueTypeColor: null,
+        issueTypeIcon: null,
       },
       {
         id: "issue-2",
@@ -2348,11 +2352,33 @@ describe("RestTaskaApi issue search", () => {
         projectId: null,
         projectKey: null,
         statusKey: null,
+        issueTypeName: null,
+        issueTypeColor: null,
+        issueTypeIcon: null,
       },
     ]);
     // The count is of the whole matching set, not of the page.
     expect(page.totalCount).toBe(42);
     expect(page.page).toBe(0);
+  });
+
+  it("carries the type's look TAS-418 put on the hit, a blank name and a value outside the sets read as none", async () => {
+    stubFetch({
+      items: [
+        { id: "issue-1", issueKey: "TAS-101", summary: "s", issueType: "REQUEST", priority: "HIGH", issueTypeName: "Request", issueTypeColor: "teal", issueTypeIcon: "headset" },
+        { id: "issue-2", issueKey: "TAS-102", summary: "s", issueType: "SPIKE", priority: "HIGH", issueTypeName: "  ", issueTypeColor: "pink", issueTypeIcon: "rocket" },
+        { id: "issue-3", issueKey: "TAS-103", summary: "s", issueType: "OLD", priority: "HIGH", issueTypeName: null, issueTypeColor: null, issueTypeIcon: null },
+      ],
+      totalCount: 3,
+    });
+
+    const { items } = await new RestTaskaApi().searchIssues({ query: "board" });
+
+    expect(items.map(({ issueTypeName, issueTypeColor, issueTypeIcon }) => [issueTypeName, issueTypeColor, issueTypeIcon])).toEqual([
+      ["Request", "teal", "headset"],
+      [null, null, null],
+      [null, null, null],
+    ]);
   });
 
   it("carries the project and the status key TAS-218 put on the hit, blank read as absent", async () => {
@@ -3739,6 +3765,9 @@ describe("RestTaskaApi issue planning fields", () => {
       "id",
       "issueKey",
       "issueType",
+      "issueTypeColor",
+      "issueTypeIcon",
+      "issueTypeName",
       "priority",
       "projectId",
       "projectKey",
@@ -5424,5 +5453,150 @@ describe("RestTaskaApi project workflows", () => {
     const failure = await new RestTaskaApi().listProjectWorkflows(PROJECT).catch((error: unknown) => error);
 
     expect(isUndeployedRoute(failure, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+  });
+});
+
+/**
+ * The issue-type registry on the wire (backend #212, TAS-418; DESIGN.md
+ * §4.30): the context carries it, the four writes are their routes with
+ * exactly their bodies, and the reorder's answer is the whole registry.
+ */
+describe("RestTaskaApi issue-type registry", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string, _init?: { method?: string; body?: string }) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+  const sent = (fetchStub: ReturnType<typeof stubFetch>) => {
+    const [url, init] = fetchStub.mock.calls[0];
+    return { url, method: init?.method, body: init?.body === undefined ? undefined : JSON.parse(init.body) };
+  };
+  const entry = { code: "EPIC", name: "Epic", color: "purple", icon: "layers", sortOrder: 40 };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the context's registry in the order sent, through the registry mapper", async () => {
+    stubFetch({
+      project: { id: "project-1", projectKey: "TAS", name: "T", createdBy: "u", createdAt: "x", updatedAt: "x", currentUserRole: "ADMIN" },
+      members: [],
+      labels: [],
+      issueTypes: [
+        { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 5 },
+        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
+        { code: "TASK", name: "Again", color: "red", icon: "bug", sortOrder: 20 },
+        { code: "", name: "Blank" },
+        entry,
+      ],
+      workflows: [],
+    });
+
+    const context = await new RestTaskaApi().getProjectContext("project-1");
+
+    expect(context.issueTypes.map((type) => type.code)).toEqual(["STORY", "TASK", "EPIC"]);
+    expect(context.issueTypes[2]).toEqual(entry);
+  });
+
+  it("creates with the five declared fields at the registry path, and reads the 201 as an entry", async () => {
+    const fetchStub = stubFetch(entry, 201);
+
+    const created = await new RestTaskaApi().createProjectIssueType("project-1", {
+      code: "EPIC",
+      name: "Epic",
+      color: "purple",
+      icon: "layers",
+      sortOrder: 40,
+    });
+
+    expect(sent(fetchStub)).toEqual({
+      url: "/api/v1/projects/project-1/issue-types",
+      method: "POST",
+      body: { code: "EPIC", name: "Epic", color: "purple", icon: "layers", sortOrder: 40 },
+    });
+    expect(created).toEqual(entry);
+  });
+
+  it("patches only what was stated, never null and never the code, and refuses an empty patch unsent", async () => {
+    const fetchStub = stubFetch({ ...entry, name: "Epics" });
+
+    await new RestTaskaApi().updateProjectIssueType("project-1", "EPIC", {
+      name: "Epics",
+      color: undefined,
+      ...({ icon: null, code: "OTHER" } as object),
+    });
+
+    expect(sent(fetchStub)).toEqual({
+      url: "/api/v1/projects/project-1/issue-types/EPIC",
+      method: "PATCH",
+      body: { name: "Epics" },
+    });
+
+    fetchStub.mockClear();
+    await expect(new RestTaskaApi().updateProjectIssueType("project-1", "EPIC", {})).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "At least one field is required",
+    });
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("deletes at the code's path and keeps the refusal's reason and count for the dialog to branch on", async () => {
+    const fetchStub = stubFetch(
+      { code: "FAILED_PRECONDITION", message: "Issue type EPIC has 3 issues", details: { reason: "ISSUE_TYPE_IN_USE", issueCount: "3" } },
+      400,
+    );
+
+    await expect(new RestTaskaApi().deleteProjectIssueType("project-1", "EPIC")).rejects.toMatchObject({
+      code: "FAILED_PRECONDITION",
+      details: { reason: "ISSUE_TYPE_IN_USE", issueCount: "3" },
+    });
+    expect(sent(fetchStub)).toMatchObject({ url: "/api/v1/projects/project-1/issue-types/EPIC", method: "DELETE" });
+  });
+
+  it("reorders with one PUT of the whole permutation and answers the registry as the server renumbered it", async () => {
+    const fetchStub = stubFetch({
+      items: [
+        { ...entry, sortOrder: 10 },
+        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 20 },
+      ],
+    });
+
+    const registry = await new RestTaskaApi().reorderProjectIssueTypes("project-1", ["EPIC", "TASK"]);
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(sent(fetchStub)).toEqual({
+      url: "/api/v1/projects/project-1/issue-types/order",
+      method: "PUT",
+      body: { codes: ["EPIC", "TASK"] },
+    });
+    expect(registry.map((type) => [type.code, type.sortOrder])).toEqual([
+      ["EPIC", 10],
+      ["TASK", 20],
+    ]);
+  });
+
+  it("refuses a type change it can see is malformed, unsent, in the gateway's own words", async () => {
+    const fetchStub = stubFetch({});
+    const api = new RestTaskaApi();
+
+    await expect(
+      api.updateIssue("project-1", "issue-1", { issueType: "epic" }, 3),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "Invalid issue type key", status: 400 });
+    await expect(
+      api.updateIssue("project-1", "issue-1", { issueType: null } as unknown as UpdateIssueInput, 3),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "issueType cannot be cleared", status: 400 });
+    expect(fetchStub).not.toHaveBeenCalled();
   });
 });

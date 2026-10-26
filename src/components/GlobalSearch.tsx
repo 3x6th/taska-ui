@@ -1,17 +1,16 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { SEARCH_QUERY_MIN_LENGTH } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
-import type { IssueSearchHit, ProjectContext } from "../domain/types";
+import type { IssueSearchHit } from "../domain/types";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { useMeta } from "../hooks/useMeta";
 import { useUnanswered } from "../hooks/useUnanswered";
 import { issueTypeLabel, priorityInSentence, statusLabel } from "../lib/format";
-import { projectContextKey } from "../lib/projectContext";
 import { ApiNotice } from "./ApiNotice";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PriorityBars, TypeChip } from "./IssueBits";
@@ -345,12 +344,11 @@ export function GlobalSearch() {
  *
  * Everything drawn here is a field the hit actually carries — the status
  * among them since TAS-218. The priority and the status are printed by the one
- * label rule (TAS-173). The type is drawn from the hit's project registry
- * **only when that project's context is already in the cache** — a board the
- * reader opened — and never read for it: a context read per hit project would
- * be a fan-out on every keystroke (DESIGN.md §4.20). Without one the chip is
- * the neutral tile and the label is §6's fallback (`/meta`, then the key);
- * backend ask A5 (TAS-418) puts the look on the hit. The assignee is a bare id with no member list to
+ * label rule (TAS-173). The type is drawn from the hit's own `issueTypeName`,
+ * `issueTypeColor` and `issueTypeIcon` (backend TAS-418) and named by §6's
+ * type rule — never from a project context read for it, which would be a
+ * fan-out on every keystroke (DESIGN.md §4.6, §4.20), and never from `/meta`.
+ * The assignee is a bare id with no member list to
  * resolve it against outside a project, so it is left out rather than printed
  * as a UUID.
  */
@@ -371,12 +369,6 @@ function GlobalSearchOption({
   onHover: () => void;
 }) {
   const meta = useMeta();
-  // The cache only: `getQueryData` reads what a board already asked for and
-  // never starts a request.
-  const queryClient = useQueryClient();
-  const registry = hit.projectId
-    ? queryClient.getQueryData<ProjectContext>(projectContextKey(hit.projectId))?.issueTypes
-    : undefined;
   const status = hit.statusKey ? statusLabel(hit.statusKey) : null;
   return (
     <li
@@ -389,11 +381,11 @@ function GlobalSearchOption({
       onMouseEnter={onHover}
       role="option"
     >
-      <TypeChip registry={registry} type={hit.issueType} />
+      <TypeChip hit={hit} type={hit.issueType} />
       <span className="global-search-key">{hit.issueKey}</span>
       <span className="global-search-summary">{hit.summary}</span>
       <span className="visually-hidden">
-        {issueTypeLabel(hit.issueType, registry, meta?.issueTypes)},{" "}
+        {issueTypeLabel(hit.issueType, null, hit.issueTypeName)},{" "}
         {hit.priority ? `${priorityInSentence(hit.priority, meta?.priorities)} priority` : "no priority"}
       </span>
       {status ? <span className="global-search-note">{status}</span> : null}

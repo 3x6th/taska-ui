@@ -165,8 +165,8 @@ describe("personal notification choices", () => {
   });
 
   it("lets an unavailable saved binding be turned off and disconnected, but cannot enable it again", async () => {
-    // With the integration off and the bot username unset, the backend reports
-    // every binding as BOT_CHANGED, so that code's sentence must not be shown here.
+    // The integration is off and the row carries no delivery code: the
+    // general sentence.
     row = {
       ...initial(),
       telegramAvailable: false,
@@ -174,7 +174,7 @@ describe("personal notification choices", () => {
       telegramEnabled: true,
       telegramName: "Anna",
       telegramUsername: "anna_tg",
-      telegramError: "BOT_CHANGED",
+      telegramError: null,
     };
     api.disconnectTelegram.mockImplementation(async () => (row = { ...initial(), telegramAvailable: false }));
     draw();
@@ -214,6 +214,24 @@ describe("personal notification choices", () => {
     expect(telegram()).toHaveAccessibleDescription(`@anna_tg ${sentence}`);
     expect(screen.getByRole("button", { name: "Disconnect Telegram" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Connect Telegram" })).toBeNull();
+  });
+
+  // TAS-387's tail: the backend synthesises BOT_CHANGED only while the
+  // integration is on, so a code a row carries is that row's own even with
+  // Telegram unavailable — the guard that hid it then is gone.
+  it("says a stored delivery code's sentence while Telegram is unavailable too", async () => {
+    row = {
+      ...initial(),
+      telegramAvailable: false,
+      telegramStatus: "UNAVAILABLE",
+      telegramName: "Anna",
+      telegramError: "TELEGRAM_DELIVERY_UNAVAILABLE",
+    };
+    draw();
+    await load();
+    const sentence = telegramDeliveryErrorText("TELEGRAM_DELIVERY_UNAVAILABLE");
+    expect(screen.getAllByText(sentence)).toHaveLength(1);
+    expect(screen.queryByText(UNAVAILABLE_NOTE)).toBeNull();
   });
 
   it("falls back to the general sentence for an UNAVAILABLE row that carries no code", async () => {
@@ -269,15 +287,23 @@ describe("personal notification choices", () => {
         telegramLinkId: linkId,
         telegramLinkExpiresAt: new Date(Date.now() + 600000).toISOString(),
       };
-      return { linkId, url: "https://t.me/TaskaBot?start=opaque", expiresAt: row.telegramLinkExpiresAt };
+      return { linkId, url: "https://t.me/TaskaBot?start=opaque", expiresAt: row.telegramLinkExpiresAt, preferences: { ...row } };
     });
     draw();
     await load();
+    const reads = api.getNotificationPreferences.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Connect Telegram" }));
     expect(await screen.findByRole("link", { name: "Open Telegram bot" })).toHaveAttribute(
       "href",
       "https://t.me/TaskaBot?start=opaque",
     );
+    // TAS-387's tail: the link's answer is the row, set into the cache — one
+    // request, and no read after it.
+    expect(client.getQueryData(notificationPreferencesKey("anna"))).toMatchObject({
+      telegramStatus: "PENDING",
+      telegramLinkId: linkId,
+    });
+    expect(api.getNotificationPreferences.mock.calls.length).toBe(reads);
     expect(telegram()).toHaveAttribute("aria-disabled", "true");
     expect(screen.queryByRole("button", { name: "Confirm Telegram account" })).toBeNull();
 
