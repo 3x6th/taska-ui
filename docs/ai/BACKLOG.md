@@ -640,7 +640,7 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 - **Toast component** (`DESIGN.md` §5.6 is the contract). Unlocks two things
   at once: optimistic rollbacks stop failing silently, and `requestId` gets a
   place to appear once the gateway exposes it over CORS (TAS-141).
-- **Invite flow:** after a successful accept (204, no tokens) the screen calls
+- ~~**Invite flow:**~~ — **closed (stale), found by TAS-426** (2026-10-27, api-contract-guard): a foreign session is signed out before accept; on success the link is forgotten and the screen goes to `/login` with the activated line, no `getCurrentUser` (`LoginScreen.tsx:278-306`). after a successful accept (204, no tokens) the screen calls
   `getCurrentUser` unauthenticated and reports failure — or, with stale tokens
   in localStorage, logs in as the previous user. Fix: on success, switch to
   sign-in mode with a "account is active" message.
@@ -2962,8 +2962,8 @@ is what recurs.
   message *says*, and this is about whether it is heard. The panel and the
   create modal both got their live region in TAS-231, so the pattern and the
   precedent already exist; this is the one refusal surface left without it.
-- **The login refusal sits in a tone this stylesheet has already judged too
-  weak to be read accurately** (`art-director`, TAS-237). Measured by
+- ~~**The login refusal sits in a tone this stylesheet has already judged too
+  weak to be read accurately**~~ — **closed (stale), found by TAS-426** (2026-10-27, art-director): `.form-error` is gone; `ErrorNote` puts `--fg` on `--surface` (17.88 / 15.73) since TAS-192 / TAS-397. (`art-director`, TAS-237). Measured by
   compositing the painted pixels: `--danger` on its 12% tint is 3.17:1 light,
   4.43:1 dark, against §7's 4.5:1 for a string that must be read rather than
   felt. `styles.css` records that exact number six rows above `.auth-lock`, in
@@ -2975,7 +2975,7 @@ is what recurs.
   recipe inside a bug fix, and was right — ten other messages share it. This
   belongs with [TAS-192](https://jira.ozero.dev/browse/TAS-192), which already
   owns the 3.17:1 across the forms.
-- **The sign-in refusal is the last thing in the card, below the hint**
+- ~~**The sign-in refusal is the last thing in the card, below the hint**~~ — **closed (stale), found by TAS-426** (2026-10-27): measured order at 390 is submit, error note, hint.
   (`art-director`, TAS-237). `.auth-hint` ("Forgot password? Contact your
   project admin.") renders between the submit button and `.form-error`
   (`LoginScreen.tsx:119` against `:148`). Pre-existing placement, untouched —
@@ -4343,4 +4343,4 @@ Review round 1 (e969dbd): api-contract-guard, art-director and release-reviewer 
 - **A lost answer re-reads only `["me"]`** (art-director r2): if the PATCH landed, members, board and work log keep the old name until their next read. Call `invalidatePeopleNames(queryClient)` beside the `["me"]` invalidation in `ProfileName`'s no-answer branch.
 - **Focus falls to `<body>` when a Try again comes back dead or rejected** (art-director r2; rare: a 5xx, then 401/400): Try again leaves the DOM. Run `LoginScreen`'s focus-rescue effect on `retryRefusals` too and move focus to `.invite-preview-refusal` (`tabIndex=-1`), the §4.27 rule for the removed form.
 - **Admin rows used during a page load lose keyboard focus** (release-reviewer, narrow review of `403a4d4`): all four admin sections keep the previous page as `placeholderData`; a row opened or focused in that window unmounts when the next page lands and focus falls to `<body>`. No rule like §5.4's «no drag while the previous answer is drawn». One request's latency; the e2e race that made CI fail on PR #114 was this window.
-- **`contract:pins` is STALE** (release-reviewer): develop moved to `9fcf0253` (outbox retry and audit masking; `openapi.yml` unchanged). Refresh with the next contract pass.
+- ~~**`contract:pins` is STALE**~~ — **closed by TAS-426** (2026-10-27): header at `9fcf0253`, body unchanged. (release-reviewer): develop moved to `9fcf0253` (outbox retry and audit masking; `openapi.yml` unchanged). Refresh with the next contract pass.

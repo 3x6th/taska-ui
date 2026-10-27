@@ -36,7 +36,10 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || format('/{0}/', github.event.repository.name) }}
+          # The site is served at the root of taska.ozero.dev, and the backend's
+          # OAuth return lands on the absolute path /auth/callback (TAS-426), so
+          # the fallback is the root rather than the repository name.
+          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || '/' }}
           VITE_ROUTER_MODE: ${{ vars.VITE_ROUTER_MODE || 'hash' }}
           VITE_TASKA_API_MODE: ${{ vars.VITE_TASKA_API_MODE }}
           VITE_TASKA_API_BASE_URL: ${{ vars.VITE_TASKA_API_BASE_URL }}

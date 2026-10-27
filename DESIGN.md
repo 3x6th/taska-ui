@@ -32,6 +32,9 @@
 ### Hard rules (нарушать нельзя)
 - Не вводить новые цвета «на глаз» — только токены ниже; новый оттенок получать через
   `color-mix(in oklab, <token> N%, transparent)`.
+- Исключение из «только токены» — цвета кнопок провайдеров входа §2.8: их задают гайдлайны
+  Google и Apple, а не глаз. Живут только в `--provider-*` и только у `.provider-button`
+  (§4.31); в любом другом месте продукта — нарушение.
 - Не более **двух** фоновых уровней в одной плоскости (`--surface` + `--surface-2`).
 - Текст никогда не наследует цвет «случайно»: у текстовых узлов задавать `color` явно
   (`var(--fg)` / `--fg-2` / `--fg-3`).
@@ -348,6 +351,39 @@ Slide-over — единственная поверхность с горизон
 | Аватар | 22 (мета) / 24 (карточка, лента) / 26 (фильтр) / 28 (топбар) / 64 (Settings → My profile) |
 | Иконки SVG | 11–16 (в основном 13–16), `stroke-width` 1.2–1.7 |
 | Type chip (§4.6) | слот 14×14: квадрат 14 / круг 14 / ромб 11 под 45° (размах 13.9); с иконкой — глиф 14, `absoluteStrokeWidth`, штрих 1.7, без плитки |
+| Знак провайдера входа (§4.31) | 18 — вне шкалы 11–16: размер G задаёт Google, остальные знаки — в ту же колонку |
+| Кнопка провайдера входа (§4.31) | во всю ширину карточки, height 39, radius 9 |
+
+### 2.8 Кнопки провайдеров входа (TAS-426)
+
+Единственное место продукта, где цвет задан не нашей шкалой, а чужим гайдлайном (§1).
+
+```css
+:root, [data-theme="light"] {
+  --provider-bg: #ffffff;
+  --provider-border: #747775;
+  --provider-fg: #1f1f1f;
+  --provider-mono: #000000;
+}
+[data-theme="dark"] {
+  --provider-bg: #131314;
+  --provider-border: #8e918f;
+  --provider-fg: #e3e3e3;
+  --provider-mono: #ffffff;
+}
+```
+
+- Стили light/dark — из Sign in with Google branding guidelines; правило Sign in with Apple —
+  заливка, знак и подпись чёрные или белые, обводку, радиус и шрифт можно брать свои; у GitHub
+  своего стиля нет, он носит общий.
+- Не подменять на `--surface` / `--border-strong` / `--fg`, даже где байты совпадают: токен
+  говорит, чей это цвет.
+- Цветной G — файл Google без изменений, никогда не перекрашивается; знак Apple — из Apple
+  Design Resources; Invertocat GitHub — оба через `--provider-mono`.
+- `#131314` к `--surface` тёмной — 1.01:1, та же плоскость, второго фонового уровня не заводит.
+- Контраст: подпись 16.48 / 14.47 (Apple 21.0 / 18.57), обводка к `--surface` 4.53 / 5.77.
+- Шрифт — `--font-ui`, а не шрифт Google; подпись 13.5 в кнопке 39 (35% против 43% у Apple):
+  принято историей TAS-426 («остальное по DESIGN.md»), 17px перекричали бы primary.
 
 ---
 
@@ -429,8 +465,8 @@ Slide-over — единственная поверхность с горизон
 Активная: `background:var(--surface); color:var(--fg); box-shadow:0 1px 2px rgba(20,20,40,.08–.12)`.
 Невыбранная — `--fg-2`, как написано выше; с TAS-380 код это и рисует (до того стоял `--fg-3`,
 2.76:1 на `--surface-2`; теперь 6.38 в светлой, 7.03 в тёмной).
-Использование: Priority (модалка создания и панель), табы Sign in / Accept invite
-(там таб — `flex:1`, height 30), строки Settings → Appearance (§5.9: `.segmented.fit`, height 30,
+Использование: Priority (модалка создания и панель), табы карточки входа (§4.27, §4.31:
+`role="tablist"`, не больше двух, `flex:1`, height 30), строки Settings → Appearance (§5.9: `.segmented.fit`, height 30,
 `role="group"`, кнопки с `aria-pressed`).
 
 **Открытый набор** (TAS-173). Пикер приоритета (модалка создания, панель) берёт набор
@@ -1771,11 +1807,15 @@ API-токен (`channel` `MCP` / `API_TOKEN` в `IssueHistoryResponseDto`),
 
 ### 4.27 Экран входа и приглашения (TAS-208)
 
-Карточка логина (§2.5, §2.7, `.auth-card-wrap` §3), табы Sign in / Accept invite (§4.2).
+Карточка логина (§2.5, §2.7, `.auth-card-wrap` §3), табы — §4.31 (вид §4.2).
 Активация сессии не открывает: `POST /auth/invitations/accept` отвечает 204 без токенов,
 и после него читатель входит обычным путём. Сброса пароля нет, а повторное приглашение
 `ACTIVE`-аккаунта — 409, поэтому ни одна строка экрана восстановления не обещает.
 
+- **Табы** (TAS-426) — `role="tablist"` / `tab` (`aria-selected`, `aria-controls`) / `tabpanel`
+  (`aria-labelledby`); roving tabindex: в порядке Tab только выбранный, ←/→/Home/End переводят
+  фокус и выбор сразу; `aria-pressed` снят. Таб и кнопка с одной подписью («Sign in», «Create
+  account») различаются ролью. Вид прежний (§4.2), кольцо — исключение 2 §7. Какие табы — §4.31.
 - **Ссылка из письма** — `<accept-url>?token=<43>`: query, не фрагмент. Клиент забирает
   `token` из `location.search` до монтирования роутера (оба режима, любой путь) и из query
   внутри hash (`#/invite?token=…`), убирает его из адреса `replaceState` и открывает
@@ -1788,8 +1828,8 @@ API-токен (`channel` `MCP` / `API_TOKEN` в `IssueHistoryResponseDto`),
   Activate → подсказка. Пока preview в полёте, Email и Name — `readOnly` с `.value-skeleton`
   внутри (160×13 и 120×13, `--surface-3` на `--surface`, §5.6), `aria-busy` на их `.field`;
   Activate и Enter ничего не шлют (рецепт «в полёте» §4.1). Фокус — в New password, как
-  раньше; ответ 200 заполняет поля, Name становится правимым, фокус не двигается. Тип ссылки
-  (`kind` `INVITATION` / `SIGNUP`) пока не различается — заголовок регистрации придёт с TAS-426.
+  раньше; ответ 200 заполняет поля, Name становится правимым, фокус не двигается.
+  `kind = SIGNUP` — §4.31.
 - **Email** (TAS-425) — read-only input, не простой текст: менеджер паролей должен сохранить
   новый пароль под нужным аккаунтом. `type=email`, `autoComplete="username"`, `readOnly`,
   высота 38, рецепт read-only §4.3 (`1px --border`, прозрачная заливка, текст `--fg`, без
@@ -1811,7 +1851,8 @@ API-токен (`channel` `MCP` / `API_TOKEN` в `IssueHistoryResponseDto`),
   форм входа); успех возвращает форму с фокусом в New password. Ответ на Try again — `live="alert"`,
   перемонтируется на каждую попытку, чтобы та же фраза прозвучала снова. Preview уходит без сессии
   (`skipAuth`): его 401 никогда не попадает в ветку истёкшей сессии §5.1 — заход по ссылке
-  сессию не трогает.
+  сессию не трогает. Если ответ на Try again убирает её саму (мёртвая ссылка, отказ запроса) —
+  фокус на `.invite-preview-refusal` (TAS-426), а не в `<body>`.
 - **Токена нет** (таб выбран руками, перезагрузка) — поле «Invitation token», моно, без
   плейсхолдера-образца; под ним 11.5 `--fg-2`: «Open the link in your invitation email —
   it fills this in.» Вставленная ссылка целиком принимается: значение, разбираемое как URL
@@ -1860,7 +1901,8 @@ API-токен (`channel` `MCP` / `API_TOKEN` в `IssueHistoryResponseDto`),
   приглашения: сброса нет, а неудачные входы запирают аккаунт. Submit в полёте —
   `aria-disabled` (не `disabled`: фокус падал в `<body>`), подпись «Signing in»,
   `cursor:progress`, без затемнения; Enter в полёте ничего не шлёт. `cursor:progress` — и у
-  «Activating».
+  «Activating». Отказ входа — `ErrorNote` под кнопкой и над подсказкой, `live="alert"`
+  (TAS-426: до этого не звучал); каждая попытка перемонтирует его.
 
 ### 4.28 Workflows проекта (TAS-382, TAS-416)
 
@@ -2673,6 +2715,134 @@ Move up → Move down → Edit → Delete (недоступные остаютс
 модалки и пульс скелетона; перестановка, формы и подсветка без анимации; новых литеральных
 анимаций в §3 нет.
 
+### 4.31 Регистрация и вход через провайдера (TAS-426)
+
+Фронт под TAS-423 (регистрация по email) и TAS-424 (Google, GitHub, Apple). Набор способов —
+из `GET /auth/methods` (`signupEnabled`, `providers`); в конфиге UI ничего не зашито. При
+`signupEnabled:false` и пустом `providers` экран совпадает с прежним, кроме ролей табов (§4.27).
+
+- **`/auth/methods`** читается на каждом монтировании карточки входа, без спиннера и строки
+  ошибки (прецедент `/meta`, §4.2). Пока не ответил или упал — рисуется последний ответ из
+  `localStorage` `taska.authMethods`; без него — регистрация выключена, провайдеров нет.
+  Сохранённое — только подсказка первой отрисовки: ничего, что решает сервер, по нему не
+  решается. Ответ заменяет набор без анимации и не двигает фокус; если он убирает активный таб —
+  активным становится Sign in, введённое остаётся в памяти, фокус из убранной панели — на таб
+  Sign in. Отказ с причиной `SIGNUP_DISABLED` перечитывает способы.
+- **Табы — не больше двух**, ни в каком состоянии и ни на какой ширине: три сегмента на 320–360
+  переносятся (269.5 против 228). `/login`: `Sign in | Accept invite`, пока `signupEnabled !== true`
+  (прежний экран); `Sign in | Create account`, когда `true` — приглашение тогда приходит только
+  ссылкой, поле токена остаётся на `/invite` после перезагрузки. `/invite`: всегда
+  `Sign in | Accept invite`, что бы ни ответил `/auth/methods`, чтобы ссылка из письма в чистом
+  браузере не перескакивала; для preview `kind = SIGNUP` второй таб подписан «Create account» тем
+  же коммитом, что заполняет Email и Name (ширина та же, `flex:1`). Роли — §4.27 «Табы».
+- **Кнопки провайдеров** — на Sign in и на форме Create account; не на «Check your email», не на
+  `/invite`. Порядок задаёт клиент: Google, GitHub, Apple; рисуются только перечисленные в ответе,
+  незнакомый код не рисуется. Место — под формой и её подсказкой: отступ 18, разделитель — две
+  линии 1px `--border` (`flex:1`) и «or» 11.5/400 `--fg-3` между ними (gap 10), 13 до первой
+  кнопки, 8 между кнопками. Главный путь Email → Password → акцентный Sign in не меняется.
+  Элемент — `<a href>` на адрес из `oauthStartUrl(provider, returnTo)`: настоящая навигация;
+  `returnTo` — запомненный путь §5.1, иначе `/projects`. Во всю ширину, высота 39 (ни одна другая
+  кнопка входа не крупнее — требование Apple и Google), radius 9, подпись 13.5/550 `--font-ui` по
+  центру всей кнопки: «Continue with Google», «Continue with GitHub», «Continue with Apple». Знак
+  18, видимый глиф в 12 от левого края; знак Apple — в ту же колонку. Цвета — только §2.8; знаки
+  `aria-hidden`, имя — подпись. Hover: `background: color-mix(in oklab, var(--provider-fg) 6%,
+  var(--provider-bg))` за `--dur-hover`. Фокус — общее кольцо §7. После нажатия — рецепт
+  «в полёте» §4.1 на всех трёх: `aria-disabled`, `cursor:progress`, без затемнения, подпись та же,
+  повторное нажатие игнорируется (второй start заменил бы cookie первого — `STATE_INVALID`); без
+  спиннера, загрузку показывает браузер. На `pageshow` с `persisted` (Back от провайдера из
+  bfcache) состояние снимается. `sessionStorage` `taska.oauthAttempt` = {provider, tab} — для
+  формулировок отказов и выбора их таба.
+- **Create account.** Name («Name», `autoComplete=name`, подсказка §4.27, проверка §5.9), Email
+  («Email», `type=email`, `autoComplete=email`, плейсхолдер «you@company.com», без подсказки),
+  primary «Continue» (в полёте «Sending») — не «Create account»: нажатие аккаунта не создаёт.
+  Подсказка: «Invited by your team? Use the link in your invitation email instead.» Отказы —
+  `ErrorNote` под кнопкой, `live="alert"`, id; введённое остаётся. 400 — фраза сервера и
+  `aria-invalid` на названном поле (`DISPLAY_NAME_INVALID` — Name). 403 `SIGNUP_DISABLED` —
+  «Taska isn’t open for new accounts right now. Ask a Taska admin to invite you.» 429 — «Too many
+  attempts. Try again in {wait}.» 5xx, 408, сеть — «The sign-up request could not be sent.», слова
+  сервера (если ответил) и id.
+- **Check your email** (на 202) — заменяет форму на том же табе, без провайдеров.
+  `h1.auth-title` «Check your email» 14/650 `--fg`, −0.015em, `tabIndex=-1`, фокус на нём. Текст
+  13/400 `--fg`, lh 1.55: «If {email} can be used for a new Taska account, we’ve sent a link there.
+  Open it to choose your password.» Адрес без выделения, `overflow-wrap:anywhere`. Сервер отвечает
+  202 на любой адрес, поэтому ни одна строка не говорит, есть ли аккаунт и ушло ли письмо.
+  Secondary «Resend link» во всю ширину, 39; под ней `.auth-hint` через `aria-describedby`: первые
+  60 с — «You can resend in 0:42.» (m:ss, tabular-nums, тикает раз в секунду, не живая), кнопка —
+  рецепт «недоступна» §4.1 (`.58`, `not-allowed`); потом — «Didn’t get it? Check your spam folder,
+  then resend.» Ghost «Use a different email» (32, 12.5/550 `--fg-2`, по центру) — назад к форме с
+  обоими значениями, фокус в Email, значение выделено. Resend: в полёте «Sending»; 202 — текст
+  «If {email} can be used for a new Taska account, we’ve sent another link there. Open it to
+  choose your password.», произносится постоянной скрытой `role="status"`, отсчёт 60 с заново;
+  429 — отсчёт заново от Retry-After, подсказка «Too many attempts. You can resend in 12:40.», в
+  статусе «Too many attempts. Try again in {wait}.»; прочий отказ — `ErrorNote` (alert) над
+  подсказкой: «Resending did not go through.», слова сервера и id. Состояние переживает смену
+  табов, пока карточка смонтирована.
+- **`/invite` с `kind = SIGNUP`.** Пока preview в полёте и для `INVITATION` — всё как в §4.27;
+  незнакомый `kind` — формулировки приглашения. После ответа `SIGNUP`: второй таб — «Create
+  account»; `.invite-note` — `h1` «Finish creating your account» (12.5/650 `--fg`, своей строкой)
+  и «Confirm your name and choose a password.» (12/400 `--fg-2`); primary «Create account», в
+  полёте «Creating account»; подсказка «Link expired? Create your account again to get a new one.»;
+  401 accept — «This sign-up link no longer works — it expired, was used, or was replaced by a
+  newer one. If you already set a password, sign in; otherwise create your account again.» Успех —
+  как у приглашения. Меняется только текст на месте: на 390 карточка не сдвигается (правило
+  окончательного вида, TAS-425); на 320 заметка может вырасти не больше чем на строку. Preview
+  отказал (вид ссылки неизвестен): при `signupEnabled === true` — «This link no longer works — it
+  expired, was used, or was replaced by a newer one. If you already set a password, sign in;
+  otherwise ask for a new invitation or create your account again.»; иначе — фраза §4.27.
+- **`/auth/callback`** — публичный маршрут в оболочке логина (свечение, логотип, карточка,
+  сноска, переключатель темы), без табов. Бэк возвращает браузер на `/auth/callback` от корня
+  origin (базовый путь отбрасывается); на Pages путь отдаёт копия `index.html` в
+  `dist/auth/callback/index.html` (Pages отвечает 301 на `/auth/callback/` с тем же query, затем
+  200). `code` или `error` клиент забирает из адреса до роутера, только на этом пути, держит в
+  памяти и стирает `replaceState` (§5.1). Пока идёт обмен — одна строка 13/400 `--fg-2` по
+  центру, `role="status"`: «Signing you in with {Provider}» или «Signing you in»; без спиннера и
+  скелетона (исход неизвестен, скелетон формы мигал бы у каждого вернувшегося). Обмен — ровно один
+  раз на код, без повторов. `SIGNED_IN` — сессия, затем `navigate(returnTo, {replace:true})`;
+  returnTo, не прошедший `inAppPath`, — `/projects`.
+  `SIGNUP_REQUIRED` — шаг имени: `.invite-note` с `h1` «Finish creating your account» и «You’re
+  signing up with your {Provider} account.» (провайдер только словом, знак — только в кнопке
+  бренда); Email — read-only по рецепту §4.27, `autoComplete=email`; Name — `suggestedDisplayName`
+  или пусто, подсказка §4.27, проверка §5.9, фокус в Name; primary «Create account» («Creating
+  account»); ghost «Back to sign in» (32) на `/login`. Успех — сессия и returnTo; новый аккаунт
+  попадает в пустое состояние `/projects`. Отказы шага имени — `ErrorNote` под кнопкой, alert, Name
+  остаётся: `DISPLAY_NAME_INVALID` — фраза сервера и `aria-invalid`; 429 — фраза {wait}; 5xx без
+  причины и сеть — «Your account was not created.», слова сервера и id. Шаг истёк (15 минут, 401
+  `STATE_INVALID`) — форма уходит, на её месте `ErrorNote` (alert, `tabIndex=-1`, фокус): «This
+  sign-up step expired after 15 minutes, so your account was not created. Continue with {Provider}
+  again to start over.», под ним кнопка этого провайдера и «Back to sign in». Прочие отказы шага
+  имени (403, 503 с причиной — шаг израсходован), любой отказ обмена и `?error=` в адресе —
+  `replace` на `/login` с отказом там.
+- **Отказы провайдера на `/login`** — `ErrorNote` над табами в слоте `.auth-notice` (`margin 0 0
+  16`), `tabIndex=-1`, фокус при приходе; не живая область — это состояние на входе (§5.1, §5.6).
+  Таб — тот, с которого начинали (`taska.oauthAttempt`), иначе Sign in. Уходит при следующей
+  отправке, нажатии провайдера или смене таба. Request id отказа обмена доезжает до экрана (state
+  маршрута, читается один раз); у `?error=` id нет (TAS-444). Отказ узнаётся по паре (code,
+  `details.reason`), не по классу статуса; 5xx без причины — не `PROVIDER_UNAVAILABLE`.
+
+| Причина | Текст |
+| --- | --- |
+| `PROVIDER_CANCELLED` | ничего — экран как до нажатия |
+| `STATE_INVALID` в `?error=` | «That sign-in attempt is no longer valid: it expired, a newer one replaced it, or it began in another browser. Try again from this page.» |
+| `EMAIL_NOT_VERIFIED` | «Your {Provider} account has no verified email address, so Taska can’t use it. Verify an email with {Provider}, or sign in another way.» Без провайдера: «The account you chose has no verified email address, so Taska can’t use it. Verify an email there, or sign in another way.» |
+| `ACCOUNT_BLOCKED` | «The Taska account for this email is blocked. Ask a Taska admin to unblock it.» |
+| `ACCOUNT_LOCKED` | `.auth-lock` в две строки: «Account is locked after too many failed sign-ins.» / «Try again later.» OAuth-отказ срока не несёт (TAS-444) — время не выдумывается; придёт `lockedUntil` — «Account is locked until {HH:MM}» / «Try again later.» |
+| `SIGNUP_DISABLED` | «No Taska account uses this email, and new accounts need an invitation. Ask a Taska admin to invite you.» |
+| `PROVIDER_UNAVAILABLE` (503 с причиной или `?error=`) | «{Provider} sign-in isn’t available right now. Try again in a moment, or sign in another way.» Без провайдера: «This sign-in method isn’t available right now. Try again in a moment, or sign in another way.» |
+| Обмен: 401 `STATE_INVALID` (код истёк или использован) | «That sign-in could not be finished — it took too long or was already used. Try again from this page.» |
+| Обмен: 429 | «Too many attempts. Try again in {wait}.» |
+| Обмен: 5xx без причины, 408, сеть | «Sign-in with {Provider} could not be finished.», слова сервера и id |
+| Незнакомая причина в ответе обмена | «Sign-in with {Provider} did not finish. Try again from this page.», код — моно-строкой деталей |
+| Незнакомое значение `?error=` | та же фраза, значение не печатается: адрес мог набрать кто угодно |
+
+- **{wait}** — из `Retry-After` или `details.retryAfterSeconds`: меньше 90 с — «{n} seconds»
+  («1 second»), иначе «{⌈n/60⌉} minutes»; без значения — «a few minutes». Фраза статичная, не
+  тикает.
+- **Чего экран показать не может:** 429 и 503 от `start` и от обратного вызова провайдера — они
+  приходят JSON-ом на навигацию всей страницы на api-домене (замер 2026-10-27: `start` у google и
+  github — 503). Это заявка TAS-444, не дело экрана.
+- **Движение.** Ни спиннеров, ни новых анимаций на этом проходе; ничего не зависит от входа
+  карточки за 500 мс, чтобы быть читаемым.
+
 ## 5. Patterns
 
 ### 5.1 App shell и маршруты
@@ -2710,7 +2880,7 @@ Safari 16.2) *новее* базы `dvh` (Chrome 108 / Safari 15.4) — брау
 
 | Экран | Route | Доступ |
 | --- | --- | --- |
-| Login / Accept invite | `/login`, `/invite`; токен — из query адреса (§4.27) | публичный |
+| Login / Accept invite / Auth callback | `/login`, `/invite`, `/auth/callback`; токен и код — из адреса до роутера (§4.27, §4.31) | публичный |
 | Projects | `/projects` | по сессии |
 | Board | `/projects/:projectId/board` | по сессии |
 | Issue card | `/projects/:projectId/issues/:issueId` | по сессии |
@@ -2899,7 +3069,9 @@ select встаёт по своему правилу по умолчанию, п
   плашками вложений, наблюдателей, участников и work log. Живой областью, когда она
   есть, бывает только предложение — не коробка и не id; есть ли она, решает место:
   `alert` — строка записи панели и модалка создания задачи, `polite` — отказ записи
-  комментария (постоянная область, как у work log), остальные места без неё; отказ
+  комментария (постоянная область, как у work log), отказы карточки входа и регистрации,
+  отвечающие на нажатие, — `alert` (§4.27, §4.31), остальные места без неё; отказ, с которым
+  читатель пришёл (провайдер, preview ссылки), и отказ
   чтения — состояние на открытии, не ответ на действие, и не живой. В `.form-stack`
   отступ даёт gap (13), вне его — `margin:0 0 12`; строка записи панели — 20 сверху и
   снизу. `ApiNotice` (тинт) — баннер экрана и
@@ -4486,6 +4658,11 @@ e2e). Другое значение останавливает dev-сервер,
   Edit и Delete стоят с шагом 30 (28 + gap 2), строки — с шагом 28: расширение до 44 перекрывает
   соседа по обеим осям, поэтому решать пару и строку вместе, как тройку хедера панели (TAS-248).
   Промах по корзине открывает вопрос, а не удаляет.
+- **Открыто в TAS-426** (решение art-director 2026-10-27, до сборки): кнопки провайдеров и submit
+  карточки входа — 39 в высоту на 390, «Use a different email» и «Back to sign in» — 32. Пол §1
+  держат, 44 нет; шаг кнопок провайдеров 47 вмещает псевдоэлемент ±2.5 без перекрытия; тот же
+  приём и правило пары. На 320×568 со всеми тремя провайдерами Apple уходит ~45 ниже сгиба —
+  принято: `.auth-screen` прокручивается с `safe center`.
 - Поповер уведомлений: `aria-expanded` на триггере, счётчик непрочитанных в `aria-label`.
 - Иконки-кнопки без текста — обязателен `aria-label`.
 - Drag & drop дублируется кнопками переходов (клавиатурный путь).

@@ -294,9 +294,12 @@ Credentials for any of these are covered by *Safety* at the end of this file.
   verification through the preview tools still applies to UI work. It runs the
   dev server with browser routing at base `/`, so most specs cannot catch the
   hash-routing and base-path regressions specific to the Pages build. Since
-  TAS-297 a second mock server runs on the next port, hash-routed under base
-  `/taska-ui/`, for the specs that need the Pages shape (the invitation link
-  landing in `e2e/invite.spec.ts`). The suite therefore binds `PORT` and `PORT+1`: a
+  TAS-297 a second mock server runs on the next port, hash-routed, for the specs
+  that need the Pages shape (the invitation link landing in
+  `e2e/invite.spec.ts`, the OAuth return in TAS-426). Since TAS-426 it runs at
+  base `/`: the site is served from the root of `taska.ozero.dev`, and the
+  backend sends the OAuth return to the origin-root `/auth/callback` whatever
+  the base, so a base-prefixed server could not host that landing. The suite therefore binds `PORT` and `PORT+1`: a
   parallel run in a worktree must pick a `TASKA_E2E_PORT` at least 2 away from
   any other run's.
 - Never commit secrets, build output, or IDE state.
