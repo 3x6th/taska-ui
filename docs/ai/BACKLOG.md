@@ -4080,7 +4080,7 @@ Frontend notes:
   `aria-disabled={createLabel.isPending || undefined}`, refuse in the submit handler.
 - **The lost-focus check lives in three places** — **graduated to [TAS-397](https://jira.ozero.dev/browse/TAS-397)** (2026-10-24) (board archive effect, `EditProjectModal`,
   `ProjectLabelsModal`); a shared helper could replace them.
-- ~~**Label chip order on a card is not stated**~~ — **closed by TAS-417** (2026-10-26): backend TAS-392 orders card labels by binding time, then `labelId`, and the mock follows (the details read stays by name — TAS-431). — **graduated to [TAS-392](https://jira.ozero.dev/browse/TAS-392)** (2026-10-24): `findLabelIdsByIssueIds`
+- ~~**Label chip order on a card is not stated**~~ — **closed by TAS-417** (2026-10-26): backend TAS-392 orders card labels by binding time, then `labelId`, and the mock follows (the details read stays by name — TAS-431). **TAS-438 (2026-10-27):** backend TAS-431 orders card labels by name, then id, like the details read; the mock follows. — **graduated to [TAS-392](https://jira.ozero.dev/browse/TAS-392)** (2026-10-24): `findLabelIdsByIssueIds`
   (`IssueRepositoryImpl.java:338`) has no ORDER BY.
 
 ### Left by TAS-149 (archive and the read-only archived board, frontend for backend #155/#159, 2026-10-23)
@@ -4249,6 +4249,7 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
   (api-contract-guard r2) — but the strip does not point to it; art-director's call whether it
   should. Asked on TAS-427 whether the counting is intended (art-director N3, api-contract-guard A7).
   **TAS-417 (2026-10-26):** closed for status delete (backend TAS-427 migrates only the deleted status); it stays for workflow delete — [TAS-429](https://jira.ozero.dev/browse/TAS-429). The «asked on TAS-427» clause is answered.
+  **Closed by TAS-438 (2026-10-27):** workflow delete migrates only the workflow's own statuses plus the mapped keys (`WorkflowMutationService.deleteWorkflow`, `findForWorkflowMigrationBySourceStatuses` at `cbd3f0af`, confirmed by api-contract-guard), so the branch could never show and is removed.
 - **The mock cannot produce a true «shares no status»** (an own copy always shares `TODO`), so that
   variant was reviewed by its copy only (art-director N3).
 - **Optional backend ask, not filed:** create and delete-workflow could answer the whole
@@ -4293,3 +4294,25 @@ Reviews on `9eb3c42`: art-director and release-reviewer APPROVE WITH NOTES; back
 - **Focus ring on an `aria-disabled` .58 control fades with it** — weak in dark mode (Shape buttons, the edge Move buttons); a §4.1/§7 question: apply `.58` to the content, not the button.
 - **Backend follow-ups (TAS-432):** the contract phase — stop writing `legacy_icon` and reserve proto field 4 once no pre-TAS-432 reader is left; the gateway maps an unknown shape/colour/icon with `fromValue` and 500s the whole registry read (a server-side TAS-173 fallback to square would be cheaper); `SearchIssuesIT` is not in CI's explicit IT step.
 - **Two types with the same colour and shape and no icon** are told apart only by name (replaces «a hint when two types share colour and icon»).
+
+### Left by TAS-438 (the four compensations removed after backend `cbd3f0af`, 2026-10-27)
+
+Reviews on `32daa9c`: api-contract-guard, art-director and release-reviewer REQUEST CHANGES; blockers fixed in `830f006` (kept cards re-read through the column page, the mock's `BAD_REQUEST` cursor, the «Show more» ring and refusal in view); round 2 on `830f006`: all three APPROVE WITH NOTES (docs/ai/reviews/tas438-*.md, local).
+
+- **Develop moved past this pass:** TAS-433 (backend #258, `f82a8163`) adds create refusals (`ISSUE_TYPE_DELETION_PENDING`, `ISSUE_TYPE_CHANGED`, `UNAVAILABLE`), a read-only `generation` on issue types and `moveIssuesTo` on type delete; the create form shows the new refusals generically. The next pass, on the owner's word.
+- **Nothing probed on the stage:** the column page, `statusKey` on create, `timeSpentMinutes`, `participants` and the 409 were read from backend code at `cbd3f0af`.
+- **A «Show more» page that lands while a re-read's tail reads are out is lost** — the re-read's result overwrites it, the column shows the earlier depth and the foot; the next press reads that page again (frontend-builder, fix round) Fix: hold «Show more» in flight while the board query is fetching, as `awaitingFilter` does (api-contract-guard r2).
+- **Tail depth is inferred from counts** (cache's drawn cards minus fresh's first page): an optimistic move into a capped, unexpanded column that sorts inside its first page leaves 201 drawn and costs one tail read of 1 on the next re-read. Fix: record the expansion in `withColumnPage` and take the depth from it (api-contract-guard r2).
+- **The mock's column page checks only an unparsable type filter for the early empty page**; the gateway's `EnumFilterUtils.hasUnknownFilter` also covers priority, which the UI never sends on this route.
+- **The focus hand-off to «Show more» also fires after the reader's own drag** into a capped column when the card sorts past the drawn end and unmounts: focus jumps to the source column's «Show more» and scrolls it (release-reviewer r2, reasoned, not reproduced — the mock has one capped column). Fix: skip the moving issue, keyboard focus only, or `preventScroll`.
+- **`e2e/board-capped.spec.ts` ~140 waits a fixed 600 ms** for the re-read before the second drag — wait for OPS-1202's priority label to change instead (release-reviewer r2).
+- **Tail reads are not aborted by `cancelQueries`** (no signal passed, like `getBoard`) — extra requests only.
+- **A failed board move restores its onMutate snapshot**, dropping a «Show more» page that landed while the move was out; the foot comes back (release-reviewer, low).
+- **An issue created by «+» on a capped column** sorts last (`createdAt` asc), past the drawn page, and shows only after «Show more» (api-contract-guard residual; art-director's call whether §4.9 says so).
+- **«Create issue» is `disabled` while pending** and drops focus to `<body>`, staying there after a refusal — since before TAS-438, but every column's «+» can now meet `STATUS_NOT_IN_WORKFLOW` (art-director N2; §4.1's recipe is `aria-disabled` + `cursor:progress`).
+- **The «+» is 22×22 with no touch extension below 820**, now on every column (art-director N3; the §7 gap, for the touch pass).
+- **VIEWER and archived «Show more»** not seen in a browser — no seeded VIEWER opens a capped project; a unit assertion would close it (art-director N4).
+- **Optional backend ask, not filed (api-contract-guard r2):** the board read to a requested depth per column (say `columnPageSize=DONE:405`, capped by the server), so one read restores an expanded board instead of a board read plus a column page per expanded column — a follow-up to TAS-430.
+- **Optional backend ask (api-contract-guard A1):** the gateway's own input checks answer `BAD_REQUEST` (half a cursor, a blank `statusKey`, a malformed type key) while bean validation answers `INVALID_ARGUMENT`; one code for every client input error. Not filed.
+- **The mock's CREATED history payload** does not carry the created status (the backend's does); no UI reads it.
+- **`channel` on history and comments** (UI / API_TOKEN / MCP) is in the contract now; the REST client still sets `via: null` — the TAS-412 entry.
