@@ -4231,6 +4231,12 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
   `scrollIntoView({block:"nearest"})` could scroll the page vertically when the current link is out
   of view on a short window — scroll only the strip via `scrollLeft` if §5.8 allows. Also:
   `e2e/access-tokens.spec.ts` focuses the field before its final Esc.
+- **The «Access tokens are not on this gateway yet» branch can go** (TAS-412 stand check, 2026-10-27): the token routes are
+  deployed and the three PAT probes pass, so `SettingsTokensSection`'s static-resource-404 branch and its test describe a
+  gateway that no longer exists. A small `frontend-builder` change with the next Settings pass.
+- **«via MCP» has not been seen on the stand**: the Pages build has no `VITE_TASKA_MCP_URL` (the repo variables hold only
+  the base path, the API URL and the mode), so «Connect an AI agent» says the server is unavailable and no MCP write was
+  made. Set the variable once the MCP server is on the stand, then write one comment through it.
 
 ### Left by TAS-416 (edit and delete in the Workflows dialog, frontend for backend #225, 2026-10-26)
 
