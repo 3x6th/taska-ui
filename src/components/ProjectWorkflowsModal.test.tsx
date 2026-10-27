@@ -98,9 +98,9 @@ const ownEntry: ProjectWorkflowEntry = { workflow: ownWorkflow, issueTypes: ["ST
 
 /** The registry every project is seeded with (backend #212), in its order. */
 const SEEDED_TYPES: ProjectIssueType[] = [
-  { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
-  { code: "BUG", name: "Bug", color: "red", icon: "bug", sortOrder: 20 },
-  { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 30 },
+  { code: "TASK", name: "Task", color: "blue", shape: "square", icon: null, sortOrder: 10 },
+  { code: "BUG", name: "Bug", color: "red", shape: "circle", icon: null, sortOrder: 20 },
+  { code: "STORY", name: "Story", color: "green", shape: "square", icon: null, sortOrder: 30 },
 ];
 
 function renderDialog(readerRole: ProjectRole | null | undefined = "ADMIN", archived = false) {

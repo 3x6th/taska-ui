@@ -5862,39 +5862,55 @@ h1 {
   font-size: 11px;
 }
 
-/* §4.6 (TAS-417): one shape for every type — a 16px tile, radius 4 — filled
-   with the registry colour and carrying its glyph; fill and glyph colour come
-   together in one inline style (§4.4's pair rule). The BUG circle is gone. */
+/* §4.6 (TAS-434): one 14×14 slot for every type, holding one of two things,
+   never both — the type's shape filled with its colour, or its icon as a line
+   glyph stroked with it. The colour is the one inline `--type-fill`; without
+   it (no registry entry, a hit with no look, a colour outside the seven) the
+   shape or the stroke is `--fg-3` (3.14:1 / 3.05:1). The card's meta row is
+   15.94 high (its line box), so the 14 slot fits it with no negative margin
+   and the card is as high as before TAS-417. */
 .type-chip {
+  position: relative;
   display: inline-flex;
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
+}
+
+.type-chip.is-square,
+.type-chip.is-circle {
+  background: var(--type-fill, var(--fg-3));
+}
+
+.type-chip.is-square {
   border-radius: 4px;
+}
+
+.type-chip.is-circle {
+  border-radius: 50%;
+}
+
+/* An 11×11 square at radius 2 turned 45° about the slot's centre: it spans
+   13.9, inside the 14 and as large as its neighbours. */
+.type-chip.is-diamond::before {
+  position: absolute;
+  inset: 1.5px;
+  border-radius: 2px;
+  background: var(--type-fill, var(--fg-3));
+  content: "";
+  transform: rotate(45deg);
+}
+
+/* The icon instead of a shape: a stroke in the type's colour, no tile. */
+.type-chip.is-icon {
+  color: var(--type-fill, var(--fg-3));
 }
 
 .type-chip svg {
   display: block;
   flex: none;
-}
-
-/* The card's meta row measured 15.94 high before TAS-417 (its line box, not
-   the ≈17 §4.6 estimated), and the 16 tile would push it to 16. The tile keeps
-   its 16 on screen and lays out at 14 — the old chip's — so the card's height
-   does not change (§4.6's gate, measured after `document.fonts.ready`). */
-.issue-card-meta .type-chip {
-  margin-block: -1px;
-}
-
-/* Out of the dictionary (§4.6): no registry entry for the key, or a hit that
-   carries no look — `--fg-3` and no glyph; a colour outside the seven — the
-   same fill, and the glyph in `--fg` (5.69:1 light / 5.16:1 dark). */
-.type-chip.is-unknown,
-.type-chip.is-unknown-color {
-  background: var(--fg-3);
-  color: var(--fg);
 }
 
 /* The chip's slot with nothing in it, where a row could not be drawn: the key
@@ -6362,8 +6378,9 @@ h1 {
   font-size: 12px;
 }
 
-/* §5.5 (TAS-417): the type select — native, 30 high like the Priority
-   segments beside it — with the chosen type's tile inside the field. */
+/* §5.5 (TAS-417, TAS-434): the type select — native, 30 high like the
+   Priority segments beside it — with the chosen type's 14 chip inside the
+   field, 8 from its left edge and centred in its height. */
 .meta-grid > .type-select,
 .meta-grid > .type-static {
   color: var(--fg);
@@ -6380,7 +6397,9 @@ h1 {
 
 .type-select > .type-chip {
   position: absolute;
+  top: 50%;
   left: 8px;
+  margin-top: -7px;
   pointer-events: none;
 }
 
@@ -6389,7 +6408,7 @@ h1 {
   height: 30px;
   border: 1px solid var(--border-strong);
   border-radius: 9px;
-  padding: 0 8px 0 30px;
+  padding: 0 8px 0 28px;
   background: var(--surface);
   color: var(--fg);
   font-family: inherit;
@@ -9846,21 +9865,21 @@ button.attachment-open:hover:not(:disabled) {
   flex: none;
 }
 
-/* Under the text column: 24 is the tile (16) and the row's gap (8). */
+/* Under the text column: 22 is the chip (14) and the row's gap (8). */
 .issue-type-row-note {
   flex-basis: 100%;
   margin: 0;
-  padding-left: 24px;
+  padding-left: 22px;
   color: var(--fg-2);
   font-size: 11px;
   line-height: 1.4;
   text-wrap: pretty;
 }
 
-/* §4.22's strip, indented 24 rather than Members' 32. */
+/* §4.22's strip, indented 22 rather than Members' 32. */
 .member-confirm.issue-type-confirm {
-  flex-basis: calc(100% - 24px);
-  margin-left: 24px;
+  flex-basis: calc(100% - 22px);
+  margin-left: 22px;
 }
 
 .issue-type-row.is-skeleton {
@@ -9868,8 +9887,8 @@ button.attachment-open:hover:not(:disabled) {
 }
 
 .issue-type-skeleton-tile {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border-radius: 4px;
 }
 
@@ -9925,7 +9944,7 @@ button.attachment-open:hover:not(:disabled) {
   margin: 0;
 }
 
-/* The icon picker: §4.2's segments, as a group of 28×28 icon buttons. */
+/* The Shape and Icon pickers: §4.2's segments, as groups of 28×28 buttons. */
 .issue-type-icons {
   display: flex;
   flex-wrap: wrap;
@@ -9961,6 +9980,44 @@ button.attachment-open:hover:not(:disabled) {
 .issue-type-icon-option:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 0;
+}
+
+/* A Shape button holds the figure itself, in the button's ink rather than the
+   type's colour — the head's live chip shows that (§4.30). */
+.issue-type-icon-option .type-chip {
+  --type-fill: currentColor;
+}
+
+/* «No icon»: a dashed 12 circle, §4.4's "nobody chose this". */
+.issue-type-no-icon {
+  width: 12px;
+  height: 12px;
+  border: 1px dashed currentColor;
+  border-radius: 50%;
+}
+
+/* The Shape group while an icon is chosen: §4.1's steadily unavailable — the
+   buttons stay Tab stops and keep the choice, a press does nothing. */
+.issue-type-icons .issue-type-icon-option[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.issue-type-icons .issue-type-icon-option[aria-disabled="true"]:hover {
+  color: var(--fg-2);
+}
+
+.issue-type-icons .issue-type-icon-option.is-active[aria-disabled="true"]:hover {
+  color: var(--fg);
+}
+
+/* Below 480 both groups take 26 buttons, so the nine icons stay one row at
+   375 (264 in 269, §4.30). */
+@media (max-width: 479px) {
+  .issue-type-icon-option {
+    width: 26px;
+    height: 26px;
+  }
 }
 
 /* Below 820 every row button takes a 44-high hit area; the visible size

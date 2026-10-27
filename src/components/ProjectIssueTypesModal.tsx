@@ -10,9 +10,17 @@ import {
   ISSUE_TYPE_COLORS,
   ISSUE_TYPE_ICONS,
   ISSUE_TYPE_NAME_MAX_LENGTH,
+  ISSUE_TYPE_SHAPES,
   LAST_ISSUE_TYPE_REASON,
 } from "../api/issueTypes";
-import type { IssueTypeColor, IssueTypeIcon, ProjectContext, ProjectIssueType, ProjectRole } from "../domain/types";
+import type {
+  IssueTypeColor,
+  IssueTypeIcon,
+  IssueTypeShape,
+  ProjectContext,
+  ProjectIssueType,
+  ProjectRole,
+} from "../domain/types";
 import { boardKey } from "../lib/boardQuery";
 import { issueTypeColorValue, issueTypeFallbackLabel, issueTypeLabel, keyBadgeStyle } from "../lib/format";
 import {
@@ -28,7 +36,7 @@ import { projectContextKey } from "../lib/projectContext";
 import { ApiNotice } from "./ApiNotice";
 import { ColorSwatches } from "./ColorSwatches";
 import { ErrorNote } from "./ErrorNote";
-import { IssueTypeGlyph, TypeTile } from "./IssueBits";
+import { IssueTypeGlyph, TypeLookChip } from "./IssueBits";
 import { Modal } from "./Modal";
 import { projectWorkflowsKey } from "./projectWorkflowsQuery";
 import { RequestId } from "./RequestId";
@@ -36,7 +44,8 @@ import { RequestId } from "./RequestId";
 /**
  * Issue types (DESIGN.md §4.30, TAS-417): the project's issue-type registry,
  * readable by everyone on the project and written by its ADMIN — add, rename,
- * recolour, change the icon, reorder, delete an unused one.
+ * recolour, change the shape or the icon (or take the icon away, TAS-434),
+ * reorder, delete an unused one.
  *
  * The registry is the context's `issueTypes`, the same answer the board draws
  * from, so opening this asks for nothing (§4.30 «Чтения»). Every write lands
@@ -53,6 +62,13 @@ const COLOR_NAMES: Record<IssueTypeColor, string> = {
   purple: "Purple",
   teal: "Teal",
   slate: "Slate",
+};
+
+/** §4.30's shape names, in the contract's shape order. */
+const SHAPE_NAMES: Record<IssueTypeShape, string> = {
+  square: "Square",
+  circle: "Circle",
+  diamond: "Diamond",
 };
 
 /** §4.30's icon names, in the contract's icon order. */
@@ -73,8 +89,8 @@ const COLOR_CHOICES = ISSUE_TYPE_COLORS.map((color) => ({
   label: COLOR_NAMES[color],
 }));
 
-/** A new type's icon (§4.30). */
-const DEFAULT_ICON: IssueTypeIcon = "file-text";
+/** A new type's shape (§4.30): the server's default too. A new type has no icon. */
+const DEFAULT_SHAPE: IssueTypeShape = "square";
 /** How long a row a write made holds §4.28's highlight. */
 const HIGHLIGHT_MS = 2000;
 /** The registry's dialog sentence when a move is refused (§4.30). */
@@ -282,7 +298,7 @@ export function ProjectIssueTypesModal({
         setAnnouncement(`Type ${issueTypeLabel(entry.code, [entry])} added.`);
         pendingFocus.current = ["trigger:add"];
       } else {
-        // A name, a colour or an icon: the answer is the whole entry, and no read follows.
+        // A name, a colour, a shape or an icon: the answer is the whole entry, and no read follows.
         setRegistry((current) => current.map((item) => (item.code === entry.code ? entry : item)));
         setAnnouncement(`Type ${issueTypeLabel(entry.code, [entry])} saved.`);
         pendingFocus.current = [`edit:${entry.code}`];
@@ -473,11 +489,19 @@ export function ProjectIssueTypesModal({
               key="create"
               mode={{ kind: "create" }}
               onCancel={closeForm}
-              onSubmit={(input) =>
+              onSubmit={({ code, name, color, shape, icon }) =>
                 write.mutate({
                   kind: "create",
-                  input: { ...input, sortOrder: nextIssueTypeSortOrder(types) },
-                  name: issueTypeLabel(input.code, [{ ...input, sortOrder: 0 }]),
+                  // `shape` always, `icon` only when one was chosen (§4.30, backend TAS-432).
+                  input: {
+                    code,
+                    name,
+                    color,
+                    shape,
+                    ...(icon !== null ? { icon } : {}),
+                    sortOrder: nextIssueTypeSortOrder(types),
+                  },
+                  name: issueTypeLabel(code, [{ code, name, color, shape, icon, sortOrder: 0 }]),
                 })
               }
               register={register}
@@ -635,7 +659,7 @@ function NoteDetail({ error }: { error: unknown }) {
 }
 
 /**
- * One type (§4.30): tile 16 · name over code · the `default` marker on the
+ * One type (§4.30): chip 14 · name over code · the `default` marker on the
  * first · for an ADMIN, Move up, Move down, Edit and Delete. The ends' moves
  * are `aria-disabled` and stay, so focus never falls out of the list; a lone
  * type has no Delete, an empty slot keeps the column, and a line says why.
@@ -705,7 +729,7 @@ function IssueTypeRow({
 
   return (
     <li className={`issue-type-row${highlighted ? " is-highlighted" : ""}`}>
-      <TypeTile color={entry.color} icon={entry.icon} title={label} />
+      <TypeLookChip color={entry.color} icon={entry.icon} shape={entry.shape} title={label} />
       <span className="issue-type-text">
         <span className="issue-type-name-line">
           <span className="issue-type-name" title={label}>
@@ -792,10 +816,15 @@ function IssueTypeRow({
 type FormMode = { kind: "create" } | { kind: "edit"; entry: ProjectIssueType };
 
 /**
- * The add and edit form (§4.30): a box with the live tile and its heading,
+ * The add and edit form (§4.30): a box with the live chip and its heading,
  * Name and Code side by side (Code only when creating), the seven colours and
- * the eight icons, the reason the submit is off, the refusal, Cancel and the
- * submit. No optimism: the answer is what the list draws.
+ * the three shapes side by side, «No icon» and the eight icons, the reason the
+ * submit is off, the refusal, Cancel and the submit. No optimism: the answer is
+ * what the list draws.
+ *
+ * A chosen icon is drawn instead of the shape (§4.6), so while one is chosen
+ * the Shape group is steadily unavailable — its choice is kept, and sent: a
+ * create always states its shape, an edit the shape if it changed.
  */
 function IssueTypeForm({
   mode,
@@ -815,9 +844,13 @@ function IssueTypeForm({
   error: Error | null;
   register: Register;
   onCancel: () => void;
-  /** The whole form, and — for an edit — only what differs from the saved entry, which is all a PATCH sends. */
+  /**
+   * The whole form (`icon: null` — «No icon»), and — for an edit — only what
+   * differs from the saved entry, which is all a PATCH sends: «No icon» on a
+   * type that has one is `icon: null` (backend TAS-432).
+   */
   onSubmit: (
-    values: { code: string; name: string; color: IssueTypeColor; icon: IssueTypeIcon },
+    values: { code: string; name: string; color: IssueTypeColor; shape: IssueTypeShape; icon: IssueTypeIcon | null },
     changes: UpdateProjectIssueTypeInput,
   ) => void;
 }) {
@@ -826,7 +859,14 @@ function IssueTypeForm({
   const [name, setName] = useState(editing?.name ?? "");
   const [typedCode, setTypedCode] = useState<string | null>(null);
   const [color, setColor] = useState<IssueTypeColor | null>(editing ? editing.color : defaultIssueTypeColor(registry));
-  const [icon, setIcon] = useState<IssueTypeIcon | null>(editing ? editing.icon : DEFAULT_ICON);
+  // A saved shape this build cannot draw is shown as the square it is drawn
+  // as (§4.6), and is not sent back unless another shape is chosen.
+  const savedShape = editing ? (editing.shape ?? DEFAULT_SHAPE) : DEFAULT_SHAPE;
+  const [shape, setShape] = useState<IssueTypeShape>(savedShape);
+  // `null` is «No icon» — a new type's default, and a saved icon this build
+  // cannot draw, which is drawn as its shape (§4.6).
+  const [icon, setIcon] = useState<IssueTypeIcon | null>(editing ? editing.icon : null);
+  const shapeUnavailable = icon !== null;
   // Derived from the name until edited by hand (§4.30, as Add status).
   const code = editing ? editing.code : (typedCode ?? issueTypeCodeOf(name));
   const trimmed = name.trim();
@@ -843,7 +883,8 @@ function IssueTypeForm({
     ? {
         ...(trimmed !== editing.name ? { name: trimmed } : {}),
         ...(color !== null && color !== editing.color ? { color } : {}),
-        ...(icon !== null && icon !== editing.icon ? { icon } : {}),
+        ...(shape !== savedShape ? { shape } : {}),
+        ...(icon !== editing.icon ? { icon } : {}),
       }
     : {};
   const blocked =
@@ -851,9 +892,9 @@ function IssueTypeForm({
     code === "" ||
     reason !== null ||
     color === null ||
-    icon === null ||
     (editing !== null && Object.keys(changes).length === 0);
   const reasonId = `${ids}-reason`;
+  const shapeNoteId = `${ids}-shape-note`;
   const codeHintId = `${ids}-code-hint`;
   const refused = editing ? "The type was not saved." : "The type was not added.";
   const heading = editing ? `Edit ${issueTypeLabel(editing.code, registry)}` : "New type";
@@ -865,12 +906,12 @@ function IssueTypeForm({
       noValidate
       onSubmit={(event) => {
         event.preventDefault();
-        if (inFlight || blocked || color === null || icon === null) return;
-        onSubmit({ code, name: trimmed, color, icon }, changes);
+        if (inFlight || blocked || color === null) return;
+        onSubmit({ code, name: trimmed, color, shape, icon }, changes);
       }}
     >
       <div className="issue-type-form-head">
-        <TypeTile color={color} icon={icon} />
+        <TypeLookChip color={color} icon={icon} shape={shape} />
         <h3 id={`${ids}-title`}>{heading}</h3>
       </div>
       <div className="form-two issue-type-form-two">
@@ -917,35 +958,74 @@ function IssueTypeForm({
           )}
         </div>
       </div>
-      <div className="workflow-field">
-        <span id={`${ids}-colour`}>Colour</span>
-        <ColorSwatches
-          choices={COLOR_CHOICES}
-          groupLabel="Colour"
-          onPick={(value) => {
-            if (value !== null) setColor(value as IssueTypeColor);
-          }}
-          selected={color}
-        />
+      <div className="form-two issue-type-form-two">
+        <div className="workflow-field">
+          <span id={`${ids}-colour`}>Colour</span>
+          <ColorSwatches
+            choices={COLOR_CHOICES}
+            groupLabel="Colour"
+            onPick={(value) => {
+              if (value !== null) setColor(value as IssueTypeColor);
+            }}
+            selected={color}
+          />
+        </div>
+        <div className="workflow-field">
+          <span>Shape</span>
+          {/* The note is each button's description rather than the group's:
+              a focused button announces it, a group's is read unreliably. */}
+          <div aria-label="Shape" className="issue-type-icons" role="group">
+            {ISSUE_TYPE_SHAPES.map((option) => (
+              <button
+                aria-describedby={shapeUnavailable ? shapeNoteId : undefined}
+                aria-disabled={shapeUnavailable || undefined}
+                aria-label={SHAPE_NAMES[option]}
+                aria-pressed={shape === option}
+                className={`issue-type-icon-option${shape === option ? " is-active" : ""}`}
+                key={option}
+                onClick={() => {
+                  if (!shapeUnavailable) setShape(option);
+                }}
+                title={SHAPE_NAMES[option]}
+                type="button"
+              >
+                <span aria-hidden="true" className={`type-chip is-${option}`} />
+              </button>
+            ))}
+          </div>
+          {shapeUnavailable ? (
+            <p className="workflow-field-note" id={shapeNoteId}>
+              A type with an icon shows the icon instead of a shape.
+            </p>
+          ) : null}
+        </div>
       </div>
       <div className="workflow-field">
         <span>Icon</span>
         <div aria-label="Icon" className="issue-type-icons" role="group">
-          {ISSUE_TYPE_ICONS.map((option) => {
-            return (
-              <button
-                aria-label={ICON_NAMES[option]}
-                aria-pressed={icon === option}
-                className={`issue-type-icon-option${icon === option ? " is-active" : ""}`}
-                key={option}
-                onClick={() => setIcon(option)}
-                title={ICON_NAMES[option]}
-                type="button"
-              >
-                <IssueTypeGlyph icon={option} size={15} />
-              </button>
-            );
-          })}
+          <button
+            aria-label="No icon"
+            aria-pressed={icon === null}
+            className={`issue-type-icon-option${icon === null ? " is-active" : ""}`}
+            onClick={() => setIcon(null)}
+            title="No icon"
+            type="button"
+          >
+            <span aria-hidden="true" className="issue-type-no-icon" />
+          </button>
+          {ISSUE_TYPE_ICONS.map((option) => (
+            <button
+              aria-label={ICON_NAMES[option]}
+              aria-pressed={icon === option}
+              className={`issue-type-icon-option${icon === option ? " is-active" : ""}`}
+              key={option}
+              onClick={() => setIcon(option)}
+              title={ICON_NAMES[option]}
+              type="button"
+            >
+              <IssueTypeGlyph icon={option} size={15} />
+            </button>
+          ))}
         </div>
       </div>
       {reason ? (

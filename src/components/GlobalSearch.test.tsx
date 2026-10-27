@@ -45,9 +45,14 @@ const { fakeApi, seedHits, failSearch, holdSearch, projectReads, contextReads, r
     projectId?: string | null;
     projectKey?: string | null;
     statusKey?: string | null;
-    /** The type's look from the hit's project registry (backend TAS-418); absent for a type not in it. */
+    /**
+     * The type's look from the hit's project registry (backend TAS-418,
+     * TAS-432); absent or null for a type not in it, the icon alone null
+     * for a type without one.
+     */
     issueTypeName?: string | null;
     issueTypeColor?: string | null;
+    issueTypeShape?: string | null;
     issueTypeIcon?: string | null;
   }
   const now = "2026-08-01T09:00:00Z";
@@ -349,6 +354,7 @@ describe("the top bar's global search", () => {
         issueType: "EPIC",
         issueTypeName: "Epic",
         issueTypeColor: "purple",
+        issueTypeShape: "square",
         issueTypeIcon: "layers",
         priority: "URGENT",
         projectId: "project-web",
@@ -367,11 +373,11 @@ describe("the top bar's global search", () => {
     expect(within(option).getByText("URGENT")).toHaveClass("global-search-note");
     expect(within(option).getByText("IN_REVIEW")).toHaveClass("global-search-note");
     const chip = option.querySelector(".type-chip") as HTMLElement;
-    expect(chip).not.toHaveClass("is-unknown");
     expect(chip).toHaveAttribute("title", "Epic");
-    // §2.2's purple, with the white glyph `readableTextOn` picks for it, and the glyph drawn.
-    expect(chip.style.backgroundColor).toBe("rgb(139, 92, 246)");
-    expect(chip.style.color).toBe("rgb(255, 255, 255)");
+    // The hit's icon instead of its shape (§4.6, TAS-434), stroked in §2.2's purple.
+    expect(chip).toHaveClass("is-icon");
+    expect(chip).not.toHaveClass("is-square");
+    expect(chip.style.getPropertyValue("--type-fill")).toBe("#8b5cf6");
     expect(chip.querySelector("svg")).not.toBeNull();
     expect(contextReads()).toBe(0);
   });
@@ -379,9 +385,9 @@ describe("the top bar's global search", () => {
   it("names a hit's type by the Cyrillic rule and draws one with no look neutral, never asking /meta or a context", async () => {
     seedHits([
       // /meta names TASK "Задача"; the hit's own name wins, and is English.
-      { ...hit("TAS-1", "Renamed"), issueType: "TASK", issueTypeName: "Chore", issueTypeColor: "teal", issueTypeIcon: "flag" },
+      { ...hit("TAS-1", "Renamed"), issueType: "TASK", issueTypeName: "Chore", issueTypeColor: "teal", issueTypeShape: "diamond", issueTypeIcon: null },
       // A Cyrillic name on a seeded key: the build's word.
-      { ...hit("TAS-2", "Russian"), id: "b", issueType: "BUG", issueTypeName: "Ошибка", issueTypeColor: "red", issueTypeIcon: "bug" },
+      { ...hit("TAS-2", "Russian"), id: "b", issueType: "BUG", issueTypeName: "Ошибка", issueTypeColor: "red", issueTypeShape: "circle", issueTypeIcon: null },
       // A type deleted from the registry since: the look is absent, the key is printed.
       { ...hit("TAS-3", "Orphan"), id: "c", issueType: "REQUEST" },
     ]);
@@ -395,8 +401,15 @@ describe("the top bar's global search", () => {
     expect(within(renamed).getByText("Chore, high priority")).toBeInTheDocument();
     expect(within(russian).getByText("Bug, high priority")).toBeInTheDocument();
     expect(within(orphan).getByText("REQUEST, high priority")).toBeInTheDocument();
-    expect(orphan.querySelector(".type-chip")).toHaveClass("is-unknown");
-    expect(orphan.querySelector(".type-chip svg")).toBeNull();
+    // The hit's own shape, no glyph (TAS-432 puts the shape on the hit).
+    expect(renamed.querySelector(".type-chip")).toHaveClass("is-diamond");
+    expect(russian.querySelector(".type-chip")).toHaveClass("is-circle");
+    expect(russian.querySelector(".type-chip svg")).toBeNull();
+    // No look at all: the neutral square — no colour set, so the sheet's `--fg-3`.
+    const neutral = orphan.querySelector(".type-chip") as HTMLElement;
+    expect(neutral).toHaveClass("is-square");
+    expect(neutral.style.getPropertyValue("--type-fill")).toBe("");
+    expect(neutral.querySelector("svg")).toBeNull();
     expect(contextReads()).toBe(0);
   });
 

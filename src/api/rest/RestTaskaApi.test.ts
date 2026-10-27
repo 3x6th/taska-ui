@@ -2337,9 +2337,10 @@ describe("RestTaskaApi issue search", () => {
         projectId: null,
         projectKey: null,
         statusKey: null,
-        // Nor TAS-418's look — absent, as for a type deleted from the registry.
+        // Nor TAS-418's and TAS-432's look — absent, as for a type deleted from the registry.
         issueTypeName: null,
         issueTypeColor: null,
+        issueTypeShape: null,
         issueTypeIcon: null,
       },
       {
@@ -2355,6 +2356,7 @@ describe("RestTaskaApi issue search", () => {
         statusKey: null,
         issueTypeName: null,
         issueTypeColor: null,
+        issueTypeShape: null,
         issueTypeIcon: null,
       },
     ]);
@@ -2363,22 +2365,34 @@ describe("RestTaskaApi issue search", () => {
     expect(page.page).toBe(0);
   });
 
-  it("carries the type's look TAS-418 put on the hit, a blank name and a value outside the sets read as none", async () => {
+  it("carries the type's look TAS-418 and TAS-432 put on the hit, a blank name and a value outside the sets read as none", async () => {
     stubFetch({
       items: [
-        { id: "issue-1", issueKey: "TAS-101", summary: "s", issueType: "REQUEST", priority: "HIGH", issueTypeName: "Request", issueTypeColor: "teal", issueTypeIcon: "headset" },
-        { id: "issue-2", issueKey: "TAS-102", summary: "s", issueType: "SPIKE", priority: "HIGH", issueTypeName: "  ", issueTypeColor: "pink", issueTypeIcon: "rocket" },
-        { id: "issue-3", issueKey: "TAS-103", summary: "s", issueType: "OLD", priority: "HIGH", issueTypeName: null, issueTypeColor: null, issueTypeIcon: null },
+        { id: "issue-1", issueKey: "TAS-101", summary: "s", issueType: "REQUEST", priority: "HIGH", issueTypeName: "Request", issueTypeColor: "teal", issueTypeShape: "square", issueTypeIcon: "headset" },
+        { id: "issue-2", issueKey: "TAS-102", summary: "s", issueType: "SPIKE", priority: "HIGH", issueTypeName: "  ", issueTypeColor: "pink", issueTypeShape: "triangle", issueTypeIcon: "rocket" },
+        { id: "issue-3", issueKey: "TAS-103", summary: "s", issueType: "OLD", priority: "HIGH", issueTypeName: null, issueTypeColor: null, issueTypeShape: null, issueTypeIcon: null },
+        // A type without an icon: the wire's null (PR #256 head 1c747de7), or the key left out — read alike.
+        { id: "issue-4", issueKey: "TAS-104", summary: "s", issueType: "BUG", priority: "HIGH", issueTypeName: "Bug", issueTypeColor: "red", issueTypeShape: "circle" },
+        { id: "issue-5", issueKey: "TAS-105", summary: "s", issueType: "INCIDENT", priority: "HIGH", issueTypeName: "Incident", issueTypeColor: "amber", issueTypeShape: "diamond", issueTypeIcon: null },
       ],
-      totalCount: 3,
+      totalCount: 5,
     });
 
     const { items } = await new RestTaskaApi().searchIssues({ query: "board" });
 
-    expect(items.map(({ issueTypeName, issueTypeColor, issueTypeIcon }) => [issueTypeName, issueTypeColor, issueTypeIcon])).toEqual([
-      ["Request", "teal", "headset"],
-      [null, null, null],
-      [null, null, null],
+    expect(
+      items.map(({ issueTypeName, issueTypeColor, issueTypeShape, issueTypeIcon }) => [
+        issueTypeName,
+        issueTypeColor,
+        issueTypeShape,
+        issueTypeIcon,
+      ]),
+    ).toEqual([
+      ["Request", "teal", "square", "headset"],
+      [null, null, null, null],
+      [null, null, null, null],
+      ["Bug", "red", "circle", null],
+      ["Incident", "amber", "diamond", null],
     ]);
   });
 
@@ -3818,6 +3832,7 @@ describe("RestTaskaApi issue planning fields", () => {
       "issueTypeColor",
       "issueTypeIcon",
       "issueTypeName",
+      "issueTypeShape",
       "priority",
       "projectId",
       "projectKey",
@@ -5647,7 +5662,7 @@ describe("RestTaskaApi issue-type registry", () => {
     const [url, init] = fetchStub.mock.calls[0];
     return { url, method: init?.method, body: init?.body === undefined ? undefined : JSON.parse(init.body) };
   };
-  const entry = { code: "EPIC", name: "Epic", color: "purple", icon: "layers", sortOrder: 40 };
+  const entry = { code: "EPIC", name: "Epic", color: "purple", shape: "square", icon: "layers", sortOrder: 40 };
 
   beforeEach(() => {
     window.localStorage.clear();
@@ -5664,9 +5679,9 @@ describe("RestTaskaApi issue-type registry", () => {
       members: [],
       labels: [],
       issueTypes: [
-        { code: "STORY", name: "Story", color: "green", icon: "book-open", sortOrder: 5 },
-        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 10 },
-        { code: "TASK", name: "Again", color: "red", icon: "bug", sortOrder: 20 },
+        { code: "STORY", name: "Story", color: "green", shape: "square", icon: null, sortOrder: 5 },
+        { code: "TASK", name: "Task", color: "blue", shape: "square", icon: null, sortOrder: 10 },
+        { code: "TASK", name: "Again", color: "red", shape: "circle", icon: null, sortOrder: 20 },
         { code: "", name: "Blank" },
         entry,
       ],
@@ -5679,13 +5694,14 @@ describe("RestTaskaApi issue-type registry", () => {
     expect(context.issueTypes[2]).toEqual(entry);
   });
 
-  it("creates with the five declared fields at the registry path, and reads the 201 as an entry", async () => {
+  it("creates with the six declared fields at the registry path, and reads the 201 as an entry", async () => {
     const fetchStub = stubFetch(entry, 201);
 
     const created = await new RestTaskaApi().createProjectIssueType("project-1", {
       code: "EPIC",
       name: "Epic",
       color: "purple",
+      shape: "square",
       icon: "layers",
       sortOrder: 40,
     });
@@ -5693,25 +5709,52 @@ describe("RestTaskaApi issue-type registry", () => {
     expect(sent(fetchStub)).toEqual({
       url: "/api/v1/projects/project-1/issue-types",
       method: "POST",
-      body: { code: "EPIC", name: "Epic", color: "purple", icon: "layers", sortOrder: 40 },
+      body: { code: "EPIC", name: "Epic", color: "purple", shape: "square", icon: "layers", sortOrder: 40 },
     });
     expect(created).toEqual(entry);
   });
 
-  it("patches only what was stated, never null and never the code, and refuses an empty patch unsent", async () => {
+  it("creates a type without an icon by leaving the key out (backend TAS-432), and reads its null icon back", async () => {
+    const fetchStub = stubFetch({ ...entry, code: "SPIKE", name: "Spike", shape: "diamond", icon: null }, 201);
+
+    const created = await new RestTaskaApi().createProjectIssueType("project-1", {
+      code: "SPIKE",
+      name: "Spike",
+      color: "purple",
+      shape: "diamond",
+    });
+
+    const { body } = sent(fetchStub);
+    expect(body).toEqual({ code: "SPIKE", name: "Spike", color: "purple", shape: "diamond" });
+    expect(body).not.toHaveProperty("icon");
+    expect(created).toMatchObject({ code: "SPIKE", shape: "diamond", icon: null });
+  });
+
+  it("patches only what was stated, never the code, null only for the icon, and refuses an empty patch unsent", async () => {
     const fetchStub = stubFetch({ ...entry, name: "Epics" });
 
     await new RestTaskaApi().updateProjectIssueType("project-1", "EPIC", {
       name: "Epics",
       color: undefined,
-      ...({ icon: null, code: "OTHER" } as object),
+      shape: "circle",
+      ...({ sortOrder: null, code: "OTHER" } as object),
     });
 
     expect(sent(fetchStub)).toEqual({
       url: "/api/v1/projects/project-1/issue-types/EPIC",
       method: "PATCH",
-      body: { name: "Epics" },
+      body: { name: "Epics", shape: "circle" },
     });
+
+    // «No icon» on a type that has one: `icon: null` on the wire, and nothing else (backend TAS-432).
+    fetchStub.mockClear();
+    const cleared = await new RestTaskaApi().updateProjectIssueType("project-1", "EPIC", { icon: null });
+    expect(sent(fetchStub)).toEqual({
+      url: "/api/v1/projects/project-1/issue-types/EPIC",
+      method: "PATCH",
+      body: { icon: null },
+    });
+    expect(cleared.icon).toBe("layers");
 
     fetchStub.mockClear();
     await expect(new RestTaskaApi().updateProjectIssueType("project-1", "EPIC", {})).rejects.toMatchObject({
@@ -5738,7 +5781,7 @@ describe("RestTaskaApi issue-type registry", () => {
     const fetchStub = stubFetch({
       items: [
         { ...entry, sortOrder: 10 },
-        { code: "TASK", name: "Task", color: "blue", icon: "check-square", sortOrder: 20 },
+        { code: "TASK", name: "Task", color: "blue", shape: "square", icon: null, sortOrder: 20 },
       ],
     });
 

@@ -61,6 +61,7 @@ import {
   ISSUE_TYPE_EMPTY_PATCH_MESSAGE,
   isIssueTypeColor,
   isIssueTypeIcon,
+  isIssueTypeShape,
   projectIssueTypePatchBody,
   toProjectIssueType,
   toProjectIssueTypes,
@@ -550,10 +551,13 @@ interface RestIssueShortItem {
   projectId?: string | null;
   projectKey?: string | null;
   statusKey?: string | null;
-  // Backend TAS-418 (develop `be5085e5`): the type's look from the hit's
-  // project registry, all three nullable. Read as `unknown` and narrowed.
+  // Backend TAS-418 (develop `be5085e5`) and TAS-432 (PR #256): the type's
+  // look from the hit's project registry, all four nullable — the icon `null`
+  // for a type without one, all four for a type deleted since. Read as
+  // `unknown` and narrowed; a key left out reads as `null`.
   issueTypeName?: unknown;
   issueTypeColor?: unknown;
+  issueTypeShape?: unknown;
   issueTypeIcon?: unknown;
 }
 
@@ -2144,9 +2148,10 @@ export class RestTaskaApi implements TaskaApi {
 
   /**
    * `POST /projects/{projectId}/issue-types` — see
-   * `TaskaApi.createProjectIssueType`. The five declared fields and nothing
-   * else; `sortOrder` only when the caller states one. The 201 is read as a
-   * registry entry is.
+   * `TaskaApi.createProjectIssueType`. The six declared fields and nothing
+   * else; `shape`, `icon` and `sortOrder` only when the caller states them
+   * (backend TAS-432: no shape is the server's square, no icon is none). The
+   * 201 is read as a registry entry is.
    */
   async createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): Promise<ProjectIssueType> {
     const response = await this.request<unknown>(this.issueTypesPath(projectId), {
@@ -2155,7 +2160,8 @@ export class RestTaskaApi implements TaskaApi {
         code: input.code,
         name: input.name,
         color: input.color,
-        icon: input.icon,
+        ...(input.shape !== undefined ? { shape: input.shape } : {}),
+        ...(input.icon !== undefined ? { icon: input.icon } : {}),
         ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
       },
     });
@@ -2164,7 +2170,8 @@ export class RestTaskaApi implements TaskaApi {
 
   /**
    * `PATCH /projects/{projectId}/issue-types/{code}`. The body is whitelisted
-   * (`projectIssueTypePatchBody`): no `code`, no `null`. An empty one is
+   * (`projectIssueTypePatchBody`): no `code`, and `null` only as `icon: null`,
+   * which removes the icon (backend TAS-432). An empty one is
    * refused here in the server's own words — the service refuses `{}` before
    * it looks at anything else, so the request would say nothing new.
    */
@@ -2210,7 +2217,9 @@ export class RestTaskaApi implements TaskaApi {
   private toIssueTypeAnswer(response: unknown, sentCode: string): ProjectIssueType {
     const wire = typeof response === "object" && response !== null ? (response as Record<string, unknown>) : {};
     const code = typeof wire.code === "string" && wire.code.trim() !== "" ? wire.code : sentCode;
-    return toProjectIssueType({ ...wire, code }) ?? { code, name: code, color: null, icon: null, sortOrder: 0 };
+    return (
+      toProjectIssueType({ ...wire, code }) ?? { code, name: code, color: null, shape: null, icon: null, sortOrder: 0 }
+    );
   }
 
   /**
@@ -3020,12 +3029,14 @@ export class RestTaskaApi implements TaskaApi {
       id: item.id,
       issueKey: item.issueKey,
       issueType: item.issueType,
-      // TAS-418: the look the hit's project registry gives its type. A blank
-      // name is no name; a colour or an icon outside the contract's sets is
-      // `null`, drawn neutral (DESIGN.md §4.6) rather than guessed.
+      // TAS-418, TAS-432: the look the hit's project registry gives its type.
+      // A blank name is no name; a colour, a shape or an icon outside the
+      // contract's sets is `null`, drawn by DESIGN.md §4.6's fallbacks rather
+      // than guessed; an icon `null` or left out is a type without one.
       issueTypeName:
         typeof item.issueTypeName === "string" && item.issueTypeName.trim() !== "" ? item.issueTypeName : null,
       issueTypeColor: isIssueTypeColor(item.issueTypeColor) ? item.issueTypeColor : null,
+      issueTypeShape: isIssueTypeShape(item.issueTypeShape) ? item.issueTypeShape : null,
       issueTypeIcon: isIssueTypeIcon(item.issueTypeIcon) ? item.issueTypeIcon : null,
       summary: item.summary,
       priority: item.priority,

@@ -43,7 +43,9 @@ const seededTypeLabels: KnownLabels = { TASK: "Task", BUG: "Bug", STORY: "Story"
  * the value this build paints it with. Every value is already a §2/§9 colour
  * (`--type-task`, `--type-bug`, `--type-story`, `--prio-medium`, the label
  * purple, the teal accent alternative, `--prio-low`), theme-independent, and
- * opaque — the glyph on it is chosen from it by `readableTextOn`.
+ * opaque. It is the fill of the type's shape or the stroke of its icon (§4.6,
+ * TAS-434), straight on the surface: no text sits on it, so no ink is chosen
+ * from it.
  */
 const issueTypeColorValues: Record<IssueTypeColor, string> = {
   blue: "#4f7cf0",

@@ -13,6 +13,7 @@ const entry = (code: string, sortOrder: number, color: ProjectIssueType["color"]
   code,
   name: code,
   color,
+  shape: "diamond",
   icon: "flag",
   sortOrder,
 });
@@ -46,7 +47,7 @@ describe("withIssueTypeOrder", () => {
       ["EPIC", 40],
     ]);
     // Nothing else of an entry changes.
-    expect(moved[0]).toMatchObject({ name: "BUG", color: "blue", icon: "flag" });
+    expect(moved[0]).toMatchObject({ name: "BUG", color: "blue", shape: "diamond", icon: "flag" });
   });
 });
 

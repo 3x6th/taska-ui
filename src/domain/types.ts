@@ -651,6 +651,11 @@ export interface ProjectWorkflowEntry {
 
 /** `ProjectIssueTypeColorDto` — closed in the contract (backend #212). */
 export type IssueTypeColor = "blue" | "red" | "green" | "amber" | "purple" | "teal" | "slate";
+/**
+ * `ProjectIssueTypeShapeDto` — closed in the contract (backend TAS-432, PR
+ * #256): the figure a type without an icon is drawn as (DESIGN.md §4.6).
+ */
+export type IssueTypeShape = "square" | "circle" | "diamond";
 /** `ProjectIssueTypeIconDto` — closed in the contract (backend #212). */
 export type IssueTypeIcon =
   | "check-square"
@@ -664,14 +669,20 @@ export type IssueTypeIcon =
 
 /**
  * One entry of a project's issue-type registry — `ProjectIssueTypeDto`
- * (backend #212, TAS-385). `color` and `icon` are `null` when the server sent a
- * value outside the sets this build can draw (TAS-173's precedent): the chip
- * then draws its neutral form (DESIGN.md §4.6) rather than guessing.
+ * (backend #212, TAS-385; the look since TAS-432): a colour, a shape and an
+ * optional icon. Each is `null` when the server sent a value outside the sets
+ * this build can draw (TAS-173's precedent), and the chip then falls back as
+ * DESIGN.md §4.6 says rather than guessing: a colour to `--fg-3`, a shape — or
+ * one that is missing — to the square, an icon to the shape.
+ *
+ * `icon: null` is also the ordinary answer: since TAS-432 a type has no icon
+ * unless one was chosen, and the chip draws its shape.
  */
 export interface ProjectIssueType {
   code: IssueTypeCode;
   name: string;
   color: IssueTypeColor | null;
+  shape: IssueTypeShape | null;
   icon: IssueTypeIcon | null;
   sortOrder: number;
 }
@@ -905,14 +916,18 @@ export interface IssueSearchHit {
   issueType: IssueTypeCode;
   /**
    * The type's look as the hit's own project registry holds it now (backend
-   * TAS-418, `IssueShortResponseDto.issueTypeName/Color/Icon`): what global
-   * search draws the type with, so it never reads a project context per hit
-   * (DESIGN.md §4.6, §4.20). Each `null` when absent — a type deleted from
-   * the registry since — and the colour and the icon `null` too for a value
-   * outside the contract's sets, which the chip draws neutral.
+   * TAS-418, TAS-432, `IssueShortResponseDto.issueTypeName/Color/Shape/Icon`):
+   * what global search draws the type with, so it never reads a project
+   * context per hit (DESIGN.md §4.6, §4.20). Each `null` when absent — all four
+   * for a type deleted from the registry since, the icon alone for a type
+   * without one (the wire's `null`; a key left out reads the same) — and the
+   * colour, the shape and the icon `null` too for a
+   * value outside the contract's sets, which the chip draws by §4.6's
+   * fallbacks.
    */
   issueTypeName: string | null;
   issueTypeColor: IssueTypeColor | null;
+  issueTypeShape: IssueTypeShape | null;
   issueTypeIcon: IssueTypeIcon | null;
   summary: string;
   priority: IssuePriorityCode;

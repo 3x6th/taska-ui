@@ -160,7 +160,14 @@ describe("labels and visuals for codes off the wire", () => {
  * longer one of them.
  */
 describe("issueTypeLabel", () => {
-  const entry = (code: string, name: string): ProjectIssueType => ({ code, name, color: "blue", icon: "flag", sortOrder: 10 });
+  const entry = (code: string, name: string): ProjectIssueType => ({
+    code,
+    name,
+    color: "blue",
+    shape: "square",
+    icon: "flag",
+    sortOrder: 10,
+  });
   const registry = [
     entry("TASK", "Chore"),
     entry("BUG", "Ошибка"),
@@ -220,9 +227,6 @@ describe("issueTypeLabel", () => {
     expect(
       (["blue", "red", "green", "amber", "purple", "teal", "slate"] as const).map((color) => issueTypeColorValue(color)),
     ).toEqual(["#4f7cf0", "#e5544b", "#3fa863", "#e3a008", "#8b5cf6", "#0d9488", "#9aa0aa"]);
-    // §2.2's glyph column: dark on every fill but purple.
-    expect(readableTextOn(issueTypeColorValue("purple"))).toBe("#ffffff");
-    expect(readableTextOn(issueTypeColorValue("amber"))).toBe("#17171b");
   });
 });
 
