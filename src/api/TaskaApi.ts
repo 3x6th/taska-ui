@@ -8,6 +8,7 @@ import type {
   AdminRowsQuery,
   AuditEntries,
   AuditEntriesQuery,
+  AuthMethods,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
   AvatarUploadTicket,
@@ -38,6 +39,8 @@ import type {
   NotificationPage,
   NotificationPreferences,
   NotificationPreferencesPatch,
+  OAuthExchangeResult,
+  OAuthProvider,
   OutboxRetryResult,
   Page,
   ProblematicOutboxSummary,
@@ -84,6 +87,22 @@ export interface AcceptInvitationInput {
    * in the body is looked at, so a name it refuses does not spend the link.
    */
   displayName?: string;
+}
+
+/**
+ * `POST /auth/signup` — `SignupRequestDto` (backend TAS-423). Both required;
+ * the server trims and lower-cases the address and normalises the name by the
+ * shared display-name rule (src/lib/displayName.ts).
+ */
+export interface SignupInput {
+  email: string;
+  displayName: string;
+}
+
+/** `POST /auth/oauth/signup` — `OAuthSignupRequestDto` (backend TAS-424): the name step's one write. */
+export interface OAuthSignupInput {
+  signupToken: string;
+  displayName: string;
 }
 
 /**
@@ -1021,6 +1040,91 @@ export interface TaskaApi {
    * with a 400 first.
    */
   previewInvitation(token: string): Promise<InvitationPreview>;
+
+  /**
+   * `GET /auth/methods` (backend TAS-423/424, develop `9fcf0253`): whether
+   * email signup is open and which providers are configured. Public and sent
+   * without the session, like `login`. The answer is `no-store`; the server
+   * lists providers in upper case, only the configured ones, always in the
+   * order GOOGLE, GITHUB, APPLE. Anything else in the list is dropped (TAS-173),
+   * and `signupEnabled` is `true` only when the server says exactly that.
+   *
+   * The stand answered `{signupEnabled: false, providers: []}` on 2026-10-27.
+   */
+  getAuthMethods(): Promise<AuthMethods>;
+  /**
+   * `POST /auth/signup` (backend TAS-423) — asks for a sign-up link. **202 for
+   * every address** — free, invited, active, locked or blocked — so nothing
+   * about the answer says whether an account exists or whether an email went
+   * out. The link that arrives is an ordinary invitation link, spent through
+   * `previewInvitation` and `acceptInvitation`; its preview's `kind` is the
+   * account's origin, not the link's — `SIGNUP` for an account this request
+   * made, `INVITATION` still for one an admin had invited.
+   *
+   * The server's order: the gateway's binding (400 "Invalid request
+   * parameters"), then 403 `PERMISSION_DENIED` with `details.reason`
+   * `SIGNUP_DISABLED` ("Signup is disabled"), then the address (400 "A valid
+   * email address is required (maximum 320 characters)"), the name (400
+   * `DISPLAY_NAME_INVALID`), the caller's IP budget (10 an hour, 429), the
+   * address's cooldown (60 s, 429) — both 429s `RESOURCE_EXHAUSTED` with
+   * `details.retryAfterSeconds` as a string. Public, sent without the session.
+   * Never retried by the caller: a second send is a second email.
+   */
+  requestSignup(input: SignupInput): Promise<void>;
+  /**
+   * The address a provider button navigates to — `GET /auth/oauth/{provider}/start`
+   * with `returnTo` (backend TAS-424). **Not a request**: the browser follows
+   * it as a page navigation, the gateway answers with a 302 to the provider
+   * and a ten-minute state cookie, and nothing comes back to this code.
+   *
+   * On `TaskaApi` for the reason TAS-190 put the object store's PUT here: the
+   * seam that swaps mock for rest has to sit at this level, or the end-to-end
+   * suite has no structural guarantee that a click never reaches the real
+   * gateway. AGENTS.md lets a leg that is not a gateway request live here only
+   * if its failures cannot pass for a gateway's — and this one has none: it is
+   * synchronous, total and pure. It never throws, for any provider and any
+   * `returnTo` (unit-tested in both implementations), and it attaches no token.
+   *
+   * What it cannot report: a failure at `/start` itself — the shared 240-an-hour
+   * attempt budget (429) or a provider that is not configured or an
+   * auth-service that is down (503) — is drawn by the browser as the gateway's
+   * JSON on the API host, a full-page navigation this app never sees (TAS-444).
+   *
+   * `returnTo` is the router path to come back to, as `RequireSession`
+   * remembers it (pathname and search), never an absolute URL and never a
+   * `#/…` route. The server stores it with the state and echoes it unchanged from the
+   * exchange; anything it does not like becomes `/projects`.
+   */
+  oauthStartUrl(provider: OAuthProvider, returnTo: string): string;
+  /**
+   * `POST /auth/oauth/exchange` — the one-time code the gateway's callback put
+   * on `/auth/callback`, for a session (`SIGNED_IN`) or the name step
+   * (`SIGNUP_REQUIRED`). `SIGNED_IN` replaces the session exactly as `login`
+   * does before it resolves. Public, sent without the session.
+   *
+   * **The code is claimed atomically and lives 60 seconds**, so the caller
+   * sends it exactly once and never retries it (DESIGN.md §4.31). Refusals, by
+   * (code, `details.reason`): 401 `UNAUTHENTICATED` `STATE_INVALID` (unknown,
+   * used, expired or blank); 403 `PERMISSION_DENIED` `ACCOUNT_BLOCKED`,
+   * `ACCOUNT_LOCKED` (no `lockedUntil`) or `SIGNUP_DISABLED`; 429
+   * `RESOURCE_EXHAUSTED` with `details.retryAfterSeconds`, which does not spend
+   * the code; 503 `UNAVAILABLE` `PROVIDER_UNAVAILABLE`; and a reasonless 5xx
+   * when auth-service is down, which is not `PROVIDER_UNAVAILABLE`. An answer
+   * that does not hold what its status promises throws.
+   */
+  exchangeOAuthCode(code: string): Promise<OAuthExchangeResult>;
+  /**
+   * `POST /auth/oauth/signup` — the name step's write: an `ACTIVE` `USER` with
+   * no password and no project, signed in. Replaces the session as `login`
+   * does. Public, sent without the session; never retried.
+   *
+   * 400 `DISPLAY_NAME_INVALID` and 429 come before the token is claimed, so the
+   * form stays usable; 401 `STATE_INVALID` is a token used or older than 15
+   * minutes; 403 and 503 with a reason are as the exchange's, and spend it. An
+   * address that has an account by then is signed into it, so `SIGNUP_DISABLED`
+   * comes only for one that still has none (`OAuthAccountService.signIn`).
+   */
+  completeOAuthSignup(input: OAuthSignupInput): Promise<AuthTokens>;
   refresh(refreshToken: string): Promise<AuthTokens>;
   logout(): Promise<void>;
   /**
@@ -1380,9 +1484,18 @@ export interface TaskaApi {
   removeProjectMember(projectId: string, userId: string): Promise<void>;
 
   /**
-   * `GET /users` — the people directory, for anybody signed in (backend #204,
-   * TAS-204, merged and deployed at develop `e8a8d316b326`). What the members
-   * dialog looks people up by, in place of the user id it used to take.
+   * `GET /users` — the people directory (backend #204, TAS-204, merged and
+   * deployed at develop `e8a8d316b326`). What the members dialog looks people
+   * up by, in place of the user id it used to take.
+   *
+   * **Not for anybody signed in once signup is open** (backend TAS-423,
+   * `DirectoryMembershipAccess`, develop `9fcf0253`): with signup enabled, a
+   * caller who is not a `GLOBAL_ADMIN` and belongs to no project is refused
+   * 403 `PERMISSION_DENIED` "Project membership is required" with no
+   * `details.reason`, or 503 "Project membership service is unavailable" when
+   * the check cannot be made. The contract does not say so. Nothing in the UI
+   * reaches it today: the one caller is the members dialog's add form, which
+   * only a project admin sees, and a project admin is a member.
    *
    * Case-insensitive substring over display name **or** email, `%`, `_` and
    * `!` matched literally; `ACTIVE`, `INVITED` and `LOCKED` accounts, never a
@@ -1415,8 +1528,10 @@ export interface TaskaApi {
    *   the old one, **200**, queued — unless the last one was made less than a
    *   minute ago, **429** "Invitation was sent recently; try again later" with
    *   `details.retryAfterSeconds` as a *string*. The `Retry-After` header is
-   *   set too, and no browser can read it: CORS exposes only `X-Request-Id`
-   *   and `ETag`;
+   *   set too, from the same value, and CORS exposes it (`X-Request-Id, ETag,
+   *   Retry-After`, probed from https://taska.ozero.dev on 2026-10-27); this
+   *   build reads the details, because `ApiError` carries no response headers
+   *   but the request id;
    * - `ACTIVE`, `LOCKED` or `BLOCKED`: **409** `ALREADY_EXISTS` "An account
    *   with this email already exists", and nothing changes.
    *

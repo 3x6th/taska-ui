@@ -329,12 +329,17 @@ for (const theme of ["light", "dark"] as Theme[]) {
       await page.addInitScript((value) => window.localStorage.setItem("taska.theme", value), theme);
     });
 
-    test("sign in and accept invite", async ({ page }) => {
+    test("sign in, create account and accept invite", async ({ page }) => {
+      // The mock's methods are open by default (TAS-426): Sign in carries the
+      // three provider buttons, and `/login`'s second tab is Create account.
       await page.goto("/login");
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.getByRole("link", { name: "Continue with Apple" })).toBeVisible();
       await walkBoth(page, "/login, Sign in");
-      await page.getByRole("button", { name: "Accept invite" }).click();
-      await walkBoth(page, "/login, Accept invite");
+      await page.getByRole("tab", { name: "Create account" }).click();
+      await walkBoth(page, "/login, Create account");
+      await page.goto("/invite");
+      await walkBoth(page, "/invite, Accept invite");
     });
 
     test("projects, the New project dialog, the profile menu, notifications and the global search", async ({ page }) => {

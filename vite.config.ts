@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { loadEnv } from "vite";
 import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { callbackLanding } from "./scripts/callbackLanding";
 
 function withTrailingSlash(value: string) {
   return value.endsWith("/") ? value : `${value}/`;
@@ -68,6 +69,9 @@ export default defineConfig(({ mode }) => {
         name: "taska-public-url",
         transformIndexHtml: (html) => html.replaceAll("%TASKA_PUBLIC_URL%", publicUrl),
       },
+      // `dist/auth/callback/index.html`, byte-equal to the built `index.html`:
+      // where a provider sign-in lands on Pages (TAS-426, scripts/callbackLanding.ts).
+      callbackLanding(),
     ],
     server: {
       port: 5173,

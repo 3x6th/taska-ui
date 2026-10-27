@@ -19,6 +19,7 @@ import { AdminSectionPlaceholder } from "./admin/AdminSectionPlaceholder";
 import { AdminUsersSection } from "./admin/AdminUsersSection";
 import { adminSections } from "./admin/sections";
 import { AppFailureScreen } from "./AppFailureScreen";
+import { AuthCallbackScreen } from "./AuthCallbackScreen";
 import { BoardScreen } from "./BoardScreen";
 import { IssueKeyScreen } from "./IssueKeyScreen";
 import { LoginScreen } from "./LoginScreen";
@@ -56,7 +57,10 @@ export function App() {
   };
 
   const from = location.pathname + location.search;
-  const onAuthRoute = location.pathname === "/login" || location.pathname === "/invite";
+  // The public auth routes, where no session is there to die: `/auth/callback`
+  // (TAS-426) exchanges a code without the session and then replaces it.
+  const onAuthRoute =
+    location.pathname === "/login" || location.pathname === "/invite" || location.pathname === "/auth/callback";
   // An invitation link that reached a running app (DESIGN.md §4.27): on the
   // hash build, `#/invite?token=…` typed or pasted into this tab is a hash
   // change, not a page load, so `captureInviteLink` in main.tsx never sees it
@@ -104,6 +108,11 @@ export function App() {
             session. Activating signs out of it first and opens none of its own
             (DESIGN.md §4.27). */}
         <Route path="/invite" element={<LoginScreen {...screenProps} initialMode="invite" />} />
+        {/* Where a provider sign-in comes back to (TAS-426, DESIGN.md §4.31).
+            Outside both guards: a reader arrives without a session and leaves
+            with one, and one arriving under somebody else's has it replaced by
+            the exchange, as signing in does. */}
+        <Route path="/auth/callback" element={<AuthCallbackScreen theme={theme} toggleTheme={toggleTheme} />} />
         <Route
           path="/projects"
           element={

@@ -989,7 +989,8 @@ Same rule as above: "Closed by" is settled, the rest is live.
 ### Backend PR #204 (TAS-204), merged: invitations and the people directory — what the yml does not say
 
 - **Endpoints:** `POST /api/v1/auth/invitations` (GLOBAL_ADMIN), `GET /api/v1/users`
-  (any signed-in user), `POST /api/v1/auth/invitations/accept` (public). Merged
+  (any signed-in user while sign-up is off; with it on, a `GLOBAL_ADMIN` or a member of a
+  project — see «GET /users refuses a non-admin in no project»), `POST /api/v1/auth/invitations/accept` (public). Merged
   as `0f7a937` and deployed 2026-10-19; `GET /users?query=adm` probed 200
   (`4745a06f-ccad-487f-869f-1976f9656ce7`), tokenless `?query=ab` 400 at the
   edge and `?query=abcd` 401. Built in TAS-297 / TAS-208.
@@ -1000,18 +1001,23 @@ Same rule as above: "Closed by" is settled, the rest is live.
   from `location.search` on any path the app is served on, and from the query
   inside the hash, before the router mounts, strips it with `replaceState` and
   lands on `/invite` (`src/lib/inviteLink.ts`, DESIGN.md §4.27). **On GitHub
-  Pages only the root serves `index.html`** — any other path is a static 404 and
-  no client code runs — so the accept URL must be exactly the Pages root
-  (`release-reviewer`, measured). **Removal:** the stand's accept URL set to
+  Pages a path runs the app only where a file is:** the root, and since TAS-426
+  `/auth/callback/` (a byte copy of `index.html`, reached from `/auth/callback?…` by a
+  301 that keeps the query). Any other path is a static 404 and no client code runs,
+  so the accept URL must still be exactly the Pages root (`release-reviewer`, measured). **Removal:** the stand's accept URL set to
   `https://taska.ozero.dev/` (config; comment on TAS-204) —
   the capture stays, since a query link is the contract. A fragment link
   (`#/invite?token=`) would keep the token out of the static host's logs: a
   candidate ask, not filed.
-- **`Retry-After` is set but not readable.** The gateway sets it on the 429,
-  but CORS exposes only `X-Request-Id` and `ETag`. **Compensation:** the client
-  reads `details.retryAfterSeconds` (a string) instead, and says "Try again in a
-  minute." when that does not parse. Candidate ask: expose `Retry-After`, or
-  name `details` in the contract as the source. Not filed.
+- **`Retry-After` is readable since backend `0b58dadc` (TAS-402); the client reads `details`.**
+  CORS exposes `X-Request-Id, ETag, Retry-After` (the default of `GATEWAY_CORS_EXPOSED_HEADERS`;
+  probed from https://taska.ozero.dev on 2026-10-27). `GatewayErrorHandler` sets the header only
+  from `details.retryAfterSeconds`, and only when that is 1–6 digits, so the details never say
+  less than the header. `ApiError` carries no response header but the request id; the client
+  reads `details.retryAfterSeconds` (a string) through `retryAfterSeconds()`
+  (`src/screens/admin/users.ts`) and says "Try again in a minute." when it does not parse.
+  **Compensation: none.** The candidate ask is withdrawn; stating `details.retryAfterSeconds` on
+  every 429 in the yml is part of [TAS-444](https://jira.ozero.dev/browse/TAS-444) (A1).
 - **Two sentences for a short query.** The edge refuses a raw query under 3
   characters with "Invalid request parameters" before sign-in; auth-service
   refuses a trimmed one under 3 code points with its own sentence. The client
@@ -1775,7 +1781,7 @@ Everything below is the entry as it stood, in the past tense.
     creating too often (read as status 429 or `RESOURCE_EXHAUSTED`, the
     invitation resend's pair; the wait shown is `details.retryAfterSeconds` when
     the server sends one, which the gateway already turns into `Retry-After` —
-    unreadable through CORS, so the detail is the only source), and
+    readable through CORS since `0b58dadc`; the client reads `details` — see the TAS-204 entry), and
     **404** `NOT_FOUND` on `DELETE` for an id the caller was never issued.
     The section reads that 404 — never the static-resource one — as a token
     already gone: the row stays out, the status says "The token “X” is already
@@ -1890,6 +1896,133 @@ Everything below is the entry as it stood, in the past tense.
   `openapi.yml`, and the status mapping stops failing on an unknown value. Raised on
   [TAS-387](https://jira.ozero.dev/browse/TAS-387) with the review's other backend asks.
 
+
+### TAS-426: sign-up and provider sign-in — what the Java says that the yml does not
+
+- **Endpoints:** `GET /api/v1/auth/methods`, `POST /api/v1/auth/signup` (backend TAS-423);
+  `GET /api/v1/auth/oauth/{provider}/start`, `GET|POST /api/v1/auth/oauth/{provider}/callback`,
+  `POST /api/v1/auth/oauth/exchange`, `POST /api/v1/auth/oauth/signup` (TAS-424). All in the
+  vendored contract at develop `9fcf0253`. The stand answered `GET /auth/methods` with
+  `{signupEnabled: false, providers: []}` on 2026-10-27 (`0685d758-b210-4241-bbbc-6196c3792d16`),
+  so nothing past that read is reachable there yet. Everything below is read from the Java at
+  `9fcf0253` (`api-contract-guard`, TAS-426) and built against the mock.
+- **Where the return lands.** The callback's 302 goes to `TASKA_OAUTH_UI_BASE_URL` resolved
+  against the absolute path `/auth/callback` (`OAuthFlowService.redirect`,
+  `OAuthController.errorRedirect`; auth-service and the gateway each read the variable), so any
+  base path in it is dropped. It carries `?code=` (43 base64url characters, single use, 60 s) or
+  `?error=<reason>`, never both; the yml says only «UI callback with a 60-second one-time code or
+  a stable error code». **What the UI does:** the Pages build ships `dist/auth/callback/index.html`,
+  a byte copy of the built `index.html` checked at build time (`scripts/callbackLanding.ts`); Pages
+  answers `/auth/callback?…` with a 301 to `/auth/callback/?…` keeping the query (measured on
+  another Pages site, 2026-10-27). `captureOAuthCallback` (`src/lib/oauthCallback.ts`) takes the
+  code or reason into memory before the router mounts and replaces the address with the in-app
+  `/auth/callback`. Works only with `VITE_BASE_PATH=/` — the repository variable is `/`, and
+  `deploy-pages.yml` falls back to `/`. Not a compensation: the landing path is the backend's design.
+- **`?error=` values** are exactly `OAuthErrors.REASONS`: `PROVIDER_CANCELLED`, `STATE_INVALID`
+  (the browser's state cookie: expired, replaced or another browser), `EMAIL_NOT_VERIFIED`,
+  `ACCOUNT_BLOCKED`, `ACCOUNT_LOCKED`, `SIGNUP_DISABLED`, `PROVIDER_UNAVAILABLE`; any other
+  failure becomes `PROVIDER_UNAVAILABLE`. The yml names none. The UI keeps the seven, gives any
+  other value a generic sentence and never prints it.
+- **Provider spellings.** `/auth/methods` lists the configured providers upper-case, always in the
+  order GOOGLE, GITHUB, APPLE (`EmailSignupService.providers`); `signup.provider` is upper-case.
+  The `{provider}` path segment is the yml's lower-case enum; an upper-case segment is 503
+  `PROVIDER_UNAVAILABLE` even for a configured provider (`OAuthFlowService.provider`). `providers`
+  is an open `string[]` in the yml; `toAuthMethods` keeps the three this build has a mark and a
+  segment for (TAS-173), and `OAUTH_PROVIDER_SEGMENTS` maps them by table.
+- **Refusals, by (`code`, `details.reason`).** The yml lists only 200, 429 and `default`. The server
+  reserves the shared IP budget first (`OAuthIpLimiter`), then reads the code or token.
+  Exchange: 401 `UNAUTHENTICATED` `STATE_INVALID` (code unknown, used, older than 60 s, blank);
+  403 `PERMISSION_DENIED` with `ACCOUNT_BLOCKED`, `ACCOUNT_LOCKED` or `SIGNUP_DISABLED`; 503
+  `UNAVAILABLE` `PROVIDER_UNAVAILABLE` (provider unconfigured since the callback, or the linked
+  user row gone) — these three come after the claim, so the code is spent; 429
+  `RESOURCE_EXHAUSTED` comes before it, so the code is not. A 5xx without a reason is auth-service
+  or its database down, the 10 s deadline, or a 500 `INTERNAL` when the gateway's generated
+  `StatusEnum` / `ProviderEnum.fromValue` meets an unknown value — after the claim (comment on
+  TAS-443). Name step: 429, then 400 `INVALID_ARGUMENT` `DISPLAY_NAME_INVALID` — both before the
+  token is claimed; 401 `STATE_INVALID` (used or older than 15 minutes); 503
+  `PROVIDER_UNAVAILABLE` and the 403s after the claim. If the address gained an account in
+  between, the step signs into it, or answers 403 if it is BLOCKED or LOCKED.
+- **OAuth 429s carry `details.retryAfterSeconds`** as a string (`OAuthIpLimiter.limited`), and
+  `GatewayErrorHandler` sets `Retry-After` from it; the yml names only the header, as an integer.
+  The budget is 240 an hour per IP, shared by start, callback, exchange and the name step.
+- **A provider's `ACCOUNT_LOCKED` has no `lockedUntil`**, unlike `POST /auth/login`; it is refused
+  only while the lock is in the future. The UI shows the two lines without a deadline and uses one
+  if it ever arrives.
+- **`POST /auth/signup` beyond the uniform 202** (`EmailSignupTransaction`): a new address becomes
+  an `INVITED` account created via `SIGNUP`; an `INVITED` account gets a fresh link that revokes
+  the older ones and keeps its name — nothing while its latest link is under a minute old
+  (`EmailSignupTransaction.java:72-75`) — except a `SIGNUP`-made account whose latest link expired,
+  which is deleted and created again under the new name (reachable only in the gap before
+  `SignupCleanup`, which every minute deletes `INVITED` sign-up accounts whose links have all
+  expired and purges `signup_rate_limits` rows older than two hours); `ACTIVE` and `LOCKED` accounts get an
+  «existing account» email (`USER_SIGNUP_EXISTING_ACCOUNT`); `BLOCKED` gets nothing. The preview's
+  `kind` is the **account's** origin (`createdVia == SIGNUP`), not the link's: an admin-invited
+  account that asks by email still previews `INVITATION`. The yml's `kind` has no description.
+- **Compensation: none.** No pre-flight of `/start`, no retry of the exchange (`exchangeOnce`),
+  no made-up `lockedUntil`, no re-read of `/auth/methods` per press; refusals print with the
+  request id.
+- **Mock:** budgets are triggers, not counts; codes and steps never expire; accounts are matched
+  by address with no provider-subject binding; a code the mock cannot decode gets 401 where the
+  server, over budget, answers 429; the existing-account email is not modelled. Each is stated in
+  `src/api/mock/mockAuthFixtures.ts` and on the `MockTaskaStore` methods.
+- **Removal:** when the yml states the landing URL, the reason set, the provider enums, the refusal
+  table and `details.retryAfterSeconds` ([TAS-444](https://jira.ozero.dev/browse/TAS-444), A1).
+  The enum 500 closes with the comment on [TAS-443](https://jira.ozero.dev/browse/TAS-443).
+
+### TAS-426: /start failures and the callback's 429 reach the browser as JSON on the API host
+
+- **Endpoints:** `GET /api/v1/auth/oauth/{provider}/start`, `GET|POST /api/v1/auth/oauth/{provider}/callback`.
+- **Observed (Java, `9fcf0253`):** `/start` has no error redirect — a spent IP budget (429), a
+  provider unknown, upper-case or not configured (503) and auth-service down (5xx) all answer
+  `RestErrorResponse` JSON to a top-level navigation on `api.taska.ozero.dev`. The callback turns
+  every failure into `?error=` except `RESOURCE_EXHAUSTED`, which it re-throws
+  (`OAuthController.callback`). The stand answered `/start` 503 for google and github on 2026-10-27
+  (providers not configured). The yml lists the 429s, not where they are drawn.
+- **What the UI does:** nothing — it cannot. The press is a page navigation (`oauthStartUrl`
+  returns a plain address) and the app is not loaded when the answer arrives; the reader sees raw
+  JSON and has Back. No pre-flight `fetch` of `/start`: it would spend the budget and set the
+  state cookie a second time.
+- **Compensation: none.**
+- **Removal:** [TAS-444](https://jira.ozero.dev/browse/TAS-444) (A2: every start and callback
+  failure redirects to `/auth/callback?error=…`, a rate limit with its wait).
+
+### TAS-426: ?error= carries no request id, and PROVIDER_UNAVAILABLE is the catch-all
+
+- **Endpoint:** the callback's redirect to `/auth/callback?error=<reason>`.
+- **Observed:** the redirect carries only the reason; the gateway's `X-Request-Id` is on the 302,
+  which the browser follows and no script reads. A reason outside the seven, a provider error that
+  is not a cancel, and any non-429 failure of the callback rpc (auth-service down, the 25 s
+  deadline) all arrive as `PROVIDER_UNAVAILABLE` (`OAuthErrors.reason`,
+  `OAuthController.errorRedirect`), indistinguishable from an unconfigured provider.
+- **What the UI does:** draws the reason's sentence on `/login`, focused, with no request id; an
+  unknown value gets a generic sentence and is never printed (`refusalFromCallbackError`,
+  `src/screens/authText.ts`). An exchange refusal, by contrast, carries its id to `/login` in
+  router state.
+- **Compensation: none.**
+- **Removal:** [TAS-444](https://jira.ozero.dev/browse/TAS-444) (A3: the request id on the error redirect).
+
+### GET /users refuses a non-admin in no project once sign-up is on (backend TAS-423)
+
+- **Endpoint:** `GET /api/v1/users`.
+- **Observed (Java, `9fcf0253`):** `UserDirectoryService.search` runs
+  `DirectoryMembershipAccess.check` in auth-service, after `DirectoryAccess.requireActor` and before
+  the query is measured. With `signup.enabled` and a caller who is not `GLOBAL_ADMIN`,
+  project-service's `HasProjectMembershipInternal` (3 s deadline) decides: no membership — 403
+  `PERMISSION_DENIED` «Project membership is required» with no `details.reason`; project-service
+  unreachable — 503 `UNAVAILABLE` «Project membership service is unavailable». With sign-up off,
+  as on the stand, there is no check. The yml states only `200` and `default`.
+- **What the UI does:** nothing reaches it today — the one caller is the add form in the members
+  dialog, which only a project admin sees, and a project admin is a member. A refusal would print
+  the server's words and the request id.
+- **Also hidden:** the directory and the profiles-by-id read leave out `INVITED` accounts made by
+  sign-up (`UserRepository.searchDirectory`, `findUsersWithAvatars` — `NOT (status='INVITED' AND
+  created_via='SIGNUP')`). The yml says neither; part of TAS-444 (A1).
+- **Mock:** answers the same 403 while the methods knob has sign-up on (the default); the 503 is
+  not modelled. Its search still lists an unconfirmed sign-up account (Sam Ortiz) the server hides —
+  BACKLOG «Left by TAS-426».
+- **Compensation: none.**
+- **Removal:** [TAS-444](https://jira.ozero.dev/browse/TAS-444) (A4: `details.reason`
+  `PROJECT_MEMBERSHIP_REQUIRED`, and the rule in the yml).
 
 ### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log
 

@@ -369,9 +369,10 @@ export interface InvitationResult {
  * account was invited under and the name it carries now.
  *
  * `kind` is `INVITATION` for an account an admin invited and `SIGNUP` for one
- * made by self-signup (backend TAS-426; signup is off on the stand). Read as
- * an open string — a kind this build has never heard of is kept as it came,
- * and nothing tells the two apart yet (DESIGN.md §4.27).
+ * made by self-signup (backend TAS-423; signup is off on the stand). Read as
+ * an open string — a kind this build has never heard of is kept as it came and
+ * worded as an invitation. Since TAS-426 the invite tab words a `SIGNUP` link
+ * as finishing an account (DESIGN.md §4.31).
  */
 export interface InvitationPreview {
   email: string;
@@ -382,6 +383,46 @@ export interface InvitationPreview {
 
 /** `InvitationPreviewResponseDto.kind`: the two the contract lists, and any other string the wire carries. */
 export type InvitationKind = "INVITATION" | "SIGNUP" | (string & {});
+
+/**
+ * The sign-in providers this build can draw a button for and start a flow
+ * with (backend TAS-424). Closed on purpose: a provider is useful only with a
+ * path segment and a mark, so one the server lists that this build has neither
+ * for is dropped by the mapper rather than drawn (TAS-173's narrowing).
+ */
+export type OAuthProvider = "GOOGLE" | "GITHUB" | "APPLE";
+
+/**
+ * `GET /auth/methods` (`AuthMethodsResponseDto`, backend TAS-423/424): whether
+ * anybody may ask for an account by email, and which providers are configured
+ * — known ones only, in the server's order, each once.
+ */
+export interface AuthMethods {
+  signupEnabled: boolean;
+  providers: readonly OAuthProvider[];
+}
+
+/**
+ * The name step a provider sign-in leads to when the verified identity has no
+ * account and signup is open (`OAuthSignupStateDto`). `signupToken` is single
+ * use and lives 15 minutes; `provider` is kept as the server's open code
+ * (DESIGN.md §6), since it is only ever printed.
+ */
+export interface OAuthSignupState {
+  signupToken: string;
+  provider: OAuthProvider | (string & {});
+  email: string;
+  suggestedDisplayName: string | null;
+}
+
+/**
+ * What `POST /auth/oauth/exchange` made of a one-time code. `SIGNED_IN` has
+ * already replaced the session by the time it is returned; `returnTo` is the
+ * in-app path the flow was started with, echoed by the server unchanged.
+ */
+export type OAuthExchangeResult =
+  | { status: "SIGNED_IN"; returnTo: string }
+  | { status: "SIGNUP_REQUIRED"; returnTo: string; signup: OAuthSignupState };
 
 /**
  * What `PATCH /admin/users/{userId}` answers with — `UserDisplayNameResponseDto`

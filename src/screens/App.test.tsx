@@ -31,6 +31,8 @@ const { fakeApi, expireSession, signIn, signOut, metaReads, breakNotFound, notFo
       state.signedIn = true;
       return { accessToken: "access", refreshToken: "refresh", expiresIn: 3600 };
     },
+    // The login card's methods (TAS-426): the stand's answer, so the card is today's.
+    getAuthMethods: async () => ({ signupEnabled: false, providers: [] }),
     getMeta: async () => {
       state.metaReads += 1;
       return { issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null };
@@ -126,9 +128,8 @@ describe("App session expiry", () => {
   const signInThroughTheForm = () => {
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "anna@example.com" } });
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct-horse" } });
-    // "Sign in" names two controls — the mode tab and the submit button.
-    const buttons = screen.getAllByRole("button", { name: "Sign in" }) as HTMLButtonElement[];
-    fireEvent.click(buttons.find((button) => button.type === "submit")!);
+    // The tab of the same name is a `tab` since TAS-426, so this is the submit.
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
   };
 
   it("sends the user to the login form, explains why, and drops the dead session's cache", async () => {
@@ -144,7 +145,9 @@ describe("App session expiry", () => {
     expect(screen.getByTestId("location")).toHaveTextContent("/login");
     expect(screen.getByLabelText("Password")).toBeVisible();
     // Answers cached under the dead session must not survive into the next one.
-    expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
+    // The one entry there is the login card's own `GET /auth/methods`, read
+    // without a session after the clear (TAS-426).
+    expect(queryClient.getQueryCache().getAll().map((query) => query.queryKey[0])).toEqual(["auth-methods"]);
     // Nobody asked for this navigation, so focus moves to the sentence that
     // explains it — otherwise a screen reader is told nothing at all (§7).
     expect(notice).toHaveFocus();
@@ -176,7 +179,7 @@ describe("App session expiry", () => {
     });
     await screen.findByText("Your session expired. Sign in to continue.");
 
-    fireEvent.click(screen.getByRole("button", { name: "Accept invite" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Accept invite" }));
 
     // "Your session expired. Sign in to continue." above a form headed
     // "Activate account" describes neither of them.

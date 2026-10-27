@@ -13,11 +13,15 @@ import { defineConfig } from "@playwright/test";
 // default 5183, not 5184.
 const PORT = Number(process.env.TASKA_E2E_PORT) || 5183;
 // A second server one port up, built the way the Pages build routes: by the
-// hash, under a base path. It exists for the specs that are *about* that — the
-// invitation link (TAS-208), whose `?token=` the hash router never sees — and
-// they address it by absolute URL; every other spec stays on the first.
+// hash. It exists for the specs that are *about* that — the invitation link
+// (TAS-208), whose `?token=` the hash router never sees, and the provider
+// sign-in's return (TAS-426) — and they address it by absolute URL; every other
+// spec stays on the first. At base `/` since TAS-426, production's shape: the
+// site is served from the root of taska.ozero.dev, and the backend sends the
+// return to the origin-root `/auth/callback` whatever the base, which a server
+// under `/taska-ui/` could not host.
 const HASH_PORT = PORT + 1;
-const HASH_BASE = "/taska-ui/";
+const HASH_BASE = "/";
 
 // CI runs this suite as shards, each on a runner of its own, so a shard takes
 // one worker per vCPU ("100%") rather than Playwright's default half. Each

@@ -17,7 +17,7 @@ test("names the field exactly Password, puts the toggle beside it, and keeps the
 }) => {
   await page.goto(`/?token=${LEO_TOKEN}`);
   await expect(page.getByLabel("New password")).toBeFocused();
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("tab", { name: "Sign in" }).click();
   const password = page.getByLabel("Password", { exact: true });
   const toggle = page.getByRole("button", { name: "Show password" });
 
@@ -33,12 +33,12 @@ test("names the field exactly Password, puts the toggle beside it, and keeps the
   const [field, eye] = await Promise.all([password.boundingBox(), toggle.boundingBox()]);
   expect(field!.x + field!.width - 40).toBeLessThanOrEqual(eye!.x);
 
-  await page.getByRole("button", { name: "Accept invite" }).click();
+  await page.getByRole("tab", { name: "Accept invite" }).click();
   const newPassword = page.getByLabel("New password");
   await expect(newPassword).toHaveCSS("padding-right", "40px");
   // A shown password does not follow the reader to the other tab.
   await expect(newPassword).toHaveAttribute("type", "password");
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("tab", { name: "Sign in" }).click();
   await expect(password).toHaveAttribute("type", "password");
-  await expect(page.getByRole("button", { name: "Sign in", pressed: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Sign in", selected: true })).toBeVisible();
 });

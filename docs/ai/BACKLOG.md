@@ -640,7 +640,7 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 - **Toast component** (`DESIGN.md` §5.6 is the contract). Unlocks two things
   at once: optimistic rollbacks stop failing silently, and `requestId` gets a
   place to appear once the gateway exposes it over CORS (TAS-141).
-- **Invite flow:** after a successful accept (204, no tokens) the screen calls
+- ~~**Invite flow:**~~ — **closed (stale), found by TAS-426** (2026-10-27, api-contract-guard): a foreign session is signed out before accept; on success the link is forgotten and the screen goes to `/login` with the activated line, no `getCurrentUser` (`LoginScreen.tsx:278-306`). after a successful accept (204, no tokens) the screen calls
   `getCurrentUser` unauthenticated and reports failure — or, with stale tokens
   in localStorage, logs in as the previous user. Fix: on success, switch to
   sign-in mode with a "account is active" message.
@@ -758,7 +758,7 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   (`MockTaskaApi.test.ts:385-396`); Mark's `GLOBAL_ADMIN` is pinned only indirectly by the
   mock-backed admin e2e specs — one `toMatchObject({ globalRole: "GLOBAL_ADMIN" })` after
   Mark's login there would pin it directly (`api-contract-guard`, TAS-209 post-build).
-- **Duplicate accessible name on the login screen** — the segmented mode toggle
+- ~~**Duplicate accessible name on the login screen**~~ — **closed by TAS-426** (2026-10-27, `e08eb4a`): the mode switch is a tablist, so the tab and the submit differ by role; `e2e/smoke.spec.ts` uses a role locator. — the segmented mode toggle
   and the submit button are both named "Sign in", so a role locator matches two
   elements. `e2e/smoke.spec.ts` works around it with a CSS locator; the fix
   belongs in `LoginScreen.tsx`.
@@ -2953,7 +2953,7 @@ is what recurs.
 
 ### Left open by TAS-237 (from `frontend-builder`, 2026-09-22)
 
-- **No sign-in refusal is announced at all** (`frontend-builder`, TAS-237).
+- ~~**No sign-in refusal is announced at all**~~ — **closed by TAS-426** (2026-10-27, `e08eb4a`): the sign-in refusal is `live="alert"` and remounts per attempt. (`frontend-builder`, TAS-237).
   The login form's `.form-error` carries no `role="alert"` and sits in no live
   region, so a reader who cannot see it is told nothing when a sign-in is
   refused — the new locked-account message included, but equally the plain
@@ -2962,8 +2962,8 @@ is what recurs.
   message *says*, and this is about whether it is heard. The panel and the
   create modal both got their live region in TAS-231, so the pattern and the
   precedent already exist; this is the one refusal surface left without it.
-- **The login refusal sits in a tone this stylesheet has already judged too
-  weak to be read accurately** (`art-director`, TAS-237). Measured by
+- ~~**The login refusal sits in a tone this stylesheet has already judged too
+  weak to be read accurately**~~ — **closed (stale), found by TAS-426** (2026-10-27, art-director): `.form-error` is gone; `ErrorNote` puts `--fg` on `--surface` (17.88 / 15.73) since TAS-192 / TAS-397. (`art-director`, TAS-237). Measured by
   compositing the painted pixels: `--danger` on its 12% tint is 3.17:1 light,
   4.43:1 dark, against §7's 4.5:1 for a string that must be read rather than
   felt. `styles.css` records that exact number six rows above `.auth-lock`, in
@@ -2975,7 +2975,7 @@ is what recurs.
   recipe inside a bug fix, and was right — ten other messages share it. This
   belongs with [TAS-192](https://jira.ozero.dev/browse/TAS-192), which already
   owns the 3.17:1 across the forms.
-- **The sign-in refusal is the last thing in the card, below the hint**
+- ~~**The sign-in refusal is the last thing in the card, below the hint**~~ — **closed (stale), found by TAS-426** (2026-10-27): measured order at 390 is submit, error note, hint.
   (`art-director`, TAS-237). `.auth-hint` ("Forgot password? Contact your
   project admin.") renders between the submit button and `.form-error`
   (`LoginScreen.tsx:119` against `:148`). Pre-existing placement, untouched —
@@ -4347,6 +4347,20 @@ Review round 1 (e969dbd): api-contract-guard, art-director and release-reviewer 
 - **Not on the mock:** the profile name after a reload (the store is rebuilt per page load — the e2e follows it across navigation), and a server refusal of either rename (unit tests only; the client check equals the server's rule, so the UI never sends a refused name). Stand check: rename yourself, rename as admin, activate an invitation with a changed name.
 - **Backend tails** filed as [TAS-443](https://jira.ozero.dev/browse/TAS-443): a name of only Cf characters passes `DisplayNames.normalize` and shows blank; preview `kind` through `KindEnum.fromValue` (a new kind is a 500); no channel dictionary in `/meta`, so an unknown channel draws as a UI change.
 - **A lost answer re-reads only `["me"]`** (art-director r2): if the PATCH landed, members, board and work log keep the old name until their next read. Call `invalidatePeopleNames(queryClient)` beside the `["me"]` invalidation in `ProfileName`'s no-answer branch.
-- **Focus falls to `<body>` when a Try again comes back dead or rejected** (art-director r2; rare: a 5xx, then 401/400): Try again leaves the DOM. Run `LoginScreen`'s focus-rescue effect on `retryRefusals` too and move focus to `.invite-preview-refusal` (`tabIndex=-1`), the §4.27 rule for the removed form.
+- ~~**Focus falls to `<body>` when a Try again comes back dead or rejected**~~ — **closed by TAS-426** (2026-10-27, `e08eb4a`): the rescue effect also runs on `retryRefusals` and focuses `.invite-preview-refusal`. (art-director r2; rare: a 5xx, then 401/400): Try again leaves the DOM. Run `LoginScreen`'s focus-rescue effect on `retryRefusals` too and move focus to `.invite-preview-refusal` (`tabIndex=-1`), the §4.27 rule for the removed form.
 - **Admin rows used during a page load lose keyboard focus** (release-reviewer, narrow review of `403a4d4`): all four admin sections keep the previous page as `placeholderData`; a row opened or focused in that window unmounts when the next page lands and focus falls to `<body>`. No rule like §5.4's «no drag while the previous answer is drawn». One request's latency; the e2e race that made CI fail on PR #114 was this window.
-- **`contract:pins` is STALE** (release-reviewer): develop moved to `9fcf0253` (outbox retry and audit masking; `openapi.yml` unchanged). Refresh with the next contract pass.
+- ~~**`contract:pins` is STALE**~~ — **closed by TAS-426** (2026-10-27): header at `9fcf0253`, body unchanged. (release-reviewer): develop moved to `9fcf0253` (outbox retry and audit masking; `openapi.yml` unchanged). Refresh with the next contract pass.
+
+### Left by TAS-426 (sign-up and provider sign-in, develop `9fcf0253`, 2026-10-28)
+
+Round 1 on `e08eb4a`: release-reviewer REQUEST CHANGES (docs only), api-contract-guard REQUEST CHANGES (two mock blockers), art-director REQUEST CHANGES (Apple button, the SIGNUP_DISABLED sentence); fixes in round 2. Backend asks: [TAS-444](https://jira.ozero.dev/browse/TAS-444), the enum 500 as a comment on [TAS-443](https://jira.ozero.dev/browse/TAS-443).
+
+- **A malformed exchange 200 shows FAILED without a request id** (api-contract-guard ruling 2). The gateway sets `X-Request-Id` on every answer: return it from the private `exchange()` and throw an error `apiErrorFacts` reads the id from, with `status` and `code` null so no pair predicate matches. Matters more once TAS-443's open status lands.
+- **The expired name step says «expired after 15 minutes» for a used token too** (api-contract-guard N2): 401 `STATE_INVALID` on `/auth/oauth/signup` also means already used — reachable when the form stays after a reasonless 5xx that came after the claim and the reader resubmits. Needs an art-director wording.
+- **The card entrance plays twice after an exchange refusal** (art-director N2): `/auth/callback` pops, then `/login` remounts the shell and pops again. Readable throughout; `AuthShell` `entrance={false}` when the route state carries `providerRefusal`, or one shell across the three auth routes.
+- **The mock's provider address is computed at render, not at click** (api-contract-guard N3): `ProviderChoices` reads the identity knob on every render; only matters when a knob changes from the console between render and click.
+- **Back from the board after a provider sign-in can restore `/login` from bfcache** (release-reviewer): the form shows while signed in; Playwright disables bfcache, so e2e cannot see it. Low.
+- **Stand checks owed after deploy:** `curl https://taska.ozero.dev/auth/callback?error=ACCOUNT_BLOCKED` → 301 then 200; in a browser the blocked sentence with a clean address; `?code=` + 43×`A` → exchange 401 `STATE_INVALID` with an `X-Request-Id`. A real provider round trip and a real sign-up email need the owner to switch sign-up on and give provider keys.
+- **The mock's people search lists unconfirmed sign-up accounts** (api-contract-guard, TAS-426 round 2): `MockTaskaStore.searchUsers` filters only on `DIRECTORY_STATUSES`; the server also hides `INVITED` accounts made by sign-up (`UserRepository.searchDirectory`, and the profiles-by-id read). On the mock the members dialog finds Sam Ortiz and can add him. Fix: `!(user.status === "INVITED" && user.createdVia === "SIGNUP")` in the search and the by-id read; recorded in API-DIVERGENCE.
+- **The mock's Data view `auth.users` rows lack `created_via`** (api-contract-guard): add it to the row map (`MockTaskaApi.ts` ~8450); the live viewer reads columns from metadata and should show it (not probed).
+- **Resend refused with `SIGNUP_DISABLED` loses its sentence** (art-director ruling, TAS-426 round 2; rare: sign-up switched off between the 202 and Resend). Ruled: the same sentence word for word (`SIGNUP_CLOSED_TEXT`, «Taska isn’t open for new accounts right now. Ask a Taska admin to invite you.») as the in-panel alert with id instead of «Resending did not go through.»; when the re-read removes the tab, it moves to `.auth-notice` by the Create account rule. Build: `ResendFailure` gets an `isSignupDisabled` branch (`SignupPanel.tsx`); `closedBySignup` in `LoginScreen.tsx` also on `signup.resend`. §4.31 «Check your email» gains: «403 `SIGNUP_DISABLED` на Resend — та же фраза, что у Create account, alert над подсказкой с id; если перечитанные способы уносят таб — переезжает в `.auth-notice` по правилу Create account.» Rejected wording: «so no new link was sent».

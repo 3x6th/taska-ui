@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, RestTaskaApi } from "./RestTaskaApi";
+import { ApiError, OAUTH_PROVIDER_SEGMENTS, RestTaskaApi, toOAuthExchange } from "./RestTaskaApi";
 import { DIRECTORY_QUERY_REFUSAL_MESSAGE, UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
 import { ATTACHMENT_MAX_SIZE_BYTES, attachmentSizeRefusalMessage } from "../attachments";
 import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES } from "../avatars";
@@ -8,10 +8,12 @@ import { issueLinkTypeLabel } from "../../lib/format";
 import {
   IssueVersionConflictError,
   apiErrorFacts,
+  hasRefusalReason,
   isConflict,
   isDisplayNameInvalid,
   isMissingOrForbidden,
   isProjectArchived,
+  isSignupDisabled,
   isTransitionConflict,
   isUndeployedRoute,
 } from "../errors";
@@ -6277,5 +6279,274 @@ describe("RestTaskaApi display names and the invitation preview (TAS-425)", () =
     });
     expect(JSON.parse(fetchStub.mock.calls[1][1]?.body as string)).toEqual({ token: "tok", newPassword: "Correct-horse-1" });
     expect(headersOf(fetchStub.mock.calls[0][1]).Authorization).toBeUndefined();
+  });
+});
+
+/**
+ * Sign-up and provider sign-in (TAS-426; backend TAS-423, TAS-424, develop
+ * `9fcf0253`): four public routes, sent without the session, and one address
+ * that is never a request.
+ */
+describe("RestTaskaApi sign-up and provider sign-in (TAS-426)", () => {
+  const answer = (status: number, body: unknown, requestId: string | null = null) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (name: string) => (name === "X-Request-Id" ? requestId : null) },
+      json: async () => {
+        if (body === undefined) throw new SyntaxError("Unexpected end of JSON input");
+        return body;
+      },
+    }) as unknown as Response;
+
+  const apiAnswering = (status: number, body: unknown, requestId: string | null = null) => {
+    const fetchStub = vi.fn(async (_input: string, _init?: RequestInit) => answer(status, body, requestId));
+    vi.stubGlobal("fetch", fetchStub);
+    return { api: new RestTaskaApi("https://api.example/api/v1"), fetchStub };
+  };
+
+  const headersOf = (init: RequestInit | undefined) => (init?.headers ?? {}) as Record<string, string>;
+
+  const withOldSession = () => {
+    window.localStorage.setItem("taska.accessToken", "old-access");
+    window.localStorage.setItem("taska.refreshToken", "old-refresh");
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  describe("GET /auth/methods", () => {
+    it("is read without the session, and keeps the known providers in the server's order, each once", async () => {
+      withOldSession();
+      const { api, fetchStub } = apiAnswering(200, {
+        signupEnabled: true,
+        providers: ["GITHUB", "OKTA", "GOOGLE", "GITHUB", "google", 7, null, "APPLE"],
+      });
+
+      await expect(api.getAuthMethods()).resolves.toEqual({ signupEnabled: true, providers: ["GITHUB", "GOOGLE", "APPLE"] });
+      const [url, init] = fetchStub.mock.calls[0];
+      expect(url).toBe("https://api.example/api/v1/auth/methods");
+      expect(init?.method).toBe("GET");
+      expect(headersOf(init).Authorization).toBeUndefined();
+    });
+
+    it("reads sign-up as open only when the server says exactly true, and anything odd as closed with no providers", async () => {
+      for (const [body, read] of [
+        [{ signupEnabled: false, providers: [] }, { signupEnabled: false, providers: [] }],
+        [{ signupEnabled: "true", providers: "GOOGLE" }, { signupEnabled: false, providers: [] }],
+        [{}, { signupEnabled: false, providers: [] }],
+        [null, { signupEnabled: false, providers: [] }],
+      ] as const) {
+        const { api } = apiAnswering(200, body);
+        await expect(api.getAuthMethods()).resolves.toEqual(read);
+      }
+    });
+  });
+
+  describe("POST /auth/signup", () => {
+    it("sends the address and the name without the session, and takes the bodiless 202", async () => {
+      withOldSession();
+      const { api, fetchStub } = apiAnswering(202, undefined);
+
+      await expect(api.requestSignup({ email: "rosa@example.com", displayName: "Rosa Diaz" })).resolves.toBeUndefined();
+      const [url, init] = fetchStub.mock.calls[0];
+      expect(url).toBe("https://api.example/api/v1/auth/signup");
+      expect(init?.method).toBe("POST");
+      expect(JSON.parse(init?.body as string)).toEqual({ email: "rosa@example.com", displayName: "Rosa Diaz" });
+      expect(headersOf(init).Authorization).toBeUndefined();
+    });
+
+    it("carries the refusals' pairs and the 429's wait, and never reads a refusal as the session dying", async () => {
+      withOldSession();
+      const { api } = apiAnswering(
+        403,
+        { code: "PERMISSION_DENIED", message: "Signup is disabled", details: { reason: "SIGNUP_DISABLED" } },
+        "req-off",
+      );
+      const expired = vi.fn();
+      api.onSessionExpired(expired);
+
+      const refusal = await api.requestSignup({ email: "a@b.c", displayName: "A" }).catch((error: unknown) => error);
+      expect(isSignupDisabled(refusal)).toBe(true);
+      expect(apiErrorFacts(refusal)).toMatchObject({ status: 403, requestId: "req-off" });
+      expect(expired).not.toHaveBeenCalled();
+      expect(api.hasSession()).toBe(true);
+    });
+  });
+
+  describe("the provider's start address", () => {
+    it("is the lower-case segment from the table and returnTo in the query, never a request", () => {
+      const fetchStub = vi.fn();
+      vi.stubGlobal("fetch", fetchStub);
+      const api = new RestTaskaApi("https://api.example/api/v1");
+
+      expect(api.oauthStartUrl("GOOGLE", "/projects")).toBe(
+        "https://api.example/api/v1/auth/oauth/google/start?returnTo=%2Fprojects",
+      );
+      expect(api.oauthStartUrl("GITHUB", "/projects/p-1/board?q=a b&x=1")).toBe(
+        "https://api.example/api/v1/auth/oauth/github/start?returnTo=%2Fprojects%2Fp-1%2Fboard%3Fq%3Da+b%26x%3D1",
+      );
+      expect(api.oauthStartUrl("APPLE", "/projects")).toContain("/auth/oauth/apple/start?");
+      expect(fetchStub).not.toHaveBeenCalled();
+    });
+
+    it("never throws, for any provider and any returnTo — empty, unicode, a lone surrogate, 2 KB", () => {
+      const api = new RestTaskaApi("/api/v1");
+      const odd = ["", "/проекты/доска?ключ=значение", "/\uD800x", `/${"x".repeat(2048)}`, "https://evil.example/", "#/projects"];
+      for (const provider of ["GOOGLE", "GITHUB", "APPLE"] as const) {
+        for (const returnTo of odd) {
+          let url = "";
+          expect(() => {
+            url = api.oauthStartUrl(provider, returnTo);
+          }).not.toThrow();
+          const parsed = new URL(url, "https://taska.example");
+          expect(parsed.pathname).toBe(`/api/v1/auth/oauth/${provider.toLowerCase()}/start`);
+          expect(typeof parsed.searchParams.get("returnTo")).toBe("string");
+        }
+      }
+      // A value outside the type still gives an address rather than a throw.
+      expect(() => api.oauthStartUrl("OKTA" as never, undefined as never)).not.toThrow();
+    });
+
+    it("keeps the provider segments as an explicit table", () => {
+      expect(OAUTH_PROVIDER_SEGMENTS).toEqual({ GOOGLE: "google", GITHUB: "github", APPLE: "apple" });
+    });
+  });
+
+  describe("POST /auth/oauth/exchange", () => {
+    it("takes the session on SIGNED_IN as login does — without sending the old one — and answers the returnTo", async () => {
+      withOldSession();
+      const { api, fetchStub } = apiAnswering(200, {
+        status: "SIGNED_IN",
+        session: { accessToken: "new-access", refreshToken: "new-refresh", expiresIn: 900 },
+        signup: null,
+        returnTo: "/projects/p-1/board",
+      });
+
+      await expect(api.exchangeOAuthCode("code-1")).resolves.toEqual({ status: "SIGNED_IN", returnTo: "/projects/p-1/board" });
+      const [url, init] = fetchStub.mock.calls[0];
+      expect(url).toBe("https://api.example/api/v1/auth/oauth/exchange");
+      expect(init?.method).toBe("POST");
+      expect(JSON.parse(init?.body as string)).toEqual({ code: "code-1" });
+      expect(headersOf(init).Authorization).toBeUndefined();
+      expect(window.localStorage.getItem("taska.accessToken")).toBe("new-access");
+      expect(window.localStorage.getItem("taska.refreshToken")).toBe("new-refresh");
+    });
+
+    it("answers the name step on SIGNUP_REQUIRED and leaves the session alone", async () => {
+      withOldSession();
+      const { api } = apiAnswering(200, {
+        status: "SIGNUP_REQUIRED",
+        session: null,
+        signup: { signupToken: "st-1", provider: "GITHUB", email: "new@example.com", suggestedDisplayName: null },
+        returnTo: "/projects",
+      });
+
+      await expect(api.exchangeOAuthCode("code-2")).resolves.toEqual({
+        status: "SIGNUP_REQUIRED",
+        returnTo: "/projects",
+        signup: { signupToken: "st-1", provider: "GITHUB", email: "new@example.com", suggestedDisplayName: null },
+      });
+      expect(window.localStorage.getItem("taska.accessToken")).toBe("old-access");
+    });
+
+    it.each([
+      ["SIGNED_IN without tokens", { status: "SIGNED_IN", session: null, returnTo: "/projects" }],
+      ["SIGNED_IN with one token", { status: "SIGNED_IN", session: { accessToken: "a" }, returnTo: "/projects" }],
+      ["SIGNUP_REQUIRED without the step", { status: "SIGNUP_REQUIRED", signup: null, returnTo: "/projects" }],
+      [
+        "SIGNUP_REQUIRED without the address",
+        { status: "SIGNUP_REQUIRED", signup: { signupToken: "st", provider: "GOOGLE" }, returnTo: "/projects" },
+      ],
+      ["another status", { status: "LINKED", returnTo: "/projects" }],
+      ["no body", null],
+    ])("throws on an answer that does not hold what it says (%s), and stores nothing", async (_case, body) => {
+      withOldSession();
+      const { api } = apiAnswering(200, body);
+      await expect(api.exchangeOAuthCode("code")).rejects.toThrow();
+      expect(window.localStorage.getItem("taska.accessToken")).toBe("old-access");
+    });
+
+    it("reads the server's nulls and absences alike, and returnTo that is not a string as empty", () => {
+      expect(
+        toOAuthExchange({
+          status: "SIGNUP_REQUIRED",
+          signup: { signupToken: "st", provider: 3, email: "e@x.y" },
+          returnTo: 5,
+        }),
+      ).toEqual({
+        status: "SIGNUP_REQUIRED",
+        returnTo: "",
+        signup: { signupToken: "st", provider: "", email: "e@x.y", suggestedDisplayName: null },
+      });
+    });
+
+    it("never reads the code's 401 as the session dying: no refresh, no expiry, and the refusal keyed by its reason", async () => {
+      withOldSession();
+      const { api, fetchStub } = apiAnswering(
+        401,
+        { code: "UNAUTHENTICATED", message: "Invalid OAuth code", details: { reason: "STATE_INVALID" } },
+        "req-code",
+      );
+      const expired = vi.fn();
+      api.onSessionExpired(expired);
+
+      const refusal = await api.exchangeOAuthCode("used").catch((error: unknown) => error);
+
+      expect(hasRefusalReason(refusal, "UNAUTHENTICATED", "STATE_INVALID")).toBe(true);
+      expect(apiErrorFacts(refusal).requestId).toBe("req-code");
+      expect(fetchStub).toHaveBeenCalledTimes(1);
+      expect(expired).not.toHaveBeenCalled();
+    });
+
+    it("does not let an answer for an older sign-in write over a newer session", async () => {
+      let release: (value: Response) => void = () => {};
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          (input: string) =>
+            new Promise<Response>((resolve) => {
+              if (input.endsWith("/auth/oauth/exchange")) release = resolve;
+              else resolve(answer(200, { accessToken: "login-access", refreshToken: "login-refresh", expiresIn: 1 }));
+            }),
+        ),
+      );
+      const api = new RestTaskaApi("/api/v1");
+      const exchanged = api.exchangeOAuthCode("slow");
+      await api.login({ email: "a@b.c", password: "x" });
+      release(answer(200, { status: "SIGNED_IN", session: { accessToken: "late", refreshToken: "late" }, returnTo: "/" }));
+      await exchanged;
+      expect(window.localStorage.getItem("taska.accessToken")).toBe("login-access");
+    });
+  });
+
+  describe("POST /auth/oauth/signup", () => {
+    it("sends the step's token and the name without the session, and takes the new session", async () => {
+      withOldSession();
+      const { api, fetchStub } = apiAnswering(200, { accessToken: "made-access", refreshToken: "made-refresh", expiresIn: 900 });
+
+      await expect(api.completeOAuthSignup({ signupToken: "st-1", displayName: "Rosa" })).resolves.toEqual({
+        accessToken: "made-access",
+        refreshToken: "made-refresh",
+        expiresIn: 900,
+      });
+      const [url, init] = fetchStub.mock.calls[0];
+      expect(url).toBe("https://api.example/api/v1/auth/oauth/signup");
+      expect(JSON.parse(init?.body as string)).toEqual({ signupToken: "st-1", displayName: "Rosa" });
+      expect(headersOf(init).Authorization).toBeUndefined();
+      expect(window.localStorage.getItem("taska.accessToken")).toBe("made-access");
+    });
+
+    it("throws for an answer with no session in it, and stores nothing", async () => {
+      withOldSession();
+      const { api } = apiAnswering(200, { accessToken: "" });
+      await expect(api.completeOAuthSignup({ signupToken: "st", displayName: "R" })).rejects.toThrow();
+      expect(window.localStorage.getItem("taska.accessToken")).toBe("old-access");
+    });
   });
 });
