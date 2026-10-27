@@ -78,7 +78,13 @@ import {
   avatarRefusal,
   avatarSizeRefusalMessage,
 } from "../avatars";
-import { IssueVersionConflictError, LAST_ADMIN_REASON, PROJECT_ARCHIVED_REASON, type ErrorDetails } from "../errors";
+import {
+  DISPLAY_NAME_INVALID_REASON,
+  IssueVersionConflictError,
+  LAST_ADMIN_REASON,
+  PROJECT_ARCHIVED_REASON,
+  type ErrorDetails,
+} from "../errors";
 import { blankSummaryRefusal, datesOutOfOrderServerMessage, issueTypePatchRefusal, issueVersionRefusal } from "../issuePatch";
 import {
   INVALID_ISSUE_TYPE_KEY_MESSAGE,
@@ -142,6 +148,7 @@ import type {
   DictionaryEntry,
   DirectoryPage,
   EnumDictionaries,
+  InvitationPreview,
   InvitationResult,
   Issue,
   IssueAttachment,
@@ -187,6 +194,7 @@ import type {
   UserAvatar,
   UserSummary,
   UserStatus,
+  UserDisplayNameChange,
   UserStatusChange,
   WatchIssueResult,
   WorkflowDefinition,
@@ -194,6 +202,7 @@ import type {
 } from "../../domain/types";
 import { isDateOnly } from "../../domain/types";
 import { accountLockedMessage } from "../../lib/accountLock";
+import { DISPLAY_NAME_REFUSAL_MESSAGE, normalizeDisplayName } from "../../lib/displayName";
 import { addDays, localDateOnly } from "../../lib/worklog";
 import type { AdminColumnClass } from "../../lib/adminColumnTypes";
 import { classifyColumnType } from "../../lib/adminColumnTypes";
@@ -2816,13 +2825,14 @@ export class MockTaskaStore {
     const tas107 = this.issues.find((item) => item.issueKey === "TAS-107");
     const tas101 = this.issues.find((item) => item.issueKey === "TAS-101");
     this.commentsByIssue = {};
-    // The channel mark (TAS-412, for TAS-411) — **mock only**: no gateway sends
-    // one yet. Sofia moved TAS-107 and commented on it through the MCP server
-    // with a named token; Mark set TAS-101's priority with a token the server
-    // does not name. Every other seeded event and comment has no mark, which
-    // is a change made in the UI.
-    const viaCursor: ActionVia = { channel: "MCP", tokenName: "Cursor on laptop" };
-    const viaToken: ActionVia = { channel: "API_TOKEN", tokenName: null };
+    // The channel mark (TAS-412, TAS-411): `channel` on the event and on the
+    // comment's last write, as the gateway serves it since develop `78019ece`.
+    // Sofia moved TAS-107 and commented on it through the MCP server; Mark set
+    // TAS-101's priority with an API token. The server never names the token.
+    // Every other seeded event and comment is a change made in the UI, which
+    // carries no mark.
+    const viaCursor: ActionVia = { channel: "MCP" };
+    const viaToken: ActionVia = { channel: "API_TOKEN" };
     if (tas107) {
       this.pushHistory(tas107.id, "ASSIGNED", ANNA_ID, { previousAssigneeId: null, assigneeId: SOFIA_ID }, ts(16, 43));
       this.pushHistory(tas107.id, "TRANSITIONED", SOFIA_ID, { from: "TODO", to: "IN_PROGRESS" }, ts(17, 14), viaCursor);
@@ -3188,7 +3198,7 @@ export class MockTaskaStore {
    * then signs in with any.
    */
   acceptInvitation(input: AcceptInvitationInput): void {
-    const { token, newPassword } = input;
+    const { token, newPassword, displayName } = input;
     // `trim() === ""` approximates Java's `String.isBlank`, and is not it: JS
     // trims U+00A0, U+2007, U+202F and U+FEFF, which `Character.isWhitespace`
     // does not count, and keeps U+001C–U+001F, which it does. Nobody types either into these
@@ -3199,6 +3209,11 @@ export class MockTaskaStore {
     if (typeof newPassword !== "string" || newPassword.trim() === "") {
       throw new MockApiError("INVALID_ARGUMENT", "body.newPassword must not be blank");
     }
+    // TAS-425: the service's first check, and only for a name that was sent —
+    // so a name it refuses spends neither the password check nor the link.
+    // Behind the transport's two blank checks above, which run before the
+    // service sees the request at all.
+    const name = displayName === undefined ? undefined : this.displayNameOrRefuse(displayName);
     const policy = passwordPolicyRefusal(newPassword);
     if (policy) throw new MockApiError("INVALID_ARGUMENT", policy);
     if (token.length > 256) {
@@ -3211,6 +3226,98 @@ export class MockTaskaStore {
     }
     found.usedAt = Date.now();
     user.status = "ACTIVE";
+    // Omitted keeps the invited name; sent, it is the name the account starts with.
+    if (name !== undefined) user.displayName = name;
+  }
+
+  /**
+   * `POST /auth/invitations/preview` (TAS-425): who a live link was made for,
+   * without spending it. One 401 for every way it can be dead, as
+   * auth-service has it at develop `78019ece` — a blank token, one over 256
+   * characters, one nobody holds, one used or revoked by a newer invitation,
+   * one past its deadline, an account that is no longer `INVITED`. The kind is
+   * always `INVITATION`: this store has no self-signup (backend TAS-426).
+   */
+  previewInvitation(token: string): InvitationPreview {
+    const found = token.trim() === "" || token.length > 256 ? undefined : this.inviteTokens.find((item) => item.token === token);
+    const user = found ? this.users.find((item) => item.id === found.userId) : undefined;
+    if (!found || user?.status !== "INVITED" || found.usedAt !== null || found.expiresAt <= Date.now()) {
+      throw new MockApiError("UNAUTHENTICATED", "Invalid or expired token");
+    }
+    return {
+      email: user.email,
+      displayName: user.displayName,
+      kind: "INVITATION",
+      expiresAt: new Date(found.expiresAt).toISOString(),
+    };
+  }
+
+  /**
+   * common-lib `DisplayNames.normalize` (TAS-425): the trimmed name, or the
+   * one refusal every name-taking route answers — 400 `INVALID_ARGUMENT`,
+   * `details.reason` `DISPLAY_NAME_INVALID`, in the server's sentence. The rule
+   * itself is shared with the screens (src/lib/displayName.ts), where the
+   * difference between JS's edges and Java's is named.
+   */
+  private displayNameOrRefuse(displayName: string): string {
+    const name = normalizeDisplayName(displayName);
+    if (name === null) {
+      throw new MockApiError("INVALID_ARGUMENT", DISPLAY_NAME_REFUSAL_MESSAGE, { reason: DISPLAY_NAME_INVALID_REASON });
+    }
+    return name;
+  }
+
+  /**
+   * `PATCH /users/me` (TAS-425): the reader's own name, and an answer in the
+   * shape of `GET /users/me`. Every read that names people reads the account,
+   * so the new name is in members, the project context, the directory and
+   * every issue summary from the next read on — as on the server, where those
+   * reads join the profile when they are asked.
+   */
+  updateMyDisplayName(displayName: string): User {
+    const name = this.displayNameOrRefuse(displayName);
+    this.getUser(this.currentUserId).displayName = name;
+    return this.currentUserProfile();
+  }
+
+  /**
+   * `PATCH /admin/users/{userId}` (TAS-425), in auth-service's order
+   * (`UserDisplayNameService.updateByAdmin`, develop `78019ece`) after the
+   * path, which the gateway binds as a UUID before anything runs (see
+   * `adminUser`): the name, then a caller who is a `GLOBAL_ADMIN` in `ACTIVE`
+   * or `LOCKED`, then the account. Any status may be renamed, the caller's own
+   * account included. admin-service then writes the audit row, old name and
+   * new.
+   */
+  updateUserDisplayName(userId: string, displayName: string): UserDisplayNameChange {
+    if (!UUID_PATTERN.test(userId)) {
+      throw new MockApiError("INVALID_ARGUMENT", `User id ${userId} is not a UUID`);
+    }
+    const name = this.displayNameOrRefuse(displayName);
+    const actor = this.currentUser();
+    if (actor.globalRole !== "GLOBAL_ADMIN" || (actor.status !== "ACTIVE" && actor.status !== "LOCKED")) {
+      throw new MockApiError("PERMISSION_DENIED", "Global admin role is required");
+    }
+    const user = this.getUser(userId);
+    const previous = user.displayName;
+    // The actor as they were named when they acted — before the write, which
+    // may be renaming them.
+    const actorSnapshot = { actorUserId: actor.id, actorDisplayName: actor.displayName, actorEmail: actor.email };
+    user.displayName = name;
+    this.auditEntries.push({
+      id: makeId("audit"),
+      ...actorSnapshot,
+      action: "USER_DISPLAY_NAME_UPDATED",
+      targetService: "auth",
+      targetTable: "users",
+      targetId: user.id,
+      reason: "Display name updated by administrator",
+      requestId: null,
+      createdAt: now(),
+      oldValue: jsonbCompact({ displayName: previous }),
+      newValue: jsonbCompact({ displayName: name }),
+    });
+    return { userId: user.id, displayName: name };
   }
 
   /**
@@ -6826,6 +6933,9 @@ export class MockTaskaStore {
     comment.body = this.commentBody(body);
     comment.updatedAt = now();
     comment.version += 1;
+    // `CommentResponseDto.channel` is the channel of the comment's *last*
+    // write (TAS-411), and this one came from the UI.
+    delete comment.via;
     this.pushHistory(comment.issueId, "COMMENT_UPDATED", this.currentUserId, { commentId: comment.id });
     return this.commentView(comment, false);
   }
@@ -8559,8 +8669,8 @@ export class MockTaskaStore {
       // does (`repository/IssueCommentRepository.java`). Nothing in the UI
       // reads it for that purpose — one field decides the badge.
       version: 1,
-      // Only on a seeded comment that has one (mock only, TAS-411); a comment
-      // written in the UI carries no mark.
+      // Only on a seeded comment that has one (TAS-411); a comment written in
+      // the UI carries no mark.
       ...(via ? { via } : {}),
     };
     this.commentsByIssue[issue.id] = [...(this.commentsByIssue[issue.id] ?? []), comment];
@@ -8621,6 +8731,13 @@ export class MockTaskaApi implements TaskaApi {
     await wait(null);
   }
 
+  // Sends no session either, as the rest leg sends none: a link opened under
+  // somebody else's session leaves it alone.
+  async previewInvitation(token: string): Promise<InvitationPreview> {
+    await wait(null);
+    return this.store.previewInvitation(token);
+  }
+
   async searchUsers(params: SearchUsersParams): Promise<DirectoryPage> {
     return wait(this.store.searchUsers(params));
   }
@@ -8640,6 +8757,12 @@ export class MockTaskaApi implements TaskaApi {
 
   async getCurrentUser(): Promise<User> {
     return wait(this.store.currentUserProfile());
+  }
+
+  // The wait first, so a refusal takes as long to arrive as a success does.
+  async updateMyDisplayName(displayName: string): Promise<User> {
+    await wait(null);
+    return clone(this.store.updateMyDisplayName(displayName));
   }
 
   async getNotificationPreferences(): Promise<NotificationPreferences> {
@@ -9133,6 +9256,11 @@ export class MockTaskaApi implements TaskaApi {
 
   async resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange> {
     return wait(this.store.resetCredentialLockout(userId, reason));
+  }
+
+  async updateUserDisplayName(userId: string, displayName: string): Promise<UserDisplayNameChange> {
+    await wait(null);
+    return this.store.updateUserDisplayName(userId, displayName);
   }
 
   async retryOutboxEvent(

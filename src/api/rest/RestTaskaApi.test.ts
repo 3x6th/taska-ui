@@ -9,6 +9,7 @@ import {
   IssueVersionConflictError,
   apiErrorFacts,
   isConflict,
+  isDisplayNameInvalid,
   isMissingOrForbidden,
   isProjectArchived,
   isTransitionConflict,
@@ -6122,5 +6123,159 @@ describe("RestTaskaApi issue-type registry", () => {
       api.updateIssue("project-1", "issue-1", { issueType: null } as unknown as UpdateIssueInput, 3),
     ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "issueType cannot be cleared", status: 400 });
     expect(fetchStub).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * TAS-425 against the contract at develop `78019ece`: the reader's own name
+ * (`PATCH /users/me`), an admin's rename (`PATCH /admin/users/{userId}`), the
+ * invitation's preview and the name sent with the password.
+ */
+describe("RestTaskaApi display names and the invitation preview (TAS-425)", () => {
+  const answer = (status: number, body: unknown, requestId: string | null = null) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (name: string) => (name === "X-Request-Id" ? requestId : null) },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const apiAnswering = (status: number, body: unknown, requestId: string | null = null) => {
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+    window.localStorage.setItem("taska.refreshToken", "valid-refresh");
+    const fetchStub = vi.fn(async (_input: string, _init?: RequestInit) => answer(status, body, requestId));
+    vi.stubGlobal("fetch", fetchStub);
+    return { api: new RestTaskaApi(), fetchStub };
+  };
+
+  const headersOf = (init: RequestInit | undefined) => (init?.headers ?? {}) as Record<string, string>;
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("patches the reader's own name and maps the answer as GET /users/me is mapped", async () => {
+    const { api, fetchStub } = apiAnswering(200, {
+      id: "u-1",
+      email: "anna@example.com",
+      displayName: "Anna I.",
+      status: "ACTIVE",
+      globalRole: "USER",
+      avatar: { id: "a-1", downloadUrl: "https://minio.example/a-1?sig=2" },
+      avatarUnavailable: false,
+    });
+
+    await expect(api.updateMyDisplayName("Anna I.")).resolves.toEqual({
+      id: "u-1",
+      email: "anna@example.com",
+      displayName: "Anna I.",
+      status: "ACTIVE",
+      color: undefined,
+      globalRole: "USER",
+      avatarUrl: "https://minio.example/a-1?sig=2",
+      avatarId: "a-1",
+      avatarUnavailable: false,
+    });
+    const [url, init] = fetchStub.mock.calls[0];
+    expect(url).toBe("/api/v1/users/me");
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(init?.body as string)).toEqual({ displayName: "Anna I." });
+    expect(headersOf(init).Authorization).toBe("Bearer valid-access");
+  });
+
+  it("carries the server's name refusal with its reason, so the field can be pointed at", async () => {
+    const { api } = apiAnswering(
+      400,
+      {
+        code: "INVALID_ARGUMENT",
+        message: "Display name must contain 1 to 128 characters and no control characters or line breaks",
+        details: { reason: "DISPLAY_NAME_INVALID" },
+      },
+      "req-name",
+    );
+
+    const refusal = await api.updateMyDisplayName("Anna\tI.").catch((error: unknown) => error);
+    expect(isDisplayNameInvalid(refusal)).toBe(true);
+    expect(apiErrorFacts(refusal)).toMatchObject({ status: 400, requestId: "req-name" });
+  });
+
+  it("patches an account's name on the admin path, escaped, and reads back the pair", async () => {
+    const { api, fetchStub } = apiAnswering(200, { userId: "1cf0dc4e-0000-4000-8000-000000000001", displayName: "Nina K." });
+
+    await expect(api.updateUserDisplayName("1cf0dc4e-0000-4000-8000-000000000001", "Nina K.")).resolves.toEqual({
+      userId: "1cf0dc4e-0000-4000-8000-000000000001",
+      displayName: "Nina K.",
+    });
+    const [url, init] = fetchStub.mock.calls[0];
+    expect(url).toBe("/api/v1/admin/users/1cf0dc4e-0000-4000-8000-000000000001");
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(init?.body as string)).toEqual({ displayName: "Nina K." });
+
+    await api.updateUserDisplayName("a/b", "x").catch(() => undefined);
+    expect(fetchStub.mock.calls[1][0]).toBe("/api/v1/admin/users/a%2Fb");
+  });
+
+  it("previews a link without the session's token, and reads the kind as any string", async () => {
+    const { api, fetchStub } = apiAnswering(200, {
+      email: "leo@example.com",
+      displayName: "Leo Fischer",
+      kind: "INVITATION",
+      expiresAt: "2026-11-01T10:00:00Z",
+    });
+
+    await expect(api.previewInvitation("tok")).resolves.toEqual({
+      email: "leo@example.com",
+      displayName: "Leo Fischer",
+      kind: "INVITATION",
+      expiresAt: "2026-11-01T10:00:00Z",
+    });
+    const [url, init] = fetchStub.mock.calls[0];
+    expect(url).toBe("/api/v1/auth/invitations/preview");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({ token: "tok" });
+    expect(headersOf(init).Authorization).toBeUndefined();
+
+    for (const [kind, read] of [
+      ["SIGNUP", "SIGNUP"],
+      ["OAUTH_SIGNUP", "OAUTH_SIGNUP"],
+      [7, ""],
+    ] as const) {
+      fetchStub.mockResolvedValueOnce(answer(200, { email: "a@b.c", displayName: "A", kind, expiresAt: "x" }));
+      expect((await api.previewInvitation("tok")).kind).toBe(read);
+    }
+  });
+
+  it("never reads a preview's 401 as the session dying: no refresh, no expiry, the tokens kept", async () => {
+    const { api, fetchStub } = apiAnswering(401, { code: "UNAUTHENTICATED", message: "Invalid or expired token" }, "req-401");
+    const expired = vi.fn();
+    api.onSessionExpired(expired);
+
+    const refusal = await api.previewInvitation("dead").catch((error: unknown) => error);
+
+    expect(apiErrorFacts(refusal)).toMatchObject({ status: 401, code: "UNAUTHENTICATED", requestId: "req-401" });
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(fetchStub.mock.calls.some(([input]) => input.endsWith("/auth/refresh"))).toBe(false);
+    expect(expired).not.toHaveBeenCalled();
+    expect(api.hasSession()).toBe(true);
+    expect(window.localStorage.getItem("taska.accessToken")).toBe("valid-access");
+  });
+
+  it("sends the name with the password when there is one, and leaves the key out when there is not", async () => {
+    const { api, fetchStub } = apiAnswering(204, undefined);
+
+    await api.acceptInvitation({ token: "tok", newPassword: "Correct-horse-1", displayName: "Leo F." });
+    await api.acceptInvitation({ token: "tok", newPassword: "Correct-horse-1" });
+
+    expect(JSON.parse(fetchStub.mock.calls[0][1]?.body as string)).toEqual({
+      token: "tok",
+      newPassword: "Correct-horse-1",
+      displayName: "Leo F.",
+    });
+    expect(JSON.parse(fetchStub.mock.calls[1][1]?.body as string)).toEqual({ token: "tok", newPassword: "Correct-horse-1" });
+    expect(headersOf(fetchStub.mock.calls[0][1]).Authorization).toBeUndefined();
   });
 });

@@ -214,6 +214,22 @@ export function isLastAdmin(error: unknown): boolean {
   return hasRefusalReason(error, "FAILED_PRECONDITION", LAST_ADMIN_REASON);
 }
 
+/** `details.reason` on every refusal of a display name (TAS-425, common-lib `DisplayNames`). */
+export const DISPLAY_NAME_INVALID_REASON = "DISPLAY_NAME_INVALID";
+
+/**
+ * Whether a write was refused for the name it carried — 400
+ * `INVALID_ARGUMENT`, `details.reason: "DISPLAY_NAME_INVALID"` from
+ * `PATCH /users/me`, `PATCH /admin/users/{userId}` and
+ * `POST /auth/invitations/accept` (backend develop `78019ece`). The reason is
+ * what points at the name field (`aria-invalid`); every other 400 of those
+ * routes — a password, a token — shares the code and must not (DESIGN.md
+ * §4.27, §5.8, §5.9).
+ */
+export function isDisplayNameInvalid(error: unknown): boolean {
+  return hasRefusalReason(error, "INVALID_ARGUMENT", DISPLAY_NAME_INVALID_REASON);
+}
+
 /**
  * Whether this failure means "the gateway does not have this route yet" rather
  * than "the thing you asked for is not there".

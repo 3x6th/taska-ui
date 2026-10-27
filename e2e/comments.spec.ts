@@ -126,6 +126,22 @@ test("a seeded thread nobody has touched carries no badge on either comment", as
   await expect(comments.locator(".comment-item em")).toHaveCount(0);
 });
 
+// The channel mark (TAS-411, TAS-425): Sofia's seeded comment came through the
+// MCP server, Anna's through the UI. The mark names the channel after the
+// author and nothing else — the server never returns a token's name.
+test("marks a comment written through MCP after its author, without a token name, and an ordinary one not at all", async ({
+  page,
+}) => {
+  await signIn(page);
+  const comments = await openComments(page, "TAS-107");
+
+  const items = comments.locator(".comment-item");
+  await expect(items).toHaveCount(2);
+  const sofias = items.filter({ hasText: "Picked this up" });
+  await expect(sofias.locator(".comment-head strong + .via-mark")).toHaveText("via MCP");
+  await expect(items.filter({ hasText: "Agreed. Ping me" }).locator(".via-mark")).toHaveCount(0);
+});
+
 // TAS-259: one press on a comment's Delete used to delete it. It now asks in
 // §4.22's strip, as the work log's Delete does, and only the strip's answer
 // sends anything. Each "kept" below is read back from the store through a

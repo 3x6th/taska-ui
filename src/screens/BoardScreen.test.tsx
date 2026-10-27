@@ -8136,7 +8136,7 @@ describe("New issue and Esc", () => {
   });
 });
 
-describe("the channel mark on history and comments (TAS-412)", () => {
+describe("the channel mark on history and comments (TAS-412, TAS-425)", () => {
   const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
   const comment = (overrides: Partial<IssueComment>): IssueComment => ({
     id: "comment-1",
@@ -8173,25 +8173,25 @@ describe("the channel mark on history and comments (TAS-412)", () => {
       meta: item.querySelector("p")?.nextElementSibling ?? null,
     }));
 
-  it("says which channel a change came through on its meta line and a comment's after the author, with the token's name when there is one", async () => {
+  it("says which channel a change came through on its meta line and a comment's after the author, and never names a token", async () => {
     seedHistory([
-      event({ id: "history-1", via: { channel: "MCP", tokenName: "Cursor on laptop" } }),
+      event({ id: "history-1", via: { channel: "MCP" } }),
       event({
         id: "history-2",
         eventType: "TRANSITIONED",
         occurredAt: "2026-08-01T10:00:00Z",
         payload: { from: "TODO", to: "IN_PROGRESS" },
-        via: { channel: "API_TOKEN", tokenName: null },
+        via: { channel: "API_TOKEN" },
       }),
     ]);
-    seedComments([comment({ via: { channel: "API_TOKEN", tokenName: "Release script" } })]);
+    seedComments([comment({ via: { channel: "API_TOKEN" } })]);
     renderBoard(ISSUE_PATH);
     const panel = await openPanel();
 
     const row = (await panel.findByText("Retry guard is in review.")).closest(".comment-item") as HTMLElement;
     const head = row.querySelector(".comment-head") as HTMLElement;
     // Right after the name, before the time; never the `edited` badge's <em>.
-    expect(head.querySelector("strong + .via-mark")).toHaveTextContent("via API token (Release script)");
+    expect(head.querySelector("strong + .via-mark")).toHaveTextContent(/^via API token$/);
     expect(head.querySelector("em")).toBeNull();
 
     // The feed names an actor neither the server nor a member row names
@@ -8204,7 +8204,7 @@ describe("the channel mark on history and comments (TAS-412)", () => {
       "Unknown created this issue",
     ]);
     expect(document.querySelector(".activity-item p .via-mark")).toBeNull();
-    for (const [index, mark] of ["via API token", "via MCP (Cursor on laptop)"].entries()) {
+    for (const [index, mark] of ["via API token", "via MCP"].entries()) {
       const meta = events[index].meta as HTMLElement;
       expect(meta).toHaveClass("activity-meta");
       // The time, a dot only the eye gets, then the mark — and a plain space
@@ -8213,7 +8213,7 @@ describe("the channel mark on history and comments (TAS-412)", () => {
       expect(meta.children[1]).toHaveAttribute("aria-hidden", "true");
       expect(meta.children[1]).toHaveTextContent("·");
       expect(meta.children[2]).toHaveClass("via-mark");
-      expect(meta.children[2]).toHaveTextContent(mark);
+      expect(meta.children[2]).toHaveTextContent(new RegExp(`^${mark}$`));
       const spoken = [...meta.childNodes]
         .filter((node) => !(node instanceof Element && node.getAttribute("aria-hidden") === "true"))
         .map((node) => node.textContent)
@@ -8229,7 +8229,7 @@ describe("the channel mark on history and comments (TAS-412)", () => {
       event({
         id: "history-3",
         occurredAt: "2026-08-01T11:00:00Z",
-        via: { channel: "SMOKE_SIGNAL", tokenName: "x" } as unknown as IssueHistoryEvent["via"],
+        via: { channel: "SMOKE_SIGNAL" } as unknown as IssueHistoryEvent["via"],
       }),
     ]);
     seedComments([comment({})]);

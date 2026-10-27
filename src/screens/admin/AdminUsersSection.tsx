@@ -1,12 +1,15 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { UserPlus } from "lucide-react";
+import { Pencil, UserPlus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Navigate, useSearchParams } from "react-router-dom";
 import { taskaApi } from "../../api/client";
-import type { UserStatus } from "../../domain/types";
+import type { User, UserStatus } from "../../domain/types";
+import { ME_QUERY_KEY } from "../../lib/ownAvatarLink";
+import { invalidatePeopleNames } from "../../lib/peopleNames";
 import { AdminError } from "./AdminError";
 import { AdminInviteUserModal, AdminResendInviteModal } from "./AdminInviteModals";
 import { AdminPager } from "./AdminPager";
+import { AdminRenameUserModal } from "./AdminRenameUserModal";
 import { AdminUserActionModal } from "./AdminUserActionModal";
 import { readViewState } from "./urlState";
 import {
@@ -85,6 +88,8 @@ export function AdminUsersSection() {
   });
 
   const [pending, setPending] = useState<{ user: AdminUserTarget; action: UserAction } | null>(null);
+  /** The account whose "Rename user" dialog is open (TAS-425). */
+  const [renaming, setRenaming] = useState<AdminUserTarget | null>(null);
   /** The two invitation dialogs (TAS-204): a new invitation, or a new link for one row. */
   const [inviting, setInviting] = useState(false);
   const [resending, setResending] = useState<(AdminUserTarget & { email: string }) | null>(null);
@@ -118,6 +123,12 @@ export function AdminUsersSection() {
    * override survives exactly as long as the stale list it is correcting.
    */
   const [changed, setChanged] = useState<{ userId: string; status: UserStatus; listedAt: number } | null>(null);
+  /**
+   * The rename's bridge (TAS-425, §5.8), on `changed`'s terms: the name the
+   * server answered with, over a list older than the answer, until the
+   * re-read lands.
+   */
+  const [renamed, setRenamed] = useState<{ userId: string; displayName: string; listedAt: number } | null>(null);
   const [flashed, setFlashed] = useState<string | null>(null);
   /**
    * Mounted from the first render with an empty string rather than appearing
@@ -201,6 +212,7 @@ export function AdminUsersSection() {
 
   const closeDialog = () => {
     setPending(null);
+    setRenaming(null);
     setInviting(false);
     setResending(null);
     const row = staleRow.current;
@@ -260,10 +272,15 @@ export function AdminUsersSection() {
   // `changed`. Derived rather than cleared in an effect: one rule, read where
   // it is used, instead of a second mechanism racing the first.
   const override = changed !== null && rowsQuery.dataUpdatedAt <= changed.listedAt ? changed : null;
+  const nameOverride = renamed !== null && rowsQuery.dataUpdatedAt <= renamed.listedAt ? renamed : null;
   // The server's answer to the last change wins over a row the list has not
   // caught up with yet.
-  const withChange = (user: AdminUserRow): AdminUserRow =>
-    override && override.userId === user.id ? { ...user, status: override.status } : user;
+  const withChange = (row: AdminUserRow): AdminUserRow => {
+    let user = row;
+    if (override && override.userId === user.id) user = { ...user, status: override.status };
+    if (nameOverride && nameOverride.userId === user.id) user = { ...user, displayName: nameOverride.displayName };
+    return user;
+  };
 
   return (
     <div aria-busy={rowsQuery.isFetching} className="admin-plane admin-users-plane" ref={planeRef}>
@@ -449,6 +466,25 @@ export function AdminUsersSection() {
                           {actionLabels[action]}
                         </button>
                       ) : null}
+                      {/* Last in the cell, after Block, on every row the table
+                          gave a key — any status, an unknown one included — so
+                          the pencils stand in one column (§5.8, TAS-425). An
+                          icon rather than a word: a third framed button per row
+                          would be one too many (§1). */}
+                      {hasKey(user) ? (
+                        <button
+                          aria-label={`Rename ${name}`}
+                          className="icon-button admin-row-rename"
+                          onClick={(event) => {
+                            trigger.current = event.currentTarget;
+                            setRenaming(user);
+                          }}
+                          title="Rename"
+                          type="button"
+                        >
+                          <Pencil aria-hidden="true" size={14} />
+                        </button>
+                      ) : null}
                     </span>
                   </td>
                 </tr>
@@ -477,6 +513,32 @@ export function AdminUsersSection() {
             void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
           }}
           user={resending}
+        />
+      ) : null}
+
+      {renaming ? (
+        <AdminRenameUserModal
+          onClose={closeDialog}
+          onDone={(change) => {
+            const before = renaming;
+            setRenamed({ userId: before.id, displayName: change.displayName, listedAt: rowsQuery.dataUpdatedAt });
+            setFlashed(before.id);
+            // Named as the row named them until now, so the sentence says who
+            // this was as well as what they are called.
+            setAnnouncement(`${personLabel(before)} is now named ${change.displayName}.`);
+            setRenaming(null);
+            focusTrigger(true);
+            // The reader renamed themselves: the top bar and the profile menu
+            // take the name at once, and the account is read again.
+            if (meQuery.data && meQuery.data.id === change.userId) {
+              queryClient.setQueryData<User>(ME_QUERY_KEY, (me) => (me ? { ...me, displayName: change.displayName } : me));
+              void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
+            }
+            // The list here is read again, and every other read that names
+            // people is marked to be.
+            invalidatePeopleNames(queryClient);
+          }}
+          user={renaming}
         />
       ) : null}
 

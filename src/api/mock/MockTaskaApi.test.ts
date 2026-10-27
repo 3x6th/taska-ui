@@ -3938,6 +3938,140 @@ describe("MockTaskaApi", () => {
   });
 
   /**
+   * TAS-425 as auth-service has it at develop `78019ece`: one name rule
+   * (`DisplayNames.normalize`) behind three writes, and the invitation's
+   * preview. The name is read where people are named, so a rename shows in
+   * every read that follows.
+   */
+  describe("display names and the invitation preview", () => {
+    const NAME_REFUSAL = {
+      code: "INVALID_ARGUMENT",
+      message: "Display name must contain 1 to 128 characters and no control characters or line breaks",
+      details: { reason: "DISPLAY_NAME_INVALID" },
+    };
+    const DEAD = { code: "UNAUTHENTICATED", message: "Invalid or expired token" };
+    const idOf = async (email: string) => {
+      const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
+      return String(rows.find((row) => row.email === email)!.id);
+    };
+    const rowOf = async (email: string) =>
+      (await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 })).rows.find((row) => row.email === email);
+
+    it("previews a live link — the address, the name it carries now, the kind and the deadline — without spending it", async () => {
+      const preview = await api.previewInvitation(MOCK_INVITE_TOKENS.leo);
+      expect(preview).toMatchObject({ email: "leo@example.com", displayName: "Leo Fischer", kind: "INVITATION" });
+      expect(Date.parse(preview.expiresAt)).toBeGreaterThan(Date.now());
+      // Read twice, and still good for activating.
+      await expect(api.previewInvitation(MOCK_INVITE_TOKENS.leo)).resolves.toMatchObject({ email: "leo@example.com" });
+      await expect(api.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "Correct-horse-1" })).resolves.toBeUndefined();
+      // And no session came of either.
+      expect(api.hasSession()).toBe(false);
+    });
+
+    it("answers every dead link with the same 401: expired, used, unknown, blank, too long", async () => {
+      await expect(api.previewInvitation(MOCK_INVITE_TOKENS.ivy)).rejects.toMatchObject(DEAD);
+      await expect(api.previewInvitation("nobody-holds-this-token")).rejects.toMatchObject(DEAD);
+      await expect(api.previewInvitation("   ")).rejects.toMatchObject(DEAD);
+      await expect(api.previewInvitation("x".repeat(257))).rejects.toMatchObject(DEAD);
+      await api.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "Correct-horse-1" });
+      await expect(api.previewInvitation(MOCK_INVITE_TOKENS.leo)).rejects.toMatchObject(DEAD);
+    });
+
+    it("refuses a bad name on activation before the password and the link, and does not spend the link", async () => {
+      // A weak password and a bad name: the name is the service's first check.
+      await expect(
+        api.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "weak", displayName: "Leo\tF." }),
+      ).rejects.toMatchObject(NAME_REFUSAL);
+      // A dead link and a bad name: the name still first.
+      await expect(
+        api.acceptInvitation({ token: MOCK_INVITE_TOKENS.ivy, newPassword: "Correct-horse-1", displayName: "   " }),
+      ).rejects.toMatchObject(NAME_REFUSAL);
+      await expect(api.previewInvitation(MOCK_INVITE_TOKENS.leo)).resolves.toMatchObject({ displayName: "Leo Fischer" });
+    });
+
+    it("activates with the name sent, trimmed, and keeps the invited name when none is", async () => {
+      await api.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "Correct-horse-1", displayName: "  Leo F.  " });
+      expect(await rowOf("leo@example.com")).toMatchObject({ status: "ACTIVE", display_name: "Leo F." });
+      await api.login({ email: "leo@example.com", password: "x" });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ displayName: "Leo F." });
+    });
+
+    it("renames the reader, trimmed, answers in the shape of /users/me, and every read that names them follows", async () => {
+      await api.login({ email: "anna@example.com", password: "x" });
+
+      await expect(api.updateMyDisplayName("  Anna I.  ")).resolves.toMatchObject({
+        id: ANNA_ID,
+        email: "anna@example.com",
+        displayName: "Anna I.",
+        status: "ACTIVE",
+        avatarUnavailable: false,
+      });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ displayName: "Anna I." });
+      const members = await api.listMembers(project.id);
+      expect(members.find((member) => member.userId === ANNA_ID)?.user?.displayName).toBe("Anna I.");
+      const context = await api.getProjectContext(project.id);
+      expect(context.members.find((member) => member.userId === ANNA_ID)?.user?.displayName).toBe("Anna I.");
+      expect((await api.searchUsers({ query: "anna@" })).items[0].displayName).toBe("Anna I.");
+      expect((await rowOf("anna@example.com"))?.display_name).toBe("Anna I.");
+    });
+
+    it("refuses the reader's bad name with the reason, and changes nothing", async () => {
+      await api.login({ email: "anna@example.com", password: "x" });
+      for (const name of ["", "  ", "Anna\tI.", `Anna${String.fromCodePoint(0x2028)}`, "a".repeat(129)]) {
+        await expect(api.updateMyDisplayName(name)).rejects.toMatchObject(NAME_REFUSAL);
+      }
+      await expect(api.updateMyDisplayName("a".repeat(128))).resolves.toMatchObject({ displayName: "a".repeat(128) });
+    });
+
+    it("lets a global admin rename any account in any status, and writes the audit row", async () => {
+      await api.login({ email: "mark@example.com", password: "x" });
+      const nina = await idOf("nina@example.com");
+      const leo = await idOf("leo@example.com");
+
+      await expect(api.updateUserDisplayName(nina, " Nina K. ")).resolves.toEqual({ userId: nina, displayName: "Nina K." });
+      await expect(api.updateUserDisplayName(leo, "Leo F.")).resolves.toEqual({ userId: leo, displayName: "Leo F." });
+      expect(await rowOf("nina@example.com")).toMatchObject({ status: "BLOCKED", display_name: "Nina K." });
+      // An invited account keeps the new name into its invitation.
+      await expect(api.previewInvitation(MOCK_INVITE_TOKENS.leo)).resolves.toMatchObject({ displayName: "Leo F." });
+      // Themselves too.
+      await expect(api.updateUserDisplayName(MARK_ID, "Mark L.")).resolves.toEqual({ userId: MARK_ID, displayName: "Mark L." });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ displayName: "Mark L." });
+
+      const { entries } = await api.listAuditEntries({ action: "USER_DISPLAY_NAME_UPDATED", targetId: nina });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        actorUserId: MARK_ID,
+        actorDisplayName: "Mark Lee",
+        targetService: "auth",
+        targetTable: "users",
+        targetId: nina,
+        reason: "Display name updated by administrator",
+        oldValue: JSON.stringify({ displayName: "Nina Kowal" }),
+        newValue: JSON.stringify({ displayName: "Nina K." }),
+      });
+    });
+
+    it("refuses in auth-service's order: the name, then the caller's role, then the account", async () => {
+      await api.login({ email: "anna@example.com", password: "x" });
+      const sofia = await idOf("sofia@example.com");
+      await expect(api.updateUserDisplayName(sofia, "\t")).rejects.toMatchObject(NAME_REFUSAL);
+      await expect(api.updateUserDisplayName(sofia, "Sofia R.")).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: "Global admin role is required",
+      });
+
+      await api.logout();
+      await api.login({ email: "mark@example.com", password: "x" });
+      await expect(api.updateUserDisplayName("00000000-0000-4000-8000-000000000000", "Nobody")).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        message: "User not found",
+      });
+      await expect(api.updateUserDisplayName("not-a-uuid", "Nobody")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      expect((await rowOf("sofia@example.com"))?.display_name).toBe("Sofia Reyes");
+    });
+  });
+
+  /**
    * The people directory (backend #204): the gateway's binding first, before
    * sign-in, then auth-service's own measure of the trimmed query; then
    * `searchDirectory`'s set, order and page.

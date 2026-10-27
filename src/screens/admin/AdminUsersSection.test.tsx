@@ -55,6 +55,8 @@ const { fakeApi, useMock, setExtraRows, setWriteFailure, setRowsFailure, holdRow
       state.writeFailure ? Promise.reject(state.writeFailure) : state.mock!.resetCredentialLockout(userId, reason),
     inviteUser: (input: InviteUserInput) =>
       state.writeFailure ? Promise.reject(state.writeFailure) : state.mock!.inviteUser(input),
+    updateUserDisplayName: (userId: string, displayName: string) =>
+      state.writeFailure ? Promise.reject(state.writeFailure) : state.mock!.updateUserDisplayName(userId, displayName),
   };
 
   return {
@@ -150,11 +152,17 @@ describe("the admin Users section", () => {
     expect(within(rowFor("Anna Ivanova")).getByText("Active")).toBeVisible();
     expect(within(rowFor("Anna Ivanova")).getByRole("button", { name: "Block Anna Ivanova" })).toBeVisible();
     expect(within(rowFor("Leo Fischer")).getByText("Invited")).toBeVisible();
-    // INVITED carries two (§5.8): Resend invite, then Block — rightmost, so the
-    // column's edge lines up with every other row's.
+    // INVITED carries two (§5.8): Resend invite, then Block — and after both,
+    // in every keyed row, the rename pencil (TAS-425), so the pencils stand in
+    // one column.
     expect(within(rowFor("Leo Fischer")).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
       "Resend invite to Leo Fischer",
       "Block Leo Fischer",
+      "Rename Leo Fischer",
+    ]);
+    expect(within(rowFor("Anna Ivanova")).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Block Anna Ivanova",
+      "Rename Anna Ivanova",
     ]);
     expect(within(rowFor("Nina Kowal")).getByText("Blocked")).toBeVisible();
     expect(within(rowFor("Nina Kowal")).getByRole("button", { name: "Unblock Nina Kowal" })).toBeVisible();
@@ -178,7 +186,11 @@ describe("the admin Users section", () => {
     renderSection();
 
     expect(await screen.findByText("QUARANTINED")).toBeVisible();
-    expect(within(rowFor("Quinn Ash")).queryByRole("button")).not.toBeInTheDocument();
+    // No status write for a status nobody can name — but a name is not a
+    // status, and the server renames any account (TAS-425).
+    expect(within(rowFor("Quinn Ash")).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Rename Quinn Ash",
+    ]);
     expect(within(rowFor("No Key")).queryByRole("button")).not.toBeInTheDocument();
   });
 
@@ -819,5 +831,164 @@ describe("the admin Users section, inviting", () => {
     // Nothing answered, so nothing is quoted as the server's: "Failed to
     // fetch" is the browser's.
     expect(within(dialog).queryByText("Failed to fetch")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Renaming (TAS-425, DESIGN.md §5.8 «Users: переименование»), against the
+ * real mock as the status writes are: the rename is auth-service's rule there,
+ * and only the gateway's transport failures are supplied on top.
+ */
+describe("the admin Users section, renaming", () => {
+  let mock: MockTaskaApi;
+
+  beforeEach(async () => {
+    window.localStorage.clear();
+    mock = new MockTaskaApi();
+    await mock.login({ email: "mark@example.com", password: "mock-accepts-anything" });
+    useMock(mock);
+  });
+
+  const openRename = async (person: string) => {
+    const trigger = await screen.findByRole("button", { name: `Rename ${person}` });
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Rename user" });
+    return { trigger, dialog, field: within(dialog).getByLabelText("Name") as HTMLInputElement };
+  };
+
+  it("asks in a dialog that names the person, with the name in the field and the caret at its end", async () => {
+    renderSection();
+    const { trigger, dialog, field } = await openRename("Nina Kowal");
+
+    expect(trigger).toHaveAttribute("title", "Rename");
+    expect(within(dialog).getByText("nina@example.com")).toBeVisible();
+    expect(field).toHaveValue("Nina Kowal");
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(field.selectionStart).toBe("Nina Kowal".length);
+    expect(field).not.toHaveAttribute("maxlength");
+    // No reason field: the server writes the audit row itself.
+    expect(within(dialog).queryByLabelText("Reason")).not.toBeInTheDocument();
+  });
+
+  it("holds Rename while the name has a reason against it, and says the reason under the field", async () => {
+    renderSection();
+    const { dialog, field } = await openRename("Nina Kowal");
+    const rename = within(dialog).getByRole("button", { name: "Rename" });
+
+    fireEvent.change(field, { target: { value: "  " } });
+    expect(field).toHaveAccessibleDescription("Enter a name.");
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(rename).toHaveAttribute("aria-disabled", "true");
+    expect(rename).toHaveClass("is-unavailable");
+    fireEvent.click(rename);
+    fireEvent.change(field, { target: { value: "x".repeat(130) } });
+    expect(field).toHaveAccessibleDescription("Use at most 128 characters. This name has 130.");
+    expect(await mock.listAdminRows({ service: "auth", table: "users", pageSize: 100 })).toMatchObject({
+      rows: expect.arrayContaining([expect.objectContaining({ display_name: "Nina Kowal" })]),
+    });
+  });
+
+  it("closes without a request when the name did not change", async () => {
+    const spy = vi.spyOn(fakeApi, "updateUserDisplayName");
+    renderSection();
+    const { trigger, dialog, field } = await openRename("Nina Kowal");
+    fireEvent.change(field, { target: { value: " Nina Kowal " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(spy).not.toHaveBeenCalled();
+    expect(trigger).toHaveFocus();
+    spy.mockRestore();
+  });
+
+  it("takes the name the server answered with, marks the row, says so, and gives focus back to the row's pencil", async () => {
+    const queryClient = renderSection();
+    // Reads elsewhere that name people, cached from an earlier visit.
+    queryClient.setQueryData(["members", "p-1"], []);
+    queryClient.setQueryData(["project-context", "p-1"], {});
+    queryClient.setQueryData(["user-directory", "nin"], { items: [], hasMore: false });
+    const { dialog, field } = await openRename("Nina Kowal");
+    fireEvent.change(field, { target: { value: "  Nina Kay  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const row = rowFor("Nina Kay");
+    expect(row).toHaveClass("is-changed");
+    // Named as the row named them before, then as the server does now.
+    expect(screen.getByText("Nina Kowal is now named Nina Kay.")).toHaveAttribute("role", "status");
+    // Any status: Nina is BLOCKED, and stays so.
+    expect(within(row).getByText("Blocked")).toBeVisible();
+    expect(within(row).getByRole("button", { name: "Rename Nina Kay" })).toHaveFocus();
+    // Every other read that names people is marked to be asked again — no
+    // read of its own here, since none of them is on screen.
+    for (const key of [["members", "p-1"], ["project-context", "p-1"], ["user-directory", "nin"]]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    }
+    // And the list re-read says the same as the bridge did.
+    await waitFor(() => expect(within(rowFor("Nina Kay")).getByText("Blocked")).toBeVisible());
+    expect(screen.queryByText("Nina Kowal")).not.toBeInTheDocument();
+  });
+
+  it("renaming yourself puts the name in the cached account at once, and reads it again", async () => {
+    const queryClient = renderSection();
+    await screen.findByRole("button", { name: "Rename Mark Lee" });
+    await waitFor(() => expect(queryClient.getQueryData(["me"])).toMatchObject({ displayName: "Mark Lee" }));
+    const { dialog, field } = await openRename("Mark Lee");
+    fireEvent.change(field, { target: { value: "Mark Lin" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
+
+    await waitFor(() => expect(queryClient.getQueryData(["me"])).toMatchObject({ displayName: "Mark Lin" }));
+    expect(screen.getByText("Mark Lee is now named Mark Lin.")).toBeInTheDocument();
+  });
+
+  it("keeps the dialog open on a refusal, in the taxonomy's words, and points at the field for a name refusal", async () => {
+    setWriteFailure(
+      new ApiError(
+        "Display name must contain 1 to 128 characters and no control characters or line breaks",
+        "INVALID_ARGUMENT",
+        400,
+        "req-name",
+        undefined,
+        { reason: "DISPLAY_NAME_INVALID" },
+      ),
+    );
+    renderSection();
+    const { dialog, field } = await openRename("Nina Kowal");
+    fireEvent.change(field, { target: { value: "Nina K." } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
+
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent(/^The gateway would not accept this request/);
+    expect(alert).toHaveTextContent("Display name must contain 1 to 128 characters");
+    expect(within(alert).getByRole("button", { name: /Copy request id req-name/ })).toBeVisible();
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field).toHaveValue("Nina K.");
+  });
+
+  it.each([
+    [new ApiError("Global admin role is required", "PERMISSION_DENIED", 403), /^The server refused this/],
+    [new ApiError("User not found", "NOT_FOUND", 404), /^The server refused this/],
+    [new ApiError("Internal error", "INTERNAL", 500), /^The gateway failed while renaming this account/],
+    [new TypeError("Failed to fetch"), /^The admin API could not be reached, so this name may or may not have changed/],
+  ])("words %s in the rename's sentence", async (failure, sentence) => {
+    setWriteFailure(failure);
+    renderSection();
+    const { dialog, field } = await openRename("Nina Kowal");
+    fireEvent.change(field, { target: { value: "Nina K." } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(sentence);
+    expect(field).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("closes on Escape whatever the field holds, focus back on the pencil", async () => {
+    renderSection();
+    const { trigger, field } = await openRename("Nina Kowal");
+    fireEvent.change(field, { target: { value: "Something else" } });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
   });
 });

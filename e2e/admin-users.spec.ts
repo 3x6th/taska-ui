@@ -210,9 +210,12 @@ test("resends from an INVITED row only after asking, and the row's two buttons k
   await openUsers(page);
   const row = page.getByRole("row").filter({ hasText: "Leo Fischer" });
   const buttons = row.getByRole("button");
-  await expect(buttons).toHaveCount(2);
+  // Block is the rightmost of the two framed buttons; the rename pencil comes
+  // after it in every keyed row (TAS-425), so the pencils make one column.
+  await expect(buttons).toHaveCount(3);
   await expect(buttons.nth(0)).toHaveAccessibleName("Resend invite to Leo Fischer");
   await expect(buttons.nth(1)).toHaveAccessibleName("Block Leo Fischer");
+  await expect(buttons.nth(2)).toHaveAccessibleName("Rename Leo Fischer");
 
   const resend = row.getByRole("button", { name: "Resend invite to Leo Fischer" });
   await resend.click();
@@ -285,4 +288,72 @@ test("keeps the person column in view while a row's action has focus, frozen onl
     expect(measured.position).toBe("static");
     expect(measured.edge).toBe("0px");
   }
+});
+
+// Renaming (TAS-425, DESIGN.md §5.8 «Users: переименование»): any keyed row,
+// any status. The mock's store lives in memory, so the rename is followed into
+// a project's members within the same visit — by the links, never by a reload.
+test("renames an account from its row: the row takes the server's name, says so, and the project's members follow", async ({
+  page,
+}) => {
+  await openUsers(page);
+  const row = page.getByRole("row").filter({ hasText: "sofia@example.com" });
+  const pencil = row.getByRole("button", { name: "Rename Sofia Reyes" });
+  await expect(pencil).toHaveAttribute("title", "Rename");
+  // Every keyed row has one, whatever its status — LOCKED and BLOCKED included.
+  await expect(page.getByRole("button", { name: "Rename Omar Haddad" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rename Nina Kowal" })).toBeVisible();
+
+  await pencil.click();
+  const dialog = page.getByRole("dialog", { name: "Rename user" });
+  await expect(dialog.getByText("sofia@example.com")).toBeVisible();
+  const field = dialog.getByLabel("Name", { exact: true });
+  await expect(field).toBeFocused();
+  await expect(field).toHaveValue("Sofia Reyes");
+
+  // A reason against the name holds Rename, dimmed.
+  await field.fill("   ");
+  await expect(dialog.getByText("Enter a name.")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Rename" })).toHaveAttribute("aria-disabled", "true");
+
+  await field.fill("  Sofia Reyes-Park  ");
+  await field.press("Enter");
+
+  await expect(dialog).toHaveCount(0);
+  const renamed = page.getByRole("row").filter({ hasText: "sofia@example.com" });
+  await expect(renamed.getByText("Sofia Reyes-Park", { exact: true })).toBeVisible();
+  await expect(renamed).toHaveClass(/is-changed/);
+  await expect(page.getByRole("status").filter({ hasText: "Sofia Reyes is now named Sofia Reyes-Park." })).toHaveCount(1);
+  const back = renamed.getByRole("button", { name: "Rename Sofia Reyes-Park" });
+  await expect(back).toBeFocused();
+  expect(await page.evaluate(() => document.activeElement?.matches(":focus-visible"))).toBe(true);
+
+  // The members of a project she is on name her as the server now does.
+  await page.getByRole("link", { name: "Back to projects" }).click();
+  await expect(page).toHaveURL(/\/projects$/);
+  await page.locator(".project-card", { hasText: "Taska Platform" }).click();
+  await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
+  await page.getByRole("button", { name: "Members", exact: true }).click();
+  const members = page.getByRole("dialog", { name: "Members" });
+  await expect(members.locator(".member-row", { hasText: "sofia@example.com" })).toContainText("Sofia Reyes-Park");
+});
+
+test("closes the rename on Esc with focus back on the pencil, and changes nothing for an unchanged name", async ({ page }) => {
+  await openUsers(page);
+  const pencil = page.getByRole("button", { name: "Rename Nina Kowal" });
+
+  await pencil.click();
+  const dialog = page.getByRole("dialog", { name: "Rename user" });
+  await dialog.getByLabel("Name", { exact: true }).fill("Somebody else");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(pencil).toBeFocused();
+
+  await pencil.click();
+  await dialog.getByLabel("Name", { exact: true }).fill(" Nina Kowal ");
+  await dialog.getByRole("button", { name: "Rename" }).click();
+  await expect(dialog).toHaveCount(0);
+  // No write: the row is not marked and nothing is announced.
+  await expect(page.getByRole("row").filter({ hasText: "nina@example.com" })).not.toHaveClass(/is-changed/);
+  await expect(page.getByRole("status").filter({ hasText: "is now named" })).toHaveCount(0);
 });

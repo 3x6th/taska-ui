@@ -31,6 +31,7 @@ import type {
   IssueWorklogPage,
   IssueDetailsWithHistory,
   IssuedAccessToken,
+  InvitationPreview,
   InvitationResult,
   Label,
   Notification,
@@ -57,6 +58,7 @@ import type {
   UnwatchIssueResult,
   User,
   UserAvatar,
+  UserDisplayNameChange,
   UserStatusChange,
   WatchIssueResult,
 } from "../domain/types";
@@ -75,6 +77,13 @@ export interface AuthTokens {
 export interface AcceptInvitationInput {
   token: string;
   newPassword: string;
+  /**
+   * The name the account is activated with (TAS-425). Optional on the wire —
+   * left out, the invited name stays — and always sent by the invite form,
+   * trimmed (DESIGN.md §4.27). The server normalises it before it looks at
+   * anything else, so a name it refuses does not spend the link.
+   */
+  displayName?: string;
 }
 
 /**
@@ -993,6 +1002,22 @@ export interface TaskaApi {
    * the link; a success does.
    */
   acceptInvitation(input: AcceptInvitationInput): Promise<void>;
+  /**
+   * `POST /auth/invitations/preview` (TAS-425) — who a live link was made for,
+   * without spending it: the address, the name the account carries now, the
+   * kind of link and its deadline. Public, and sent **without** the session's
+   * token in every implementation, like `login` and `acceptInvitation`: a link
+   * opened under somebody else's session must not touch it, and its 401 must
+   * never read as that session dying (DESIGN.md §4.27, §5.1).
+   *
+   * One 401 `UNAUTHENTICATED` "Invalid or expired token" for every way the
+   * link can be dead — a blank token, one over 256 characters, one nobody
+   * holds, one used or revoked by a newer invitation, one past its deadline,
+   * and an account that is no longer `INVITED` (auth-service at develop
+   * `78019ece`). The gateway may refuse a body without a token at the edge
+   * with a 400 first.
+   */
+  previewInvitation(token: string): Promise<InvitationPreview>;
   refresh(refreshToken: string): Promise<AuthTokens>;
   logout(): Promise<void>;
   /**
@@ -1014,6 +1039,20 @@ export interface TaskaApi {
    * that cost a request of its own; nothing calls that route any more.
    */
   getCurrentUser(): Promise<User>;
+  /**
+   * `PATCH /users/me` `{displayName}` (`updateMyProfile`, TAS-425) — the only
+   * field of the reader's own account they can change. Answers 200 in the
+   * shape of `GET /users/me`, with the name as the server normalised it
+   * (trimmed), so it is mapped exactly as `getCurrentUser` maps its answer and
+   * replaces the cached account whole.
+   *
+   * The server's rule is `DisplayNames.normalize` (src/lib/displayName.ts):
+   * any control character or line break, or a trimmed name outside 1–128 code
+   * points, is a 400 `INVALID_ARGUMENT` with `details.reason`
+   * `DISPLAY_NAME_INVALID`. Nothing here refuses one before the request — the
+   * screens check, and the server decides.
+   */
+  updateMyDisplayName(displayName: string): Promise<User>;
 
   /** TAS-387: authenticated current-user routes; never accept a target user id. */
   getNotificationPreferences(): Promise<NotificationPreferences>;
@@ -2510,6 +2549,23 @@ export interface TaskaApi {
    * gateway's enum — read as no status (TAS-173).
    */
   resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange>;
+
+  /**
+   * `PATCH /admin/users/{userId}` `{displayName}` (`updateUserDisplayName`,
+   * TAS-425) — renames any account, in any status, the caller's own included.
+   * Answers `{userId, displayName}` with the name as the server normalised it.
+   * No reason is asked for: admin-service writes the old and the new name to
+   * the audit log itself (`USER_DISPLAY_NAME_UPDATED`).
+   *
+   * What it refuses, in auth-service's order (`UserDisplayNameService.updateByAdmin`,
+   * develop `78019ece`): the name first — 400 `INVALID_ARGUMENT`,
+   * `details.reason` `DISPLAY_NAME_INVALID`, the rule `updateMyDisplayName`
+   * states; then a caller who is not an `ACTIVE` or `LOCKED` `GLOBAL_ADMIN`,
+   * 403 `PERMISSION_DENIED` "Global admin role is required"; then an account
+   * nobody has, 404 `NOT_FOUND` "User not found". As with the status writes,
+   * hiding the control is not the permission.
+   */
+  updateUserDisplayName(userId: string, displayName: string): Promise<UserDisplayNameChange>;
 }
 
 /**

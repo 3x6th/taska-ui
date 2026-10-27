@@ -363,6 +363,36 @@ export interface InvitationResult {
 }
 
 /**
+ * What `POST /auth/invitations/preview` says about a live link
+ * (`InvitationPreviewResponseDto`, TAS-425, backend develop `78019ece`) — read
+ * before the password is chosen, without spending the link: the address the
+ * account was invited under and the name it carries now.
+ *
+ * `kind` is `INVITATION` for an account an admin invited and `SIGNUP` for one
+ * made by self-signup (backend TAS-426; signup is off on the stand). Read as
+ * an open string — a kind this build has never heard of is kept as it came,
+ * and nothing tells the two apart yet (DESIGN.md §4.27).
+ */
+export interface InvitationPreview {
+  email: string;
+  displayName: string;
+  kind: InvitationKind;
+  expiresAt: string;
+}
+
+/** `InvitationPreviewResponseDto.kind`: the two the contract lists, and any other string the wire carries. */
+export type InvitationKind = "INVITATION" | "SIGNUP" | (string & {});
+
+/**
+ * What `PATCH /admin/users/{userId}` answers with — `UserDisplayNameResponseDto`
+ * (TAS-425): the account and the name it now carries, normalised by the server.
+ */
+export interface UserDisplayNameChange {
+  userId: string;
+  displayName: string;
+}
+
+/**
  * `UserSummaryDto` — who somebody is, as the server names them inline on a
  * read that is about something else (backend TAS-214, develop `60d62ee`): the
  * issue's assignee and reporter, an attachment's uploader, a comment's author.
@@ -1194,24 +1224,25 @@ export type IssueEventType =
 /**
  * How a change reached Taska when it did not come from the UI (TAS-411, epic
  * TAS-399): through the MCP server, or straight to the gateway with a personal
- * access token. Neither is on the wire yet — see `ActionVia`.
+ * access token — `channel` `MCP` and `API_TOKEN` on the wire (see `ActionVia`).
  */
 export type ActionChannel = "API_TOKEN" | "MCP";
 
 /**
- * The channel mark on a history event or a comment (TAS-412, for TAS-411).
- * **Not in the contract and not served**: backend develop `92a00dbc` sends no
- * such field, `RestTaskaApi` therefore states none (`via: null`), and only the
- * mock seeds it, so the mark can be seen and tested before the backend says
- * what it is called and what it holds (docs/ai/API-DIVERGENCE.md, "TAS-412").
+ * The channel mark on a history event or a comment (TAS-412, TAS-411):
+ * `IssueHistoryResponseDto.channel` and `CommentResponseDto.channel` since
+ * backend develop `78019ece` — a nullable, read-only open string, "UI,
+ * API_TOKEN or MCP", absent or `null` on records older than the field. A
+ * comment's is the channel of its **last** write.
  *
- * Absent or `null` is a change made in the UI, and it renders exactly as it
- * did before this field existed. `tokenName` is the token's name when the
- * server names it, `null` when it does not.
+ * Only the two channels that are not the UI become a mark. `UI`, `null`, an
+ * absent field and a channel this build has no word for are all `null` here,
+ * and render exactly as a change made in the UI always has (DESIGN.md §4.15,
+ * §4.26). The contract declares the token's name and id private and never
+ * returns them, so the mark names the channel and nothing else.
  */
 export interface ActionVia {
   channel: ActionChannel;
-  tokenName: string | null;
 }
 
 export interface IssueHistoryEvent {
@@ -1241,7 +1272,7 @@ export interface IssueHistoryEvent {
    */
   participants?: Readonly<Record<string, UserSummary>>;
   occurredAt: string;
-  /** The channel mark (`ActionVia`): mock only until TAS-411. */
+  /** The channel mark (`ActionVia`), from the event's `channel`. */
   via?: ActionVia | null;
   payload: {
     from?: IssueStatusKey;
@@ -1628,7 +1659,7 @@ export interface IssueComment {
   createdAt: string;
   updatedAt: string | null;
   version: number;
-  /** The channel mark (`ActionVia`): mock only until TAS-411. */
+  /** The channel mark (`ActionVia`), from the channel of the comment's last write. */
   via?: ActionVia | null;
 }
 

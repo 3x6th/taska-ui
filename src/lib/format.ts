@@ -369,22 +369,20 @@ export const commentWasEdited = ({ createdAt, updatedAt }: Pick<IssueComment, "c
 };
 
 /**
- * The channel mark after an actor's name in Activity and a comment's head
- * (TAS-412, for TAS-411): "via MCP (Cursor on laptop)", "via API token
- * (Release script)", or without a name just "via MCP" / "via API token".
+ * The channel mark in a comment's head and on an Activity event's meta line
+ * (TAS-412, TAS-411): "via MCP" or "via API token". The token's name is not
+ * part of it — the contract declares a token's name and id private, and no
+ * answer carries them (DESIGN.md §4.15, §4.26).
  *
  * `null` — draw nothing — for no mark at all, which is a change made in the
  * UI and looks exactly as it did before the mark existed, and for a channel
- * this build has no word for: a mark it cannot read says nothing true. A
- * blank name is no name. The mark is mock only until TAS-411 puts it on the
- * wire (`ActionVia`).
+ * this build has no word for: a mark it cannot read says nothing true.
  */
 export const actionViaText = (via: ActionVia | null | undefined): string | null => {
   if (!via || typeof via !== "object") return null;
-  const channel = via.channel === "MCP" ? "MCP" : via.channel === "API_TOKEN" ? "API token" : null;
-  if (!channel) return null;
-  const name = typeof via.tokenName === "string" ? via.tokenName.trim() : "";
-  return name ? `via ${channel} (${name})` : `via ${channel}`;
+  if (via.channel === "MCP") return "via MCP";
+  if (via.channel === "API_TOKEN") return "via API token";
+  return null;
 };
 
 /**
