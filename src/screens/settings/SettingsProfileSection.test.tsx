@@ -72,6 +72,15 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     profileFailure?: Error;
     /** Holds the profile read open, so the page's loading state can be watched. */
     holdProfile: boolean;
+    /** The account's name as the server holds it (TAS-425). */
+    displayName: string;
+    /** Names `updateMyDisplayName` was sent, in order. */
+    renames: string[];
+    nameFailure?: Error;
+    /** The rename lands on the server, and this is thrown in place of its answer: a reply lost on the way back. */
+    nameAnswerLost?: Error;
+    /** Holds the rename open, so its in-flight frame can be looked at. */
+    holdName: boolean;
   } = {
     avatarUrl: null,
     avatarUnavailable: false,
@@ -88,6 +97,9 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     holdConfirm: false,
     userStatuses: null,
     holdProfile: false,
+    displayName: "Anna Ivanova",
+    renames: [],
+    holdName: false,
   };
 
   let releaseHeld: (() => void) | null = null;
@@ -98,7 +110,31 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     releaseHeld = null;
   };
 
+  /** `GET /users/me` as the server answers it now; the avatar link is signed afresh on every answer. */
+  let signature = 0;
+  const profile = () => {
+    if (state.legacyProfile) return { ...anna, displayName: state.displayName };
+    if (state.avatarUnavailable)
+      return { ...anna, displayName: state.displayName, avatarUrl: null, avatarId: null, avatarUnavailable: true };
+    signature += 1;
+    return {
+      ...anna,
+      displayName: state.displayName,
+      avatarUrl: state.avatarUrl ? `${state.avatarUrl}&read=${signature}` : null,
+      avatarId: state.avatarUrl ? "avatar-1" : null,
+      avatarUnavailable: false,
+    };
+  };
+
   const fakeApi = {
+    updateMyDisplayName: async (displayName: string) => {
+      state.renames.push(displayName);
+      if (state.holdName) await hold();
+      if (state.nameFailure) throw state.nameFailure;
+      state.displayName = displayName;
+      if (state.nameAnswerLost) throw state.nameAnswerLost;
+      return profile();
+    },
     getNotificationPreferences: async () => ({
       emailEnabled: true,
       telegramEnabled: false,
@@ -123,13 +159,15 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
       state.reads.push("me");
       if (state.holdProfile) await hold();
       if (state.profileFailure) throw state.profileFailure;
-      if (state.legacyProfile) return { ...anna };
+      if (state.legacyProfile) return { ...anna, displayName: state.displayName };
       // The avatar's id stays the same while the picture does, as on the
       // server: only the link is signed afresh on every read. A failed profile
       // read carries no avatar at all, whatever the row holds.
-      if (state.avatarUnavailable) return { ...anna, avatarUrl: null, avatarId: null, avatarUnavailable: true };
+      if (state.avatarUnavailable)
+        return { ...anna, displayName: state.displayName, avatarUrl: null, avatarId: null, avatarUnavailable: true };
       return {
         ...anna,
+        displayName: state.displayName,
         avatarUrl: state.avatarUrl,
         avatarId: state.avatarUrl ? "avatar-1" : null,
         avatarUnavailable: false,
@@ -197,6 +235,11 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     state.userStatuses = null;
     state.profileFailure = undefined;
     state.holdProfile = false;
+    state.displayName = "Anna Ivanova";
+    state.renames = [];
+    state.nameFailure = undefined;
+    state.nameAnswerLost = undefined;
+    state.holdName = false;
     releaseHeld = null;
   };
 
@@ -922,6 +965,248 @@ describe("Settings → My profile", () => {
       expect(within(head).getByText("Anna Ivanova")).toBeVisible();
       expect(within(head).getByText("anna@example.com")).toHaveClass("settings-profile-email");
       expect(head).not.toHaveTextContent("@anna");
+    });
+  });
+  /**
+   * The name (TAS-425, DESIGN.md §5.9 «Имя»): a pencil after it, a form in its
+   * place, `PATCH /users/me`, and the answer written over the cached account
+   * the way a read is — the top bar's menu follows in the same frame.
+   */
+  describe("the name", () => {
+    const openEditor = async () => {
+      await openOnProfile();
+      const pencil = screen.getByRole("button", { name: "Edit name" });
+      fireEvent.click(pencil);
+      const field = await screen.findByLabelText("Name");
+      return { pencil, field: field as HTMLInputElement };
+    };
+
+    it("puts a pencil right after the name, and opens a form in its place with the name and the caret at its end", async () => {
+      renderOnProfile();
+      await openOnProfile();
+      const pencil = screen.getByRole("button", { name: "Edit name" });
+      expect(pencil).toHaveAttribute("title", "Edit");
+      expect(pencil.previousElementSibling).toHaveTextContent("Anna Ivanova");
+      expect(pencil.previousElementSibling).toHaveAttribute("title", "Anna Ivanova");
+
+      fireEvent.click(pencil);
+      const field = (await screen.findByLabelText("Name")) as HTMLInputElement;
+      expect(field).toHaveValue("Anna Ivanova");
+      await waitFor(() => expect(field).toHaveFocus());
+      expect(field.selectionStart).toBe("Anna Ivanova".length);
+      expect(field).not.toHaveAttribute("maxlength");
+      expect(field).not.toHaveAttribute("placeholder");
+      expect(screen.getByRole("button", { name: "Save" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible();
+      // The email stays, under the form.
+      expect(document.querySelector(".settings-name-form + p + .settings-profile-email")).toHaveTextContent(
+        "anna@example.com",
+      );
+    });
+
+    it("cancels on Esc and on Cancel, sending nothing, and gives focus back to the pencil", async () => {
+      renderOnProfile();
+      const { field } = await openEditor();
+      fireEvent.change(field, { target: { value: "Someone else" } });
+      fireEvent.keyDown(field, { key: "Escape" });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Edit name" })).toHaveFocus());
+      expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Edit name" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Edit name" })).toHaveFocus());
+      expect(state.renames).toEqual([]);
+    });
+
+    it("saves on Enter, trimmed; the header, the menu and the status follow, and focus is on the pencil", async () => {
+      state.avatarUrl = "https://store.example/face.png?sig=1";
+      renderOnProfile();
+      const trigger = await openOnProfile();
+      const drawn = trigger.querySelector("img")?.getAttribute("src");
+      expect(drawn).toBeTruthy();
+      const { field } = await openEditor();
+
+      fireEvent.change(field, { target: { value: "  Anna Smith  " } });
+      fireEvent.keyDown(field, { key: "Enter" });
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Edit name" })).toHaveFocus());
+      expect(state.renames).toEqual(["Anna Smith"]);
+      expect(document.querySelector(".settings-profile-name")).toHaveTextContent("Anna Smith");
+      expect(screen.getByRole("button", { name: "Open profile for Anna Smith" })).toBeVisible();
+      expect(screen.getByText("Your name is now Anna Smith.")).toHaveAttribute("role", "status");
+      // The answer carried the same avatar under a fresh signature; the link
+      // already drawn is kept, so the photo is not fetched again.
+      expect(screen.getByRole("button", { name: "Open profile for Anna Smith" }).querySelector("img")).toHaveAttribute(
+        "src",
+        drawn!,
+      );
+    });
+
+    it("closes without a request when the trimmed name is the one it already has", async () => {
+      renderOnProfile();
+      const { field } = await openEditor();
+      fireEvent.change(field, { target: { value: " Anna Ivanova " } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(screen.queryByLabelText("Name")).not.toBeInTheDocument());
+      expect(state.renames).toEqual([]);
+    });
+
+    it("says the one reason against a name under the field and holds Save, Enter included", async () => {
+      renderOnProfile();
+      const { field } = await openEditor();
+      const save = screen.getByRole("button", { name: "Save" });
+
+      fireEvent.change(field, { target: { value: "   " } });
+      expect(field).toHaveAccessibleDescription("Enter a name.");
+      expect(field).toHaveAttribute("aria-invalid", "true");
+      expect(save).toHaveAttribute("aria-disabled", "true");
+      expect(save).toHaveClass("is-unavailable");
+      fireEvent.click(save);
+      fireEvent.keyDown(field, { key: "Enter" });
+
+      fireEvent.change(field, { target: { value: "Anna\tSmith" } });
+      expect(field).toHaveAccessibleDescription("Remove the tab or line break from the name.");
+      fireEvent.change(field, { target: { value: "x".repeat(129) } });
+      expect(field).toHaveAccessibleDescription("Use at most 128 characters. This name has 129.");
+      expect(state.renames).toEqual([]);
+
+      fireEvent.change(field, { target: { value: "Anna Smith" } });
+      expect(field).not.toHaveAttribute("aria-invalid");
+      expect(save).not.toHaveAttribute("aria-disabled");
+      expect(save).not.toHaveClass("is-unavailable");
+    });
+
+    it("ignores Enter and Esc while an IME is composing", async () => {
+      renderOnProfile();
+      const { field } = await openEditor();
+      fireEvent.change(field, { target: { value: "Anna Smith" } });
+      fireEvent.keyDown(field, { key: "Enter", isComposing: true });
+      fireEvent.keyDown(field, { key: "Escape", isComposing: true });
+      expect(field).toBeInTheDocument();
+      expect(state.renames).toEqual([]);
+    });
+
+    it("holds the field read-only and both buttons in flight while the write is out; Enter and Esc do nothing", async () => {
+      state.holdName = true;
+      renderOnProfile();
+      const { field } = await openEditor();
+      fireEvent.change(field, { target: { value: "Anna Smith" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(field).toHaveAttribute("readonly"));
+      const save = screen.getByRole("button", { name: "Save" });
+      const cancel = screen.getByRole("button", { name: "Cancel" });
+      expect(save).toHaveAttribute("aria-disabled", "true");
+      expect(save).not.toHaveClass("is-unavailable");
+      expect(cancel).toHaveAttribute("aria-disabled", "true");
+      fireEvent.keyDown(field, { key: "Enter" });
+      fireEvent.keyDown(field, { key: "Escape" });
+      fireEvent.click(cancel);
+      expect(field).toBeInTheDocument();
+      expect(state.renames).toEqual(["Anna Smith"]);
+
+      await act(async () => release());
+      await waitFor(() => expect(screen.queryByLabelText("Name")).not.toBeInTheDocument());
+    });
+
+    it("prints the server's name refusal as it came, marks the field with it, and keeps the form and the text", async () => {
+      state.nameFailure = Object.assign(
+        new Error("Display name must contain 1 to 128 characters and no control characters or line breaks"),
+        { code: "INVALID_ARGUMENT", status: 400, requestId: REQUEST_ID, details: { reason: "DISPLAY_NAME_INVALID" } },
+      );
+      renderOnProfile();
+      const { field } = await openEditor();
+      const reads = state.reads.length;
+      fireEvent.change(field, { target: { value: "Anna Smith" } });
+      fireEvent.keyDown(field, { key: "Enter" });
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(/^Display name must contain 1 to 128 characters/);
+      expect(screen.getByRole("button", { name: `Copy request id ${REQUEST_ID}` })).toBeVisible();
+      expect(field).toHaveAttribute("aria-invalid", "true");
+      expect(field).toHaveAccessibleDescription(/^Display name must contain/);
+      expect(field).toHaveValue("Anna Smith");
+      expect(field).toHaveFocus();
+      // The server answered: nothing to read again.
+      await act(async () => {});
+      expect(state.reads).toHaveLength(reads);
+    });
+
+    it("says the name was not changed for anything else, with the server's words, and does not point at the field", async () => {
+      state.nameFailure = Object.assign(new Error("Auth service unavailable"), {
+        code: "UNAVAILABLE",
+        status: 503,
+        requestId: REQUEST_ID,
+      });
+      renderOnProfile();
+      const { field } = await openEditor();
+      const reads = state.reads.length;
+      fireEvent.change(field, { target: { value: "Anna Smith" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("Your name was not changed.");
+      expect(screen.getByText("Auth service unavailable")).toBeVisible();
+      expect(screen.getByRole("button", { name: `Copy request id ${REQUEST_ID}` })).toBeVisible();
+      expect(field).not.toHaveAttribute("aria-invalid");
+      expect(document.querySelector(".settings-profile-name")).toBeNull();
+      await act(async () => {});
+      expect(state.reads).toHaveLength(reads);
+    });
+
+    it("says the name may or may not have changed when nothing answered, reads the account again, and a second Save of a name it now has sends nothing", async () => {
+      // The write landed; its answer did not come back.
+      state.nameAnswerLost = new TypeError("Failed to fetch");
+      renderOnProfile();
+      const { field } = await openEditor();
+      const reads = state.reads.length;
+      fireEvent.change(field, { target: { value: "Anna Smith" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "The server could not be reached, so your name may or may not have changed. Save again to make sure.",
+      );
+      // The browser's words are not the server's, and there is no id to give.
+      expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Copy request id/ })).not.toBeInTheDocument();
+      expect(field).not.toHaveAttribute("aria-invalid");
+      expect(field).toHaveValue("Anna Smith");
+      // `/users/me` read again, once; the top bar follows what it says.
+      await waitFor(() => expect(state.reads).toHaveLength(reads + 1));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Open profile for Anna Smith" })).toBeVisible());
+      expect(screen.getByLabelText("Name")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByLabelText("Name")).not.toBeInTheDocument());
+      expect(state.renames).toEqual(["Anna Smith"]);
+      expect(document.querySelector(".settings-profile-name")).toHaveTextContent("Anna Smith");
+    });
+
+    it("sends a name that never landed again on the second Save, and gives the id when the failure carried one", async () => {
+      state.nameFailure = Object.assign(new TypeError("Failed to fetch"), { requestId: REQUEST_ID });
+      renderOnProfile();
+      const { field } = await openEditor();
+      const reads = state.reads.length;
+      fireEvent.change(field, { target: { value: "Anna Smith" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/^The server could not be reached/);
+      expect(screen.getByRole("button", { name: `Copy request id ${REQUEST_ID}` })).toBeVisible();
+      await waitFor(() => expect(state.reads).toHaveLength(reads + 1));
+
+      state.nameFailure = undefined;
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByLabelText("Name")).not.toBeInTheDocument());
+      expect(state.renames).toEqual(["Anna Smith", "Anna Smith"]);
+      expect(document.querySelector(".settings-profile-name")).toHaveTextContent("Anna Smith");
+    });
+
+    it("offers no pencil while the profile is loading or could not be read", async () => {
+      state.holdProfile = true;
+      renderOnProfile();
+      await screen.findByText("Loading your profile");
+      expect(screen.queryByRole("button", { name: "Edit name" })).not.toBeInTheDocument();
+      await act(async () => release());
     });
   });
 });

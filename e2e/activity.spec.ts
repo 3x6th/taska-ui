@@ -106,3 +106,17 @@ test("the activity heading folds and opens from the keyboard", async ({ page }) 
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(itemsOf(panel).first()).toBeVisible();
 });
+
+// The channel mark on the feed (TAS-411, TAS-425): Sofia moved TAS-107 through
+// the MCP server. The mark rides on the event's meta line after the time,
+// names the channel and nothing else, and every other event carries none.
+test("marks an event that came through MCP on its meta line, without a token name", async ({ page }) => {
+  await signIn(page);
+  await openBoard(page);
+  const panel = await openIssue(page, "TAS-107");
+
+  const marks = panel.locator(".activity-item .activity-meta .via-mark");
+  await expect(marks).toHaveCount(1);
+  await expect(marks).toHaveText("via MCP");
+  await expect(panel.locator(".activity-item p .via-mark")).toHaveCount(0);
+});

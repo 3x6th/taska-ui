@@ -213,11 +213,19 @@ export const actionPendingLabels: Record<UserAction, string> = {
   reset: "Resetting…",
 };
 
+/**
+ * Every write the Users section makes: the three status writes, and the
+ * rename (TAS-425), which is not a status write — a row offers it whatever its
+ * status — and so is not a `UserAction`.
+ */
+export type UserWriteAction = UserAction | "rename";
+
 /** Mid-sentence, for the failure that is the gateway's own fault: "failed while …ing this account". */
-export const actionGerunds: Record<UserAction, string> = {
+export const actionGerunds: Record<UserWriteAction, string> = {
   block: "blocking",
   unblock: "unblocking",
   reset: "resetting the lockout on",
+  rename: "renaming",
 };
 
 /**

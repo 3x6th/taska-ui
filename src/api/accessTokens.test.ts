@@ -230,9 +230,21 @@ describe("the lifetimes a policy allows", () => {
   });
 });
 
-describe("the channel mark on the REST wire (TAS-411)", () => {
-  it("states no channel on a history event or a comment, whatever a key of that name holds", async () => {
-    const via = { channel: "MCP", tokenName: "Cursor on laptop" };
+describe("the channel mark on the REST wire (TAS-411, TAS-425)", () => {
+  // `channel` on `IssueHistoryResponseDto` and `CommentResponseDto` (develop
+  // `78019ece`): an open string, null or absent on old records. Only MCP and
+  // an API token become a mark; nothing names the token.
+  const channels: [label: string, value: Record<string, unknown>, via: { channel: string } | null][] = [
+    ["MCP", { channel: "MCP" }, { channel: "MCP" }],
+    ["API_TOKEN", { channel: "API_TOKEN" }, { channel: "API_TOKEN" }],
+    ["UI", { channel: "UI" }, null],
+    ["null", { channel: null }, null],
+    ["absent", {}, null],
+    ["an unknown channel", { channel: "WEBHOOK" }, null],
+    ["a non-string", { channel: 3 }, null],
+  ];
+
+  function stubWire(extra: Record<string, unknown>) {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) =>
@@ -249,7 +261,7 @@ describe("the channel mark on the REST wire (TAS-411)", () => {
                     createdAt: "2026-10-24T10:00:00Z",
                     updatedAt: "2026-10-24T10:00:00Z",
                     version: 1,
-                    via,
+                    ...extra,
                   },
                 ],
                 totalCount: 1,
@@ -259,19 +271,39 @@ describe("the channel mark on the REST wire (TAS-411)", () => {
           : new Response(
               JSON.stringify({
                 issue: { id: "i-1", projectId: "p-1", summary: "x", labels: [] },
-                history: [{ id: "h-1", eventType: "CREATED", actorUserId: "u-1", occurredAt: "2026-10-24T10:00:00Z", payload: {}, via }],
+                history: [
+                  { id: "h-1", eventType: "CREATED", actorUserId: "u-1", occurredAt: "2026-10-24T10:00:00Z", payload: {}, ...extra },
+                ],
               }),
               { status: 200 },
             ),
       ),
     );
+  }
+
+  it.each(channels)("reads %s on a history event and a comment", async (_label, extra, via) => {
+    stubWire(extra);
     const api = new RestTaskaApi();
 
     const { history } = await api.getIssue("p-1", "i-1");
     const { items } = await api.listComments("p-1", "i-1");
 
-    expect(history[0].via).toBeNull();
-    expect(items[0].via).toBeNull();
+    expect(history[0].via).toEqual(via);
+    expect(items[0].via).toEqual(via);
+    // The wire's own key does not ride through into the domain object.
+    expect(history[0]).not.toHaveProperty("channel");
+    expect(items[0]).not.toHaveProperty("channel");
+  });
+
+  it("reads no token name, whatever a key of the old shape carries", async () => {
+    stubWire({ channel: "MCP", via: { channel: "API_TOKEN", tokenName: "Cursor on laptop" } });
+    const api = new RestTaskaApi();
+
+    const { history } = await api.getIssue("p-1", "i-1");
+    const { items } = await api.listComments("p-1", "i-1");
+
+    expect(history[0].via).toEqual({ channel: "MCP" });
+    expect(items[0].via).toEqual({ channel: "MCP" });
   });
 });
 

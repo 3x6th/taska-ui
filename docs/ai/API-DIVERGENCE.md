@@ -1723,6 +1723,7 @@ Everything below is the entry as it stood, in the past tense.
 ### TAS-412: personal access tokens and the channel mark ship ahead of the gateway, on shapes nobody has specified
 
 - **TAS-417 (2026-10-26):** the token routes are deployed (401 without a token, rid `76b3a012-99c3-429f-9d31-40a29ef7f543`) and specified at develop `be5085e5`; TAS-417 removed the provisional mapping and follows the real shapes (policy, server order, `ACTIVE_TOKEN_LIMIT`, `SESSION_REQUIRED`, 204 on any revoke). Still open on the token half: the three PAT probes behind the lead's promise, and the kept not-deployed branch they unlock. The channel half stays (TAS-411, backend PR #242 open).
+- **TAS-425 (2026-10-27): the channel half is closed.** Develop `78019ece` states `channel` on `IssueHistoryResponseDto` and `CommentResponseDto` (nullable open string, "UI, API_TOKEN or MCP", on a comment the channel of its last write; the token's name and id are never returned). `RestTaskaApi` maps it in `getIssue` and `toComment` through `toActionVia`: `MCP` and `API_TOKEN` become the mark, `UI`, `null`, absent, non-string and unknown values draw nothing. `ActionVia.tokenName` is gone, and so is the request for it on TAS-411. The Channel, `rest` and Removal lines below are history for the token half only.
 
 - **Endpoints:** `GET /api/v1/users/me/access-tokens`,
   `POST /api/v1/users/me/access-tokens`,

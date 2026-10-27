@@ -1,12 +1,12 @@
 import { useMutation } from "@tanstack/react-query";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { taskaApi } from "../../api/client";
 import { apiErrorFacts } from "../../api/errors";
 import { ADMIN_WRITE_REASON_MAX_LENGTH } from "../../api/TaskaApi";
 import { Modal } from "../../components/Modal";
 import { RequestId } from "../../components/RequestId";
 import type { UserStatusChange } from "../../domain/types";
-import type { AdminUserTarget, UserAction } from "./users";
+import type { AdminUserTarget, UserAction, UserWriteAction } from "./users";
 import {
   actionAccessibleName,
   actionGerunds,
@@ -119,17 +119,7 @@ export function AdminUserActionModal({
           submit();
         }}
       >
-        <div className="admin-write-target">
-          {/* A name that fell all the way back to the row's key is a machine
-              value, and is set as one: mono, and free to wrap (§5.8). */}
-          <p className={labelIsKey(user) ? "admin-write-target-name admin-write-target-id" : "admin-write-target-name"}>
-            {name}
-          </p>
-          {/* The address, unless it is already the name above, so the account
-              is identifiable from the dialog alone: a confirmation naming one
-              "Anna Ivanova" out of two people is not a confirmation. Two
-              accounts can share a name and cannot share an email (§5.8). */}
-          {user.email && user.email !== name ? <p className="admin-write-target-line">{user.email}</p> : null}
+        <AdminWriteTarget user={user}>
           {/* The transition being asked for, in the server's own values. The
               arrow is punctuation and is hidden from the accessibility tree —
               read out, "ACTIVE → BLOCKED" is two words with a pause where a
@@ -142,7 +132,7 @@ export function AdminUserActionModal({
               from {userStatusLabel(from)} to {userStatusLabel(to)}
             </span>
           </p>
-        </div>
+        </AdminWriteTarget>
 
         {/* Every sentence here is a fact the reader cannot see anywhere else,
             and each is printed only when it is true. */}
@@ -196,7 +186,7 @@ export function AdminUserActionModal({
             : `A reason is required — the server refuses a change without one. Up to ${ADMIN_WRITE_REASON_MAX_LENGTH} characters.`}
         </p>
 
-        {run.isError ? <ActionFailure action={action} error={run.error} /> : null}
+        {run.isError ? <UserWriteFailureNote action={action} error={run.error} /> : null}
 
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">
@@ -208,6 +198,30 @@ export function AdminUserActionModal({
         </div>
       </form>
     </Modal>
+  );
+}
+
+/**
+ * Who a Users dialog is about (§5.8): the name, and under it the address —
+ * the confirmation's block, and the rename's (TAS-425), which carries no
+ * transition. Anything a dialog adds about the person goes inside, after them.
+ */
+export function AdminWriteTarget({ user, children }: { user: AdminUserTarget; children?: ReactNode }) {
+  const name = personLabel(user);
+  return (
+    <div className="admin-write-target">
+      {/* A name that fell all the way back to the row's key is a machine
+          value, and is set as one: mono, and free to wrap (§5.8). */}
+      <p className={labelIsKey(user) ? "admin-write-target-name admin-write-target-id" : "admin-write-target-name"}>
+        {name}
+      </p>
+      {/* The address, unless it is already the name above, so the account
+          is identifiable from the dialog alone: a confirmation naming one
+          "Anna Ivanova" out of two people is not a confirmation. Two
+          accounts can share a name and cannot share an email (§5.8). */}
+      {user.email && user.email !== name ? <p className="admin-write-target-line">{user.email}</p> : null}
+      {children}
+    </div>
   );
 }
 
@@ -225,14 +239,28 @@ export function AdminUserActionModal({
  * copy of the submit button one line below it. What is shared is the taxonomy,
  * the classifier and the request-id affordance, not the prose.
  */
-function ActionFailure({ action, error }: { action: UserAction; error: unknown }) {
+export function UserWriteFailureNote({ action, error }: { action: UserWriteAction; error: unknown }) {
   const failure = userWriteFailure(error);
   const { message, requestId } = apiErrorFacts(error);
 
   return (
     <div className="admin-write-failure" role="alert">
       <p>
-        {failure === "conflict" ? (
+        {action === "rename" ? (
+          // The rename's own sentences (§5.8 «Users: переименование»): it has
+          // no transition to refuse, so a conflict reads as any refused
+          // request, with the server's words below; and it changes a name, not
+          // an account's state.
+          failure === "refused" ? (
+            "The server refused this. Either you are not a global admin as far as the gateway is concerned, or that user is no longer there."
+          ) : failure === "server" ? (
+            `The gateway failed while ${actionGerunds.rename} this account. Nothing is wrong with what was asked for — this is a fault on the server, and the request id below is what identifies it in the gateway log.`
+          ) : failure === "conflict" || failure === "rejected" ? (
+            "The gateway would not accept this request. Nothing is down: it read what was asked for and refused it, and what to change is in its own words below."
+          ) : (
+            "The admin API could not be reached, so this name may or may not have changed. The list behind this dialog says which, once it can be read again."
+          )
+        ) : failure === "conflict" ? (
           action === "reset" ? (
             "The server would not make this change. Nothing is wrong with the request — a lockout can only be reset while the account is locked, and this one is not, or is no longer."
           ) : (

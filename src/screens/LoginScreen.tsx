@@ -1,18 +1,21 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQueryClient, type UseQueryOptions, type UseQueryResult } from "@tanstack/react-query";
 import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts, isAccountLocked } from "../api/errors";
+import { apiErrorFacts, isAccountLocked, isDisplayNameInvalid } from "../api/errors";
+import type { InvitationPreview } from "../domain/types";
 import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
 import { ErrorNote } from "../components/ErrorNote";
 import { TaskaLogo } from "../components/TaskaLogo";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { formatLockDeadline, lockedUntilOf } from "../lib/accountLock";
+import { displayNameProblem, trimDisplayName } from "../lib/displayName";
 import {
   forgetInviteToken,
   heldInviteToken,
+  holdInviteToken,
   inviteTokenFromInput,
   subscribeInviteToken,
 } from "../lib/inviteLink";
@@ -41,6 +44,21 @@ const PASSWORD_HINT = "At least 8 characters, with an uppercase letter, a digit 
 const INVITE_LINK_DEAD =
   "This invitation link no longer works — it expired, was used, or was replaced by a newer one. If you already set a password, sign in; otherwise ask the person who invited you to send a new invitation.";
 
+/** The invite tab's note, with a link caught and without one (§4.27, TAS-425). */
+const INVITE_NOTE = "Confirm your name and choose a password to activate your Taska account.";
+
+/** Under Name, while the name has no reason to refuse it (§4.27). */
+const NAME_HINT = "Shown to the people you work with. You can change it later in Settings.";
+
+/**
+ * The preview's answers, by token (TAS-425). The token is in the key, so this
+ * cache entry is as short-lived as the token itself: memory only, dropped with
+ * the link once it is spent, and kept apart from the cache a foreign session's
+ * sign-out clears — the preview was read without that session and is about
+ * the person activating.
+ */
+const INVITATION_PREVIEW_KEY = "invitation-preview";
+
 /**
  * The login card, both tabs (DESIGN.md §4.27, TAS-208).
  *
@@ -55,6 +73,13 @@ const INVITE_LINK_DEAD =
  * Somebody else's session is told about on the invite tab and signed out of at
  * submit, before the request — never on landing, which would end a session
  * for a link opened by accident.
+ *
+ * Since TAS-425 a link is previewed before the password is asked for
+ * (`POST /auth/invitations/preview`, sent without the session like the
+ * activation): a caught link on arrival, a typed one on Continue. The answer
+ * fills Email, read-only, so a password manager files the new password under
+ * the right account, and Name, which the reader may change and which is sent
+ * with the password. A link the preview refuses never shows the form at all.
  */
 export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProps) {
   const navigate = useNavigate();
@@ -70,6 +95,15 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const [newPassword, setNewPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
+  /** The name as the reader changed it; `null` until they do, which reads the invited one (§4.27). */
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
+  /**
+   * How many times "Try again" has been answered by a refusal, for this link
+   * (§4.27). The refusal found on arrival is not announced; every one that
+   * answers a Try again is, and is keyed by this count so that the same
+   * sentence is mounted — and announced — again.
+   */
+  const [retryRefusals, setRetryRefusals] = useState(0);
   // Read once: a session held when the form opened is the one the notice is
   // about, and the press that signs out of it is what retires the notice —
   // not a re-read that might race the sign-out.
@@ -78,12 +112,17 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const noticeRef = useRef<HTMLParagraphElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
   const newPasswordRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const previewRefusalRef = useRef<HTMLDivElement>(null);
   const noticeId = useId();
   const tokenHintId = useId();
   const passwordHintId = useId();
   const newPasswordId = useId();
   const passwordId = useId();
   const typedTokenId = useId();
+  const inviteEmailId = useId();
+  const nameId = useId();
+  const nameHintId = useId();
 
   // A link that arrives while the card is already up — a hash change on the
   // Pages build, handed over by `App` — lands on the tab it is for. Adjusted
@@ -93,7 +132,56 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   if (tokenSeen !== capturedToken) {
     setTokenSeen(capturedToken);
     if (capturedToken !== null) setMode("invite");
+    // A name typed for one link is not the name of the next.
+    setNameDraft(null);
+    setRetryRefusals(0);
   }
+
+  // The link's preview, read as soon as a link is caught (§4.27): who it was
+  // made for, and the name the account carries now. Never retried by itself and
+  // never re-read on focus — a dead link stays dead, and the reader's own
+  // "Try again" is the retry for a failure that is not. A list of one query or
+  // of none, so that without a link nothing is put in the cache at all: the
+  // sign-in form after an expired session starts from an empty one (§5.1).
+  const previewQueries: UseQueryOptions<InvitationPreview>[] =
+    capturedToken === null
+      ? []
+      : [
+          {
+            queryKey: [INVITATION_PREVIEW_KEY, capturedToken],
+            queryFn: () => taskaApi.previewInvitation(capturedToken),
+            retry: false,
+            staleTime: Infinity,
+            refetchOnWindowFocus: false,
+          },
+        ];
+  const preview: UseQueryResult<InvitationPreview> | undefined = useQueries({ queries: previewQueries })[0];
+  /**
+   * The refusal "Try again" is answering, held while the retry is out: a
+   * query with no data goes back to pending when it is fetched again, and the
+   * refusal — with "Checking" under it — has to stay where it was (§4.27).
+   * Held until the retry's answer is in hand, a new refusal included, so that
+   * the answer is drawn once, in the same commit as `retryRefusals` moves.
+   */
+  const [retrying, setRetrying] = useState<{ error: unknown } | null>(null);
+  const previewed = capturedToken !== null && preview?.isSuccess ? preview.data : null;
+  const previewError = retrying ? retrying.error : preview?.isError ? preview.error : null;
+  const previewRefused = capturedToken !== null && previewError !== null;
+  const nameValue = nameDraft ?? previewed?.displayName ?? "";
+  const nameProblem = previewed ? displayNameProblem(nameValue) : null;
+
+  // A typed token is previewed on Continue (§4.27), and the answer makes it a
+  // caught one: the field goes, the caught layout is drawn — from the answer
+  // already in hand, so it is not asked for twice — and focus is in New
+  // password.
+  const continueWith = useMutation({
+    mutationFn: (token: string) => taskaApi.previewInvitation(token),
+    onSuccess: (answer, token) => {
+      queryClient.setQueryData([INVITATION_PREVIEW_KEY, token], answer);
+      holdInviteToken(token);
+      setFocusRequest({ target: "newPassword" });
+    },
+  });
 
   // Only the session that died without being asked needs explaining: a login
   // form after clicking a private link surprises nobody, and a sentence there
@@ -102,8 +190,10 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // in to continue." above a form headed "Activate account" describes neither.
   const expiredNotice = mode === "signin" && redirect?.expired ? "Your session expired. Sign in to continue." : null;
   const activatedNotice = mode === "signin" && activated ? "Password set. Sign in with your email and new password." : null;
+  // It is about activating, and there is nothing to activate once the preview
+  // has refused the link (§4.27): it goes with the form.
   const foreignSessionNotice =
-    mode === "invite" && signedInElsewhere
+    mode === "invite" && signedInElsewhere && !previewRefused
       ? "You’re signed in on this browser. Activating this invitation signs you out first."
       : null;
 
@@ -144,6 +234,16 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     else if (focusRequest?.target === "newPassword") newPasswordRef.current?.focus();
   }, [focusRequest]);
 
+  // A preview that refused the link takes the form away, and focus with it if
+  // it was there — New password, where a caught link starts. It goes to the
+  // refusal rather than to <body>, as the expired session's notice takes it
+  // (§4.27); focus anywhere else is left where the reader put it.
+  useEffect(() => {
+    if (!previewRefused) return;
+    const active = document.activeElement;
+    if (active === null || active === document.body) previewRefusalRef.current?.focus();
+  }, [previewRefused]);
+
   // Read once, then taken out of the history entry: router state outlives a
   // reload, and a reload of `/login` would otherwise say "Password set" again
   // and take focus to Email a second time, for an activation long past. The
@@ -161,6 +261,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     setShowPassword(false);
     setShowNewPassword(false);
     submit.reset();
+    continueWith.reset();
   };
 
   const submit = useMutation({
@@ -176,12 +277,19 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
       // activating. The notice above said this would happen.
       if (taskaApi.hasSession()) {
         await taskaApi.logout();
-        queryClient.clear();
+        // Everything that session read goes, and its writes with it — all but
+        // the link's preview, which no session read and which the form on
+        // screen is drawn from.
+        queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== INVITATION_PREVIEW_KEY });
+        queryClient.getMutationCache().clear();
         setSignedInElsewhere(false);
       }
       await taskaApi.acceptInvitation({
         token: capturedToken ?? inviteTokenFromInput(typedToken),
         newPassword,
+        // Always sent, and trimmed (§4.27): what the reader confirmed is the
+        // name the account starts with.
+        displayName: trimDisplayName(nameValue),
       });
       return "activated";
     },
@@ -192,6 +300,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
         // a sentence saying so. `replace`, so Back does not return to a form
         // whose link no longer works.
         forgetInviteToken();
+        queryClient.removeQueries({ queryKey: [INVITATION_PREVIEW_KEY] });
         navigate("/login", { replace: true, state: { activated: true } satisfies LoginRedirectState });
         return;
       }
@@ -203,7 +312,29 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   });
 
   const passwordRefused = mode === "invite" && submit.isError && isPasswordRefusal(submit.error);
+  const nameRefused = mode === "invite" && submit.isError && isDisplayNameInvalid(submit.error);
   const notice = expiredNotice ?? activatedNotice ?? foreignSessionNotice;
+
+  /**
+   * Enter or a press on the invite tab's one button. Without a caught link that
+   * button is Continue, and it previews what was typed. With one it is
+   * Activate, which sends nothing while the preview is out or has refused, and
+   * nothing for a name with a reason against it — it takes the reader to Name
+   * instead (§4.27).
+   */
+  const submitInvite = () => {
+    if (capturedToken === null) {
+      if (continueWith.isPending) return;
+      continueWith.mutate(inviteTokenFromInput(typedToken));
+      return;
+    }
+    if (submit.isPending || !previewed) return;
+    if (nameProblem) {
+      nameRef.current?.focus();
+      return;
+    }
+    submit.mutate();
+  };
 
   return (
     <main className="auth-screen">
@@ -248,6 +379,10 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
             className="form-stack"
             onSubmit={(event) => {
               event.preventDefault();
+              if (mode === "invite") {
+                submitInvite();
+                return;
+              }
               // The guard `aria-disabled` on either submit does not enforce by
               // itself: Enter in a field while the request is out sends nothing.
               if (submit.isPending) return;
@@ -304,28 +439,108 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                 {submit.isError ? <LoginFailure error={submit.error} mode={mode} /> : null}
                 <p className="auth-hint">Forgot your password? Taska has no password reset yet.</p>
               </>
+            ) : capturedToken === null ? (
+              <>
+                <p className="invite-note">{INVITE_NOTE}</p>
+                <div className="field">
+                  <label htmlFor={typedTokenId}>Invitation token</label>
+                  <input
+                    aria-describedby={tokenHintId}
+                    aria-invalid={continueWith.isError && previewFailure(continueWith.error) !== "unavailable" ? true : undefined}
+                    autoComplete="off"
+                    className="mono-input"
+                    id={typedTokenId}
+                    onChange={(event) => setTypedToken(event.target.value)}
+                    spellCheck={false}
+                    value={typedToken}
+                  />
+                  <p className="auth-field-hint" id={tokenHintId}>
+                    Open the link in your invitation email — it fills this in.
+                  </p>
+                </div>
+                {/* Continue, not Activate: nothing is asked for until the link
+                    has said whose it is (§4.27). No debounce — a token half
+                    typed would read as a dead link. */}
+                <button
+                  aria-disabled={continueWith.isPending || undefined}
+                  className="primary-button auth-submit"
+                  type="submit"
+                >
+                  {continueWith.isPending ? "Checking" : "Continue"}
+                </button>
+                {continueWith.isError ? <PreviewFailureNote error={continueWith.error} live /> : null}
+                {continueWith.isError && previewFailure(continueWith.error) === "dead" ? null : (
+                  <p className="auth-hint">Link expired? Ask the person who invited you to send a new one.</p>
+                )}
+              </>
+            ) : previewRefused ? (
+              // The link was refused on arrival, so there is nothing to fill
+              // in: the note, the fields, Activate and the hint all go, and
+              // the refusal stands in their place. A state found on arrival,
+              // not an answer to anything done, so not announced — focus
+              // brings it to a reader who was in the form (§4.27).
+              <div className="invite-preview-refusal" ref={previewRefusalRef} tabIndex={-1}>
+                <PreviewFailureNote error={previewError} key={retryRefusals} live={retryRefusals > 0} />
+                {previewFailure(previewError) === "unavailable" ? (
+                  <button
+                    aria-disabled={retrying ? true : undefined}
+                    className="secondary-button auth-retry"
+                    onClick={() => {
+                      if (retrying || !preview) return;
+                      setRetrying({ error: previewError });
+                      void preview.refetch().then((result) => {
+                        setRetrying(null);
+                        if (result.isSuccess) setFocusRequest({ target: "newPassword" });
+                        else setRetryRefusals((count) => count + 1);
+                      });
+                    }}
+                    type="button"
+                  >
+                    {retrying ? "Checking" : "Try again"}
+                  </button>
+                ) : null}
+              </div>
             ) : (
               <>
-                <p className="invite-note">Choose a password to activate your Taska account.</p>
-                {/* No token field at all once the link brought one (§4.27): the
-                    reader cannot correct it, and 43 characters invite study. */}
-                {capturedToken === null ? (
-                  <div className="field">
-                    <label htmlFor={typedTokenId}>Invitation token</label>
+                <p className="invite-note">{INVITE_NOTE}</p>
+                {/* Read-only, and an input rather than text: a password manager
+                    files the new password under this address (§4.27). In the
+                    tab order, with §7's ring and no accent frame. */}
+                <div aria-busy={previewed ? undefined : true} className="field">
+                  <label htmlFor={inviteEmailId}>Email</label>
+                  <div className="invite-value-field">
                     <input
-                      aria-describedby={tokenHintId}
-                      autoComplete="off"
-                      className="mono-input"
-                      id={typedTokenId}
-                      onChange={(event) => setTypedToken(event.target.value)}
-                      spellCheck={false}
-                      value={typedToken}
+                      autoComplete="username"
+                      id={inviteEmailId}
+                      readOnly
+                      type="email"
+                      value={previewed?.email ?? ""}
                     />
-                    <p className="auth-field-hint" id={tokenHintId}>
-                      Open the link in your invitation email — it fills this in.
-                    </p>
+                    {previewed ? null : <span aria-hidden="true" className="value-skeleton invite-skeleton-email" />}
                   </div>
-                ) : null}
+                </div>
+                <div aria-busy={previewed ? undefined : true} className="field">
+                  <label htmlFor={nameId}>Name</label>
+                  <div className="invite-value-field">
+                    <input
+                      aria-describedby={nameHintId}
+                      aria-invalid={nameProblem || nameRefused ? true : undefined}
+                      autoComplete="name"
+                      id={nameId}
+                      onChange={(event) => setNameDraft(event.target.value)}
+                      readOnly={!previewed}
+                      ref={nameRef}
+                      spellCheck={false}
+                      value={nameValue}
+                    />
+                    {previewed ? null : <span aria-hidden="true" className="value-skeleton invite-skeleton-name" />}
+                  </div>
+                  {/* The one reason the shared check gives stands where the
+                      hint stood, while there is one (§4.27, §5.9). */}
+                  <p className="auth-field-hint" id={nameHintId}>
+                    {nameProblem ?? NAME_HINT}
+                  </p>
+                </div>
                 <div className="field">
                   <label htmlFor={newPasswordId}>New password</label>
                   <div className="password-field">
@@ -357,8 +572,13 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                 </div>
                 {/* `aria-disabled`, not `disabled` (§4.21): a button that
                     disabled itself would drop the keyboard reader's focus to
-                    <body> for the length of the request. */}
-                <button aria-disabled={submit.isPending || undefined} className="primary-button auth-submit" type="submit">
+                    <body> for the length of the request. In flight while the
+                    preview is out too, with its label unchanged. */}
+                <button
+                  aria-disabled={submit.isPending || !previewed || undefined}
+                  className="primary-button auth-submit"
+                  type="submit"
+                >
                   {submit.isPending ? "Activating" : "Activate account"}
                 </button>
                 {submit.isError ? <InviteFailure error={submit.error} /> : null}
@@ -426,6 +646,67 @@ function InviteFailure({ error }: { error: unknown }) {
 function isDeadLink(error: unknown): boolean {
   const { status, code } = apiErrorFacts(error);
   return status === 401 || code === "UNAUTHENTICATED";
+}
+
+/**
+ * The two 4xx a retry may change (§4.27): a request the server timed out
+ * waiting for (408), and one it would not take yet (429). They go with the 5xx.
+ */
+const RETRYABLE_CLIENT_STATUSES: ReadonlySet<number> = new Set([408, 429]);
+
+/**
+ * How a preview was refused (§4.27): the link is dead (its one 401); the
+ * request was refused (any other 4xx but 408 and 429 — a 400 at the gateway's
+ * edge for a body it will not read), which no retry changes; or the link could
+ * not be checked — a 5xx, a 408 or a 429, or no answer at all — which a retry
+ * might. The mock carries no status, so its codes stand in.
+ */
+function previewFailure(error: unknown): "dead" | "rejected" | "unavailable" {
+  if (isDeadLink(error)) return "dead";
+  const { status, code } = apiErrorFacts(error);
+  if (
+    status !== null
+      ? status >= 400 && status < 500 && !RETRYABLE_CLIENT_STATUSES.has(status)
+      : code === "INVALID_ARGUMENT" || code === "FAILED_PRECONDITION"
+  ) {
+    return "rejected";
+  }
+  return "unavailable";
+}
+
+/**
+ * What a refused preview says (§4.27): the dead link in the same words as a
+ * refused activation, a rejected request in the server's own, and anything
+ * else as a link that could not be checked, with the server's words beside
+ * it. The request id under each. `live` for an answer to a press — Continue's,
+ * and Try again's — and not for the refusal found on arrival.
+ */
+function PreviewFailureNote({ error, live = false }: { error: unknown; live?: boolean }) {
+  const { message, requestId, status, code } = apiErrorFacts(error);
+  // Words only from something that answered: a request that never reached the
+  // server has the browser's ("Failed to fetch"), and those are not the server's.
+  const serverWords = status !== null || code !== null ? message : null;
+  const failure = previewFailure(error);
+  const role = live ? "alert" : undefined;
+  if (failure === "dead") {
+    return (
+      <ErrorNote live={role} requestId={requestId}>
+        {INVITE_LINK_DEAD}
+      </ErrorNote>
+    );
+  }
+  if (failure === "rejected" && message) {
+    return (
+      <ErrorNote live={role} requestId={requestId}>
+        {message}
+      </ErrorNote>
+    );
+  }
+  return (
+    <ErrorNote live={role} requestId={requestId} serverWords={serverWords}>
+      This invitation could not be checked.
+    </ErrorNote>
+  );
 }
 
 /**

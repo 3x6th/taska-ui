@@ -609,17 +609,15 @@ describe("formatDayWithYearIfOther", () => {
   });
 });
 
-describe("actionViaText (TAS-412)", () => {
-  it("names the channel, and the token when the server names it", () => {
-    expect(actionViaText({ channel: "MCP", tokenName: "Cursor on laptop" })).toBe("via MCP (Cursor on laptop)");
-    expect(actionViaText({ channel: "API_TOKEN", tokenName: "Release script" })).toBe("via API token (Release script)");
-    expect(actionViaText({ channel: "MCP", tokenName: null })).toBe("via MCP");
-    expect(actionViaText({ channel: "API_TOKEN", tokenName: "   " })).toBe("via API token");
+describe("actionViaText (TAS-412, TAS-425)", () => {
+  it("names the channel and nothing else — the token's name is never on the wire", () => {
+    expect(actionViaText({ channel: "MCP" })).toBe("via MCP");
+    expect(actionViaText({ channel: "API_TOKEN" })).toBe("via API token");
   });
 
   it("says nothing for a change made in the UI, or a channel this build has no word for", () => {
     expect(actionViaText(undefined)).toBeNull();
     expect(actionViaText(null)).toBeNull();
-    expect(actionViaText({ channel: "FAX", tokenName: "x" } as unknown as Parameters<typeof actionViaText>[0])).toBeNull();
+    expect(actionViaText({ channel: "FAX" } as unknown as Parameters<typeof actionViaText>[0])).toBeNull();
   });
 });

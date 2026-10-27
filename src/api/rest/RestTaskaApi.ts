@@ -88,6 +88,7 @@ import type {
   AccessToken,
   AccessTokenList,
   AccessTokenPolicy,
+  ActionVia,
   AdminCatalog,
   AdminPagination,
   AdminRow,
@@ -127,6 +128,7 @@ import type {
   IssueDetails,
   IssueDetailsWithHistory,
   IssuedAccessToken,
+  InvitationPreview,
   InvitationResult,
   LinkedIssue,
   UserSummary,
@@ -156,6 +158,7 @@ import type {
   UnwatchIssueResult,
   User,
   UserAvatar,
+  UserDisplayNameChange,
   UserStatus,
   UserStatusChange,
   WatchIssueResult,
@@ -372,6 +375,28 @@ interface RestUserStatusChange {
 }
 
 /**
+ * `UserDisplayNameResponseDto` — what `PATCH /admin/users/{userId}` answers
+ * with. Both properties are in the schema's `required` list, so they are typed
+ * as present, as `RestUserStatusChange` above is.
+ */
+interface RestUserDisplayNameChange {
+  userId: string;
+  displayName: string;
+}
+
+/**
+ * `InvitationPreviewResponseDto` (TAS-425). All four are required by the
+ * schema; `kind` is read as `unknown` because its enum may grow, and a value
+ * that is not a string is not one to keep.
+ */
+interface RestInvitationPreview {
+  email: string;
+  displayName: string;
+  kind?: unknown;
+  expiresAt: string;
+}
+
+/**
  * `RetryOutboxEventResponseDto` — what the outbox retry answers with.
  *
  * `eventId` and `status` are in the schema's `required` list, so they are typed
@@ -485,15 +510,17 @@ interface RestListIssueLabelsResponse {
 }
 
 /**
- * `IssueHistoryResponseDto` without `via`: the channel mark (TAS-411) is not on
- * the wire, and a wire type that declared it would say it is. `actor` is a
- * nullable `UserSummaryDto` (backend TAS-398), read field by field, and so is
- * every entry of `participants` (backend TAS-431), a map of `UserSummaryDto`
- * by id.
+ * `IssueHistoryResponseDto`. `actor` is a nullable `UserSummaryDto` (backend
+ * TAS-398), read field by field, and so is every entry of `participants`
+ * (backend TAS-431), a map of `UserSummaryDto` by id. `channel` (TAS-411,
+ * develop `78019ece`) is a nullable open string — "UI, API_TOKEN or MCP",
+ * absent on records older than the field — read as `unknown` and turned into
+ * the domain's `via` by `toActionVia`; it never rides through as itself.
  */
 type RestIssueHistoryEvent = Omit<IssueHistoryEvent, "issueId" | "via" | "actor" | "participants"> & {
   actor?: unknown;
   participants?: unknown;
+  channel?: unknown;
 };
 
 interface RestIssueWithHistory {
@@ -845,11 +872,15 @@ interface RestUserAvatar {
   downloadUrl?: string;
 }
 
-/** `CommentResponseDto`. No `via`: the channel mark (TAS-411) is not on the wire. */
+/**
+ * `CommentResponseDto`. `channel` is the channel of the comment's last write
+ * (TAS-411, develop `78019ece`), read as `history`'s is.
+ */
 type RestComment = Omit<IssueComment, "updatedAt" | "author" | "via"> & {
   updatedAt?: string | null;
   /** Since backend TAS-214. */
   author?: RestUserSummary | null;
+  channel?: unknown;
 };
 
 /**
@@ -1009,9 +1040,30 @@ export class RestTaskaApi implements TaskaApi {
   async acceptInvitation(input: AcceptInvitationInput): Promise<void> {
     await this.request<void>("/auth/invitations/accept", {
       method: "POST",
-      body: input,
+      // Field by field, so the name is left out rather than sent `undefined`
+      // when the caller has none: omitted keeps the invited name.
+      body: {
+        token: input.token,
+        newPassword: input.newPassword,
+        ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+      },
       skipAuth: true,
     });
+  }
+
+  /**
+   * `POST /auth/invitations/preview`, sent like `acceptInvitation`: without the
+   * session's token (`skipAuth`), so a link opened under somebody else's
+   * session neither carries it nor, on its 401, ends it (DESIGN.md §4.27, §5.1).
+   */
+  async previewInvitation(token: string): Promise<InvitationPreview> {
+    return toInvitationPreview(
+      await this.request<RestInvitationPreview>("/auth/invitations/preview", {
+        method: "POST",
+        body: { token },
+        skipAuth: true,
+      }),
+    );
   }
 
   async refresh(refreshToken = this.refreshTokenValue ?? ""): Promise<AuthTokens> {
@@ -1037,6 +1089,20 @@ export class RestTaskaApi implements TaskaApi {
 
   async getCurrentUser(): Promise<User> {
     const response = await this.request<RestUser>("/users/me");
+    return this.toUser(response);
+  }
+
+  /**
+   * `PATCH /users/me`. The 200 is `GET /users/me`'s shape, so it goes through
+   * the same `toUser` — avatar, status and role read exactly as a read reads
+   * them — and the caller writes it over the `["me"]` query, whose
+   * `keepSignedAvatarLink` keeps the drawn link for an unchanged `avatar.id`.
+   */
+  async updateMyDisplayName(displayName: string): Promise<User> {
+    const response = await this.request<RestUser>("/users/me", {
+      method: "PATCH",
+      body: { displayName },
+    });
     return this.toUser(response);
   }
 
@@ -2765,6 +2831,15 @@ export class RestTaskaApi implements TaskaApi {
     );
   }
 
+  /** `PATCH /admin/users/{userId}` — the name, and nothing else, in the body. */
+  async updateUserDisplayName(userId: string, displayName: string): Promise<UserDisplayNameChange> {
+    const response = await this.request<RestUserDisplayNameChange>(`/admin/users/${this.segment(userId)}`, {
+      method: "PATCH",
+      body: { displayName },
+    });
+    return { userId: response.userId, displayName: response.displayName };
+  }
+
   /**
    * `POST /admin/outbox/{service}/{eventId}/retry`.
    *
@@ -3204,7 +3279,7 @@ export class RestTaskaApi implements TaskaApi {
     };
     return {
       issue,
-      history: (response.history ?? []).map(({ participants, ...event }) => ({
+      history: (response.history ?? []).map(({ participants, channel, ...event }) => ({
         ...event,
         issueId,
         actor: toNullableUserSummary(event.actor, event.actorUserId),
@@ -3212,10 +3287,9 @@ export class RestTaskaApi implements TaskaApi {
         // `actor`; one that names nobody is left out, as the server leaves out
         // an id it found no profile for.
         participants: toParticipants(participants),
-        // No channel mark from this gateway: TAS-411 has not said what the
-        // field is called or what it holds, so whatever a key of that name
-        // might carry is not read (docs/ai/API-DIVERGENCE.md, "TAS-412").
-        via: null,
+        // Backend TAS-411: how the change arrived. A mark only for MCP and an
+        // API token; `UI`, `null`, absent and unknown draw nothing.
+        via: toActionVia(channel),
       })),
     };
   }
@@ -3342,13 +3416,13 @@ export class RestTaskaApi implements TaskaApi {
     };
   }
 
-  private toComment(comment: RestComment): IssueComment {
+  private toComment({ channel, ...comment }: RestComment): IssueComment {
     return {
       ...comment,
       updatedAt: comment.updatedAt ?? null,
       author: comment.author ? toUserSummary(comment.author, comment.authorUserId) : null,
-      // No channel mark from this gateway yet (TAS-411), as in `getIssue`'s history.
-      via: null,
+      // The channel of the comment's last write (TAS-411), as in `getIssue`'s history.
+      via: toActionVia(channel),
     };
   }
 
@@ -3899,6 +3973,28 @@ function boardCounts(total: unknown, more: unknown, drawn: number): { totalCount
   const totalCount = typeof total === "number" && Number.isSafeInteger(total) && total >= 0 ? total : null;
   const hasMore = typeof more === "boolean" ? more : totalCount === null ? null : totalCount > drawn;
   return { totalCount, hasMore };
+}
+
+/**
+ * `channel` on a history event or a comment (TAS-411) as the domain's mark:
+ * `MCP` and `API_TOKEN` are the two channels that are not the UI and the only
+ * two that become one. `UI`, `null`, an absent field, anything that is not a
+ * string and any channel this build has no word for are `null` — no mark,
+ * drawn exactly as a change made in the UI (DESIGN.md §4.15, §4.26). The
+ * token's name and id are never on the wire, so the mark carries neither.
+ */
+function toActionVia(channel: unknown): ActionVia | null {
+  return channel === "MCP" || channel === "API_TOKEN" ? { channel } : null;
+}
+
+/** `InvitationPreviewResponseDto` → `InvitationPreview`: `kind` kept as any string it came as, `""` when it was not one. */
+function toInvitationPreview(response: RestInvitationPreview): InvitationPreview {
+  return {
+    email: response.email,
+    displayName: response.displayName,
+    kind: typeof response.kind === "string" ? response.kind : "",
+    expiresAt: response.expiresAt,
+  };
 }
 
 /**

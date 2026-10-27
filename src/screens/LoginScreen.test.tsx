@@ -14,7 +14,7 @@ import { LoginScreen } from "./LoginScreen";
  * both places at once — so nothing there can tell which of the two the screen
  * read. These cases take the two apart.
  */
-const { fakeApi, refuseWith, inviteState, loginState } = vi.hoisted(() => {
+const { fakeApi, refuseWith, inviteState, loginState, previewState } = vi.hoisted(() => {
   const state: { refusal?: Error } = {};
   /** A sign-in held open by hand, so its in-flight state can be looked at. */
   const loginState = { hold: false, release: () => {}, calls: 0 };
@@ -26,6 +26,13 @@ const { fakeApi, refuseWith, inviteState, loginState } = vi.hoisted(() => {
     release: () => {},
     calls: [] as string[],
     accepted: [] as AcceptInvitationInput[],
+  };
+  /** `POST /auth/invitations/preview` (TAS-425): what it answers, what it refuses, and the tokens it was asked about. */
+  const previewState = {
+    refusal: undefined as Error | undefined,
+    hold: false,
+    release: () => {},
+    tokens: [] as string[],
   };
   const api = {
     login: async () => {
@@ -43,6 +50,12 @@ const { fakeApi, refuseWith, inviteState, loginState } = vi.hoisted(() => {
       inviteState.calls.push("logout");
       inviteState.session = false;
     },
+    previewInvitation: async (token: string) => {
+      previewState.tokens.push(token);
+      if (previewState.hold) await new Promise<void>((resolve) => (previewState.release = resolve));
+      if (previewState.refusal) throw previewState.refusal;
+      return { email: "leo@example.com", displayName: "Leo Fischer", kind: "INVITATION", expiresAt: "2026-11-01T10:00:00Z" };
+    },
     acceptInvitation: async (input: AcceptInvitationInput) => {
       inviteState.calls.push(`acceptInvitation:${String(inviteState.session)}`);
       inviteState.accepted.push(input);
@@ -57,6 +70,7 @@ const { fakeApi, refuseWith, inviteState, loginState } = vi.hoisted(() => {
     },
     inviteState,
     loginState,
+    previewState,
   };
 });
 
@@ -121,6 +135,7 @@ describe("LoginScreen, a locked account", () => {
  */
 describe("LoginScreen, signing in", () => {
   afterEach(() => {
+    forgetInviteToken();
     refuseWith(undefined);
     Object.assign(loginState, { hold: false, release: () => {}, calls: 0 });
   });
@@ -144,7 +159,10 @@ describe("LoginScreen, signing in", () => {
     expect(field).toHaveAttribute("type", "password");
   });
 
-  it("says which tab is the current one, and hides a shown password again on every tab change", () => {
+  it("says which tab is the current one, and hides a shown password again on every tab change", async () => {
+    // A caught link, so the invite tab carries New password (TAS-425: without
+    // one it asks for the token first).
+    holdInviteToken(TOKEN);
     renderLogin();
     expect(screen.getByRole("button", { name: "Sign in", pressed: true })).toBeVisible();
     expect(screen.getByRole("button", { name: "Accept invite", pressed: false })).toBeVisible();
@@ -154,6 +172,7 @@ describe("LoginScreen, signing in", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Accept invite" }));
     expect(screen.getByRole("button", { name: "Accept invite", pressed: true })).toBeVisible();
+    await previewed();
     fireEvent.click(screen.getByRole("button", { name: "Show password" }));
     expect(screen.getByLabelText("New password")).toHaveAttribute("type", "text");
 
@@ -216,7 +235,13 @@ function renderAuth(path = "/invite", queryClient = new QueryClient({ defaultOpt
   return queryClient;
 }
 
-function activate(password = "Correct-horse-1") {
+/** The caught layout once the preview has answered: Email filled, Name editable. */
+async function previewed() {
+  await waitFor(() => expect(screen.getByLabelText("Email")).toHaveValue("leo@example.com"));
+}
+
+async function activate(password = "Correct-horse-1") {
+  await previewed();
   fireEvent.change(screen.getByLabelText("New password"), { target: { value: password } });
   fireEvent.click(screen.getByRole("button", { name: "Activate account" }));
 }
@@ -230,6 +255,7 @@ describe("LoginScreen, accepting an invitation", () => {
   afterEach(() => {
     forgetInviteToken();
     Object.assign(inviteState, { session: false, refusal: undefined, hold: false, calls: [], accepted: [] });
+    Object.assign(previewState, { refusal: undefined, hold: false, release: () => {}, tokens: [] });
   });
 
   it("shows no token field for a captured link, starts in New password, and says nothing false", async () => {
@@ -237,7 +263,7 @@ describe("LoginScreen, accepting an invitation", () => {
     renderAuth();
 
     expect(screen.queryByLabelText("Invitation token")).not.toBeInTheDocument();
-    expect(screen.getByText("Choose a password to activate your Taska account.")).toBeVisible();
+    expect(screen.getByText("Confirm your name and choose a password to activate your Taska account.")).toBeVisible();
     await waitFor(() => expect(screen.getByLabelText("New password")).toHaveFocus());
     expect(screen.getByLabelText("New password")).toHaveAccessibleDescription(
       "At least 8 characters, with an uppercase letter, a digit and a symbol.",
@@ -254,10 +280,11 @@ describe("LoginScreen, accepting an invitation", () => {
     holdInviteToken(TOKEN);
     renderAuth();
 
-    activate();
+    await activate();
 
     await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
-    expect(inviteState.accepted).toEqual([{ token: TOKEN, newPassword: "Correct-horse-1" }]);
+    // The invited name goes with the password, as the preview gave it.
+    expect(inviteState.accepted).toEqual([{ token: TOKEN, newPassword: "Correct-horse-1", displayName: "Leo Fischer" }]);
     expect(inviteState.calls).not.toContain("getCurrentUser");
     const notice = screen.getByText("Password set. Sign in with your email and new password.");
     expect(notice).toBeVisible();
@@ -293,7 +320,7 @@ describe("LoginScreen, accepting an invitation", () => {
     ).toBeVisible();
     expect(inviteState.calls).toEqual([]);
 
-    activate();
+    await activate();
 
     await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
     expect(inviteState.calls).toEqual(["logout", "acceptInvitation:false"]);
@@ -305,7 +332,7 @@ describe("LoginScreen, accepting an invitation", () => {
     holdInviteToken(TOKEN);
     renderAuth();
 
-    activate();
+    await activate();
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/^This invitation link no longer works — it expired, was used, or was replaced/);
@@ -342,7 +369,7 @@ describe("LoginScreen, accepting an invitation", () => {
     holdInviteToken(TOKEN);
     renderAuth();
 
-    activate("Correcthorse1");
+    await activate("Correcthorse1");
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Password must have at least 1 special character");
     expect(screen.getByLabelText("New password")).toHaveAttribute("aria-invalid", "true");
@@ -359,13 +386,13 @@ describe("LoginScreen, accepting an invitation", () => {
     holdInviteToken(TOKEN);
     renderAuth();
 
-    activate("   ");
+    await activate("   ");
 
     expect(await screen.findByRole("alert")).toHaveTextContent("body.newPassword must not be blank");
     expect(screen.getByLabelText("New password")).toHaveAttribute("aria-invalid", "true");
 
     inviteState.refusal = new ApiError("body.token must not be blank", "INVALID_ARGUMENT", 400);
-    activate("Correct-horse-1");
+    await activate("Correct-horse-1");
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("body.token must not be blank"));
     expect(screen.getByLabelText("New password")).not.toHaveAttribute("aria-invalid");
   });
@@ -375,7 +402,7 @@ describe("LoginScreen, accepting an invitation", () => {
     holdInviteToken(TOKEN);
     renderAuth();
 
-    activate();
+    await activate();
 
     const button = await screen.findByRole("button", { name: "Activating" });
     expect(button).toHaveAttribute("aria-disabled", "true");
@@ -401,15 +428,292 @@ describe("LoginScreen, accepting an invitation", () => {
     expect(field).toHaveAttribute("type", "password");
   });
 
-  it("asks for the token when no link brought one, and takes a whole pasted link", async () => {
+  it("asks for the token when no link brought one, previews it on Continue, and takes a whole pasted link", async () => {
     renderAuth();
     const field = screen.getByLabelText("Invitation token");
 
     expect(field).not.toHaveAttribute("placeholder");
     expect(field).toHaveAccessibleDescription("Open the link in your invitation email — it fills this in.");
-    fireEvent.change(field, { target: { value: `https://taska.ozero.dev/?token=${TOKEN}` } });
-    activate();
+    expect(screen.getByText("Confirm your name and choose a password to activate your Taska account.")).toBeVisible();
+    // Nothing asked for until the link has said whose it is.
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Activate account" })).not.toBeInTheDocument();
+    expect(screen.getByText("Link expired? Ask the person who invited you to send a new one.")).toBeVisible();
 
-    await waitFor(() => expect(inviteState.accepted).toEqual([{ token: TOKEN, newPassword: "Correct-horse-1" }]));
+    fireEvent.change(field, { target: { value: `https://taska.ozero.dev/?token=${TOKEN}` } });
+    // Typing alone asks nothing: no debounce.
+    expect(previewState.tokens).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    // The typed token becomes a caught one: the field goes, focus is in New password.
+    await waitFor(() => expect(screen.getByLabelText("New password")).toHaveFocus());
+    expect(previewState.tokens).toEqual([TOKEN]);
+    expect(screen.queryByLabelText("Invitation token")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toHaveValue("leo@example.com");
+    expect(screen.getByLabelText("Name")).toHaveValue("Leo Fischer");
+
+    await activate();
+
+    await waitFor(() =>
+      expect(inviteState.accepted).toEqual([{ token: TOKEN, newPassword: "Correct-horse-1", displayName: "Leo Fischer" }]),
+    );
+    // Asked once: the caught layout was drawn from Continue's answer.
+    expect(previewState.tokens).toEqual([TOKEN]);
+  });
+
+  it("says Checking while a typed token is out, and answers a refusal under Continue as an alert, the token kept", async () => {
+    previewState.hold = true;
+    renderAuth();
+    const field = screen.getByLabelText("Invitation token");
+    fireEvent.change(field, { target: { value: "dead-token" } });
+    fireEvent.submit(field.closest("form")!);
+
+    const button = await screen.findByRole("button", { name: "Checking" });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(button);
+    expect(previewState.tokens).toEqual(["dead-token"]);
+
+    previewState.refusal = new ApiError("Invalid or expired token", "UNAUTHENTICATED", 401, "req-preview");
+    await act(async () => previewState.release());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^This invitation link no longer works/);
+    expect(screen.getByRole("button", { name: "Copy request id req-preview" })).toBeVisible();
+    expect(screen.getByLabelText("Invitation token")).toHaveValue("dead-token");
+    expect(screen.getByLabelText("Invitation token")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("button", { name: "Continue" })).toBeVisible();
+    // The alert already says to ask for a new invitation.
+    expect(screen.queryByText("Link expired? Ask the person who invited you to send a new one.")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [408, "Request timeout"],
+    [429, "Too many requests"],
+  ])("answers a typed token's %i as a link that could not be checked, not as a bad token", async (status, words) => {
+    previewState.refusal = new ApiError(words, "UNAVAILABLE", status, `req-${status}`);
+    renderAuth();
+    const field = screen.getByLabelText("Invitation token");
+    fireEvent.change(field, { target: { value: TOKEN } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("This invitation could not be checked.");
+    expect(screen.getByText(words)).toBeVisible();
+    expect(screen.getByRole("button", { name: `Copy request id req-${status}` })).toBeVisible();
+    expect(field).not.toHaveAttribute("aria-invalid");
+    expect(screen.getByText("Link expired? Ask the person who invited you to send a new one.")).toBeVisible();
+  });
+});
+
+/**
+ * The preview of a caught link (TAS-425, DESIGN.md §4.27): the form drawn in
+ * its final shape while the preview is out, Email and Name from its answer,
+ * and the form taken away by a refusal.
+ */
+describe("LoginScreen, the invitation's preview", () => {
+  afterEach(() => {
+    forgetInviteToken();
+    Object.assign(inviteState, { session: false, refusal: undefined, hold: false, calls: [], accepted: [] });
+    Object.assign(previewState, { refusal: undefined, hold: false, release: () => {}, tokens: [] });
+  });
+
+  it("draws the final form while the preview is out — skeletons in Email and Name, Activate in flight — and fills it", async () => {
+    previewState.hold = true;
+    holdInviteToken(TOKEN);
+    renderAuth();
+
+    const email = screen.getByLabelText("Email");
+    const name = screen.getByLabelText("Name");
+    expect(previewState.tokens).toEqual([TOKEN]);
+    expect(email).toHaveAttribute("readonly");
+    expect(email).toHaveAttribute("type", "email");
+    expect(email).toHaveAttribute("autocomplete", "username");
+    expect(name).toHaveAttribute("readonly");
+    expect(email.closest(".field")).toHaveAttribute("aria-busy", "true");
+    expect(name.closest(".field")).toHaveAttribute("aria-busy", "true");
+    expect(document.querySelectorAll(".invite-value-field .value-skeleton")).toHaveLength(2);
+    await waitFor(() => expect(screen.getByLabelText("New password")).toHaveFocus());
+
+    // Activate and Enter send nothing yet.
+    const activateButton = screen.getByRole("button", { name: "Activate account" });
+    expect(activateButton).toHaveAttribute("aria-disabled", "true");
+    fireEvent.change(screen.getByLabelText("New password"), { target: { value: "Correct-horse-1" } });
+    fireEvent.click(activateButton);
+    fireEvent.submit(activateButton.closest("form")!);
+    expect(inviteState.accepted).toEqual([]);
+
+    await act(async () => previewState.release());
+
+    await waitFor(() => expect(email).toHaveValue("leo@example.com"));
+    expect(email).toHaveAttribute("readonly");
+    expect(name).toHaveValue("Leo Fischer");
+    expect(name).not.toHaveAttribute("readonly");
+    expect(name).toHaveAttribute("autocomplete", "name");
+    expect(name).toHaveAccessibleDescription("Shown to the people you work with. You can change it later in Settings.");
+    expect(document.querySelectorAll(".invite-value-field .value-skeleton")).toHaveLength(0);
+    expect(email.closest(".field")).not.toHaveAttribute("aria-busy");
+    // Focus did not move when the answer landed.
+    expect(screen.getByLabelText("New password")).toHaveFocus();
+    expect(activateButton).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("sends the changed name trimmed, and holds Activate on the name while it has a reason against it", async () => {
+    holdInviteToken(TOKEN);
+    renderAuth();
+    await previewed();
+    const name = screen.getByLabelText("Name");
+
+    fireEvent.change(name, { target: { value: "   " } });
+    expect(name).toHaveAttribute("aria-invalid", "true");
+    expect(name).toHaveAccessibleDescription("Enter a name.");
+    fireEvent.change(screen.getByLabelText("New password"), { target: { value: "Correct-horse-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Activate account" }));
+    expect(name).toHaveFocus();
+    expect(inviteState.accepted).toEqual([]);
+
+    fireEvent.change(name, { target: { value: "Leo\tF." } });
+    expect(name).toHaveAccessibleDescription("Remove the tab or line break from the name.");
+
+    fireEvent.change(name, { target: { value: "  Leo F.  " } });
+    expect(name).not.toHaveAttribute("aria-invalid");
+    fireEvent.click(screen.getByRole("button", { name: "Activate account" }));
+    await waitFor(() =>
+      expect(inviteState.accepted).toEqual([{ token: TOKEN, newPassword: "Correct-horse-1", displayName: "Leo F." }]),
+    );
+  });
+
+  it("marks Name for the server's name refusal, and prints its sentence", async () => {
+    inviteState.refusal = new ApiError(
+      "Display name must contain 1 to 128 characters and no control characters or line breaks",
+      "INVALID_ARGUMENT",
+      400,
+      "req-name",
+      undefined,
+      { reason: "DISPLAY_NAME_INVALID" },
+    );
+    holdInviteToken(TOKEN);
+    renderAuth();
+
+    await activate();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^Display name must contain 1 to 128 characters/);
+    expect(screen.getByLabelText("Name")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("New password")).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("takes the form away for a dead link: the dead-link sentence and its id, not announced, focus brought to it", async () => {
+    inviteState.session = true;
+    previewState.hold = true;
+    holdInviteToken(TOKEN);
+    renderAuth();
+    await waitFor(() => expect(screen.getByLabelText("New password")).toHaveFocus());
+    expect(screen.getByText("You’re signed in on this browser. Activating this invitation signs you out first.")).toBeVisible();
+
+    previewState.refusal = new ApiError("Invalid or expired token", "UNAUTHENTICATED", 401, "req-dead");
+    await act(async () => previewState.release());
+
+    const sentence = await screen.findByText(/^This invitation link no longer works/);
+    expect(sentence).not.toHaveAttribute("role");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy request id req-dead" })).toBeVisible();
+    for (const label of ["Email", "Name", "New password"]) expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Activate account" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Confirm your name and choose a password to activate your Taska account.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Link expired\?/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/signed in on this browser/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    const block = document.querySelector(".invite-preview-refusal");
+    expect(block).toHaveAttribute("tabindex", "-1");
+    expect(block).toHaveFocus();
+    // The landing touched nobody's session.
+    expect(inviteState.calls).toEqual([]);
+  });
+
+  it.each([
+    [400, "INVALID_ARGUMENT", "Invalid request parameters"],
+    [403, "PERMISSION_DENIED", "Forbidden"],
+    [413, "INVALID_ARGUMENT", "Payload too large"],
+  ])("prints a rejected preview (%i) in the server's words, with no retry", async (status, code, words) => {
+    previewState.refusal = new ApiError(words, code, status, `req-${status}`);
+    holdInviteToken(TOKEN);
+    renderAuth();
+
+    expect(await screen.findByText(words)).toBeVisible();
+    expect(screen.getByRole("button", { name: `Copy request id req-${status}` })).toBeVisible();
+    expect(screen.queryByText("This invitation could not be checked.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [408, "Request timeout"],
+    [429, "Too many requests"],
+    [502, "Bad gateway"],
+  ])("takes a %i on arrival as a link that could not be checked, with the server's words, the id and Try again", async (status, words) => {
+    previewState.refusal = new ApiError(words, "UNAVAILABLE", status, `req-${status}`);
+    holdInviteToken(TOKEN);
+    renderAuth();
+
+    expect(await screen.findByText("This invitation could not be checked.")).toBeVisible();
+    expect(screen.getByText(words)).toBeVisible();
+    expect(screen.getByRole("button", { name: `Copy request id req-${status}` })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+    // Found on arrival, not an answer to anything done.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("announces the refusal that answers Try again, and the same sentence again on the next", async () => {
+    previewState.refusal = new TypeError("Failed to fetch");
+    holdInviteToken(TOKEN);
+    renderAuth();
+
+    const arrival = await screen.findByText("This invitation could not be checked.");
+    expect(arrival).not.toHaveAttribute("role");
+    // Nothing answered, so no words are the server's.
+    expect(screen.queryByText("Failed to fetch")).not.toBeInTheDocument();
+
+    // Held while the retry is out: the refusal stays as it was, unannounced.
+    previewState.hold = true;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await screen.findByRole("button", { name: "Checking" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    previewState.refusal = new ApiError("Service unavailable", "UNAVAILABLE", 503, "req-503");
+    await act(async () => previewState.release());
+
+    const first = await screen.findByRole("alert");
+    expect(first).toHaveTextContent("This invitation could not be checked.");
+    expect(screen.getByText("Service unavailable")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+
+    previewState.hold = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(previewState.tokens).toHaveLength(3));
+    // The same sentence, mounted afresh so that it is said again.
+    await waitFor(() => expect(screen.getByRole("alert")).not.toBe(first));
+    expect(screen.getByRole("alert")).toHaveTextContent("This invitation could not be checked.");
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("offers Try again for a link that could not be checked, says Checking while it is out, and brings the form back", async () => {
+    previewState.refusal = new ApiError("Service unavailable", "UNAVAILABLE", 503, "req-503");
+    holdInviteToken(TOKEN);
+    renderAuth();
+
+    expect(await screen.findByText("This invitation could not be checked.")).toBeVisible();
+    expect(screen.getByText("Service unavailable")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Copy request id req-503" })).toBeVisible();
+
+    previewState.refusal = undefined;
+    previewState.hold = true;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    const checking = await screen.findByRole("button", { name: "Checking" });
+    expect(checking).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(checking);
+    expect(previewState.tokens).toEqual([TOKEN, TOKEN]);
+
+    await act(async () => previewState.release());
+
+    await waitFor(() => expect(screen.getByLabelText("New password")).toHaveFocus());
+    expect(screen.getByLabelText("Email")).toHaveValue("leo@example.com");
   });
 });

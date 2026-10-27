@@ -6202,7 +6202,7 @@ function CommentItem({
   };
   const when = formatDateTime(comment.createdAt);
   const asking = canManage && confirming && !editing;
-  // "via MCP (Cursor on laptop)" — nothing for a comment written in the UI (TAS-412).
+  // "via MCP" or "via API token" — nothing for a comment written in the UI (TAS-412).
   const via = actionViaText(comment.via);
 
   return (
@@ -6469,7 +6469,7 @@ function ActivityItem({
   isLast: boolean;
 }) {
   // The channel mark (TAS-412) is meta, so it rides on the time's line —
-  // "Aug 1, 12:00 · via MCP (Cursor on laptop)" — and the sentence stays whole
+  // "Aug 1, 12:00 · via MCP" — and the sentence stays whole
   // (§4.26). The plain space before the hidden dot is what a screen reader
   // keeps between the two. An event without one draws exactly as before.
   const via = actionViaText(event.via);

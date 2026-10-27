@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ImageUp } from "lucide-react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { taskaApi } from "../../api/client";
 import { AVATAR_ACCEPTED_SUMMARY, AVATAR_ACCEPT_ATTRIBUTE, AVATAR_MAX_SIZE_BYTES } from "../../api/avatars";
 import { apiErrorFacts } from "../../api/errors";
@@ -10,6 +10,7 @@ import { RequestId } from "../../components/RequestId";
 import { useMeta } from "../../hooks/useMeta";
 import { useOwnPhoto } from "../../hooks/useOwnPhoto";
 import { formatFileSize, globalRoleLabel, userStatusLabel } from "../../lib/format";
+import { ProfileName } from "./ProfileName";
 import { SettingsNotificationsSection } from "./SettingsNotificationsSection";
 
 /**
@@ -18,9 +19,10 @@ import { SettingsNotificationsSection } from "./SettingsNotificationsSection";
  * story (TAS-220); the three-leg upload, the optimistic remove, the cache
  * writes and every sentence came here unchanged (`useOwnPhoto`).
  *
- * Read-only apart from the photo: nothing here invites editing, so the account
- * fields are plain text in a `<dl>`, with no inputs and no "can't edit" line.
- * No role gate — a VIEWER owns their face as an ADMIN does.
+ * Read-only apart from the photo and the name (TAS-425, `ProfileName`): the
+ * other account fields are plain text in a `<dl>`, with no inputs and no
+ * "can't edit" line — the contract has no route that changes them. No role
+ * gate — a VIEWER owns their face and their name as an ADMIN does.
  *
  * The reader's own face comes with the profile: `GET /users/me` carries the
  * avatar since backend PR #193 (TAS-223), so this page spends no request of its
@@ -47,6 +49,8 @@ export function SettingsProfileSection() {
   const avatarUnavailable = user?.avatarUnavailable === true;
   const { writing, uploading, notice } = photo;
   const requestId = apiErrorFacts(notice?.error).requestId;
+  /** What a saved name says, in the header's own status region (§5.9) — shared with nothing else. */
+  const [nameStatus, setNameStatus] = useState("");
 
   if (!user) {
     return (
@@ -117,7 +121,13 @@ export function SettingsProfileSection() {
           <header className="settings-profile-head">
             <Avatar size="xl" user={user} />
             <div className="settings-profile-identity">
-              <strong className="settings-profile-name">{user.displayName}</strong>
+              <ProfileName onSaved={(name) => setNameStatus(`Your name is now ${name}.`)} user={user} />
+              {/* Mounted from the first render and empty until a name is saved,
+                  so the change is what is announced (§7); the photo's live
+                  region below is a different one. */}
+              <p className="visually-hidden" role="status">
+                {nameStatus}
+              </p>
               <span className="settings-profile-email">{user.email}</span>
               <div className="settings-photo">
                 {/* Driven by the button beside it rather than styled directly:

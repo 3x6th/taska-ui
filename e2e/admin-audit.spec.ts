@@ -184,6 +184,8 @@ test("filters the log by an entry's actor from the opened detail, keyboard only"
   await openAudit(page);
   await page.getByRole("button", { name: "Next" }).click();
   await expect(page).toHaveURL(/\/admin\/audit\?page=2$/);
+  // Page 1's rows stay drawn until page 2 is answered; the pager reads the answer's own page.
+  await expect(page.getByText("Page 2 of 2")).toBeVisible();
 
   const toggle = entryRows(page).first().getByRole("button", { name: /^Changes of / });
   await toggle.focus();

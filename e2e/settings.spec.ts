@@ -209,3 +209,75 @@ test("hides the phone line on a wider screen", async ({ page }, testInfo) => {
   await expect(page.getByRole("group", { name: "Theme" })).toBeVisible();
   await expect(page.getByText("On a phone, issues always open from the side")).toBeHidden();
 });
+
+// My profile's name (TAS-425, DESIGN.md §5.9 «Имя»): `PATCH /users/me` against
+// the mock, whose store lives in memory and is rebuilt on every page load — so
+// the name is followed across navigation within one visit, and a reload, which
+// would bring the seed back, is the stand's to show.
+test.describe("the name in My profile", () => {
+  async function openProfile(page: Page) {
+    await signIn(page);
+    await page.getByRole("button", { name: "Open profile for Anna Ivanova" }).click();
+    await page.getByRole("link", { name: "Settings" }).click();
+    await expect(page).toHaveURL(/\/settings\/profile$/);
+    await expect(page.getByRole("button", { name: "Edit name" })).toBeVisible();
+  }
+
+  test("renames the reader: the header, the top bar and the profile menu follow without a reload, and on another page", async ({
+    page,
+  }) => {
+    await openProfile(page);
+
+    await page.getByRole("button", { name: "Edit name" }).click();
+    const field = page.getByLabel("Name", { exact: true });
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue("Anna Ivanova");
+    await field.fill("  Anna Smith  ");
+    await field.press("Enter");
+
+    await expect(field).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Edit name" })).toBeFocused();
+    await expect(page.locator(".settings-profile-name")).toHaveText("Anna Smith");
+    await expect(page.getByRole("status").filter({ hasText: "Your name is now Anna Smith." })).toHaveCount(1);
+    const trigger = page.getByRole("button", { name: "Open profile for Anna Smith" });
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+    await expect(page.getByRole("dialog", { name: "Current user profile" }).locator(".user-profile-head strong")).toHaveText(
+      "Anna Smith",
+    );
+    await page.keyboard.press("Escape");
+
+    // Another page, read again from the store: the name is the server's now.
+    await page.getByRole("link", { name: "Back to projects" }).click();
+    await expect(page).toHaveURL(/\/projects$/);
+    await expect(page.getByRole("button", { name: "Open profile for Anna Smith" })).toBeVisible();
+  });
+
+  test("Esc cancels and changes nothing, and a name with a reason against it cannot be saved", async ({ page }) => {
+    await openProfile(page);
+
+    await page.getByRole("button", { name: "Edit name" }).click();
+    const field = page.getByLabel("Name", { exact: true });
+    await field.fill("Somebody else");
+    await field.press("Escape");
+    await expect(field).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Edit name" })).toBeFocused();
+    await expect(page.locator(".settings-profile-name")).toHaveText("Anna Ivanova");
+
+    await page.getByRole("button", { name: "Edit name" }).click();
+    await field.fill("   ");
+    await expect(page.getByText("Enter a name.")).toBeVisible();
+    await expect(field).toHaveAttribute("aria-invalid", "true");
+    const save = page.getByRole("button", { name: "Save" });
+    await expect(save).toHaveAttribute("aria-disabled", "true");
+    // Pressed anyway — `aria-disabled` keeps it pressable, and the handler refuses.
+    await save.click({ force: true });
+    await field.press("Enter");
+    await field.fill("x".repeat(129));
+    await expect(page.getByText("Use at most 128 characters. This name has 129.")).toBeVisible();
+    // Still the form: nothing was sent, and nothing announced.
+    await expect(field).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Your name is now" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Open profile for Anna Ivanova" })).toBeVisible();
+  });
+});
