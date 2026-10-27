@@ -22,6 +22,12 @@ import { retryAfterSeconds } from "./admin/users";
 /** Under Name, while the name has no reason to refuse it (§4.27, §4.31) — the invite tab, Create account and the name step. */
 export const NAME_HINT = "Shown to the people you work with. You can change it later in Settings.";
 
+/**
+ * Create account's 403 `SIGNUP_DISABLED` (§4.31) — under Continue as an alert,
+ * and above the tabs once the methods it re-read have taken the tab away.
+ */
+export const SIGNUP_CLOSED_TEXT = "Taska isn’t open for new accounts right now. Ask a Taska admin to invite you.";
+
 /** The provider as a word — for the three this build knows; a code it does not know is printed as it came (§6). */
 export function providerName(provider: string | null | undefined): string | null {
   if (provider === "GOOGLE") return "Google";

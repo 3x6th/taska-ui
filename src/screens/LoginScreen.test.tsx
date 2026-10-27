@@ -16,8 +16,8 @@ import { LoginScreen } from "./LoginScreen";
  */
 const { fakeApi, refuseWith, inviteState, loginState, previewState, methodsState, signupState } = vi.hoisted(() => {
   const state: { refusal?: Error } = {};
-  /** A sign-in held open by hand, so its in-flight state can be looked at. */
-  const loginState = { hold: false, release: () => {}, calls: 0 };
+  /** A sign-in held open by hand, so its in-flight state can be looked at; `me`, when set, is who signed in. */
+  const loginState = { hold: false, release: () => {}, calls: 0, me: undefined as unknown };
   const inviteState = {
     session: false,
     refusal: undefined as Error | undefined,
@@ -73,6 +73,7 @@ const { fakeApi, refuseWith, inviteState, loginState, previewState, methodsState
     },
     getCurrentUser: async () => {
       inviteState.calls.push("getCurrentUser");
+      if (loginState.me) return loginState.me;
       throw new Error("not reached");
     },
     hasSession: () => inviteState.session,
@@ -121,6 +122,7 @@ afterEach(() => {
     refusal: undefined,
   });
   Object.assign(signupState, { sent: [], refusal: undefined, hold: false, release: () => {} });
+  loginState.me = undefined;
 });
 
 function renderLogin() {
@@ -863,6 +865,18 @@ describe("LoginScreen, tabs", () => {
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
+  it("draws no provider button anywhere on /invite — its Sign in tab included — while /login draws them", async () => {
+    methodsState.answer = OPEN;
+    window.localStorage.setItem("taska.authMethods", JSON.stringify(OPEN));
+    renderEntry("/invite");
+    await waitFor(() => expect(methodsState.calls).toBe(1));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sign in" }));
+    expect(screen.getByRole("button", { name: "Sign in" })).toHaveAttribute("type", "submit");
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByText("or")).not.toBeInTheDocument();
+  });
+
   it("draws its first frame from the stored answer, and the server's answer replaces it and is stored", async () => {
     window.localStorage.setItem("taska.authMethods", JSON.stringify({ signupEnabled: true, providers: ["GITHUB"] }));
     methodsState.hold = true;
@@ -969,7 +983,11 @@ describe("LoginScreen, provider buttons", () => {
     fireEvent.click(google);
 
     for (const link of screen.getAllByRole("link")) expect(link).toHaveAttribute("aria-disabled", "true");
-    expect(JSON.parse(window.sessionStorage.getItem("taska.oauthAttempt")!)).toEqual({ provider: "GOOGLE", tab: "signin" });
+    expect(JSON.parse(window.sessionStorage.getItem("taska.oauthAttempt")!)).toEqual({
+      provider: "GOOGLE",
+      tab: "signin",
+      returnTo: "/projects",
+    });
     // A second start would replace the first one's state cookie.
     const second = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
     screen.getByRole("link", { name: "Continue with GitHub" }).dispatchEvent(second);
@@ -1032,6 +1050,26 @@ describe("LoginScreen, a provider's refusal on arrival", () => {
     // Gone with the next tab change.
     fireEvent.click(screen.getByRole("tab", { name: "Accept invite" }));
     expect(screen.queryByText(/is blocked/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the page it was to return to when it drops the refusal, and the next sign-in goes there", async () => {
+    loginState.me = { id: "u-anna", email: "anna@example.com", displayName: "Anna Ivanova" };
+    methodsState.answer = { signupEnabled: false, providers: ["GOOGLE"] };
+    renderEntry({
+      pathname: "/login",
+      state: { ...refusalState("ACCOUNT_BLOCKED"), from: "/projects/p-1/board?q=x" },
+    });
+
+    await waitFor(() => expect(JSON.parse(screen.getByTestId("where-state").textContent!)).toEqual({ from: "/projects/p-1/board?q=x" }));
+    // A provider pressed again is sent the same page.
+    expect(await screen.findByRole("link", { name: "Continue with Google" })).toHaveAttribute(
+      "href",
+      `https://api.example/auth/oauth/google/start?returnTo=${encodeURIComponent("/projects/p-1/board?q=x")}`,
+    );
+
+    signIn();
+
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/projects/p-1/board"));
   });
 
   it("says the exchange's expired code and the callback's stale state in different words", () => {
@@ -1194,6 +1232,81 @@ describe("LoginScreen, Create account", () => {
     await waitFor(() => expect(methodsState.calls).toBe(reads + 1));
   });
 
+  /** Continue refused as closed, and the re-read methods closing too: the tab goes, the sentence moves. */
+  const closedByRefusal = async (providers: string[] = []) => {
+    await openCreateAccount();
+    signupState.refusal = new ApiError("Signup is disabled", "PERMISSION_DENIED", 403, "req-off", undefined, {
+      reason: "SIGNUP_DISABLED",
+    });
+    methodsState.answer = { signupEnabled: false, providers };
+    fill("Rosa Diaz", "rosa@example.com");
+    const send = screen.getByRole("button", { name: "Continue" });
+    send.focus();
+    fireEvent.click(send);
+    await waitFor(() => expect(tabNames()).toEqual(["Sign in", "Accept invite"]));
+    return screen.getByText(SIGNUP_CLOSED).closest(".auth-refusal");
+  };
+  const SIGNUP_CLOSED = "Taska isn’t open for new accounts right now. Ask a Taska admin to invite you.";
+
+  it("moves that sentence and its id above the tabs when the methods it re-read take the tab away, and brings focus to it", async () => {
+    const box = await closedByRefusal();
+
+    expect(box).toHaveAttribute("tabindex", "-1");
+    await waitFor(() => expect(box).toHaveFocus());
+    expect(screen.getByRole("tab", { name: "Sign in" })).not.toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Sign in" })).toHaveAttribute("aria-selected", "true");
+    // Not live: the alert under Continue already said it.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(box).not.toHaveAttribute("aria-live");
+    expect(screen.getByRole("button", { name: "Copy request id req-off" })).toBeVisible();
+    // Above the tabs.
+    expect(box!.compareDocumentPosition(screen.getByRole("tablist")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("drops the moved sentence with the next provider press", async () => {
+    await closedByRefusal(["GOOGLE"]);
+    document.addEventListener("click", (event) => event.preventDefault(), { once: true });
+    fireEvent.click(screen.getByRole("link", { name: "Continue with Google" }));
+    expect(screen.queryByText(SIGNUP_CLOSED)).not.toBeInTheDocument();
+  });
+
+  it("drops the moved sentence with the next sign-in", async () => {
+    await closedByRefusal();
+    signIn();
+    expect(screen.queryByText(SIGNUP_CLOSED)).not.toBeInTheDocument();
+  });
+
+  it("drops the moved sentence with the next tab change", async () => {
+    await closedByRefusal();
+    fireEvent.click(screen.getByRole("tab", { name: "Accept invite" }));
+    expect(screen.queryByText(SIGNUP_CLOSED)).not.toBeInTheDocument();
+  });
+
+  it("leaves the tab's removal to the Sign in tab when no refusal caused it", async () => {
+    window.localStorage.setItem("taska.authMethods", JSON.stringify(OPEN));
+    methodsState.hold = true;
+    renderEntry("/login");
+    fireEvent.click(screen.getByRole("tab", { name: "Create account" }));
+    screen.getByLabelText("Name").focus();
+
+    await act(async () => methodsState.release());
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Sign in" })).toHaveFocus());
+    expect(document.querySelector(".auth-refusal")).toBeNull();
+  });
+
+  it("drops a provider's refusal with the next Continue", async () => {
+    window.localStorage.setItem("taska.authMethods", JSON.stringify(OPEN));
+    methodsState.answer = OPEN;
+    renderEntry({ pathname: "/login", state: refusalState("PROVIDER_UNAVAILABLE", { tab: "signup" }) });
+    expect(screen.getByText("Google sign-in isn’t available right now. Try again in a moment, or sign in another way.")).toBeVisible();
+
+    fill("Rosa Diaz", "rosa@example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(screen.queryByText(/isn’t available right now/)).not.toBeInTheDocument();
+  });
+
   it("prints a name refusal in the server's words and marks Name; any other 400 marks Email", async () => {
     await openCreateAccount();
     signupState.refusal = new ApiError(
@@ -1297,6 +1410,25 @@ describe("LoginScreen, Resend link", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("says a 429 without a number with the same wait the hint counts down — the minute", async () => {
+    methodsState.answer = OPEN;
+    renderEntry("/login");
+    fireEvent.click(await screen.findByRole("tab", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Rosa Diaz" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "rosa@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    const resend = await screen.findByRole("button", { name: "Resend link" });
+    const status = document.querySelector(".signup-sent [role='status']")!;
+
+    jumpPast(61);
+    await waitFor(() => expect(resend).not.toHaveAttribute("aria-disabled"), { timeout: 2500 });
+    signupState.refusal = new ApiError("Too many requests", "RESOURCE_EXHAUSTED", 429, "req-429");
+    fireEvent.click(resend);
+
+    await waitFor(() => expect(status).toHaveTextContent("Too many attempts. Try again in 60 seconds."));
+    expect(resend).toHaveAccessibleDescription("Too many attempts. You can resend in 1:00.");
+  });
+
   it("says a resend that did not go through in its own words, as an alert above the hint", async () => {
     methodsState.answer = OPEN;
     renderEntry("/login");
@@ -1368,6 +1500,7 @@ describe("LoginScreen, a sign-up link", () => {
 
   it("keeps an unknown kind in the invitation's words", async () => {
     previewState.kind = "OAUTH_SIGNUP";
+    inviteState.session = true;
     holdInviteToken(TOKEN);
     renderAuth();
     await previewed();
@@ -1375,6 +1508,25 @@ describe("LoginScreen, a sign-up link", () => {
     expect(screen.getByRole("tab", { name: "Accept invite" })).toBeVisible();
     expect(screen.getByText("Confirm your name and choose a password to activate your Taska account.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Activate account" })).toBeVisible();
+    expect(screen.getByText("You’re signed in on this browser. Activating this invitation signs you out first.")).toBeVisible();
+  });
+
+  it("swaps the foreign-session line for a sign-up link's own, in the same commit as its other words", async () => {
+    previewState.kind = "SIGNUP";
+    previewState.hold = true;
+    inviteState.session = true;
+    holdInviteToken(TOKEN);
+    renderAuth();
+
+    // While the preview is out the link is an invitation, as everywhere else.
+    expect(screen.getByText("You’re signed in on this browser. Activating this invitation signs you out first.")).toBeVisible();
+
+    await act(async () => previewState.release());
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Create account" })).toBeVisible());
+    expect(screen.getByRole("heading", { name: "Finish creating your account" })).toBeVisible();
+    expect(screen.getByText("You’re signed in on this browser. Creating your account signs you out first.")).toBeVisible();
+    expect(screen.queryByText(/Activating this invitation/)).not.toBeInTheDocument();
   });
 
   it("says a dead link of unknown kind in words for either kind while sign-up is open", async () => {

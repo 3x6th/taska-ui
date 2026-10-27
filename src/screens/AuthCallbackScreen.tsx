@@ -41,6 +41,18 @@ import type { ScreenProps } from "./App";
 const signedInRoute = (returnTo: string) => inAppPath(returnTo) ?? DEFAULT_SIGNED_IN_ROUTE;
 
 /**
+ * The router state a provider flow hands back to `/login` with: its refusal,
+ * if any, and the page it was to come back to as `from` — so the reader who
+ * signs in with a password next still lands there, as the guard promised
+ * (§5.1), and a provider pressed again is sent the same `returnTo`.
+ */
+const backToLogin = (providerRefusal: ProviderRefusal | null, returnTo: string | null | undefined): LoginRedirectState | null => {
+  const from = inAppPath(returnTo);
+  if (providerRefusal === null && from === undefined) return null;
+  return { ...(providerRefusal ? { providerRefusal } : {}), ...(from ? { from } : {}) };
+};
+
+/**
  * `/auth/callback` (DESIGN.md §4.31, TAS-426): where a provider sign-in comes
  * back to. Public, outside both session guards, in the login card's shell
  * without tabs.
@@ -56,7 +68,8 @@ const signedInRoute = (returnTo: string) => inAppPath(returnTo) ?? DEFAULT_SIGNE
  *   before goes, and the reader goes on to `returnTo`, replacing this entry.
  * - `SIGNUP_REQUIRED`: the name step, here.
  * - A refusal, of the exchange or on `?error=`: `/login`, replacing this
- *   entry, with the refusal and its request id in router state.
+ *   entry, with the refusal and its request id in router state, and the
+ *   attempt's `returnTo` as `from`.
  * - Nothing held — a reload, a typed address: `/login`.
  */
 export function AuthCallbackScreen({ theme, toggleTheme }: Pick<ScreenProps, "theme" | "toggleTheme">) {
@@ -109,7 +122,7 @@ export function AuthCallbackScreen({ theme, toggleTheme }: Pick<ScreenProps, "th
         forgetOAuthAttempt();
         if (isSignupDisabled(error)) void queryClient.invalidateQueries({ queryKey: AUTH_METHODS_QUERY_KEY });
         const providerRefusal = refusalFromExchange(error, attempt?.provider ?? null, attempt?.tab ?? null);
-        navigate("/login", { replace: true, state: { providerRefusal } satisfies LoginRedirectState });
+        navigate("/login", { replace: true, state: backToLogin(providerRefusal, attempt?.returnTo) });
       },
     );
   }, [attempt, code, mutateAsync, navigate, queryClient]);
@@ -130,7 +143,7 @@ export function AuthCallbackScreen({ theme, toggleTheme }: Pick<ScreenProps, "th
       attempt?.provider ?? null,
       attempt?.tab ?? null,
     );
-    return <Navigate replace state={{ providerRefusal } satisfies LoginRedirectState} to="/login" />;
+    return <Navigate replace state={backToLogin(providerRefusal, attempt?.returnTo)} to="/login" />;
   }
 
   return (
@@ -182,11 +195,13 @@ function NameStep({ signup, returnTo }: { signup: OAuthSignupState; returnTo: st
       forgetOAuthAttempt();
       if (isSignupDisabled(error)) void queryClient.invalidateQueries({ queryKey: AUTH_METHODS_QUERY_KEY });
       const providerRefusal = refusalFromExchange(error, signup.provider, null);
-      navigate("/login", { replace: true, state: { providerRefusal } satisfies LoginRedirectState });
+      navigate("/login", { replace: true, state: backToLogin(providerRefusal, returnTo) });
     },
   });
 
   const expired = complete.isError && isStepExpired(complete.error);
+  // The way back keeps the page the flow was to return to, as a refusal does.
+  const backToSignIn = () => navigate("/login", { replace: true, state: backToLogin(null, returnTo) });
 
   // Focus in Name when the step opens; on the expired step's sentence when the
   // form is taken away under the reader (§4.31).
@@ -196,18 +211,20 @@ function NameStep({ signup, returnTo }: { signup: OAuthSignupState; returnTo: st
   }, [expired]);
 
   if (expired) {
+    // With a provider this build can draw, the way out is its button; without
+    // one there is no button to name, and the way out is sign-in (§4.31).
+    const restart = isKnownProvider(signup.provider) ? signup.provider : null;
     return (
       <div className="auth-step-expired">
         <div className="auth-refusal" ref={expiredRef} tabIndex={-1}>
           <ErrorNote live="alert">
-            This sign-up step expired after 15 minutes, so your account was not created. Continue with {provider ?? "your provider"}{" "}
-            again to start over.
+            {restart
+              ? `This sign-up step expired after 15 minutes, so your account was not created. Continue with ${providerName(restart)} again to start over.`
+              : "This sign-up step expired after 15 minutes, so your account was not created. Go back to sign in to start over."}
           </ErrorNote>
         </div>
-        {isKnownProvider(signup.provider) ? (
-          <ProviderChoices divider={false} providers={[signup.provider]} returnTo={returnTo} tab="signin" />
-        ) : null}
-        <button className="auth-ghost" onClick={() => navigate("/login", { replace: true })} type="button">
+        {restart ? <ProviderChoices divider={false} providers={[restart]} returnTo={returnTo} tab="signin" /> : null}
+        <button className="auth-ghost" onClick={backToSignIn} type="button">
           Back to sign in
         </button>
       </div>
@@ -232,7 +249,7 @@ function NameStep({ signup, returnTo }: { signup: OAuthSignupState; returnTo: st
     >
       <div className="invite-note">
         <h1 className="invite-note-title">Finish creating your account</h1>
-        <p>{provider ? `You’re signing up with your ${provider} account.` : "You’re signing up with your account."}</p>
+        <p>{provider ? `You’re signing up with your ${provider} account.` : "You’re signing up with the account you chose."}</p>
       </div>
       {/* §4.27's read-only Email: an input, so a password manager or the
           browser's autofill knows the account; the provider vouched for it. */}
@@ -267,7 +284,7 @@ function NameStep({ signup, returnTo }: { signup: OAuthSignupState; returnTo: st
       {complete.isError && stepStays(complete.error) ? (
         <NameStepFailure error={complete.error} key={complete.submittedAt} />
       ) : null}
-      <button className="auth-ghost" onClick={() => navigate("/login", { replace: true })} type="button">
+      <button className="auth-ghost" onClick={backToSignIn} type="button">
         Back to sign in
       </button>
     </form>

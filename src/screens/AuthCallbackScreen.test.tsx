@@ -71,10 +71,14 @@ function renderCallback({ strict = false } = {}) {
 }
 
 const signedIn = (returnTo: string): OAuthExchangeResult => ({ status: "SIGNED_IN", returnTo });
-const signupRequired = (suggestedDisplayName: string | null = "New Person"): OAuthExchangeResult => ({
+const signupRequired = (
+  suggestedDisplayName: string | null = "New Person",
+  provider = "GITHUB",
+  returnTo = "/projects",
+): OAuthExchangeResult => ({
   status: "SIGNUP_REQUIRED",
-  returnTo: "/projects",
-  signup: { signupToken: "step-1", provider: "GITHUB", email: "new@example.com", suggestedDisplayName },
+  returnTo,
+  signup: { signupToken: "step-1", provider, email: "new@example.com", suggestedDisplayName },
 });
 
 afterEach(() => {
@@ -88,7 +92,7 @@ afterEach(() => {
 
 describe("AuthCallbackScreen, the exchange", () => {
   it("sends the code exactly once under StrictMode's double effects, and says only who it is signing in with meanwhile", async () => {
-    rememberOAuthAttempt({ provider: "GOOGLE", tab: "signin" });
+    rememberOAuthAttempt({ provider: "GOOGLE", tab: "signin", returnTo: "/projects/p-1/board" });
     holdOAuthCallback({ code: "the-code" });
     exchangeState.hold = true;
     exchangeState.answer = signedIn("/projects/p-1/board");
@@ -124,8 +128,8 @@ describe("AuthCallbackScreen, the exchange", () => {
     expect(window.sessionStorage.getItem("taska.oauthAttempt")).toBeNull();
   });
 
-  it("takes a refusal to /login with its reason, provider, tab and request id, never retrying it", async () => {
-    rememberOAuthAttempt({ provider: "GITHUB", tab: "signup" });
+  it("takes a refusal to /login with its reason, provider, tab and request id, and the page it was to return to, never retrying it", async () => {
+    rememberOAuthAttempt({ provider: "GITHUB", tab: "signup", returnTo: "/projects/p-1/board?q=1" });
     holdOAuthCallback({ code: "c-blocked" });
     exchangeState.refusal = new ApiError("Account is blocked", "PERMISSION_DENIED", 403, "req-ex", undefined, {
       reason: "ACCOUNT_BLOCKED",
@@ -143,6 +147,8 @@ describe("AuthCallbackScreen, the exchange", () => {
         retryAfterSeconds: null,
         lockedUntil: null,
       },
+      // The next password sign-in still goes back where the guard sent the reader from.
+      from: "/projects/p-1/board?q=1",
     });
     expect(exchangeState.calls).toEqual(["c-blocked"]);
   });
@@ -155,6 +161,25 @@ describe("AuthCallbackScreen, the exchange", () => {
     expect(exchangeState.calls).toEqual([]);
   });
 
+  it("carries the attempt's returnTo to /login as from with an ?error= refusal, and nothing that is not an in-app path", async () => {
+    rememberOAuthAttempt({ provider: "APPLE", tab: "signin", returnTo: "/projects/p-2/board" });
+    holdOAuthCallback({ error: "ACCOUNT_BLOCKED" });
+    renderCallback();
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
+    expect(JSON.parse(screen.getByTestId("where-state").textContent!)).toMatchObject({
+      providerRefusal: { reason: "ACCOUNT_BLOCKED", provider: "APPLE" },
+      from: "/projects/p-2/board",
+    });
+  });
+
+  it("drops a returnTo that is not an in-app path rather than carry it to /login", async () => {
+    rememberOAuthAttempt({ provider: "APPLE", tab: "signin", returnTo: "https://evil.example/x" });
+    holdOAuthCallback({ error: "ACCOUNT_BLOCKED" });
+    renderCallback();
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
+    expect(JSON.parse(screen.getByTestId("where-state").textContent!)).not.toHaveProperty("from");
+  });
+
   it("goes to /login with nothing held — a reload, a typed address", async () => {
     renderCallback();
     await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
@@ -164,10 +189,10 @@ describe("AuthCallbackScreen, the exchange", () => {
 
 describe("AuthCallbackScreen, the name step", () => {
   let codes = 0;
-  const openStep = async (suggested: string | null = "New Person") => {
+  const openStep = async (suggested: string | null = "New Person", provider = "GITHUB", returnTo = "/projects") => {
     codes += 1;
     holdOAuthCallback({ code: `c-step-${codes}` });
-    exchangeState.answer = signupRequired(suggested);
+    exchangeState.answer = signupRequired(suggested, provider, returnTo);
     renderCallback();
     await screen.findByRole("heading", { name: "Finish creating your account" });
   };
@@ -245,6 +270,32 @@ describe("AuthCallbackScreen, the name step", () => {
     await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
   });
 
+  it("says the account was chosen without naming a provider it was not told", async () => {
+    await openStep("New Person", "");
+    expect(screen.getByText("You’re signing up with the account you chose.")).toBeVisible();
+  });
+
+  it("sends a reader whose expired step names no provider it can draw back to sign in, with no provider button", async () => {
+    await openStep("New Person", "OKTA");
+    signupStep.refusal = new ApiError("Invalid signup token", "UNAUTHENTICATED", 401, "req-x", undefined, {
+      reason: "STATE_INVALID",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This sign-up step expired after 15 minutes, so your account was not created. Go back to sign in to start over.",
+    );
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to sign in" })).toBeVisible();
+  });
+
+  it("keeps the page the flow was to return to on the way back to sign in", async () => {
+    await openStep("New Person", "GITHUB", "/projects/p-3/board");
+    fireEvent.click(screen.getByRole("button", { name: "Back to sign in" }));
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
+    expect(JSON.parse(screen.getByTestId("where-state").textContent!)).toEqual({ from: "/projects/p-3/board" });
+  });
+
   it("takes a refusal that spent the step to /login with it", async () => {
     await openStep();
     signupStep.refusal = new ApiError("Signup is disabled", "PERMISSION_DENIED", 403, "req-off", undefined, {
@@ -258,5 +309,6 @@ describe("AuthCallbackScreen, the name step", () => {
       provider: "GITHUB",
       requestId: "req-off",
     });
+    expect(JSON.parse(screen.getByTestId("where-state").textContent!).from).toBe("/projects");
   });
 });

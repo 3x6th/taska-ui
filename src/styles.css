@@ -1297,10 +1297,13 @@ h1 {
   cursor: progress;
 }
 
+/* The mark's column (§4.31): the visible edge of the G and of the Invertocat —
+   both files start at their glyph — 12 from the button's outer edge. `left`
+   counts from inside the 1px border, hence 11. */
 .provider-mark {
   position: absolute;
   top: 50%;
-  left: 12px;
+  left: 11px;
   width: 18px;
   height: 18px;
   transform: translateY(-50%);
@@ -1308,6 +1311,22 @@ h1 {
 
 .provider-mark-mono {
   fill: var(--provider-mono);
+}
+
+/* Apple's rule is black or white for the words as for the mark (§2.8, §4.31):
+   `--provider-mono`, not Google's `--provider-fg`. The hover is the shared one. */
+.provider-button-apple {
+  color: var(--provider-mono);
+}
+
+/* Apple's medium file uncropped, the button's full height (39 of its 44, so
+   17 wide is 15.07), centred like the other marks. Its glyph begins 0.75 of
+   44 into the view box — 0.66 at this height — so the box starts that much
+   left of the column, and the glyph's edge stands at 12 with the others. */
+.provider-mark-apple {
+  left: calc(11px - 39px * 0.75 / 44);
+  width: calc(39px * 17 / 44);
+  height: 39px;
 }
 
 /* «Check your email» (§4.31): the card's form gap between its parts. */
@@ -1379,8 +1398,11 @@ h1 {
   line-height: calc(12px * 1.45);
 }
 
+/* Its colour stated, not inherited from the box (§1): the sentence under the
+   heading is 12/400 `--fg-2` by rule, whatever the box ever becomes. */
 .invite-note p {
   margin: 0;
+  color: var(--fg-2);
 }
 
 /* A sign-up link's hint, over the invitation's hidden one in the same cell:

@@ -261,8 +261,9 @@ const OMAR_ID = "d58f0e73-4b2c-4c9d-8e15-3f6a70b2c9d4";
 // expires with a week of real time.
 const IVY_ID = "e3a7c915-08b2-4d6e-9f41-7c2b5a0d8e63";
 // A third INVITED account, added by TAS-426: one who asked for an account
-// themselves (`POST /auth/signup`), so the link they hold is of kind `SIGNUP`
-// and the invite tab words it as finishing an account (DESIGN.md §4.31).
+// themselves (`POST /auth/signup`), so the account was made `SIGNUP`, every live
+// link it holds previews as kind `SIGNUP`, and the invite tab words it as
+// finishing an account (DESIGN.md §4.31).
 const SAM_ID = "f6b2d4a8-3c1e-4f7a-9b5d-2e8c0a6f4d17";
 
 const TASKA_PROJECT_ID = "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e";
@@ -285,8 +286,9 @@ const SESSION_KEY = "taska.mockSession";
  * `requestSignup`.
  *
  * Leo's works until a week after it was made; Ivy's ran out two days ago, so
- * accepting it is the 401 "Invalid or expired token". Sam's is the sign-up
- * link of an account Sam asked for (TAS-426): kind `SIGNUP`, made an hour ago.
+ * accepting it is the 401 "Invalid or expired token". Sam's is the link of an
+ * account Sam asked for (TAS-426), made an hour ago — it previews as kind
+ * `SIGNUP` because the account was made by sign-up, not because of the link.
  */
 export const MOCK_INVITE_TOKENS = {
   leo: "Lk3vQ9xW2mTz8RbN4cYp7HfJ1sDg6EaU5oKiVwXqZrM",
@@ -317,11 +319,6 @@ interface MockInviteToken {
   createdAt: number;
   expiresAt: number;
   usedAt: number | null;
-  /**
-   * What made the link, which is what the preview's `kind` reports (TAS-426):
-   * an admin's invitation, or the person's own `POST /auth/signup`.
-   */
-  kind: "INVITATION" | "SIGNUP";
 }
 
 /**
@@ -378,11 +375,22 @@ const TODO_STATUS_ID = "22222222-2222-2222-2222-222222222222";
 const IN_PROGRESS_STATUS_ID = "33333333-3333-3333-3333-333333333333";
 const DONE_STATUS_ID = "44444444-4444-4444-4444-444444444444";
 /**
+ * What made an account — auth-service's `users.created_via` (backend TAS-423,
+ * changelog `0009-user-created-via.sql`): an admin's invitation (the column's
+ * default, so every account older than the column is one), the person's own
+ * `POST /auth/signup`, or a provider's name step. Written once, when the
+ * account is made, and never again.
+ */
+type AccountOrigin = "INVITATION" | "SIGNUP" | "OAUTH";
+
+/**
  * An account as this store holds it: its status is one of the four it can
  * write, never the open code `User.status` admits off the wire (TAS-173) — the
- * store is the server here, and a server knows its own states.
+ * store is the server here, and a server knows its own states. `createdVia` is
+ * the server's too, and like it never leaves the store on an account read
+ * (`currentUserProfile`): the only answer it shapes is the preview's `kind`.
  */
-type StoredUser = User & { status: UserStatus };
+type StoredUser = User & { status: UserStatus; createdVia: AccountOrigin };
 
 /** The extra status of WEB's EPIC workflow (TAS-173) — a key this build has no word for. */
 const IN_REVIEW_STATUS_ID = "45454545-4545-4545-4545-454545454545";
@@ -2240,6 +2248,7 @@ export class MockTaskaStore {
         // both branches of `readableTextOn` are on screen at once.
         color: "#f59e0b",
         globalRole: "USER",
+        createdVia: "INVITATION",
       },
       {
         id: MARK_ID,
@@ -2248,6 +2257,7 @@ export class MockTaskaStore {
         status: "ACTIVE",
         color: "#0ea5e9",
         globalRole: "GLOBAL_ADMIN",
+        createdVia: "INVITATION",
       },
       {
         id: SOFIA_ID,
@@ -2256,6 +2266,7 @@ export class MockTaskaStore {
         status: "ACTIVE",
         color: "#ec4899",
         globalRole: "USER",
+        createdVia: "INVITATION",
       },
       {
         id: TOM_ID,
@@ -2272,6 +2283,7 @@ export class MockTaskaStore {
         // §2.2's birthday bound standing in front of a reader rather than
         // written down in a document.
         globalRole: "USER",
+        createdVia: "INVITATION",
       },
       {
         id: PRIYA_ID,
@@ -2279,6 +2291,7 @@ export class MockTaskaStore {
         displayName: "Priya Nair",
         status: "ACTIVE",
         globalRole: "USER",
+        createdVia: "INVITATION",
       },
       // The three accounts that are not ACTIVE (TAS-186, and Omar with
       // TAS-188). Every status the admin Users section can draw is on screen
@@ -2309,6 +2322,7 @@ export class MockTaskaStore {
         displayName: "Leo Fischer",
         status: "INVITED",
         globalRole: "USER",
+        createdVia: "INVITATION",
       },
       {
         id: NINA_ID,
@@ -2316,6 +2330,7 @@ export class MockTaskaStore {
         displayName: "Nina Kowal",
         status: "BLOCKED",
         globalRole: "USER",
+        createdVia: "INVITATION",
       },
       // Locked by his own failed sign-ins rather than by an administrator, so
       // he is the one account whose state nobody in this product created —
@@ -2329,6 +2344,7 @@ export class MockTaskaStore {
         displayName: "Omar Haddad",
         status: "LOCKED",
         globalRole: "USER",
+        createdVia: "INVITATION",
       },
       // Invited and never activated, whose link has expired (TAS-297).
       {
@@ -2337,6 +2353,7 @@ export class MockTaskaStore {
         displayName: "Ivy Chen",
         status: "INVITED",
         globalRole: "USER",
+        createdVia: "INVITATION",
       },
       // Asked for an account by email and has not opened the link yet (TAS-426).
       {
@@ -2345,14 +2362,15 @@ export class MockTaskaStore {
         displayName: "Sam Ortiz",
         status: "INVITED",
         globalRole: "USER",
+        createdVia: "SIGNUP",
       },
     ];
     const seededAt = Date.now();
     const day = 24 * 60 * 60 * 1000;
     this.inviteTokens = [
-      { token: MOCK_INVITE_TOKENS.leo, userId: LEO_ID, createdAt: seededAt - 2 * day, expiresAt: seededAt - 2 * day + INVITE_TOKEN_TTL_MS, usedAt: null, kind: "INVITATION" },
-      { token: MOCK_INVITE_TOKENS.ivy, userId: IVY_ID, createdAt: seededAt - 9 * day, expiresAt: seededAt - 9 * day + INVITE_TOKEN_TTL_MS, usedAt: null, kind: "INVITATION" },
-      { token: MOCK_INVITE_TOKENS.signup, userId: SAM_ID, createdAt: seededAt - day / 24, expiresAt: seededAt - day / 24 + INVITE_TOKEN_TTL_MS, usedAt: null, kind: "SIGNUP" },
+      { token: MOCK_INVITE_TOKENS.leo, userId: LEO_ID, createdAt: seededAt - 2 * day, expiresAt: seededAt - 2 * day + INVITE_TOKEN_TTL_MS, usedAt: null },
+      { token: MOCK_INVITE_TOKENS.ivy, userId: IVY_ID, createdAt: seededAt - 9 * day, expiresAt: seededAt - 9 * day + INVITE_TOKEN_TTL_MS, usedAt: null },
+      { token: MOCK_INVITE_TOKENS.signup, userId: SAM_ID, createdAt: seededAt - day / 24, expiresAt: seededAt - day / 24 + INVITE_TOKEN_TTL_MS, usedAt: null },
     ];
 
     /**
@@ -3311,10 +3329,15 @@ export class MockTaskaStore {
    * without spending it. One 401 for every way it can be dead, as
    * auth-service has it at develop `78019ece` — a blank token, one over 256
    * characters, one nobody holds, one used or revoked by a newer invitation,
-   * one past its deadline, an account that is no longer `INVITED`. The kind is
-   * what made the link (TAS-426): `INVITATION` for an admin's invitation,
-   * `SIGNUP` for the person's own `requestSignup` — Sam's seeded link, or one
-   * this store made since the page loaded.
+   * one past its deadline, an account that is no longer `INVITED`.
+   *
+   * The kind (TAS-426) is **the account's origin, not the link's**:
+   * `AuthServiceImpl.previewInvitation` answers `SIGNUP` when the account was
+   * made by `POST /auth/signup` and `INVITATION` otherwise (develop `9fcf0253`,
+   * `AuthServiceImpl.java:214-215`). So an admin's resend to Sam previews as
+   * `SIGNUP`, and a sign-up request for Leo — which sends him a fresh link —
+   * still previews as `INVITATION`. An `OAUTH` account is `ACTIVE` from the
+   * start and has no live link to preview.
    */
   previewInvitation(token: string): InvitationPreview {
     const found = token.trim() === "" || token.length > 256 ? undefined : this.inviteTokens.find((item) => item.token === token);
@@ -3325,7 +3348,7 @@ export class MockTaskaStore {
     return {
       email: user.email,
       displayName: user.displayName,
-      kind: found.kind,
+      kind: user.createdVia === "SIGNUP" ? "SIGNUP" : "INVITATION",
       expiresAt: new Date(found.expiresAt).toISOString(),
     };
   }
@@ -3424,8 +3447,12 @@ export class MockTaskaStore {
    * develop `9fcf0253`): **with signup open**, a caller who is not a
    * `GLOBAL_ADMIN` and belongs to no project is refused 403
    * `PERMISSION_DENIED` "Project membership is required", with no
-   * `details.reason`. It is the gateway's check on the authenticated caller, so
-   * it follows the binding and precedes auth-service's measure of the query.
+   * `details.reason`. It is auth-service's check, not the gateway's
+   * (`UserDirectoryService.search`, `UserDirectoryService.java:28`): the caller
+   * is required first (`requireActor`), then `DirectoryMembershipAccess.check`
+   * asks project-service whether they belong anywhere, and only then is the
+   * query measured — so it follows the gateway's binding and precedes the
+   * service's measure.
    */
   searchUsers(params: SearchUsersParams, methods: AuthMethods): DirectoryPage {
     const { query, page = 0, pageSize = 20 } = params;
@@ -3527,6 +3554,7 @@ export class MockTaskaStore {
         displayName: name,
         status: "INVITED",
         globalRole: "USER",
+        createdVia: "INVITATION",
       };
       this.users.push(user);
       return this.queueInvitation(user, true);
@@ -3567,7 +3595,6 @@ export class MockTaskaStore {
       createdAt: madeAt,
       expiresAt: madeAt + INVITE_TOKEN_TTL_MS,
       usedAt: null,
-      kind: "INVITATION",
     };
     this.inviteTokens.push(token);
     return this.invitationResult(user, created, true, token.expiresAt);
@@ -3583,11 +3610,26 @@ export class MockTaskaStore {
    * binding of the body (both strings, the address at most 320), then signup
    * switched off, then the address, then the name, then the caller's IP
    * budget, then the address's minute. **One answer for every address that
-   * gets that far**: a new address becomes an `INVITED` account with a link of
-   * kind `SIGNUP`; an `INVITED` one gets a new `SIGNUP` link that revokes the
-   * older ones, keeping its name (TAS-423: a resend does not replace the name);
-   * an `ACTIVE`, `LOCKED` or `BLOCKED` one gets nothing. The caller cannot tell
-   * the three apart, and neither can the screen.
+   * gets that far**, and behind it `EmailSignupTransaction.signup` (develop
+   * `9fcf0253`), by what the address already belongs to:
+   *
+   * - nothing: a new `INVITED` account made `SIGNUP`, with a link;
+   * - an `INVITED` account, whoever made it: it keeps its name and gets a fresh
+   *   link that revokes the older ones — unless its latest link is under a
+   *   minute old, when it gets nothing (`resend`). Its origin does not change,
+   *   so a sign-up request for Leo still previews as `INVITATION`;
+   * - an `INVITED` account made `SIGNUP` whose latest link has expired: the
+   *   server deletes it and makes it again under the new name. **Not modelled**
+   *   — no account here can be in that state: the seed's one `SIGNUP` account
+   *   (Sam) holds a link an hour old, and a link made since the page loaded
+   *   lives a week;
+   * - an `ACTIVE` or `LOCKED` account: the server sends an «existing account»
+   *   email (`USER_SIGNUP_EXISTING_ACCOUNT`). **Not modelled** — this store
+   *   sends no mail and keeps no journal of it; nothing about the account
+   *   changes, here or there;
+   * - a `BLOCKED` account: nothing.
+   *
+   * The caller cannot tell these apart, and neither can the screen.
    *
    * The 403 and the second 400's words are the server's ("Signup is
    * disabled", and `inviteUser`'s address sentence); the two 429s' are this
@@ -3623,13 +3665,23 @@ export class MockTaskaStore {
     }
     this.signupRequestedAt.set(email, madeAt);
 
-    let user = this.users.find((item) => item.email.trim().toLowerCase() === email);
-    if (!user) {
-      user = { id: mockUuid(), email, displayName: name, status: "INVITED", globalRole: "USER" };
-      this.users.push(user);
-    } else if (user.status !== "INVITED") {
-      return;
+    const found = this.users.find((item) => item.email.trim().toLowerCase() === email);
+    // ACTIVE and LOCKED: the «existing account» email, not modelled; BLOCKED: nothing.
+    if (found && found.status !== "INVITED") return;
+    if (found) {
+      // `resend`'s own minute, from the latest link's making — whoever made it.
+      const latest = this.inviteTokens.filter((item) => item.userId === found.id).at(-1);
+      if (latest && madeAt < latest.createdAt + 60 * 1000) return;
     }
+    const user: StoredUser = found ?? {
+      id: mockUuid(),
+      email,
+      displayName: name,
+      status: "INVITED",
+      globalRole: "USER",
+      createdVia: "SIGNUP",
+    };
+    if (!found) this.users.push(user);
     for (const item of this.inviteTokens) {
       if (item.userId === user.id && item.usedAt === null) item.usedAt = madeAt;
     }
@@ -3639,7 +3691,6 @@ export class MockTaskaStore {
       createdAt: madeAt,
       expiresAt: madeAt + INVITE_TOKEN_TTL_MS,
       usedAt: null,
-      kind: "SIGNUP",
     });
   }
 
@@ -3692,28 +3743,39 @@ export class MockTaskaStore {
   }
 
   /**
-   * `POST /auth/oauth/exchange` (TAS-424), in the server's order: a code
-   * nobody made or already exchanged, 401 `STATE_INVALID`; the attempt budget,
-   * 429, which does not spend the code; then the code is spent, and the rest
-   * re-checks under the claim — the provider no longer configured, 503
-   * `PROVIDER_UNAVAILABLE`; a `BLOCKED` or `LOCKED` account, 403 (no
-   * `lockedUntil`, as on the server); no account while signup is off, 403
-   * `SIGNUP_DISABLED`. A known account signs in; an `INVITED` one is activated
-   * first, with no password, and its unused links are revoked. An unknown
-   * address with signup open gets the name step.
+   * `POST /auth/oauth/exchange` (TAS-424), in the server's order (develop
+   * `9fcf0253`). First the caller's IP budget, 429 — reserved before the code
+   * is so much as read (`OAuthGrpcService.exchangeOAuth`, `ipLimiter.reserve`
+   * ahead of `flow.exchange`), so it spends nothing, and a code that is dead
+   * anyway is answered 429 too while the budget is out. Then the claim
+   * (`OAuthFlowStore.claimGrant`, a `DELETE … RETURNING`): a code nobody made,
+   * one already exchanged, one older than 60 seconds, 401 `STATE_INVALID`; a
+   * live one is spent there. Then, under the claim: the provider no longer
+   * configured, 503 `PROVIDER_UNAVAILABLE`; a `BLOCKED` or `LOCKED` account,
+   * 403 (no `lockedUntil`, as on the server); no account while signup is off,
+   * 403 `SIGNUP_DISABLED`. A known account signs in; an `INVITED` one is
+   * activated first, with no password, and its unused links are revoked. An
+   * unknown address with signup open gets the name step.
    *
-   * Spent codes live in `sessionStorage` (`MOCK_OAUTH_CLAIMED_KEY`), so opening
-   * the same callback address again is refused as a reuse is. The server also
-   * refuses a code older than 60 seconds with the same 401; this one never
-   * expires. Words are this store's — the reasons are the server's.
+   * The budget is not counted here: it is answered for a code whose address
+   * holds `MOCK_AUTH_TRIGGERS.oauthBudget`, which means the code has to be
+   * decoded before the budget can be asked about. So a code this store cannot
+   * decode — one nobody made — is its 401 even where the server, over budget,
+   * would answer 429. Spent codes live in `sessionStorage`
+   * (`MOCK_OAUTH_CLAIMED_KEY`), so opening the same callback address again is
+   * refused as a reuse is; this store's codes never expire. Words are this
+   * store's — the reasons are the server's.
    */
   exchangeOAuthCode(code: string, methods: AuthMethods): OAuthExchangeResult {
     const grant = decodeMockOAuthCode(code);
-    if (grant === null || isMockOAuthCodeClaimed(grant.nonce)) {
+    if (grant === null) {
       throw new MockApiError("UNAUTHENTICATED", "Invalid or expired authorization code", { reason: STATE_INVALID_REASON });
     }
     if (grant.email.includes(MOCK_AUTH_TRIGGERS.oauthBudget)) {
       throw new MockApiError("RESOURCE_EXHAUSTED", "Too many sign-in attempts; try again later", { retryAfterSeconds: "900" });
+    }
+    if (isMockOAuthCodeClaimed(grant.nonce)) {
+      throw new MockApiError("UNAUTHENTICATED", "Invalid or expired authorization code", { reason: STATE_INVALID_REASON });
     }
     claimMockOAuthCode(grant.nonce);
     if (!methods.providers.includes(grant.provider)) {
@@ -3738,44 +3800,64 @@ export class MockTaskaStore {
   }
 
   /**
-   * `POST /auth/oauth/signup` (TAS-424): the name first, before the step is
-   * spent, so a refused name leaves the form usable; then the attempt budget
-   * (`MOCK_AUTH_TRIGGERS.oauthSignupBudget` in the name), not spent either;
-   * then the step itself, single use; then the exchange's re-checks, which
-   * spend it. The account is `ACTIVE`, a `USER`, with no password and no
-   * project, and signed in. **Gone on reload** with everything else this store
-   * holds — the session the browser keeps then names nobody and is dropped.
+   * `POST /auth/oauth/signup` (TAS-424), in the server's order (develop
+   * `9fcf0253`):
    *
-   * An address that gained an account between the exchange and this call is a
-   * race this store does not try to model: it is refused like the exchange's
-   * re-check when the account is `BLOCKED` or `LOCKED`, and otherwise signed
-   * into. The server's answer to it was not read.
+   * - the caller's IP budget, 429 (`OAuthGrpcService.signupOAuth`,
+   *   `ipLimiter.reserve`) — answered here for a name holding
+   *   `MOCK_AUTH_TRIGGERS.oauthSignupBudget`, before the name is judged;
+   * - the name (`OAuthFlowService.java:51`, `DisplayNames.normalize`), 400
+   *   `DISPLAY_NAME_INVALID`;
+   * - the step (`:52`, `claimGrant("SIGNUP", …)`): one nobody made, one used,
+   *   one older than 15 minutes, 401 `STATE_INVALID` — this store's steps never
+   *   expire. A live one is **spent here**, so nothing below leaves the form
+   *   usable;
+   * - the provider no longer configured (`:53`, `providers.require`), 503
+   *   `PROVIDER_UNAVAILABLE`;
+   * - then `OAuthAccountService.signIn` with the name: an account that holds
+   *   the address by now — made between the exchange and this call — is
+   *   signed into, as the exchange would have (403 `ACCOUNT_BLOCKED` or
+   *   `ACCOUNT_LOCKED` first, an `INVITED` one activated with no password);
+   *   only with no account at all is sign-up switched off the 403
+   *   `SIGNUP_DISABLED` (`OAuthAccountService.java:50-52`);
+   * - otherwise a new account: `ACTIVE`, a `USER`, made `OAUTH`, with no
+   *   password and no project, and signed in. **Gone on reload** with
+   *   everything else this store holds — the session the browser keeps then
+   *   names nobody and is dropped.
    */
   completeOAuthSignup(input: OAuthSignupInput, methods: AuthMethods): AuthTokens {
-    const name = this.displayNameOrRefuse(input.displayName);
-    if (name.includes(MOCK_AUTH_TRIGGERS.oauthSignupBudget)) {
+    if (typeof input.displayName === "string" && input.displayName.includes(MOCK_AUTH_TRIGGERS.oauthSignupBudget)) {
       throw new MockApiError("RESOURCE_EXHAUSTED", "Too many sign-in attempts; try again later", { retryAfterSeconds: "45" });
     }
+    const name = this.displayNameOrRefuse(input.displayName);
     const step = this.oauthSignups.get(input.signupToken);
     if (!step || step.usedAt !== null) {
       throw new MockApiError("UNAUTHENTICATED", "Invalid or expired signup token", { reason: STATE_INVALID_REASON });
     }
     step.usedAt = Date.now();
-    if (!methods.signupEnabled) {
-      throw new MockApiError("PERMISSION_DENIED", "Signup is disabled", { reason: SIGNUP_DISABLED_REASON });
-    }
     if (!methods.providers.includes(step.provider)) {
       throw new MockApiError("UNAVAILABLE", "Sign-in provider is unavailable", { reason: PROVIDER_UNAVAILABLE_REASON });
     }
-    let user = this.users.find((item) => item.email.trim().toLowerCase() === step.email);
-    if (user) {
-      this.refuseProviderSignIn(user);
+    const existing = this.users.find((item) => item.email.trim().toLowerCase() === step.email);
+    if (existing) {
+      this.refuseProviderSignIn(existing);
+      this.signInWithProvider(existing);
     } else {
-      user = { id: mockUuid(), email: step.email, displayName: name, status: "ACTIVE", globalRole: "USER" };
+      if (!methods.signupEnabled) {
+        throw new MockApiError("PERMISSION_DENIED", "Signup is disabled", { reason: SIGNUP_DISABLED_REASON });
+      }
+      const user: StoredUser = {
+        id: mockUuid(),
+        email: step.email,
+        displayName: name,
+        status: "ACTIVE",
+        globalRole: "USER",
+        createdVia: "OAUTH",
+      };
       this.users.push(user);
       this.passwordless.add(user.id);
+      this.signInWithProvider(user);
     }
-    this.signInWithProvider(user);
     return { accessToken: "mock-access-token", refreshToken: "mock-refresh-token", expiresIn: 3600 };
   }
 
@@ -7063,7 +7145,8 @@ export class MockTaskaStore {
    * deadline) has no counterpart in one synchronous store.
    */
   currentUserProfile(): User {
-    const user = this.currentUser();
+    // The account's origin is the server's own column, and `GET /users/me` does not carry it.
+    const { createdVia: _createdVia, ...user } = this.getUser(this.currentUserId);
     const avatar = this.avatars.get(user.id);
     const usable = avatar && this.avatarObjects.has(avatar.objectKey) ? avatar : null;
     return {

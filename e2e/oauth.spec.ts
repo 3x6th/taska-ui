@@ -188,4 +188,78 @@ test.describe("refusals of a provider sign-in", () => {
     await expect(page).toHaveURL(/\/login$/);
     await expect(page.locator(".auth-refusal")).toHaveCount(0);
   });
+
+  test("a refusal keeps the page the guard remembered: the next password sign-in goes back there", async ({ page }) => {
+    await setKnobs(page, identity({ email: "nina@example.com" }));
+    await page.goto(BOARD);
+    await expect(page).toHaveURL(/\/login$/);
+    await page.getByRole("link", { name: "Continue with Apple" }).click();
+    await expect(page.locator(".auth-refusal")).toHaveText(
+      "The Taska account for this email is blocked. Ask a Taska admin to unblock it.",
+    );
+
+    await page.getByLabel("Email").fill("anna@example.com");
+    await page.getByLabel("Password", { exact: true }).fill("anything");
+    await page.getByRole("button", { name: "Sign in" }).click();
+
+    await expect(page).toHaveURL(new RegExp(`${escape(BOARD)}$`));
+  });
 });
+
+test("no provider button on /invite, its Sign in tab included", async ({ page }) => {
+  await page.goto("/login");
+  await expect(page.getByRole("link")).toHaveCount(3);
+
+  await page.goto("/invite");
+  await expect(page.getByRole("tab")).toHaveText(["Sign in", "Accept invite"]);
+  await expect(page.getByRole("link")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Sign in" }).click();
+  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+  await expect(page.getByRole("link")).toHaveCount(0);
+  await expect(page.locator(".auth-divider")).toHaveCount(0);
+});
+
+for (const [theme, mono] of [
+  ["light", "rgb(0, 0, 0)"],
+  ["dark", "rgb(255, 255, 255)"],
+] as const) {
+  test(`the marks stand 12 from the button's edge, and Apple's mark and words are ${theme === "light" ? "black" : "white"} (${theme})`, async ({
+    page,
+  }) => {
+    await page.addInitScript((value) => window.localStorage.setItem("taska.theme", value), theme);
+    await page.goto("/login");
+    await expect(page.getByRole("link")).toHaveCount(3);
+
+    const marks = await page.evaluate(async () => {
+      await document.fonts.ready;
+      return [...document.querySelectorAll<HTMLAnchorElement>(".provider-button")].map((button) => {
+        const mark = button.querySelector<SVGSVGElement | HTMLImageElement>(".provider-mark")!;
+        // The glyph's own box: an <svg>'s path, the G's file edge to edge.
+        const glyph = (mark.querySelector("path") ?? mark).getBoundingClientRect();
+        const box = mark.getBoundingClientRect();
+        const outer = button.getBoundingClientRect();
+        return {
+          label: button.textContent,
+          glyphLeft: glyph.left - outer.left,
+          markHeight: box.height,
+          markTop: box.top - outer.top,
+          buttonHeight: outer.height,
+          color: getComputedStyle(button).color,
+          fill: mark instanceof SVGSVGElement ? getComputedStyle(mark).fill : null,
+        };
+      });
+    });
+
+    for (const mark of marks) expect(mark.glyphLeft, mark.label!).toBeCloseTo(12, 1);
+    const apple = marks.find((mark) => mark.label === "Continue with Apple")!;
+    // Apple's file uncropped across the button's full height, centred.
+    expect(apple.markHeight).toBeCloseTo(39, 1);
+    expect(apple.markTop + apple.markHeight / 2).toBeCloseTo(apple.buttonHeight / 2, 1);
+    expect(apple.color).toBe(mono);
+    expect(apple.fill).toBe(mono);
+    // GitHub's mark is the mono colour too; its words, like Google's, are not.
+    const github = marks.find((mark) => mark.label === "Continue with GitHub")!;
+    expect(github.fill).toBe(mono);
+    expect(github.color).not.toBe(mono);
+  });
+}

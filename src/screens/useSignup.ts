@@ -95,10 +95,12 @@ export function useSignup() {
       rereadMethodsOn(error);
       const { status, code } = apiErrorFacts(error);
       if (code !== "RESOURCE_EXHAUSTED" && status !== 429) return;
-      // The countdown starts again from the server's number; without one, from the minute.
-      const seconds = retryAfterSeconds(error);
+      // The countdown starts again from the server's number; without one, from
+      // the minute — and the status says the same wait the hint counts down
+      // (§4.31), «60 seconds» rather than «a few minutes».
+      const seconds = retryAfterSeconds(error) ?? RESEND_COOLDOWN_SECONDS;
       setTooMany(true);
-      startCountdown(seconds ?? RESEND_COOLDOWN_SECONDS);
+      startCountdown(seconds);
       setAnnouncement((last) => ({ key: (last?.key ?? 0) + 1, text: tooManyAttemptsText(seconds) }));
     },
   });

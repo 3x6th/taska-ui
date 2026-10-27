@@ -4,7 +4,7 @@ import { ErrorNote } from "../components/ErrorNote";
 import { ProviderChoices } from "../components/ProviderChoices";
 import type { OAuthProvider } from "../domain/types";
 import { retryAfterSeconds } from "./admin/users";
-import { NAME_HINT, formatCountdown, tooManyAttemptsText } from "./authText";
+import { NAME_HINT, SIGNUP_CLOSED_TEXT, formatCountdown, tooManyAttemptsText } from "./authText";
 import type { SignupState } from "./useSignup";
 
 /**
@@ -21,11 +21,14 @@ export function SignupPanel({
   providers,
   returnTo,
   onProviderStart,
+  onSubmit,
 }: {
   signup: SignupState;
   providers: readonly string[];
   returnTo: string;
   onProviderStart: (provider: OAuthProvider) => void;
+  /** Continue was pressed: the card's notices above the tabs go, as with any other send (§4.31). */
+  onSubmit: () => void;
 }) {
   const nameRef = useRef<HTMLInputElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
@@ -106,6 +109,7 @@ export function SignupPanel({
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
+          onSubmit();
           signup.submit();
         }}
       >
@@ -173,7 +177,7 @@ function SignupFailure({ error }: { error: unknown }) {
   if (isSignupDisabled(error)) {
     return (
       <ErrorNote live="alert" requestId={requestId}>
-        Taska isn’t open for new accounts right now. Ask a Taska admin to invite you.
+        {SIGNUP_CLOSED_TEXT}
       </ErrorNote>
     );
   }

@@ -114,12 +114,21 @@ describe("the remembered attempt", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps the provider and the tab in sessionStorage, and forgets them", () => {
-    rememberOAuthAttempt({ provider: "GITHUB", tab: "signup" });
-    expect(JSON.parse(window.sessionStorage.getItem("taska.oauthAttempt")!)).toEqual({ provider: "GITHUB", tab: "signup" });
-    expect(readOAuthAttempt()).toEqual({ provider: "GITHUB", tab: "signup" });
+  it("keeps the provider, the tab and the returnTo in sessionStorage, and forgets them", () => {
+    rememberOAuthAttempt({ provider: "GITHUB", tab: "signup", returnTo: "/projects/p-1/board" });
+    expect(JSON.parse(window.sessionStorage.getItem("taska.oauthAttempt")!)).toEqual({
+      provider: "GITHUB",
+      tab: "signup",
+      returnTo: "/projects/p-1/board",
+    });
+    expect(readOAuthAttempt()).toEqual({ provider: "GITHUB", tab: "signup", returnTo: "/projects/p-1/board" });
     forgetOAuthAttempt();
     expect(readOAuthAttempt()).toBeNull();
+  });
+
+  it("reads an attempt stored without a returnTo as one with none", () => {
+    window.sessionStorage.setItem("taska.oauthAttempt", JSON.stringify({ provider: "APPLE", tab: "signin" }));
+    expect(readOAuthAttempt()).toEqual({ provider: "APPLE", tab: "signin", returnTo: null });
   });
 
   it("reads anything that is not the shape as no attempt, and survives storage that refuses", () => {
@@ -134,7 +143,7 @@ describe("the remembered attempt", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("denied", "SecurityError");
     });
-    expect(() => rememberOAuthAttempt({ provider: "GOOGLE", tab: "signin" })).not.toThrow();
+    expect(() => rememberOAuthAttempt({ provider: "GOOGLE", tab: "signin", returnTo: "/projects" })).not.toThrow();
     expect(readOAuthAttempt()).toBeNull();
   });
 });

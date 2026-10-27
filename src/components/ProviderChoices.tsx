@@ -12,7 +12,9 @@ import { rememberOAuthAttempt } from "../lib/oauthCallback";
  *   the G of Google's sign-in button), drawn as an image so its four colours
  *   stay in that file and never pass through a stylesheet that could tint it;
  * - GitHub's Invertocat and Apple's logo are single-colour marks, filled with
- *   `--provider-mono` — black on the light button, white on the dark one.
+ *   `--provider-mono` — black on the light button, white on the dark one. The
+ *   Apple button's words are `--provider-mono` too (`.provider-button-apple`):
+ *   Apple's rule is black or white, and Google's `--provider-fg` is neither.
  *
  * All three are decoration: `aria-hidden`, the button's words are its name.
  */
@@ -27,9 +29,15 @@ function ProviderMark({ provider }: { provider: OAuthProvider }) {
       </svg>
     );
   }
+  // Apple's own artwork, not a redrawing: the path of the «logo and text»
+  // button at its medium size (a 31 × 44 box, the logo 17 wide), as Apple's
+  // Sign in with Apple JS (`appleid.auth.js`) draws it — copied unchanged,
+  // and drawn uncropped across the button's full height (§4.31). The view box
+  // is the logo's 17-wide column of that file, `x` 7 to 24; the glyph begins
+  // 0.75 into it, which `.provider-mark-apple` accounts for.
   return (
-    <svg aria-hidden="true" className="provider-mark provider-mark-mono" focusable="false" viewBox="0 0 24 24">
-      <path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701" />
+    <svg aria-hidden="true" className="provider-mark provider-mark-mono provider-mark-apple" focusable="false" viewBox="7 0 17 44">
+      <path d="M15.7099491,14.8846154 C16.5675461,14.8846154 17.642562,14.3048315 18.28274,13.5317864 C18.8625238,12.8312142 19.2852829,11.852829 19.2852829,10.8744437 C19.2852829,10.7415766 19.2732041,10.6087095 19.2490464,10.5 C18.2948188,10.5362365 17.1473299,11.140178 16.4588366,11.9494596 C15.9152893,12.56548 15.4200572,13.5317864 15.4200572,14.5222505 C15.4200572,14.6671964 15.4442149,14.8121424 15.4562937,14.8604577 C15.5166879,14.8725366 15.6133185,14.8846154 15.7099491,14.8846154 Z M12.6902416,29.5 C13.8618881,29.5 14.3812778,28.714876 15.8428163,28.714876 C17.3285124,28.714876 17.6546408,29.4758423 18.9591545,29.4758423 C20.2395105,29.4758423 21.0971074,28.292117 21.9063891,27.1325493 C22.8123013,25.8038779 23.1867451,24.4993643 23.2109027,24.4389701 C23.1263509,24.4148125 20.6743484,23.4122695 20.6743484,20.5979021 C20.6743484,18.1579784 22.6069612,17.0588048 22.7156707,16.974253 C21.4353147,15.1382708 19.490623,15.0899555 18.9591545,15.0899555 C17.5217737,15.0899555 16.3501271,15.9596313 15.6133185,15.9596313 C14.8161157,15.9596313 13.7652575,15.1382708 12.521138,15.1382708 C10.1536872,15.1382708 7.75,17.0950413 7.75,20.7911634 C7.75,23.0861411 8.64383344,25.513986 9.74300699,27.0842339 C10.6851558,28.4129053 11.5065162,29.5 12.6902416,29.5 Z" />
     </svg>
   );
 }
@@ -73,7 +81,12 @@ function ProviderButton({
     onStart(provider);
   };
   return (
-    <a aria-disabled={inFlight || undefined} className="provider-button" href={href} onClick={onClick}>
+    <a
+      aria-disabled={inFlight || undefined}
+      className={provider === "APPLE" ? "provider-button provider-button-apple" : "provider-button"}
+      href={href}
+      onClick={onClick}
+    >
       <ProviderMark provider={provider} />
       <span>{LABELS[provider]}</span>
     </a>
@@ -88,8 +101,8 @@ const ORDER: readonly OAuthProvider[] = ["GOOGLE", "GITHUB", "APPLE"];
  * provider the answer lists, in the client's order. Nothing at all when it
  * lists none — the screen is then the one it was before TAS-426.
  *
- * A press remembers the attempt (`taska.oauthAttempt`: the provider and the
- * tab it began on) and puts every button in flight. Coming back with Back from
+ * A press remembers the attempt (`taska.oauthAttempt`: the provider, the tab
+ * it began on and the `returnTo` it was sent) and puts every button in flight. Coming back with Back from
  * the provider's page restores this page from the bfcache with that state
  * still on it, so `pageshow` with `persisted` takes it off.
  */
@@ -126,7 +139,7 @@ export function ProviderChoices({
           inFlight={inFlight}
           key={provider}
           onStart={(started) => {
-            rememberOAuthAttempt({ provider: started, tab });
+            rememberOAuthAttempt({ provider: started, tab, returnTo });
             setInFlight(true);
             onStart?.(started);
           }}

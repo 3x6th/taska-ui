@@ -1,6 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MOCK_ATTACHMENT_TRIGGERS, MOCK_INVITE_TOKENS, MOCK_PROJECT_TRIGGERS, MockTaskaApi, buildMockBoard } from "./MockTaskaApi";
-import { MOCK_AUTH_METHODS_KEY, MOCK_AUTH_TRIGGERS, MOCK_OAUTH_IDENTITY_KEY } from "./mockAuthFixtures";
+import {
+  MOCK_AUTH_METHODS_KEY,
+  MOCK_AUTH_TRIGGERS,
+  MOCK_OAUTH_IDENTITY_KEY,
+  claimMockOAuthCode,
+  decodeMockOAuthCode,
+} from "./mockAuthFixtures";
 import type { UpdateIssueInput } from "../TaskaApi";
 import { DIRECTORY_QUERY_REFUSAL_MESSAGE } from "../TaskaApi";
 import type { Board, BoardIssue, Issue, NotificationType, Project, ProjectIssueType } from "../../domain/types";
@@ -7473,13 +7479,75 @@ describe("MockTaskaApi sign-up and provider sign-in", () => {
       expect(after.find((row) => row.email === "anna@example.com")).toMatchObject({ status: "ACTIVE" });
     });
 
-    it("previews a sign-up link as SIGNUP, and an invitation as INVITATION", async () => {
+    it("previews a sign-up account's link as SIGNUP, and an invited account's as INVITATION", async () => {
       await expect(api.previewInvitation(MOCK_INVITE_TOKENS.signup)).resolves.toMatchObject({
         email: "sam@example.com",
         displayName: "Sam Ortiz",
         kind: "SIGNUP",
       });
       await expect(api.previewInvitation(MOCK_INVITE_TOKENS.leo)).resolves.toMatchObject({ kind: "INVITATION" });
+    });
+
+    /**
+     * The kind is the account's origin, not the link's (`AuthServiceImpl.java:214-215`).
+     * The link a request makes is never returned, so the bytes it is minted
+     * from are fixed for the call and the token computed from them.
+     */
+    describe("the preview's kind, by the account's origin", () => {
+      const MINTED = 7;
+      const minted = btoa(String.fromCharCode(...new Uint8Array(32).fill(MINTED)))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+      const mintingFixed = () =>
+        vi.spyOn(crypto, "getRandomValues").mockImplementation(<T extends ArrayBufferView | null>(array: T): T => {
+          if (array instanceof Uint8Array) array.fill(MINTED);
+          return array;
+        });
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it("keeps INVITATION for an invited account that asked to sign up, and gives it a fresh link with its name kept", async () => {
+        mintingFixed();
+        await api.requestSignup({ email: "leo@example.com", displayName: "Somebody Else" });
+
+        await expect(api.previewInvitation(minted)).resolves.toMatchObject({
+          email: "leo@example.com",
+          displayName: "Leo Fischer",
+          kind: "INVITATION",
+        });
+        // The older link is revoked by the new one.
+        await expect(api.previewInvitation(MOCK_INVITE_TOKENS.leo)).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+      });
+
+      it("keeps SIGNUP for a sign-up account an admin sends a new invitation to", async () => {
+        await api.login({ email: "mark@example.com", password: "x" });
+        mintingFixed();
+        await api.inviteUser({ email: "sam@example.com", resend: true });
+
+        await expect(api.previewInvitation(minted)).resolves.toMatchObject({ email: "sam@example.com", kind: "SIGNUP" });
+        await expect(api.previewInvitation(MOCK_INVITE_TOKENS.signup)).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+      });
+
+      it("makes a new address's account SIGNUP", async () => {
+        mintingFixed();
+        await api.requestSignup({ email: "rosa@example.com", displayName: "Rosa" });
+
+        await expect(api.previewInvitation(minted)).resolves.toMatchObject({ email: "rosa@example.com", kind: "SIGNUP" });
+      });
+
+      it("sends an invited account nothing while its latest link is under a minute old", async () => {
+        await api.login({ email: "mark@example.com", password: "x" });
+        mintingFixed();
+        // Ivy's link ran out, so an admin's resend makes her a new one now.
+        await api.inviteUser({ email: "ivy@example.com", resend: true });
+        vi.restoreAllMocks();
+
+        await expect(api.requestSignup({ email: "ivy@example.com", displayName: "Ivy" })).resolves.toBeUndefined();
+        // The admin's link is still the live one.
+        await expect(api.previewInvitation(minted)).resolves.toMatchObject({ email: "ivy@example.com", kind: "INVITATION" });
+      });
     });
   });
 
@@ -7554,6 +7622,10 @@ describe("MockTaskaApi sign-up and provider sign-in", () => {
         details: { retryAfterSeconds: "900" },
       });
       await expect(api.exchangeOAuthCode(code!)).rejects.toMatchObject({ code: "RESOURCE_EXHAUSTED" });
+      // The budget is reserved before the code is read: a code already spent
+      // is answered 429 too while the budget is out, not 401.
+      claimMockOAuthCode(decodeMockOAuthCode(code)!.nonce);
+      await expect(api.exchangeOAuthCode(code!)).rejects.toMatchObject({ code: "RESOURCE_EXHAUSTED" });
 
       knob(MOCK_OAUTH_IDENTITY_KEY, { email: "anna@example.com" });
       const second = landing(api.oauthStartUrl("APPLE", "/projects")).code!;
@@ -7593,7 +7665,11 @@ describe("MockTaskaApi sign-up and provider sign-in", () => {
       expect(api.hasSession()).toBe(false);
       const { signupToken } = (result as Extract<typeof result, { status: "SIGNUP_REQUIRED" }>).signup;
 
-      // The name is checked before the step is spent, and so is the budget.
+      // The budget and then the name are checked before the step is spent:
+      // over budget, even a name it would refuse is the 429.
+      await expect(
+        api.completeOAuthSignup({ signupToken, displayName: `${MOCK_AUTH_TRIGGERS.oauthSignupBudget}\u0007` }),
+      ).rejects.toMatchObject({ code: "RESOURCE_EXHAUSTED" });
       await expect(api.completeOAuthSignup({ signupToken, displayName: "\t" })).rejects.toMatchObject({
         details: { reason: "DISPLAY_NAME_INVALID" },
       });
@@ -7606,6 +7682,8 @@ describe("MockTaskaApi sign-up and provider sign-in", () => {
       });
       expect(api.hasSession()).toBe(true);
       await expect(api.getCurrentUser()).resolves.toMatchObject({ email: "new@example.com", displayName: "New Person" });
+      // The account's origin is the server's column; `GET /users/me` does not carry it.
+      expect(await api.getCurrentUser()).not.toHaveProperty("createdVia");
       await expect(api.listProjects()).resolves.toEqual([]);
       // Single use.
       await expect(api.completeOAuthSignup({ signupToken, displayName: "Again" })).rejects.toMatchObject({
@@ -7628,6 +7706,38 @@ describe("MockTaskaApi sign-up and provider sign-in", () => {
         details: { reason: "SIGNUP_DISABLED" },
       });
       await expect(api.completeOAuthSignup({ signupToken, displayName: "New" })).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+    });
+
+    it("refuses the name step 503 for a provider gone since the exchange, before it asks whether sign-up is on", async () => {
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "new@example.com" });
+      const result = await api.exchangeOAuthCode(landing(api.oauthStartUrl("GOOGLE", "/projects")).code!);
+      const { signupToken } = (result as Extract<typeof result, { status: "SIGNUP_REQUIRED" }>).signup;
+      knob(MOCK_AUTH_METHODS_KEY, { signupEnabled: false, providers: ["GITHUB"] });
+
+      await expect(api.completeOAuthSignup({ signupToken, displayName: "New" })).rejects.toMatchObject({
+        code: "UNAVAILABLE",
+        details: { reason: "PROVIDER_UNAVAILABLE" },
+      });
+      await expect(api.completeOAuthSignup({ signupToken, displayName: "New" })).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+    });
+
+    it("signs into an account the address gained since the exchange, even with sign-up switched off meanwhile", async () => {
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "new@example.com" });
+      const result = await api.exchangeOAuthCode(landing(api.oauthStartUrl("GOOGLE", "/projects")).code!);
+      const { signupToken } = (result as Extract<typeof result, { status: "SIGNUP_REQUIRED" }>).signup;
+      // Meanwhile the address asked for an account by email, and then sign-up closed.
+      await api.requestSignup({ email: "new@example.com", displayName: "Asked By Email" });
+      knob(MOCK_AUTH_METHODS_KEY, { signupEnabled: false, providers: ["GOOGLE"] });
+
+      await expect(api.completeOAuthSignup({ signupToken, displayName: "Typed Here" })).resolves.toMatchObject({
+        accessToken: expect.any(String),
+      });
+      // The account it found, activated with no password, under the name it already had.
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        email: "new@example.com",
+        displayName: "Asked By Email",
+        status: "ACTIVE",
+      });
     });
   });
 

@@ -104,15 +104,19 @@ export function exchangeOnce<T>(code: string, exchange: (code: string) => Promis
 /**
  * `sessionStorage` `taska.oauthAttempt` (DESIGN.md §4.31): which provider a
  * press started and from which tab, so the return can name the provider and
- * a refusal lands on the tab the reader left from. Per tab, as the attempt
- * is. Every access is guarded — storage may be refused outright — and a value
- * that is not the shape is no attempt at all.
+ * a refusal lands on the tab the reader left from — and the page the press
+ * was to come back to, so a refusal that lands on `/login` still remembers
+ * it for the next sign-in. Per tab, as the attempt is. Every access is
+ * guarded — storage may be refused outright — and a value that is not the
+ * shape is no attempt at all.
  */
 export const OAUTH_ATTEMPT_KEY = "taska.oauthAttempt";
 
 export interface OAuthAttempt {
   provider: string;
   tab: string;
+  /** The `returnTo` the start was sent; `null` when an attempt stored without one is read back. */
+  returnTo: string | null;
 }
 
 export function rememberOAuthAttempt(attempt: OAuthAttempt): void {
@@ -129,8 +133,9 @@ export function readOAuthAttempt(): OAuthAttempt | null {
     if (raw === null) return null;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return null;
-    const { provider, tab } = parsed as Record<string, unknown>;
-    return typeof provider === "string" && typeof tab === "string" ? { provider, tab } : null;
+    const { provider, tab, returnTo } = parsed as Record<string, unknown>;
+    if (typeof provider !== "string" || typeof tab !== "string") return null;
+    return { provider, tab, returnTo: typeof returnTo === "string" ? returnTo : null };
   } catch {
     return null;
   }

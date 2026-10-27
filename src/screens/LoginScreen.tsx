@@ -3,7 +3,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
-import { ACCOUNT_LOCKED_REASON, apiErrorFacts, isAccountLocked, isDisplayNameInvalid } from "../api/errors";
+import { ACCOUNT_LOCKED_REASON, apiErrorFacts, isAccountLocked, isDisplayNameInvalid, isSignupDisabled } from "../api/errors";
 import type { InvitationPreview } from "../domain/types";
 import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
@@ -22,6 +22,7 @@ import {
 } from "../lib/inviteLink";
 import {
   NAME_HINT,
+  SIGNUP_CLOSED_TEXT,
   inAppPath,
   oauthReturnTo,
   providerRefusalFromState,
@@ -77,6 +78,13 @@ const ANY_LINK_DEAD =
 /** The invite tab's note, with a link caught and without one (§4.27, TAS-425). */
 const INVITE_NOTE = "Confirm your name and choose a password to activate your Taska account.";
 
+/**
+ * Above the invite form while somebody else's session is open (§4.27), and the
+ * same line for a `SIGNUP` link (§4.31), at the same height.
+ */
+const INVITE_FOREIGN_SESSION = "You’re signed in on this browser. Activating this invitation signs you out first.";
+const SIGNUP_FOREIGN_SESSION = "You’re signed in on this browser. Creating your account signs you out first.";
+
 /** Under the invite form's button (§4.27), and for a `SIGNUP` link (§4.31). */
 const INVITE_LINK_HINT = "Link expired? Ask the person who invited you to send a new one.";
 const SIGNUP_LINK_HINT = "Link expired? Create your account again to get a new one.";
@@ -114,10 +122,12 @@ const INVITATION_PREVIEW_KEY = "invitation-preview";
  *
  * Since TAS-426 the card reads `GET /auth/methods` on every mount: with sign-up
  * open, `/login`'s second tab is Create account rather than Accept invite, and
- * the provider buttons stand under Sign in and Create account. With sign-up off
- * and no providers — the stand today — the card is the one it was, but for the
- * tabs' roles. A provider sign-in that did not finish comes back here with its
- * refusal in router state, drawn above the tabs.
+ * the provider buttons stand under Sign in and Create account — on `/login`
+ * only, never on `/invite`. With sign-up off and no providers — the stand
+ * today — the card is the one it was, but for the tabs' roles. A provider
+ * sign-in that did not finish comes back here with its refusal in router
+ * state, drawn above the tabs, and with the page it was to return to as
+ * `from`.
  */
 export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProps) {
   const navigate = useNavigate();
@@ -157,10 +167,22 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // not a re-read that might race the sign-out.
   const [signedInElsewhere, setSignedInElsewhere] = useState(() => taskaApi.hasSession());
   const [activated, setActivated] = useState(Boolean(redirect?.activated));
-  /** Bumped when the methods' answer takes the open tab away, so focus can follow it to Sign in (§4.31). */
-  const [tabTaken, setTabTaken] = useState(0);
+  /**
+   * Set afresh each time the methods' answer takes the open tab away, so focus
+   * that was in the panel can follow (§4.31): to the Sign in tab — or, when
+   * the tab went because Create account was refused as closed, to that
+   * refusal's sentence above the tabs.
+   */
+  const [tabTaken, setTabTaken] = useState<{ focus: "tab" | "notice" } | null>(null);
+  /**
+   * Create account's `SIGNUP_DISABLED`, once the methods it re-read took the
+   * tab and the form away with it (§4.31): the same sentence and request id,
+   * above the tabs, until the next send, provider press or tab change.
+   */
+  const [signupClosed, setSignupClosed] = useState<{ requestId: string | null } | null>(null);
   const noticeRef = useRef<HTMLParagraphElement>(null);
   const refusalRef = useRef<HTMLDivElement>(null);
+  const signupClosedRef = useRef<HTMLDivElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
   const newPasswordRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -187,10 +209,18 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     initialMode !== "invite" && methods.signupEnabled ? ["signin", "signup"] : ["signin", "invite"];
   // The answer took the open tab away: Sign in is open instead, what was typed
   // stays in memory, and focus that was in the panel goes to the Sign in tab.
+  // When it was Create account, taken because the server refused it as closed
+  // — the refusal re-read the methods — the refusal's sentence would go with
+  // the form, so it moves above the tabs and focus goes to it instead.
   // Adjusted during render, which commits once.
   if (!tabs.includes(mode)) {
+    const closedBySignup = mode === "signup" && signup.request.isError && isSignupDisabled(signup.request.error);
     setMode("signin");
-    setTabTaken((count) => count + 1);
+    if (closedBySignup) {
+      setSignupClosed({ requestId: apiErrorFacts(signup.request.error).requestId });
+      setProviderRefusal(null);
+    }
+    setTabTaken({ focus: closedBySignup ? "notice" : "tab" });
   }
   const active: AuthMode = tabs.includes(mode) ? mode : "signin";
 
@@ -268,9 +298,12 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const activatedNotice = active === "signin" && activated ? "Password set. Sign in with your email and new password." : null;
   // It is about activating, and there is nothing to activate once the preview
   // has refused the link (§4.27): it goes with the form.
+  // A `SIGNUP` link's own words, swapped in the same commit as the rest of them.
   const foreignSessionNotice =
     active === "invite" && signedInElsewhere && !previewRefused
-      ? "You’re signed in on this browser. Activating this invitation signs you out first."
+      ? signupLink
+        ? SIGNUP_FOREIGN_SESSION
+        : INVITE_FOREIGN_SESSION
       : null;
   // A cancelled sign-in says nothing (§4.31): the screen is as it was.
   const refusalShown = providerRefusal !== null && providerRefusalText(providerRefusal) !== null ? providerRefusal : null;
@@ -311,11 +344,15 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     }
   }
 
-  // Before the arrival's own focus below, which wins when both apply.
+  // Before the arrival's own focus below, which wins when both apply. Only
+  // focus the removed panel dropped is moved; focus the reader put elsewhere
+  // stays where it is.
   useEffect(() => {
-    if (tabTaken === 0) return;
+    if (tabTaken === null) return;
     const focused = document.activeElement;
-    if (focused === null || focused === document.body) signinTabRef.current?.focus();
+    if (focused !== null && focused !== document.body) return;
+    if (tabTaken.focus === "notice") signupClosedRef.current?.focus();
+    else signinTabRef.current?.focus();
   }, [tabTaken]);
 
   useEffect(() => {
@@ -348,16 +385,20 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // reload, and a reload of `/login` would otherwise say "Password set" — or
   // the provider's refusal — again, and take focus a second time, for an
   // arrival long past. The notice itself is this screen's state from here on,
-  // and goes the way §4.27 and §4.31 say it goes.
+  // and goes the way §4.27 and §4.31 say it goes. The remembered page stays in
+  // the entry: it is where the next sign-in goes, reload or not (§5.1).
   const stateToDrop = Boolean(redirect?.activated || redirect?.providerRefusal);
   useEffect(() => {
-    if (stateToDrop) navigate(location.pathname, { replace: true, state: null });
-  }, [stateToDrop, location.pathname, navigate]);
+    if (stateToDrop) {
+      navigate(location.pathname, { replace: true, state: from ? ({ from } satisfies LoginRedirectState) : null });
+    }
+  }, [stateToDrop, from, location.pathname, navigate]);
 
   const switchTo = (next: AuthMode) => {
     setMode(next);
     setActivated(false);
     setProviderRefusal(null);
+    setSignupClosed(null);
     // A shown password does not follow the reader to the other tab (§4.27).
     setShowPassword(false);
     setShowNewPassword(false);
@@ -418,6 +459,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     onMutate: () => {
       setActivated(false);
       setProviderRefusal(null);
+      setSignupClosed(null);
     },
     onSuccess: async (outcome) => {
       if (outcome === "activated") {
@@ -442,7 +484,11 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // Where a provider flow comes back to (guard §4): the path the guard
   // remembered, or `/projects` — said explicitly.
   const returnTo = oauthReturnTo(redirect?.from);
-  const onProviderStart = () => setProviderRefusal(null);
+  // The notices above the tabs go with the next send or provider press (§4.31).
+  const dropNotices = () => {
+    setProviderRefusal(null);
+    setSignupClosed(null);
+  };
 
   /**
    * Enter or a press on the invite tab's one button. Without a caught link that
@@ -475,6 +521,12 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
         // focus brings it to them and it is not a live region.
         <div className="auth-refusal" ref={refusalRef} tabIndex={-1}>
           <ProviderRefusalNote refusal={refusalShown} />
+        </div>
+      ) : signupClosed ? (
+        // The sentence the Create account alert already said, moved here when
+        // its tab went: not live again — focus brings it (§4.31).
+        <div className="auth-refusal" ref={signupClosedRef} tabIndex={-1}>
+          <ErrorNote requestId={signupClosed.requestId}>{SIGNUP_CLOSED_TEXT}</ErrorNote>
         </div>
       ) : notice ? (
         <p
@@ -513,7 +565,8 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
       <div aria-labelledby={tabId(active)} id={panelId} role="tabpanel">
         {active === "signup" ? (
           <SignupPanel
-            onProviderStart={onProviderStart}
+            onProviderStart={dropNotices}
+            onSubmit={dropNotices}
             providers={methods.providers}
             returnTo={returnTo}
             signup={signup}
@@ -772,8 +825,10 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
             )}
           </form>
         )}
-        {active === "signin" ? (
-          <ProviderChoices onStart={onProviderStart} providers={methods.providers} returnTo={returnTo} tab="signin" />
+        {/* Not on `/invite` (§4.31): a link from an email is about that
+            invitation, and its Sign in tab is the password form alone. */}
+        {active === "signin" && initialMode !== "invite" ? (
+          <ProviderChoices onStart={dropNotices} providers={methods.providers} returnTo={returnTo} tab="signin" />
         ) : null}
       </div>
     </AuthShell>

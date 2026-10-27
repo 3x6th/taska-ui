@@ -1056,8 +1056,10 @@ export interface TaskaApi {
    * `POST /auth/signup` (backend TAS-423) — asks for a sign-up link. **202 for
    * every address** — free, invited, active, locked or blocked — so nothing
    * about the answer says whether an account exists or whether an email went
-   * out. The link that arrives is an ordinary invitation link of kind `SIGNUP`
-   * and is spent through `previewInvitation` and `acceptInvitation`.
+   * out. The link that arrives is an ordinary invitation link, spent through
+   * `previewInvitation` and `acceptInvitation`; its preview's `kind` is the
+   * account's origin, not the link's — `SIGNUP` for an account this request
+   * made, `INVITATION` still for one an admin had invited.
    *
    * The server's order: the gateway's binding (400 "Invalid request
    * parameters"), then 403 `PERMISSION_DENIED` with `details.reason`
@@ -1118,7 +1120,9 @@ export interface TaskaApi {
    *
    * 400 `DISPLAY_NAME_INVALID` and 429 come before the token is claimed, so the
    * form stays usable; 401 `STATE_INVALID` is a token used or older than 15
-   * minutes; 403 and 503 with a reason are as the exchange's, and spend it.
+   * minutes; 403 and 503 with a reason are as the exchange's, and spend it. An
+   * address that has an account by then is signed into it, so `SIGNUP_DISABLED`
+   * comes only for one that still has none (`OAuthAccountService.signIn`).
    */
   completeOAuthSignup(input: OAuthSignupInput): Promise<AuthTokens>;
   refresh(refreshToken: string): Promise<AuthTokens>;

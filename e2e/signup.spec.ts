@@ -6,9 +6,10 @@ import { expect, test, type Page } from "@playwright/test";
  * opposite of the stand, which answered `{signupEnabled: false, providers: []}`
  * on 2026-10-27, and which the last cases here pin as today's card.
  *
- * The link a sign-up sends is an invitation link of kind `SIGNUP`. The mock
- * seeds one — Sam's, `MOCK_INVITE_TOKENS.signup` — since a sign-up made here
- * mints a token nobody can read, as the server's does.
+ * The link a sign-up sends is an invitation link; its preview says `SIGNUP`
+ * for an account the sign-up made (the kind is the account's origin, not the
+ * link's). The mock seeds one — Sam's, `MOCK_INVITE_TOKENS.signup` — since a
+ * sign-up made here mints a token nobody can read, as the server's does.
  */
 
 const SIGNUP_TOKEN = "gQOaiiI6BL8jx1CHrQ1kzPQRAzHbAtOTZKrnl1P0EsA";
@@ -75,10 +76,22 @@ test("a sign-up refused because sign-up was switched off meanwhile says so and t
   await page.getByLabel("Email").fill("rosa@example.com");
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // The methods are read again: Create account goes, Sign in opens with focus on its tab.
+  // The methods are read again: Create account goes and Sign in opens. The
+  // refusal would have gone with the form, so its sentence moves above the
+  // tabs — not live again, the alert already said it — and focus goes to it
+  // rather than to the Sign in tab.
   await expect(page.getByRole("tab", { name: "Sign in" })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("tab", { name: "Sign in" })).toBeFocused();
   await expect(page.getByRole("tab")).toHaveText(["Sign in", "Accept invite"]);
+  const notice = page.locator(".auth-refusal");
+  await expect(notice).toHaveText("Taska isn’t open for new accounts right now. Ask a Taska admin to invite you.");
+  await expect(notice).toBeFocused();
+  await expect(notice).toHaveAttribute("tabindex", "-1");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "Sign in" })).not.toBeFocused();
+
+  // Gone with the next tab change.
+  await page.getByRole("tab", { name: "Accept invite" }).click();
+  await expect(notice).toHaveCount(0);
 });
 
 test("a sign-up link lands on the invite tab worded as finishing an account, and the account signs in under the typed name", async ({
