@@ -4316,3 +4316,11 @@ Reviews on `32daa9c`: api-contract-guard, art-director and release-reviewer REQU
 - **Optional backend ask (api-contract-guard A1):** the gateway's own input checks answer `BAD_REQUEST` (half a cursor, a blank `statusKey`, a malformed type key) while bean validation answers `INVALID_ARGUMENT`; one code for every client input error. Not filed.
 - **The mock's CREATED history payload** does not carry the created status (the backend's does); no UI reads it.
 - **`channel` on history and comments** (UI / API_TOKEN / MCP) is in the contract now; the REST client still sets `via: null` — the TAS-412 entry.
+
+### Left by TAS-437 (Workflows and Issue types after backend TAS-436/TAS-433, develop `78019ece`, 2026-10-27)
+
+Pre-build ruling: art-director, applied to DESIGN.md §4.28, §4.30, §5.5 first.
+
+- **`POST /issue-types` on an empty registry always answers 400 «Project has no default issue type»**, even with `workflowId` (`IssueTypeCreationTransactions` at `78019ece`), so §4.30's empty state «Add type» always fails. A backend bug; empty registries are rare (the last type cannot be deleted). Not filed yet.
+- **Reasons the yml does not document** (read from the Java by art-director): `ISSUE_TYPE_OPERATION_PENDING` (409 `ABORTED`, also on `GET /workflows` and the project context while a type move is pending), `ISSUE_TYPES_CHANGED` on binding changes, `WORKFLOW_STATUS_MAPPING_INVALID` / `ISSUE_TYPE_STATUS_MAPPING_INVALID` (400), `ISSUE_TYPE_TARGET_INVALID`, `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT`, the two request-reused reasons; on issue create `ISSUE_TYPE_DELETION_PENDING` is 400 `FAILED_PRECONDITION`, on DELETE 503. Ask the backend to describe them in openapi.yml.
+- **The project context read fails for a few seconds while a type move is pending** (`ISSUE_TYPE_OPERATION_PENDING`) — the board says it as a read refusal; outside TAS-437's ruling.
