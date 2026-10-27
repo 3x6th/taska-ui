@@ -2014,6 +2014,7 @@ Everything below is the entry as it stood, in the past tense.
 - **What the UI does:** «+» only on the column whose `statusKey` is `TODO`; no such column — no «+», «New» stays. The form from «+» is titled «New issue in {Status}» and disables types whose workflow lacks the status (DESIGN.md §4.9, §5.5). No create-then-transition.
 - **Switch-off:** when the vendored contract gains `statusKey` on create — «+» on every column and the form sends it (DESIGN.md pairs gated on TAS-428).
 - **Jira:** [TAS-428](https://jira.ozero.dev/browse/TAS-428).
+- **2026-10-27:** the switch-off condition is met at backend develop `cbd3f0af` (`CreateIssueRequestDto.statusKey`; the snapshot was refreshed with TAS-434). The client still compensates — removing it is the next frontend pass, held back by the owner's scope rule (a pass takes what was merged when it started).
 
 ### The board is capped at 200 per column and no route continues a column
 
@@ -2022,6 +2023,7 @@ Everything below is the entry as it stood, in the past tense.
 - **What the UI does:** sends 200, filters on the server, shows true counts and the foot «{n} of {total} shown. Filter to find the rest.» with no «Show more»; the link picker offers the unfiltered board's first 200 per status with a note.
 - **Switch-off:** a keyset continuation route — then «Show more» per DESIGN.md §4.9.
 - **Jira:** [TAS-430](https://jira.ozero.dev/browse/TAS-430).
+- **2026-10-27:** the switch-off condition is met at backend develop `cbd3f0af` (`GET …/board/columns/{statusKey}/issues`; the snapshot was refreshed with TAS-434). The client still compensates — removing it is the next frontend pass, held back by the owner's scope rule (a pass takes what was merged when it started).
 
 ### The work log total is a client sum, shown only when the list is complete
 
@@ -2029,6 +2031,7 @@ Everything below is the entry as it stood, in the past tense.
 - **What the UI does:** «Xh Ym logged» is summed on the client and drawn only when the last loaded page says `hasMore: false`; otherwise no total.
 - **Switch-off:** `timeSpentMinutes` on the issue DTOs — then the header reads it.
 - **Jira:** [TAS-431](https://jira.ozero.dev/browse/TAS-431).
+- **2026-10-27:** the switch-off condition is met at backend develop `cbd3f0af` (`timeSpentMinutes` on the issue DTOs; the snapshot was refreshed with TAS-434). The client still compensates — removing it is the next frontend pass, held back by the owner's scope rule (a pass takes what was merged when it started).
 
 ### A stale issue-type reorder is refused like a bad request
 
@@ -2037,6 +2040,7 @@ Everything below is the entry as it stood, in the past tense.
 - **What the UI does:** the client builds the set from its own registry, so it treats any refusal of this route as stale: the dialog's generic sentence, the request id, a context re-read.
 - **Switch-off:** a 409 `ABORTED` or `details.reason = ISSUE_TYPES_CHANGED` — then a dedicated sentence.
 - **Jira:** [TAS-429](https://jira.ozero.dev/browse/TAS-429).
+- **2026-10-27:** the switch-off condition is met at backend develop `cbd3f0af` (`ISSUE_TYPES_CHANGED` on a stale reorder; the snapshot was refreshed with TAS-434). The client still compensates — removing it is the next frontend pass, held back by the owner's scope rule (a pass takes what was merged when it started).
 
 ### Closed by TAS-417 (2026-10-26): The yml and the server name different rules for the board's `unplacedIssues`
 
