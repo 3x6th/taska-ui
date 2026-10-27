@@ -1,6 +1,6 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: be5085e539a49318dde4f091a40c7e8670c31689 (develop, 2026-10-26)
+# Backend commit: cbd3f0af97f785bee33db2c20d0bac3773d2685b (develop, 2026-10-27)
 # Fetched: 2026-10-26
 #
 # The backend repository is the single source of truth for this contract.
@@ -25,6 +25,52 @@ servers:
     description: Current host
 
 paths:
+  /api/v1/auth/signup:
+    post:
+      operationId: signup
+      tags: [auth]
+      summary: Request email signup confirmation
+      description: Uniform 202 for free, invited, active, locked and blocked addresses. Confirmation uses invitations/accept. Name is trimmed, 1..128 Unicode code points. Resend does not replace an existing name. IP budget is shared across auth replicas; forwarded IP is trusted only from GATEWAY_TRUSTED_PROXY_CIDRS.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequestDto'
+      responses:
+        '202':
+          description: Request accepted without disclosing account state.
+        '403':
+          description: Signup disabled; details.reason SIGNUP_DISABLED.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
+        '429':
+          description: Email cooldown (60s) or client IP hourly budget exceeded; details.retryAfterSeconds.
+          headers:
+            Retry-After:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/methods:
+    get:
+      operationId: getAuthMethods
+      tags: [auth]
+      summary: Enabled signup and configured social login providers
+      responses:
+        '200':
+          description: Current authentication methods; no-store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthMethodsResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
   /api/v1/users/me/access-tokens:
     post:
       x-pat-scope: session
@@ -659,6 +705,156 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
 
+  /api/v1/auth/oauth/{provider}/start:
+    get:
+      operationId: startOAuth
+      tags: [oauth]
+      summary: Redirect to a configured OAuth provider and bind the flow to this browser
+      parameters:
+        - $ref: '#/components/parameters/OAuthProviderPath'
+        - {name: returnTo, in: query, schema: {type: string, default: /projects}}
+      responses:
+        '302':
+          description: Provider redirect plus a 10-minute HttpOnly Secure SameSite=None browser cookie
+          headers:
+            Location: {schema: {type: string}}
+            Set-Cookie: {schema: {type: string}}
+        '429':
+          description: Shared OAuth attempt budget for this IP is exhausted
+          headers:
+            Retry-After: {schema: {type: integer, minimum: 1}, description: Seconds until the next attempt}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RestErrorResponse'}
+        default: {$ref: '#/components/responses/ErrorResponse'}
+
+  /api/v1/auth/oauth/{provider}/callback:
+    get:
+      operationId: completeOAuthGet
+      tags: [oauth]
+      summary: Google and GitHub callback
+      parameters:
+        - $ref: '#/components/parameters/OAuthProviderPath'
+        - {name: state, in: query, schema: {type: string}}
+        - {name: code, in: query, schema: {type: string}}
+        - {name: error, in: query, schema: {type: string}}
+      responses:
+        '302':
+          description: UI callback with a 60-second one-time code or a stable error code; no session tokens in URLs
+          headers:
+            Location: {schema: {type: string}}
+        '429':
+          description: Shared OAuth attempt budget for this IP is exhausted
+          headers:
+            Retry-After: {schema: {type: integer, minimum: 1}, description: Seconds until the next attempt}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RestErrorResponse'}
+        default: {$ref: '#/components/responses/ErrorResponse'}
+    post:
+      operationId: completeOAuthPost
+      tags: [oauth]
+      summary: Apple form_post callback
+      parameters:
+        - $ref: '#/components/parameters/OAuthProviderPath'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                state: {type: string}
+                code: {type: string}
+                error: {type: string}
+                user: {type: string, description: First-authorization name JSON; identity comes only from the verified id_token}
+      responses:
+        '302':
+          description: UI callback with a one-time code or a stable error code
+          headers:
+            Location: {schema: {type: string}}
+        '429':
+          description: Shared OAuth attempt budget for this IP is exhausted
+          headers:
+            Retry-After: {schema: {type: integer, minimum: 1}, description: Seconds until the next attempt}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RestErrorResponse'}
+        default: {$ref: '#/components/responses/ErrorResponse'}
+
+  /api/v1/auth/oauth/exchange:
+    post:
+      operationId: exchangeOAuth
+      tags: [oauth]
+      summary: Exchange a one-time code for a session or a name-confirmation step
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OAuthExchangeRequestDto'}
+      responses:
+        '200':
+          description: SIGNED_IN or SIGNUP_REQUIRED with a one-time 15-minute signupToken
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OAuthExchangeResponseDto'}
+        '429':
+          description: Shared OAuth attempt budget for this IP is exhausted
+          headers:
+            Retry-After: {schema: {type: integer, minimum: 1}, description: Seconds until the next attempt}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RestErrorResponse'}
+        default: {$ref: '#/components/responses/ErrorResponse'}
+
+  /api/v1/auth/oauth/signup:
+    post:
+      operationId: signupOAuth
+      tags: [oauth]
+      summary: Complete OAuth registration after entering a display name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OAuthSignupRequestDto'}
+      responses:
+        '200':
+          description: Active USER account with OAUTH origin and no password or project membership
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LoginResponseDto'}
+        '429':
+          description: Shared OAuth attempt budget for this IP is exhausted
+          headers:
+            Retry-After: {schema: {type: integer, minimum: 1}, description: Seconds until the next attempt}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RestErrorResponse'}
+        default: {$ref: '#/components/responses/ErrorResponse'}
+
+  /api/v1/auth/invitations/preview:
+    post:
+      summary: Preview a live invitation without consuming it
+      operationId: previewInvitation
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationPreviewRequestDto'
+      responses:
+        '200':
+          description: Invitation details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationPreviewResponseDto'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
   /api/v1/auth/invitations/accept:
     post:
       summary: Принятие инвайта и установка пароля
@@ -686,6 +882,29 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
   /api/v1/users/me:
+    patch:
+      summary: Change the current user's display name
+      description: Only displayName changes. Invalid names return 400 with details.reason DISPLAY_NAME_INVALID.
+      x-pat-scope: write
+      operationId: updateMyProfile
+      tags: [user-profile]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDisplayNameRequestDto'
+      responses:
+        '200':
+          description: Updated profile including the normalized displayName
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateAccessTokenResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
     get:
       x-pat-scope: read
       summary: Получение данных текущего пользователя
@@ -1081,7 +1300,7 @@ paths:
       x-pat-scope: write
       operationId: reorderProjectIssueTypes
       summary: Атомарно переставить все типы задач — только ADMIN проекта
-      description: codes — полная перестановка текущего реестра без повторов. Записывает sortOrder 10, 20, 30 в одной транзакции; первый тип становится типом по умолчанию. Неполный или устаревший набор кодов даёт 400 INVALID_ARGUMENT без изменений.
+      description: codes — полная перестановка текущего реестра без повторов. Записывает sortOrder 10, 20, 30 в одной транзакции; первый тип становится типом по умолчанию. Если корректно сформированный набор кодов не совпадает с текущим реестром, возвращается 409 ABORTED с details.reason ISSUE_TYPES_CHANGED без изменений; перечитайте реестр. Пустой список, повторы и некорректные коды — 400 INVALID_ARGUMENT.
       tags: [project-issue-type]
       security:
         - bearerAuth: []
@@ -1100,11 +1319,20 @@ paths:
               $ref: '#/components/schemas/ReorderProjectIssueTypesRequestDto'
       responses:
         '200':
-          description: Новый порядок сохранён
+          description: Новый порядок сохранён; реестр целиком в новом порядке, с shape и icon каждого типа.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListProjectIssueTypesDto'
+        '409':
+          description: ABORTED с details.reason ISSUE_TYPES_CHANGED — набор типов изменился; перечитайте реестр и повторите перестановку.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestErrorResponse'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
@@ -1112,7 +1340,8 @@ paths:
     patch:
       x-pat-scope: write
       operationId: updateProjectIssueType
-      summary: Изменить подпись, цвет, значок или порядок типа — только ADMIN проекта
+      summary: Изменить подпись, цвет, форму, значок или порядок типа — только ADMIN проекта
+      description: Пропущенное поле не меняется. "icon":null убирает значок; для остальных полей явный null — 400. Пустое тело — 400 INVALID_ARGUMENT. Недопустимые name, color, icon, shape или sortOrder — 400 INVALID_ARGUMENT.
       tags: [project-issue-type]
       security:
         - bearerAuth: []
@@ -1148,7 +1377,7 @@ paths:
       x-pat-scope: write
       operationId: deleteProjectIssueType
       summary: Удалить неиспользуемый тип — только ADMIN; последний тип удалить нельзя
-      description: Считаются только живые задачи. 400 FAILED_PRECONDITION содержит details.reason LAST_ISSUE_TYPE либо ISSUE_TYPE_IN_USE и строковое details.issueCount. Удалённые задачи не запрещают удаление типа.
+      description: Считаются только живые задачи. 400 FAILED_PRECONDITION содержит details.reason LAST_ISSUE_TYPE либо ISSUE_TYPE_IN_USE. Строковое details.issueCount передаётся только при ISSUE_TYPE_IN_USE; у LAST_ISSUE_TYPE его нет. Удалённые задачи не запрещают удаление типа.
       tags: [project-issue-type]
       security:
         - bearerAuth: []
@@ -1296,6 +1525,37 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
 
+  /api/v1/admin/users/{userId}:
+    patch:
+      summary: Change a user's display name (GLOBAL_ADMIN)
+      x-pat-scope: session
+      operationId: updateUserDisplayName
+      tags: [admin-user-management]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDisplayNameRequestDto'
+      responses:
+        '200':
+          description: Updated name; previous and new names are recorded in the admin audit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDisplayNameResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
   /api/v1/admin/users/{userId}/block:
     post:
       x-pat-scope: session
@@ -1352,7 +1612,11 @@ paths:
     post:
       x-pat-scope: session
       summary: Разблокировка пользователя
-      description: Изменяет статус пользователя с BLOCKED на ACTIVE. Запрещено активировать пользователей в статусе INVITED через этот эндпоинт. Требует прав GLOBAL_ADMIN.
+      description: >-
+        Восстанавливает статус до блокировки: INVITED для незавершённого приглашения,
+        ACTIVE для активированного аккаунта, в том числе OAuth без пароля.
+        Блокировка не расходует токен приглашения: после разблокировки действующая ссылка
+        позволяет завершить приглашение. Требует GLOBAL_ADMIN. Не активирует INVITED-пользователей.
       operationId: unblockUser
       tags:
         - admin-user-management
@@ -1405,6 +1669,12 @@ paths:
       x-pat-scope: write
       summary: Создание задачи
       operationId: createIssue
+      description: >-
+        Создаёт задачу сразу в statusKey из workflow её типа; без поля сохраняется TODO.
+        История и событие создания содержат фактический статус. Idempotency-Key связывается
+        со всеми полями создания, включая статус и планирование; другое тело с тем же ключом
+        возвращает FAILED_PRECONDITION. Неверный формат statusKey — 400 INVALID_ARGUMENT;
+        ключ вне workflow типа — 400 FAILED_PRECONDITION, details.reason STATUS_NOT_IN_WORKFLOW.
       tags:
         - issue
       security:
@@ -2475,7 +2745,7 @@ paths:
         - name: pageSizePerColumn
           in: query
           required: false
-          description: Первая страница каждой колонки после объединения всех типов. Для продолжения используйте поиск задач по статусу. Та же граница применяется к unplacedIssues.
+          description: Первая страница каждой колонки после объединения всех типов. Продолжение колонки доступно через GET /api/v1/projects/{projectId}/board/columns/{statusKey}/issues с курсором последней задачи. Та же граница применяется к unplacedIssues.
           schema:
             type: integer
             minimum: 1
@@ -2491,6 +2761,104 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BoardResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}/board/columns/{statusKey}/issues:
+    get:
+      x-pat-scope: read
+      summary: Страница задач колонки доски
+      description: Порядок createdAt asc, id asc для всех колонок, включая DONE. Передайте оба курсора из последней задачи предыдущей страницы и те же фильтры, что при чтении доски. Курсор исключительный; задачи, добавленные перед ним, появятся после обновления доски. Задачи входят только в статусы workflow своего типа.
+      operationId: listBoardColumnIssues
+      tags:
+        - board
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: statusKey
+          in: path
+          required: true
+          description: Открытый ключ статуса колонки; неизвестная колонка даёт пустую страницу после проверки доступа к проекту.
+          schema:
+            type: string
+            minLength: 1
+        - name: afterCreatedAt
+          in: query
+          required: false
+          description: createdAt последней задачи; обязателен вместе с afterId.
+          schema:
+            type: string
+            format: date-time
+        - name: afterId
+          in: query
+          required: false
+          description: id последней задачи; обязателен вместе с afterCreatedAt.
+          schema:
+            type: string
+            format: uuid
+        - name: issueType
+          in: query
+          required: false
+          description: Фильтр по ключу типа задачи проекта. Без параметра возвращаются все типы. Тип, которого нет в реестре проекта, или неверный формат дают пустую страницу.
+          schema:
+            type: string
+        - name: assigneeId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: labelId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: includeDone
+          in: query
+          required: false
+          description: Включать задачи в статусах категории DONE из workflow проекта. При false исключаются ключи всех таких статусов, а не буквальный ключ DONE.
+          schema:
+            type: boolean
+            default: false
+        - name: priority
+          in: query
+          required: false
+          description: Фильтр по приоритету задачи.
+          schema:
+            $ref: '#/components/schemas/IssuePriorityDto'
+        - name: query
+          in: query
+          required: false
+          description: Полнотекстовый фильтр по ключу, краткому описанию и описанию задачи (регистронезависимый).
+          schema:
+            type: string
+            minLength: 1
+        - name: pageSize
+          in: query
+          required: false
+          description: Размер страницы после объединения всех типов.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Страница колонки успешно получена
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoardColumnPageResponseDto'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
@@ -4135,7 +4503,7 @@ paths:
     delete:
       x-pat-scope: write
       operationId: deleteProjectWorkflow
-      description: Только ADMIN проекта; GLOBAL_ADMIN не обходит проектные права. Без statusMappings несовместимые статусы задач не переносятся. Целевые статусы должны присутствовать и в текущем, и в общем default workflow. Синхронная миграция ограничена 5000 выбранными задачами; это постоянный предел операции (400 FAILED_PRECONDITION, details.reason=WORKFLOW_MIGRATION_LIMIT), ожидание и повтор без изменения объёма не помогут.
+      description: Только ADMIN проекта; GLOBAL_ADMIN не обходит проектные права. Миграция выбирает только статусы удаляемого workflow и явно указанные ключи statusMappings. Без statusMappings несовместимые статусы выбранных задач требуют сопоставления. Остальные задачи в статусах вне обоих workflow не блокируют удаление и остаются в «Outside their workflow». Уже допустимые в default статусы без явного mapping не расходуют лимит миграции. Целевые статусы должны присутствовать и в текущем, и в общем default workflow. Синхронная миграция ограничена 5000 выбранными задачами; это постоянный предел операции (400 FAILED_PRECONDITION, details.reason=WORKFLOW_MIGRATION_LIMIT), ожидание и повтор без изменения объёма не помогут.
       summary: Удалить собственный workflow; несовместимые статусы задач требуют statusMappings
       tags: [workflow-mutation]
       security:
@@ -4424,6 +4792,12 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
 components:
+  parameters:
+    OAuthProviderPath:
+      name: provider
+      in: path
+      required: true
+      schema: {type: string, enum: [google, github, apple]}
   securitySchemes:
     bearerAuth:
       type: http
@@ -4628,6 +5002,27 @@ components:
       description: Подтверждает именно текущую заявку и включает Telegram. Не меняет выбор email. Повторная/просроченная заявка — 409.
       properties:
         linkId: {type: string, format: uuid}
+    SignupRequestDto:
+      type: object
+      required: [email, displayName]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 320
+        displayName:
+          type: string
+          description: Trimmed and validated in auth-service; 1..128 Unicode code points, no control characters.
+    AuthMethodsResponseDto:
+      type: object
+      required: [signupEnabled, providers]
+      properties:
+        signupEnabled:
+          type: boolean
+        providers:
+          type: array
+          items:
+            type: string
     LoginRequestDto:
       type: object
       required: [email, password]
@@ -4675,7 +5070,6 @@ components:
           maxLength: 320
         displayName:
           type: string
-          maxLength: 128
           description: Только при создании; если не задано, используется локальная часть email.
         resend:
           type: boolean
@@ -4726,12 +5120,90 @@ components:
         hasMore:
           type: boolean
 
+    OAuthExchangeRequestDto:
+      type: object
+      required: [code]
+      properties:
+        code: {type: string}
+    OAuthExchangeResponseDto:
+      type: object
+      required: [status, returnTo]
+      properties:
+        status: {type: string, enum: [SIGNED_IN, SIGNUP_REQUIRED]}
+        session:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/LoginResponseDto'
+        signup:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/OAuthSignupStateDto'
+        returnTo: {type: string}
+    OAuthSignupStateDto:
+      type: object
+      required: [signupToken, provider, email]
+      properties:
+        signupToken: {type: string}
+        provider: {type: string, enum: [GOOGLE, GITHUB, APPLE]}
+        email: {type: string}
+        suggestedDisplayName: {type: string, nullable: true}
+    OAuthSignupRequestDto:
+      type: object
+      required: [signupToken, displayName]
+      properties:
+        signupToken: {type: string}
+        displayName:
+          type: string
+          description: Trimmed name of 1..128 Unicode code points without controls or line breaks; invalid names return DISPLAY_NAME_INVALID before consuming the signup token.
+
+    UpdateDisplayNameRequestDto:
+      type: object
+      required: [displayName]
+      properties:
+        displayName:
+          type: string
+          description: Trimmed Unicode name, 1 to 128 code points, no control characters or line breaks. Invalid values return details.reason DISPLAY_NAME_INVALID.
+    UserDisplayNameResponseDto:
+      type: object
+      required: [userId, displayName]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+    InvitationPreviewRequestDto:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: Token stays in the request body, never in the URL.
+    InvitationPreviewResponseDto:
+      type: object
+      required: [email, displayName, kind, expiresAt]
+      properties:
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        kind:
+          type: string
+          enum: [INVITATION, SIGNUP]
+        expiresAt:
+          type: string
+          format: date-time
+
     PasswordByTokenRequestDto:
       type: object
       required: [token, newPassword]
       properties:
         token:
           type: string
+        displayName:
+          type: string
+          description: Optional normalized name, 1 to 128 Unicode code points, no controls or line breaks. Omission keeps the invited name; invalid values do not consume the token (400 DISPLAY_NAME_INVALID).
         newPassword:
           type: string
 
@@ -4775,6 +5247,13 @@ components:
       properties:
         issueType:
           $ref: '#/components/schemas/IssueTypeDto'
+        statusKey:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{1,63}$'
+          description: >-
+            Необязательный начальный статус из workflow выбранного типа задачи. Без поля — TODO.
+            Пустой/неверный ключ — 400 INVALID_ARGUMENT; отсутствующий в workflow типа —
+            400 FAILED_PRECONDITION с details.reason STATUS_NOT_IN_WORKFLOW.
         summary:
           type: string
         description:
@@ -4810,6 +5289,11 @@ components:
       required: [id, projectId, issueNumber, issueKey, issueType, summary, description,
                  priority, assigneeId, reporterId, createdAt, updatedAt,version, labels]
       properties:
+        timeSpentMinutes:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Total active logged minutes, independent of worklog pagination.
         id:
           type: string
         projectId:
@@ -4873,6 +5357,16 @@ components:
     IssueHistoryResponseDto:
       type: object
       properties:
+        participants:
+          type: object
+          description: Profiles keyed by UUIDs from server-owned history payload fields, including former project members. Missing profiles are omitted; UUIDs remain in payload.
+          additionalProperties:
+            $ref: '#/components/schemas/UserSummaryDto'
+        channel:
+          type: string
+          nullable: true
+          readOnly: true
+          description: Канал действия — UI, API_TOKEN или MCP; открытая строка для будущих каналов. Null/отсутствие у старых записей. Имя и id токена приватны и не возвращаются.
         id:
           type: string
         eventType:
@@ -4908,6 +5402,11 @@ components:
       required: [id, projectId, issueNumber, issueKey, issueType, summary, status,
                  priority, reporter, createdAt, updatedAt, version, isWatching, commentCount]
       properties:
+        timeSpentMinutes:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Total active logged minutes, independent of worklog pagination.
         id:
           type: string
           format: uuid
@@ -5090,6 +5589,12 @@ components:
         issueTypeIcon:
           type: string
           nullable: true
+          description: Значок из реестра проекта; null, если у типа нет значка или тип удалён.
+        issueTypeShape:
+          nullable: true
+          description: Форма из реестра проекта; null только вместе с issueTypeName (тип удалён).
+          allOf:
+            - $ref: '#/components/schemas/ProjectIssueTypeShapeDto'
         priority:
           $ref: '#/components/schemas/IssuePriorityDto'
         assigneeId:
@@ -5992,6 +6497,10 @@ components:
     ProjectIssueTypeIconDto:
       type: string
       enum: [check-square, bug, book-open, headset, megaphone, file-text, flag, layers]
+    ProjectIssueTypeShapeDto:
+      type: string
+      description: Форма метки типа. Встроенные типы новых проектов — TASK и STORY square, BUG circle, без значка.
+      enum: [square, circle, diamond]
     ReorderProjectIssueTypesRequestDto:
       type: object
       required: [codes]
@@ -6006,7 +6515,8 @@ components:
 
     ProjectIssueTypeDto:
       type: object
-      required: [code, name, color, icon, sortOrder]
+      description: Тип задачи из реестра проекта. Облик — цвет, форма и необязательный значок.
+      required: [code, name, color, shape, icon, sortOrder]
       properties:
         code:
           type: string
@@ -6018,8 +6528,13 @@ components:
           maxLength: 50
         color:
           $ref: '#/components/schemas/ProjectIssueTypeColorDto'
+        shape:
+          $ref: '#/components/schemas/ProjectIssueTypeShapeDto'
         icon:
-          $ref: '#/components/schemas/ProjectIssueTypeIconDto'
+          nullable: true
+          description: Значок типа; null — без значка.
+          allOf:
+            - $ref: '#/components/schemas/ProjectIssueTypeIconDto'
         sortOrder:
           type: integer
           format: int32
@@ -6030,12 +6545,13 @@ components:
       properties:
         items:
           type: array
+          description: Реестр типов по sortOrder и code; у каждого типа есть shape, icon может быть null.
           items:
             $ref: '#/components/schemas/ProjectIssueTypeDto'
     CreateProjectIssueTypeRequestDto:
       type: object
       additionalProperties: false
-      required: [code, name, color, icon]
+      required: [code, name, color]
       properties:
         code:
           type: string
@@ -6046,8 +6562,15 @@ components:
           maxLength: 50
         color:
           $ref: '#/components/schemas/ProjectIssueTypeColorDto'
+        shape:
+          description: По умолчанию square; явный null запрещён.
+          allOf:
+            - $ref: '#/components/schemas/ProjectIssueTypeShapeDto'
         icon:
-          $ref: '#/components/schemas/ProjectIssueTypeIconDto'
+          nullable: true
+          description: Пропуск или null — тип без значка.
+          allOf:
+            - $ref: '#/components/schemas/ProjectIssueTypeIconDto'
         sortOrder:
           type: integer
           format: int32
@@ -6057,7 +6580,7 @@ components:
       type: object
       additionalProperties: false
       minProperties: 1
-      description: Пропущенное поле не меняется; явный null запрещён. code неизменяем.
+      description: Пропущенное поле не меняется. Явный null допустим только для icon и убирает значок; для остальных полей он запрещён. code неизменяем.
       properties:
         name:
           type: string
@@ -6065,8 +6588,13 @@ components:
           maxLength: 50
         color:
           $ref: '#/components/schemas/ProjectIssueTypeColorDto'
+        shape:
+          $ref: '#/components/schemas/ProjectIssueTypeShapeDto'
         icon:
-          $ref: '#/components/schemas/ProjectIssueTypeIconDto'
+          nullable: true
+          description: Новый значок; null убирает значок.
+          allOf:
+            - $ref: '#/components/schemas/ProjectIssueTypeIconDto'
         sortOrder:
           type: integer
           format: int32
@@ -6089,7 +6617,7 @@ components:
             $ref: '#/components/schemas/ProjectLabelResponseDto'
         issueTypes:
           type: array
-          description: Реестр типов проекта по sortOrder и code; первый тип — по умолчанию.
+          description: Реестр типов проекта по sortOrder и code; первый тип — по умолчанию. Облик каждого типа — color, shape и icon (null — без значка).
           items:
             $ref: '#/components/schemas/ProjectIssueTypeDto'
         workflows:
@@ -6223,6 +6751,11 @@ components:
     CommentResponseDto:
       type: object
       properties:
+        channel:
+          type: string
+          nullable: true
+          readOnly: true
+          description: Канал последней записи комментария — UI, API_TOKEN или MCP; открытая строка для будущих каналов. Null/отсутствие у старых записей. Имя и id токена приватны и не возвращаются.
         id:
           type: string
           format: uuid
@@ -6506,7 +7039,7 @@ components:
           type: object
           additionalProperties:
             type: string
-          description: Исходный ключ статуса → ключ статуса общего default workflow. Целевой ключ также должен присутствовать в текущем workflow; при необходимости сначала добавьте его.
+          description: Исходный ключ статуса → ключ статуса общего default workflow. Явно указанный исходный ключ может быть старым статусом вне текущего workflow; остальные такие задачи не мигрируются. Целевой ключ также должен присутствовать в текущем workflow; при необходимости сначала добавьте его.
 
     ProjectWorkflowDto:
       type: object
@@ -7003,7 +7536,7 @@ components:
       required: [ issueTypes, priorities, linkTypes, notificationTypes, userStatuses ]
       properties:
         issueTypes:
-          description: Имена начального посева TASK/BUG/STORY; актуальные названия, цвет и значок берутся из реестра конкретного проекта.
+          description: Имена начального посева TASK/BUG/STORY; актуальные названия, цвет, форма и значок берутся из реестра конкретного проекта.
           type: array
           items:
             $ref: '#/components/schemas/IssueTypeMetaPairDto'
@@ -7142,6 +7675,26 @@ components:
           items:
             $ref: '#/components/schemas/BoardIssueDto'
 
+    BoardColumnPageResponseDto:
+      type: object
+      required: [ statusKey, issues, totalCount, hasMore ]
+      properties:
+        statusKey:
+          type: string
+        issues:
+          type: array
+          description: Те же BoardIssueDto и порядок createdAt asc, id asc, что в первой странице доски.
+          items:
+            $ref: '#/components/schemas/BoardIssueDto'
+        totalCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Все задачи колонки после фильтров и проверки workflow своего типа, независимо от курсора.
+        hasMore:
+          type: boolean
+          description: Есть задачи после последней задачи возвращённой страницы.
+
     BoardColumnDto:
       type: object
       required: [ statusKey, name, category, sortOrder, issues, totalCount, hasMore ]
@@ -7222,7 +7775,7 @@ components:
           $ref: '#/components/schemas/BoardUserDto'
         labels:
           type: array
-          description: Устойчивый порядок привязки createdAt asc, labelId asc; метка, отсутствующая в проекте, пропускается.
+          description: Порядок — name asc, id asc (сравнение строк по collation БД); удалённые и отсутствующие в проекте метки пропускаются.
           items:
             $ref: '#/components/schemas/IssueLabelResponseDto'
 
