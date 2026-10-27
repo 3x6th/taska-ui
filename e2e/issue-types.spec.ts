@@ -222,9 +222,7 @@ test("a move made stale by a type added elsewhere says so, and the list then sho
   await expect(dialog.getByText(sentence)).toHaveCount(0);
 });
 
-test("a delete is refused while issues have the type, saying how many, and goes through for an unused one", async ({
-  page,
-}) => {
+test("a delete of a type issues have asks where they go, and an unused one goes at once", async ({ page }) => {
   await openBoard(page, "Taska Platform");
   const dialog = await openIssueTypes(page);
 
@@ -235,9 +233,12 @@ test("a delete is refused while issues have the type, saying how many, and goes 
   await expect(strip.getByRole("button", { name: "Cancel" })).toBeFocused();
   await strip.getByRole("button", { name: "Delete type" }).click();
 
-  // TAS-101, TAS-105 and TAS-110 are live bugs; the count is the server's.
-  await expect(dialog.getByText("Bug was not deleted: 3 issues have this type. Change their type first.")).toBeVisible();
-  await expect(dialog.getByText("Issue type BUG has 3 issues")).toBeVisible();
+  // TAS-101, TAS-105 and TAS-110 are live bugs; the count is the server's,
+  // and the strip becomes its move step (TAS-433, TAS-437).
+  await expect(strip.getByRole("alert")).toHaveText("3 issues have this type. Move them to another type to delete Bug.");
+  await expect(strip.getByRole("combobox", { name: "Move them to" })).toBeFocused();
+  await expect(dialog.getByText("Issue type BUG has 3 issues")).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await expect(strip).toHaveCount(0);
   await expect(remove).toBeFocused();
   await expect(rowNames(dialog)).toHaveText(["Task", "Bug", "Story"]);
@@ -569,3 +570,99 @@ for (const width of [1440, 375]) {
     }
   });
 }
+
+/**
+ * TAS-433 and TAS-437 on Mobile, Mark's project: Incident runs on a workflow
+ * of its own (Triage, Resolved), and MOB-6 is a bug In Progress — a status
+ * Incident's workflow does not have. Deleting Bug moves its issue to Incident:
+ * first the type, then the status the target lacks.
+ */
+test("deleting a type with issues moves them: the target, then the status it lacks, then the type is gone", async ({ page }) => {
+  await openBoard(page, "Mobile", "mark@example.com");
+  const dialog = await openIssueTypes(page);
+  await dialog.getByRole("button", { name: "Delete Bug" }).click();
+  const strip = dialog.locator(".issue-type-confirm");
+  await strip.getByRole("button", { name: "Delete type" }).click();
+
+  await expect(strip.getByRole("alert")).toHaveText("1 issue has this type. Move it to another type to delete Bug.");
+  const target = strip.getByRole("combobox", { name: "Move them to" });
+  await expect(target).toBeFocused();
+  await expect(target.locator("option")).toHaveText(["Choose a type", "Task", "Story", "Incident"]);
+  const answer = strip.getByRole("button", { name: "Move and delete" });
+  await expect(answer).toHaveAttribute("aria-disabled", "true");
+  await target.selectOption({ label: "Incident" });
+  await answer.click();
+
+  const status = strip.getByRole("combobox", { name: "Move In Progress issues to" });
+  await expect(status).toBeFocused();
+  await expect(strip.getByRole("alert")).toHaveText(
+    "1 issue has this type. It is in a status Incident issues cannot have, so choose where it goes.",
+  );
+  await expect(status.locator("option")).toHaveText(["Choose a status", "Triage", "Resolved"]);
+  await status.selectOption({ label: "Triage" });
+  await answer.click();
+
+  await expect(rowNames(dialog)).toHaveText(["Task", "Story", "Incident"]);
+  await expect(dialog.getByText("Type Bug deleted. Its issues are now Incident.")).toBeAttached();
+  await dialog.getByRole("button", { name: "Close" }).click();
+
+  // MOB-6 is an incident in Triage now.
+  const card = page.getByRole("region", { name: "Triage column" }).getByRole("button", { name: /MOB-6/ });
+  await expect(card).toBeVisible();
+  await expect(card.locator(".issue-type-label")).toHaveText("Incident");
+});
+
+/** TAS-437: a new type runs on the project's main workflow unless another is chosen. */
+test("a new type runs on the main workflow by default, and Workflows lists it there", async ({ page }) => {
+  await openBoard(page, "Taska Platform");
+  // Task — the registry's first type — gets a workflow of its own.
+  await page.getByRole("button", { name: "Workflows" }).click();
+  let workflows = page.getByRole("dialog", { name: "Workflows" });
+  await workflows.getByRole("button", { name: "New workflow" }).click();
+  const create = workflows.getByRole("form", { name: "New workflow" });
+  await create.getByRole("textbox", { name: "Name" }).fill("Development");
+  await create.getByRole("checkbox", { name: "Task" }).check();
+  await create.getByRole("button", { name: "Create workflow" }).click();
+  await expect(workflows.getByRole("heading", { level: 3, name: "Development" })).toBeFocused();
+  await workflows.getByRole("button", { name: "Close", exact: true }).click();
+
+  const dialog = await openIssueTypes(page);
+  await dialog.getByRole("button", { name: "Add type" }).click();
+  const form = dialog.getByRole("form", { name: "New type" });
+  const workflow = form.getByRole("combobox", { name: "Workflow" });
+  await expect(workflow.locator("option")).toHaveText(["Development (same as Task)", "Default workflow (shared)"]);
+  await expect(workflow.locator("option:checked")).toHaveText("Development (same as Task)");
+  await form.getByLabel("Name").fill("Spike");
+  await form.getByRole("button", { name: "Add type" }).click();
+  await expect(rowNames(dialog)).toHaveText(["Task", "Bug", "Story", "Spike"]);
+  await expect(dialog.getByText("Type Spike added. It uses Development.")).toBeAttached();
+  await dialog.getByRole("button", { name: "Close" }).click();
+
+  await page.getByRole("button", { name: "Workflows" }).click();
+  workflows = page.getByRole("dialog", { name: "Workflows" });
+  const own = workflows.locator("section", { has: page.getByRole("heading", { level: 3, name: "Development" }) });
+  await expect(own.locator(".workflow-type")).toHaveText(["Task", "Spike"]);
+});
+
+/** §4.28 «Ещё применяется»: the mock answers a type named with the trigger 503 once, and the repeat finishes it. */
+test("a create the server is still applying is held, and pressing Add type again finishes it once", async ({ page }) => {
+  await openBoard(page, "Taska Platform");
+  const dialog = await openIssueTypes(page);
+  await dialog.getByRole("button", { name: "Add type" }).click();
+  const form = dialog.getByRole("form", { name: "New type" });
+  await form.getByLabel("Name").fill("Spike [still applying]");
+  const submit = form.getByRole("button", { name: "Add type" });
+  await submit.click();
+
+  await expect(
+    form.getByText("The server has not finished this change yet. Press Add type again in a few seconds to finish it; nothing is applied twice."),
+  ).toBeVisible();
+  await expect(submit).toBeFocused();
+  // Frozen: the name stays as sent.
+  await expect(form.getByLabel("Name")).toHaveAttribute("readonly", "");
+  await submit.click();
+
+  await expect(rowNames(dialog)).toHaveText(["Task", "Bug", "Story", "Spike [still applying]"]);
+  await expect(dialog.getByRole("form", { name: "New type" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Add type" })).toBeFocused();
+});

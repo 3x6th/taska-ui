@@ -685,6 +685,25 @@ export interface ProjectIssueType {
   shape: IssueTypeShape | null;
   icon: IssueTypeIcon | null;
   sortOrder: number;
+  /**
+   * `generation` (backend TAS-433, develop `78019ece`): which lifecycle of the
+   * code this entry is — a new UUID each time the code is created again. A
+   * delete that moves the type's issues sends it back as `expectedGeneration`,
+   * so it cannot delete a type of the same code made since. Nullable on the
+   * wire; left out here when the server sent none this build can read, and a
+   * move is then sent without it.
+   */
+  generation?: string;
+}
+
+/**
+ * `CreatedProjectIssueTypeDto` (backend TAS-437): the new registry entry and
+ * the workflow the server bound it to — the one asked for, or the project's
+ * main workflow when none was. `null` when the answer named none this build
+ * can read; the registry entry itself is unchanged.
+ */
+export interface CreatedProjectIssueType extends ProjectIssueType {
+  workflowId: string | null;
 }
 
 /**

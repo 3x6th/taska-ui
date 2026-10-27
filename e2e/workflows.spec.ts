@@ -398,3 +398,93 @@ for (const [email, role] of [
     await expect(page.getByRole("button", { name: "Workflows" })).toBeFocused();
   });
 }
+
+/**
+ * The owner's case (TAS-437, backend TAS-436), on the mock's Mobile: Incident
+ * runs on a workflow of its own (Triage, Resolved), Task, Bug and Story on the
+ * shared default, and MOB-6 is a bug In Progress. Mark — Mobile's ADMIN — adds
+ * Bug to the existing workflow through «Used by» on its card, maps the status
+ * it lacks, and the board follows.
+ */
+async function openMobileWorkflows(page: Page) {
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("mark@example.com");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
+  await page.locator("form button[type=submit]").click();
+  await expect(page).toHaveURL(/\/projects$/);
+  await page.locator(".project-card", { hasText: "Mobile" }).click();
+  await expect(page.locator("button.issue-card").first()).toBeVisible();
+  await page.getByRole("button", { name: "Workflows" }).click();
+  const dialog = page.getByRole("dialog", { name: "Workflows" });
+  await expect(dialog.getByRole("heading", { level: 3, name: "Incident workflow" })).toBeVisible();
+  return dialog;
+}
+
+test("the owner's case: a type on the shared default joins an existing workflow through «Used by», its issue mapped", async ({
+  page,
+}) => {
+  const dialog = await openMobileWorkflows(page);
+  const incident = cardOf(page, dialog, "Incident workflow");
+  await incident.getByRole("button", { name: "Edit Incident workflow" }).click();
+  const form = dialog.getByRole("form", { name: "Edit Incident workflow" });
+  const usedBy = form.getByRole("group", { name: "Used by" });
+  await expect(usedBy.getByRole("checkbox")).toHaveCount(4);
+  const bug = usedBy.getByRole("checkbox", { name: "Bug" });
+  await expect(bug).toHaveAccessibleDescription("On Default workflow");
+  await bug.check();
+  await expect(bug).toHaveAccessibleDescription("Moves from Default workflow");
+  await form.getByRole("button", { name: "Save" }).click();
+
+  // MOB-6 is In Progress, which Incident's workflow lacks: the mapping step.
+  await expect(form.getByRole("alert")).toHaveText(
+    "1 issue would be left in a status their new workflow does not have. Choose where each status’s issues go.",
+  );
+  const mapTo = form.getByRole("combobox", { name: "Move In Progress issues to" });
+  await expect(mapTo).toBeFocused();
+  await expect(mapTo.locator("option")).toHaveText(["Choose a status", "Triage", "Resolved"]);
+  const answer = form.getByRole("button", { name: "Move and save" });
+  await expect(answer).toHaveAttribute("aria-disabled", "true");
+  await mapTo.selectOption({ label: "Triage" });
+  await answer.click();
+
+  await expect(incident.getByRole("button", { name: "Edit Incident workflow" })).toBeFocused();
+  await expect(incident.locator(".workflow-type")).toHaveText(["Bug", "Incident"]);
+  await expect(cardOf(page, dialog, "Default workflow").locator(".workflow-type")).toHaveText(["Task", "Story"]);
+  await expect(dialog.getByText("Incident workflow is now used by Bug and Incident.")).toBeAttached();
+
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("region", { name: "Triage column" }).getByRole("button", { name: /MOB-6/ })).toBeVisible();
+});
+
+test("the last type of a workflow cannot be unchecked, and checking another frees it", async ({ page }) => {
+  const dialog = await openMobileWorkflows(page);
+  await cardOf(page, dialog, "Incident workflow").getByRole("button", { name: "Edit Incident workflow" }).click();
+  const form = dialog.getByRole("form", { name: "Edit Incident workflow" });
+  const incident = form.getByRole("checkbox", { name: "Incident" });
+  const note = "A workflow needs at least one type: check another before unchecking Incident, or delete this workflow.";
+
+  await expect(incident).toBeChecked();
+  await expect(incident).toHaveAttribute("aria-disabled", "true");
+  await expect(form.getByText(note)).toBeVisible();
+  // Neither a press nor Space takes it off, and the Tab stop stays. Forced:
+  // Playwright will not press an `aria-disabled` control by itself.
+  await incident.click({ force: true });
+  await expect(incident).toBeChecked();
+  await incident.focus();
+  await page.keyboard.press("Space");
+  await expect(incident).toBeChecked();
+  await expect(incident).toBeFocused();
+
+  await form.getByRole("checkbox", { name: "Story" }).check();
+  await expect(incident).not.toHaveAttribute("aria-disabled");
+  await expect(form.getByText(note)).toHaveCount(0);
+  await incident.uncheck();
+  await expect(incident).not.toBeChecked();
+  await expect(form.getByRole("checkbox", { name: "Story" })).toHaveAttribute("aria-disabled", "true");
+
+  // Esc puts the heading back, nothing sent.
+  await page.keyboard.press("Escape");
+  await expect(form).toHaveCount(0);
+  await expect(cardOf(page, dialog, "Incident workflow").getByRole("button", { name: "Edit Incident workflow" })).toBeFocused();
+});

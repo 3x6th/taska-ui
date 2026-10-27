@@ -12,9 +12,11 @@ import type {
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
+  CommandRetry,
   CreateProjectIssueTypeInput,
   CreateProjectLabelInput,
   CreateProjectWorkflowInput,
+  DeleteProjectIssueTypeInput,
   DeleteProjectWorkflowInput,
   DeleteWorkflowStatusParams,
   DeleteWorkflowTransitionParams,
@@ -104,6 +106,7 @@ import type {
   Board,
   BoardColumnPage,
   BoardIssue,
+  CreatedProjectIssueType,
   DateOnly,
   DictionaryEntry,
   DirectoryPage,
@@ -2213,7 +2216,11 @@ export class RestTaskaApi implements TaskaApi {
    * (backend TAS-432: no shape is the server's square, no icon is none). The
    * 201 is read as a registry entry is.
    */
-  async createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): Promise<ProjectIssueType> {
+  async createProjectIssueType(
+    projectId: string,
+    input: CreateProjectIssueTypeInput,
+    retry?: CommandRetry,
+  ): Promise<CreatedProjectIssueType> {
     const response = await this.request<unknown>(this.issueTypesPath(projectId), {
       method: "POST",
       body: {
@@ -2223,9 +2230,18 @@ export class RestTaskaApi implements TaskaApi {
         ...(input.shape !== undefined ? { shape: input.shape } : {}),
         ...(input.icon !== undefined ? { icon: input.icon } : {}),
         ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+        ...(input.workflowId !== undefined ? { workflowId: input.workflowId } : {}),
       },
+      headers: retryHeaders(retry),
     });
-    return this.toIssueTypeAnswer(response, input.code);
+    const { workflowId } = typeof response === "object" && response !== null ? (response as { workflowId?: unknown }) : {};
+    // `CreatedProjectIssueTypeDto` is the registry entry plus `workflowId`:
+    // the entry is read as the registry reads one, so the extra key never
+    // rides into the registry cache.
+    return {
+      ...this.toIssueTypeAnswer(response, input.code),
+      workflowId: typeof workflowId === "string" && UUID_TEXT.test(workflowId) ? workflowId : null,
+    };
   }
 
   /**
@@ -2249,9 +2265,28 @@ export class RestTaskaApi implements TaskaApi {
     return this.toIssueTypeAnswer(response, code);
   }
 
-  /** `DELETE /projects/{projectId}/issue-types/{code}` — 204. */
-  async deleteProjectIssueType(projectId: string, code: string): Promise<void> {
-    await this.request<void>(`${this.issueTypesPath(projectId)}/${this.segment(code)}`, { method: "DELETE" });
+  /**
+   * `DELETE /projects/{projectId}/issue-types/{code}` — 204. With no command
+   * (or one that states nothing) no body is sent, as before backend TAS-433;
+   * otherwise `DeleteProjectIssueTypeRequestDto` with only the fields given,
+   * as JSON — the gateway refuses a body of another type (415).
+   */
+  async deleteProjectIssueType(
+    projectId: string,
+    code: string,
+    input?: DeleteProjectIssueTypeInput,
+    retry?: CommandRetry,
+  ): Promise<void> {
+    const body = definedFields({
+      moveIssuesTo: input?.moveIssuesTo,
+      statusMappings: input?.statusMappings ? { ...input.statusMappings } : undefined,
+      expectedGeneration: input?.expectedGeneration,
+    });
+    await this.request<void>(`${this.issueTypesPath(projectId)}/${this.segment(code)}`, {
+      method: "DELETE",
+      ...(Object.keys(body).length ? { body } : {}),
+      headers: retryHeaders(retry),
+    });
   }
 
   /**
@@ -2288,7 +2323,11 @@ export class RestTaskaApi implements TaskaApi {
    * used to be parses into an entry with no types and `shared: true`, which
    * opens nothing.
    */
-  async createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<ProjectWorkflowEntry> {
+  async createProjectWorkflow(
+    projectId: string,
+    input: CreateProjectWorkflowInput,
+    retry?: CommandRetry,
+  ): Promise<ProjectWorkflowEntry> {
     const response = await this.request<RestProjectWorkflowItem>(this.workflowsPath(projectId), {
       method: "POST",
       body: {
@@ -2296,7 +2335,9 @@ export class RestTaskaApi implements TaskaApi {
         issueTypes: input.issueTypes,
         statuses: input.statuses.map(workflowStatusBody),
         transitions: input.transitions.map(workflowTransitionBody),
+        ...(input.statusMappings !== undefined ? { statusMappings: { ...input.statusMappings } } : {}),
       },
+      headers: retryHeaders(retry),
     });
     return toProjectWorkflowEntry(response);
   }
@@ -2321,15 +2362,26 @@ export class RestTaskaApi implements TaskaApi {
     return toProjectWorkflowEntry(response);
   }
 
-  /** `PATCH …/workflows/{workflowId}` — `PatchWorkflowRequestDto`, only the fields given. */
+  /**
+   * `PATCH …/workflows/{workflowId}` — `PatchWorkflowRequestDto`, only the
+   * fields given: `issueTypes` as the whole set in the order handed over,
+   * `statusMappings` only when stated.
+   */
   async updateProjectWorkflow(
     projectId: string,
     workflowId: string,
     input: UpdateProjectWorkflowInput,
+    retry?: CommandRetry,
   ): Promise<ProjectWorkflowEntry> {
     const response = await this.request<RestProjectWorkflowItem>(this.workflowPath(projectId, workflowId), {
       method: "PATCH",
-      body: definedFields({ version: input.version, name: input.name }),
+      body: definedFields({
+        version: input.version,
+        name: input.name,
+        issueTypes: input.issueTypes ? [...input.issueTypes] : undefined,
+        statusMappings: input.statusMappings ? { ...input.statusMappings } : undefined,
+      }),
+      headers: retryHeaders(retry),
     });
     return toProjectWorkflowEntry(response);
   }
@@ -3553,6 +3605,19 @@ function toProjectWorkflowEntry(item: RestProjectWorkflowItem): ProjectWorkflowE
     }),
     shared: item.shared !== false,
   };
+}
+
+/** The shape of a UUID, which `CreatedProjectIssueTypeDto.workflowId` is; anything else is not read as one. */
+const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The one header a repeat of a pending command adds (`CommandRetry`): the
+ * `X-Request-Id` of the 503 it repeats. The gateway keeps a client-sent id
+ * (`RequestIdProvider`) and its CORS allows the header. A new command sends
+ * none — the gateway makes one.
+ */
+function retryHeaders(retry: CommandRetry | undefined): Record<string, string> | undefined {
+  return retry?.requestId ? { "X-Request-Id": retry.requestId } : undefined;
 }
 
 /**

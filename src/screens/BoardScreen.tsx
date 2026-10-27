@@ -54,7 +54,12 @@ import {
   IssueVersionConflictError,
 } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
-import { STATUS_NOT_IN_TARGET_WORKFLOW_REASON, STATUS_NOT_IN_WORKFLOW_REASON } from "../api/issueTypes";
+import {
+  ISSUE_TYPE_CHANGED_REASON,
+  ISSUE_TYPE_DELETION_PENDING_REASON,
+  STATUS_NOT_IN_TARGET_WORKFLOW_REASON,
+  STATUS_NOT_IN_WORKFLOW_REASON,
+} from "../api/issueTypes";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches } from "../components/ColorSwatches";
@@ -1631,6 +1636,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           archived={archived}
           contextError={contextUnread.unanswered ? contextUnread.error : null}
           issueTypes={registry}
+          workflows={workflows}
           onClose={() => setManagingIssueTypes(false)}
           projectColor={project?.color}
           projectId={projectId}
@@ -7155,12 +7161,36 @@ function CreateIssueModal({
     setHalfTyped((current) => (current.startDate === next.startDate && current.dueDate === next.dueDate ? current : next));
   };
 
+  /**
+   * The type select, where focus goes when the create is refused for its type
+   * (§5.5, TAS-437) — the reader's next move is to choose another.
+   */
+  const typeSelectRef = useRef<HTMLSelectElement>(null);
+  /**
+   * The create refused for the type itself (§5.5, backend TAS-433/437): the
+   * type is being deleted (400 `FAILED_PRECONDITION` `ISSUE_TYPE_DELETION_PENDING`)
+   * or was deleted or replaced meanwhile (409 `ABORTED` `ISSUE_TYPE_CHANGED`).
+   * Branched on `details.reason` alone, as §5.5 asks; the sentence names the
+   * type as it was labelled when the create was sent, since the context read
+   * again may no longer hold it.
+   */
+  const typeRefusalSentence = (error: unknown, label: string): string | null => {
+    const reason = apiErrorFacts(error).details?.reason;
+    if (reason === ISSUE_TYPE_DELETION_PENDING_REASON) {
+      return `${label} is being deleted, so no issue can be created as ${label}. Choose another type.`;
+    }
+    if (reason === ISSUE_TYPE_CHANGED_REASON) {
+      return `${label} was deleted or replaced elsewhere, so the issue was not created. Check the type and create the issue again.`;
+    }
+    return null;
+  };
+
   const createIssue = useMutation({
     // From a column's "+", in that column's status (backend TAS-428); from
     // "New", no status — the server's `TODO`. A refusal (the type's workflow
     // lacks the status, which the form switches off but the server decides) is
     // the form's slot below: the server's words and the request id (§5.5).
-    mutationFn: (type: IssueTypeCode) =>
+    mutationFn: ({ type }: { type: IssueTypeCode; label: string }) =>
       taskaApi.createIssue(projectId, {
         issueType: type,
         ...(inStatus ? { statusKey: inStatus.statusKey } : {}),
@@ -7184,6 +7214,12 @@ function CreateIssueModal({
       if (code === "FAILED_PRECONDITION" && details?.reason === STATUS_NOT_IN_WORKFLOW_REASON) {
         void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
         void queryClient.invalidateQueries({ queryKey: boardKey(projectId) });
+      }
+      // The type is going or gone (§5.5, TAS-437): the context is read again,
+      // what was typed stays, and focus goes to the type to choose another.
+      if (typeRefusalSentence(error, "") !== null) {
+        void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+        typeSelectRef.current?.focus();
       }
     },
     onSuccess: async (issue) => {
@@ -7362,11 +7398,14 @@ function CreateIssueModal({
    * clear a box that can no longer be typed in, and there is no create left
    * for it to stand in front of.
    */
+  const typeRefused = createIssue.isError
+    ? typeRefusalSentence(createIssue.error, createIssue.variables?.label ?? "")
+    : null;
   const formNotice =
     dateNotice && !archived
       ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE
       : createIssue.isError
-        ? (refusalWords(createIssue.error) ?? createIssue.error.message)
+        ? (typeRefused ?? refusalWords(createIssue.error) ?? createIssue.error.message)
         : null;
   /**
    * The slot holds this form's `PROJECT_ARCHIVED` refusal, which says what the
@@ -7439,7 +7478,9 @@ function CreateIssueModal({
             return;
           }
           clearDateNotice();
-          if (summary.trim() && issueType && !noTypeHasStatus) createIssue.mutate(issueType);
+          if (summary.trim() && issueType && !noTypeHasStatus) {
+            createIssue.mutate({ type: issueType, label: issueTypeLabel(issueType, issueTypes) });
+          }
         }}
       >
         {/* Every box `readOnly` once archived: the reader's words stay, legible
@@ -7479,6 +7520,7 @@ function CreateIssueModal({
                   onChange={(event) => {
                     if (!archived) setIssueType(event.target.value);
                   }}
+                  ref={typeSelectRef}
                   value={issueType}
                 >
                   {issueTypes.map((entry) =>
@@ -7678,6 +7720,9 @@ function CreateIssueModal({
             // The create's refusal only: the date line is this form's own check
             // and has no id (§5.6, TAS-397). Outside the alert, under it.
             requestId={dateNotice && !archived ? null : apiErrorFacts(createIssue.error).requestId}
+            // A type refusal's sentence is the form's own, so the server's words
+            // follow it on the detail line (§5.5, TAS-437).
+            serverWords={typeRefused && !(dateNotice && !archived) ? refusalWords(createIssue.error) : null}
           >
             {formNotice}
           </ErrorNote>

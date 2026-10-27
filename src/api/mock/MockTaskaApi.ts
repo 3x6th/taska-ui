@@ -12,9 +12,11 @@ import type {
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
+  CommandRetry,
   CreateProjectIssueTypeInput,
   CreateProjectLabelInput,
   CreateProjectWorkflowInput,
+  DeleteProjectIssueTypeInput,
   DeleteProjectWorkflowInput,
   DeleteWorkflowStatusParams,
   DeleteWorkflowTransitionParams,
@@ -133,6 +135,7 @@ import type {
   AttachmentUploadTicket,
   AvatarUploadTicket,
   Board,
+  CreatedProjectIssueType,
   BoardColumn,
   BoardColumnPage,
   BoardIssue,
@@ -684,6 +687,25 @@ export const MOCK_PROJECT_TRIGGERS = {
    * §4.9, «Отказ», «Перечитывание»); the board read itself still answers.
    */
   columnPagesRefused: "[pages refused]",
+  /**
+   * In the name a pending-able command carries — a new or edited workflow's
+   * name on a binding change, a new type's name, the deleted type's name on a
+   * delete: the server accepts the command and has not finished it when it
+   * answers — 503 `UNAVAILABLE` with `WORKFLOW_BINDING_CHANGE_PENDING`,
+   * `ISSUE_TYPE_CREATION_PENDING` or `ISSUE_TYPE_DELETION_PENDING` and an
+   * `X-Request-Id` (backend TAS-433, TAS-436, TAS-437). As on the server, the
+   * command is carried out all the same; the same command sent again with that
+   * id answers what it did, once, and the same id with another command is 409
+   * `ALREADY_EXISTS`. Only the first send of a command meets it.
+   */
+  stillApplying: "[still applying]",
+  /**
+   * In a workflow's name — the one a workflow write would leave it with: a type
+   * operation of the project is still pending, so every workflow write is 409
+   * `ABORTED`, `details.reason` `ISSUE_TYPE_OPERATION_PENDING`
+   * (`WorkflowWriteFence`), whatever else it asks.
+   */
+  typeOperationPending: "[types busy]",
 } as const;
 
 /**
@@ -749,6 +771,13 @@ class MockApiError extends Error {
      * and an archived project's `reason: "PROJECT_ARCHIVED"` (backend PR #159).
      */
     public readonly details: ErrorDetails | null = null,
+    /**
+     * The `X-Request-Id` of the answer — carried only by the 503 of a pending
+     * command (`MOCK_PROJECT_TRIGGERS.stillApplying`), because that is the one
+     * refusal whose id the client sends back (`CommandRetry`). Every other
+     * mock refusal has none, as before.
+     */
+    public readonly requestId?: string,
   ) {
     super(message);
   }
@@ -990,6 +1019,9 @@ const SEED_ISSUE_TYPES: readonly ProjectIssueType[] = [
 const byRegistryOrder = (a: ProjectIssueType, b: ProjectIssueType) =>
   a.sortOrder - b.sortOrder || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0);
 
+/** A workflow's statuses as its repository reads them (`ORDER BY sort_order`). */
+const statusesInSortOrder = (statuses: readonly WorkflowStatus[]) => [...statuses].sort((a, b) => a.sortOrder - b.sortOrder);
+
 /**
  * A request body as the gateway reads it off the wire: a key whose value is
  * `undefined` is not sent at all (`JSON.stringify` drops it), so it is absent
@@ -1007,9 +1039,11 @@ const sentKeys = (body: Record<string, unknown>) => Object.keys(body).filter((ke
 const isIssueTypeCreateBody = (input: unknown): input is CreateProjectIssueTypeInput => {
   if (typeof input !== "object" || input === null) return false;
   const body = input as Record<string, unknown>;
-  const allowed = ["code", "name", "color", "shape", "icon", "sortOrder"];
+  const allowed = ["code", "name", "color", "shape", "icon", "sortOrder", "workflowId"];
   return (
     sentKeys(body).every((key) => allowed.includes(key)) &&
+    // `workflowId` is a UUID, and `null` is refused (backend TAS-437).
+    (body.workflowId === undefined || (typeof body.workflowId === "string" && UUID_PATTERN.test(body.workflowId))) &&
     isIssueTypeCode(body.code) &&
     typeof body.name === "string" &&
     body.name.trim() !== "" &&
@@ -1018,6 +1052,32 @@ const isIssueTypeCreateBody = (input: unknown): input is CreateProjectIssueTypeI
     (body.shape === undefined || isIssueTypeShape(body.shape)) &&
     (body.icon === undefined || body.icon === null || isIssueTypeIcon(body.icon)) &&
     (body.sortOrder === undefined || (isInt32(body.sortOrder) && body.sortOrder >= 0))
+  );
+};
+
+/**
+ * `DeleteProjectIssueTypeRequestDto` as the gateway reads it (backend TAS-433,
+ * `additionalProperties: false`): `moveIssuesTo` an `IssueTypeDto` code,
+ * `statusMappings` status keys onto status keys, `expectedGeneration` a UUID;
+ * anything else, `null` included, is "Invalid request parameters".
+ */
+const isIssueTypeDeleteBody = (input: unknown): input is DeleteProjectIssueTypeInput => {
+  if (typeof input !== "object" || input === null) return false;
+  const body = input as Record<string, unknown>;
+  const allowed = ["moveIssuesTo", "statusMappings", "expectedGeneration"];
+  const mapping = body.statusMappings;
+  return (
+    sentKeys(body).every((key) => allowed.includes(key)) &&
+    (body.moveIssuesTo === undefined || isIssueTypeCode(body.moveIssuesTo)) &&
+    (body.expectedGeneration === undefined ||
+      (typeof body.expectedGeneration === "string" && UUID_PATTERN.test(body.expectedGeneration))) &&
+    (mapping === undefined ||
+      (typeof mapping === "object" &&
+        mapping !== null &&
+        !Array.isArray(mapping) &&
+        Object.entries(mapping).every(
+          ([from, to]) => STATUS_KEY_PATTERN.test(from) && typeof to === "string" && STATUS_KEY_PATTERN.test(to),
+        )))
   );
 };
 
@@ -1254,7 +1314,7 @@ function workflowViolations(candidate: WorkflowCandidate): WorkflowViolation[] {
     if (transition.name.length > max) say(`Transition name exceeds maximum length of ${max}: ${pair(transition)}`);
   }
   // validateIssueTypes
-  if (issueTypes.length === 0) say("Issue type list must contain at least one valid issue type");
+  if (issueTypes.length === 0) say(EMPTY_ISSUE_TYPE_LIST_VIOLATION);
   else violations.push(...duplicatesOf(issueTypes, (code) => code, (code) => ({ message: `Duplicate issue type: ${code}`, duplicate: false })));
   // validateStatusKeys
   for (const status of statuses) {
@@ -1307,6 +1367,9 @@ function workflowViolations(candidate: WorkflowCandidate): WorkflowViolation[] {
   return violations;
 }
 
+/** `ISSUE_TYPE_LIST_EMPTY`'s words — a create's violation, and one an edit drops (`checkViolations`). */
+const EMPTY_ISSUE_TYPE_LIST_VIOLATION = "Issue type list must contain at least one valid issue type";
+
 /** `buildViolationMessage`: the prefix, then every violation joined with ", ". */
 const violationMessage = (prefix: string, violations: readonly WorkflowViolation[]) =>
   `${prefix}${violations.map((violation) => violation.message).join(", ")}`;
@@ -1339,6 +1402,10 @@ const WORKFLOW_BODY_FIELDS = {
     value !== null &&
     !Array.isArray(value) &&
     Object.values(value).every((target) => typeof target === "string"),
+  // `PatchWorkflowRequestDto.issueTypes` (backend TAS-436): a list of
+  // `IssueTypeDto` codes; the gateway refuses a repeat (`uniqueItems`).
+  issueTypes: (value: unknown) =>
+    Array.isArray(value) && value.every(isIssueTypeCode) && new Set(value).size === value.length,
 } as const;
 
 /**
@@ -2035,6 +2102,26 @@ export class MockTaskaStore {
    */
   private workflowOverrides: Record<string, Partial<Record<string, WorkflowDefinition>>> = {};
   /**
+   * Every workflow of a project's own, bound or not — workflow-service's
+   * `owner_project_id`. A workflow whose types all moved elsewhere stays here
+   * as a donor with its graph (backend TAS-436), listed with no type and
+   * editable, until it is deleted.
+   */
+  private ownedWorkflows: Record<string, WorkflowDefinition[]> = {};
+  /**
+   * The codes of a project that were deleted at least once — a code created
+   * again has an older lifecycle, so a delete with a move must then name the
+   * generation it means (`ISSUE_TYPE_GENERATION_REQUIRED`, backend TAS-433).
+   */
+  private retiredTypeCodes: Record<string, Set<string>> = {};
+  /**
+   * The commands answered 503 «still being applied»
+   * (`MOCK_PROJECT_TRIGGERS.stillApplying`), by the `X-Request-Id` the answer
+   * carried: what was asked, and what the finished command answers when it is
+   * sent again with that id.
+   */
+  private pendingCommands = new Map<string, { command: string; answer: unknown }>();
+  /**
    * The outbox rows, seeded once on first read rather than in the constructor.
    * Their timestamps are relative to *now* — a row has to be genuinely three
    * hours old for the summary's thresholds and the list's ages to say anything
@@ -2448,11 +2535,17 @@ export class MockTaskaStore {
       },
     };
 
+    this.ownedWorkflows = {
+      [WEB_PROJECT_ID]: [this.workflowOverrides[WEB_PROJECT_ID]!.EPIC!],
+      [MOB_PROJECT_ID]: [this.workflowOverrides[MOB_PROJECT_ID]!.INCIDENT!],
+    };
+
     for (const project of this.projects) {
-      this.issueTypesByProject[project.id] = SEED_ISSUE_TYPES.map((type) => ({ ...type }));
+      this.issueTypesByProject[project.id] = SEED_ISSUE_TYPES.map((type) => ({ ...type, generation: makeId("generation") }));
     }
     this.issueTypesByProject[OPS_PROJECT_ID] = SEED_ISSUE_TYPES.filter((type) => type.code !== "STORY").map((type) => ({
       ...type,
+      generation: makeId("generation"),
     }));
     this.issueTypesByProject[WEB_PROJECT_ID].push({
       code: "EPIC",
@@ -2463,6 +2556,7 @@ export class MockTaskaStore {
       shape: "square",
       icon: "layers",
       sortOrder: 40,
+      generation: makeId("generation"),
     });
     this.issueTypesByProject[MOB_PROJECT_ID].push({
       code: "INCIDENT",
@@ -2471,6 +2565,7 @@ export class MockTaskaStore {
       shape: "diamond",
       icon: null,
       sortOrder: 40,
+      generation: makeId("generation"),
     });
 
     let minute = 10;
@@ -3356,7 +3451,7 @@ export class MockTaskaStore {
     // Last, as the server lists it: the newest `created_at` (TAS-394).
     this.projects.push(project);
     // `ProjectServiceImpl.createProject` seeds the registry in the same write.
-    this.issueTypesByProject[project.id] = SEED_ISSUE_TYPES.map((type) => ({ ...type }));
+    this.issueTypesByProject[project.id] = SEED_ISSUE_TYPES.map((type) => ({ ...type, generation: makeId("generation") }));
     this.membersByProject[project.id] = [
       {
         userId: this.currentUserId,
@@ -3827,7 +3922,10 @@ export class MockTaskaStore {
    * then `ProjectWorkflowListService`: the project's registry types in its
    * order (backend #226), each resolved to the project's own workflow or the
    * shared default, one entry per workflow at the position of its first type.
-   * Statuses and every transition, hidden ones included, by `sortOrder`.
+   * Statuses and every transition, hidden ones included, by `sortOrder`. Since
+   * backend TAS-436 (develop `78019ece`) the project's own workflows no type
+   * runs on — donors — follow with `issueTypes: []`, in id order, and the
+   * shared default is listed only while a type runs on it.
    */
   listProjectWorkflows(projectId: string): ProjectWorkflowEntry[] {
     this.getProject(projectId);
@@ -3841,20 +3939,26 @@ export class MockTaskaStore {
       if (entry) entry.issueTypes.push(issueType);
       else entries.push({ workflow: this.workflowView(workflow), issueTypes: [issueType], shared: workflow === this.workflow });
     }
+    const donors = (this.ownedWorkflows[projectId] ?? [])
+      .filter((workflow) => !entries.some((entry) => entry.workflow.id === workflow.id))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (const workflow of donors) entries.push({ workflow: this.workflowView(workflow), issueTypes: [], shared: false });
     return entries;
   }
 
   /**
-   * `POST /projects/{projectId}/workflows`, in `WorkflowCreateService`'s order:
-   * the gateway's validation, the role, the whole body
-   * (`workflowViolations`, every failure 400 here — a duplicate included),
-   * then any requested type this project has already bound, 409. The 201 is
-   * `ProjectWorkflowDto` since backend PR #225 (`WorkflowMutationResponse`
-   * enriches it): statuses and every transition by `sortOrder`, the types,
-   * `shared: false`. The types are bound to it from now on, in the context
-   * and on the board as well as in the list.
+   * `POST /projects/{projectId}/workflows`, in `WorkflowBindingTransactions.create`'s
+   * order (backend TAS-436, develop `78019ece`): the gateway's validation, the
+   * whole body (`workflowViolations`, every failure 400 here — a duplicate and
+   * an empty type list included, with no reason, as the validator words
+   * them), the mapping's keys, the role, a pending type operation, then a
+   * type the registry lacks (`WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT`). The types
+   * move here from wherever they run — no 409 for a bound one any more — with
+   * their issues (`changeBindings`). The 201 is `ProjectWorkflowDto`: the
+   * statuses and every transition by `sortOrder`, the types, `shared: false`,
+   * `version` 1.
    */
-  createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): ProjectWorkflowEntry {
+  createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput, requestId?: string): ProjectWorkflowEntry {
     const body = input as Partial<Record<keyof CreateProjectWorkflowInput, unknown>>;
     if (
       typeof body.name !== "string" ||
@@ -3863,11 +3967,13 @@ export class MockTaskaStore {
       !Array.isArray(body.statuses) ||
       !body.statuses.every(isWorkflowStatusBody) ||
       !Array.isArray(body.transitions) ||
-      !body.transitions.every(isWorkflowTransitionBody)
+      !body.transitions.every(isWorkflowTransitionBody) ||
+      (body.statusMappings !== undefined && !WORKFLOW_BODY_FIELDS.statusMappings(body.statusMappings))
     ) {
       throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
     }
-    this.requireWorkflowRole(projectId);
+    const replayed = this.replayCommand(requestId, { kind: "create-workflow", projectId, input });
+    if (replayed.done) return replayed.answer as ProjectWorkflowEntry;
     const candidate: WorkflowCandidate = {
       name: input.name.trim(),
       issueTypes: [...input.issueTypes],
@@ -3888,20 +3994,10 @@ export class MockTaskaStore {
     if (violations.length) {
       throw new MockApiError("INVALID_ARGUMENT", violationMessage("Workflow creation failed: ", violations));
     }
-    // After the role and the body, in the order the request names them
-    // (`WorkflowCreateService`, backend #226): a type the registry lacks.
-    const unregistered = candidate.issueTypes.find((code) => !this.inRegistry(projectId, code));
-    if (unregistered !== undefined) {
-      throw new MockApiError("INVALID_ARGUMENT", issueTypeNotDefinedMessage(unregistered));
-    }
-    const bindings = (this.workflowOverrides[projectId] ??= {});
-    const bound = candidate.issueTypes.filter((code) => Object.hasOwn(bindings, code));
-    if (bound.length) {
-      throw new MockApiError(
-        "ALREADY_EXISTS",
-        `Workflow binding already exists for project ${projectId} and issue types: [${bound.join(", ")}]`,
-      );
-    }
+    const mapping = this.workflowStatusMapping(input.statusMappings);
+    this.requireWorkflowRole(projectId);
+    this.refuseTypeOperationPending(candidate.name);
+    this.requireRegisteredTypes(projectId, candidate.issueTypes);
     const stamp = now();
     const statuses = candidate.statuses.map((status) => ({ id: makeId("status"), ...status }));
     const idOf = (key: string) => statuses.find((status) => status.statusKey === key)?.id ?? "";
@@ -3921,8 +4017,16 @@ export class MockTaskaStore {
         hidden: transition.hidden,
       })),
     };
-    for (const code of candidate.issueTypes) bindings[code] = workflow;
-    return this.workflowAnswer(projectId, workflow);
+    const apply = this.changeBindings(projectId, workflow, candidate.issueTypes, mapping);
+    apply();
+    (this.ownedWorkflows[projectId] ??= []).push(workflow);
+    const answer = this.workflowAnswer(projectId, workflow);
+    this.pendOnTrigger(candidate.name, "WORKFLOW_BINDING_CHANGE_PENDING", "Workflow binding change is durably pending; retry with the same X-Request-Id", {
+      kind: "create-workflow",
+      projectId,
+      input,
+    }, answer);
+    return answer;
   }
 
   /**
@@ -3957,21 +4061,69 @@ export class MockTaskaStore {
   }
 
   /**
-   * `PATCH …/workflows/{workflowId}` — `WorkflowMutationService.rename`: the
-   * gateway requires a name that is not blank (`@NotBlank`, TAS-427) before
-   * anything else; it is stripped and checked with the whole workflow
-   * (`validateWorkflowEdit`). See `mutableWorkflow` for what comes between.
+   * `PATCH …/workflows/{workflowId}`. The gateway's reading first (backend
+   * TAS-427, TAS-436): the declared keys only, no `null`, a name of 1–100 not
+   * blank, a repeat-free `issueTypes`, a `name` or `issueTypes` at least,
+   * `version` with `issueTypes`, and no `statusMappings` without them — each
+   * "Invalid request parameters". Without `issueTypes` it is the rename of
+   * `WorkflowMutationService` (see `mutableWorkflow`); with them it is
+   * `WorkflowBindingTransactions.replace`: an empty set
+   * (`WORKFLOW_ISSUE_TYPES_EMPTY`), the role, a pending type operation, a type
+   * the registry lacks, a version that moved on, then the whole set as the
+   * workflow's (`changeBindings`): a type added moves here, a type left out
+   * goes back to the shared default, with their issues. The answer is the
+   * workflow with its new types, `version` + 1.
    */
-  updateProjectWorkflow(projectId: string, workflowId: string, input: UpdateProjectWorkflowInput): ProjectWorkflowEntry {
-    const named = (input as { name?: unknown }).name;
-    if (!isWorkflowPatch(input, ["version", "name"]) || typeof named !== "string" || !named.trim()) {
+  updateProjectWorkflow(
+    projectId: string,
+    workflowId: string,
+    input: UpdateProjectWorkflowInput,
+    requestId?: string,
+  ): ProjectWorkflowEntry {
+    const body = input as Partial<Record<keyof UpdateProjectWorkflowInput, unknown>>;
+    const named = body.name;
+    if (
+      !isWorkflowPatch(input, ["version", "name", "issueTypes", "statusMappings"]) ||
+      (named !== undefined && (typeof named !== "string" || !named.trim())) ||
+      (named === undefined && body.issueTypes === undefined) ||
+      (body.issueTypes !== undefined && body.version === undefined) ||
+      (body.issueTypes === undefined && body.statusMappings !== undefined && Object.keys(body.statusMappings as object).length > 0)
+    ) {
       throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
     }
-    const { workflow, issueTypes } = this.mutableWorkflow(projectId, workflowId, input.version);
-    const name = named.trim();
-    this.validateWorkflowEdit({ ...workflow, name }, issueTypes);
+    if (input.issueTypes === undefined) {
+      const { workflow, issueTypes } = this.mutableWorkflow(projectId, workflowId, input.version);
+      this.refuseTypeOperationPending(named as string);
+      const name = (named as string).trim();
+      this.validateWorkflowEdit({ ...workflow, name }, issueTypes);
+      workflow.name = name;
+      return this.bumpWorkflow(projectId, workflow);
+    }
+    const replayed = this.replayCommand(requestId, { kind: "replace-types", projectId, workflowId, input });
+    if (replayed.done) return replayed.answer as ProjectWorkflowEntry;
+    if (input.issueTypes.length === 0) {
+      throw new MockApiError("INVALID_ARGUMENT", "Workflow must use at least one issue type", {
+        reason: "WORKFLOW_ISSUE_TYPES_EMPTY",
+      });
+    }
+    const mapping = this.workflowStatusMapping(input.statusMappings);
+    const { workflow } = this.editableWorkflow(projectId, workflowId);
+    this.refuseTypeOperationPending(input.name);
+    this.requireRegisteredTypes(projectId, input.issueTypes);
+    if (input.version !== workflow.version) throw new MockApiError("ABORTED", "Workflow version changed");
+    const name = input.name === undefined ? workflow.name : input.name.trim();
+    if (name.length > 100) throw new MockApiError("INVALID_ARGUMENT", "Workflow name is too long");
+    const apply = this.changeBindings(projectId, workflow, input.issueTypes, mapping);
+    apply();
     workflow.name = name;
-    return this.bumpWorkflow(projectId, workflow);
+    const answer = this.bumpWorkflow(projectId, workflow);
+    this.pendOnTrigger(name, "WORKFLOW_BINDING_CHANGE_PENDING", "Workflow binding change is durably pending; retry with the same X-Request-Id", {
+      kind: "replace-types",
+      projectId,
+      workflowId,
+      input,
+    }, answer);
+    return answer;
   }
 
   /**
@@ -4145,6 +4297,7 @@ export class MockTaskaStore {
     );
     const bindings = this.workflowOverrides[projectId] ?? {};
     for (const code of issueTypes) delete bindings[code];
+    this.ownedWorkflows[projectId] = (this.ownedWorkflows[projectId] ?? []).filter((item) => item !== workflow);
     return { workflow: this.workflowView(fallback), issueTypes, shared: true };
   }
 
@@ -4293,8 +4446,8 @@ export class MockTaskaStore {
   private editableWorkflow(projectId: string, workflowId: string): { workflow: WorkflowDefinition; issueTypes: string[] } {
     if (!UUID_PATTERN.test(workflowId)) throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
     this.requireWorkflowRole(projectId);
-    const bound = Object.values(this.workflowOverrides).flatMap((bindings) => Object.values(bindings ?? {}));
-    const workflow = workflowId === this.workflow.id ? this.workflow : bound.find((item) => item?.id === workflowId);
+    const owned = Object.values(this.ownedWorkflows).flat();
+    const workflow = workflowId === this.workflow.id ? this.workflow : owned.find((item) => item.id === workflowId);
     if (!workflow) throw new MockApiError("NOT_FOUND", `Workflow not found: id=${workflowId}`);
     if (workflow === this.workflow) {
       throw new MockApiError(
@@ -4302,11 +4455,177 @@ export class MockTaskaStore {
         `Default workflow is shared by all projects and cannot be modified: id=${workflowId}. Create a project workflow first`,
       );
     }
+    // Owned by this project — bound or a donor (backend TAS-436) — or 404.
+    if (!(this.ownedWorkflows[projectId] ?? []).includes(workflow)) {
+      throw new MockApiError("NOT_FOUND", `Workflow not found in project: id=${workflowId}`);
+    }
+    this.refuseTypeOperationPending(workflow.name);
     const issueTypes = Object.entries(this.workflowOverrides[projectId] ?? {})
       .filter(([, item]) => item === workflow)
       .map(([code]) => code);
-    if (!issueTypes.length) throw new MockApiError("NOT_FOUND", `Workflow not found in project: id=${workflowId}`);
     return { workflow, issueTypes };
+  }
+
+  /**
+   * A binding change of workflow-service (backend TAS-436, develop `78019ece`:
+   * `WorkflowBindingTransactions.prepare`) and its issues, which issue-service
+   * moves (`WorkflowBindingMigrationService.move`). `requested` is the set of
+   * types `target` is to have: each runs on its own workflow or the shared
+   * default now and moves to `target`; a type `target` has now and `requested`
+   * leaves out goes back to the shared default. Then, for the types that
+   * actually move, the live issues in a status their destination lacks — or
+   * that `mapping` names — more than 5000 refuses the whole change
+   * (`WORKFLOW_MIGRATION_LIMIT`); any left, after the mapping, in a status
+   * their destination lacks refuses it — `WORKFLOW_ISSUES_UNMAPPED` with the
+   * count, the keys they sit in and `targetStatusKeys`, the statuses every
+   * such destination has (sorted, as the server's `TreeSet` leaves them), or
+   * `WORKFLOW_STATUS_MAPPING_INVALID` (400 `INVALID_ARGUMENT`) when a mapping
+   * points one of them nowhere it may go. Nothing is changed by a refusal; the
+   * answer is the change to apply: each mapped issue moved with a
+   * `TRANSITIONED` entry, the bindings rewritten, and every own workflow a type
+   * left one version on.
+   */
+  private changeBindings(
+    projectId: string,
+    target: WorkflowDefinition,
+    requested: readonly string[],
+    mapping: Readonly<Record<string, string>>,
+  ): () => void {
+    const bindings = (this.workflowOverrides[projectId] ??= {});
+    const registry = this.registryOf(projectId).map((type) => type.code);
+    const desired = registry.filter((code) => requested.includes(code));
+    const moves = registry
+      .filter((code) => desired.includes(code) || bindings[code] === target)
+      .map((code) => ({
+        code,
+        source: this.workflowFor(projectId, code),
+        destination: desired.includes(code) ? target : this.workflow,
+      }))
+      .filter((move) => move.source !== move.destination);
+    const keysOf = (workflow: WorkflowDefinition) => workflow.statuses.map((status) => status.statusKey);
+    const moveOf = (code: string) => moves.find((move) => move.code === code);
+    const targetOf = (statusKey: string) => (Object.hasOwn(mapping, statusKey) ? mapping[statusKey] : statusKey);
+    const rows = this.issues.filter((issue) => {
+      const move = issue.projectId === projectId && issue.deletedAt === null ? moveOf(issue.issueType) : undefined;
+      // `findForWorkflowBindingMove`: a status the destination lacks, or one the mapping moves.
+      return move !== undefined && (!keysOf(move.destination).includes(issue.status) || targetOf(issue.status) !== issue.status);
+    });
+    if (rows.length > WORKFLOW_MIGRATION_LIMIT) {
+      throw new MockApiError("FAILED_PRECONDITION", "Synchronous workflow migration is limited to 5000 issues", {
+        reason: "WORKFLOW_MIGRATION_LIMIT",
+        limit: String(WORKFLOW_MIGRATION_LIMIT),
+      });
+    }
+    const unresolved = rows.filter((issue) => !keysOf(moveOf(issue.issueType)!.destination).includes(targetOf(issue.status)));
+    if (unresolved.length) {
+      const destinations = [...new Set(unresolved.map((issue) => moveOf(issue.issueType)!.destination))];
+      const shared = destinations
+        .map(keysOf)
+        .reduce((common, keys) => common.filter((key) => keys.includes(key)))
+        .sort();
+      const badMapping = unresolved.some((issue) => Object.hasOwn(mapping, issue.status));
+      throw new MockApiError(
+        badMapping ? "INVALID_ARGUMENT" : "FAILED_PRECONDITION",
+        "Supply a valid target status mapping for the destination workflow",
+        {
+          reason: badMapping ? "WORKFLOW_STATUS_MAPPING_INVALID" : "WORKFLOW_ISSUES_UNMAPPED",
+          issueCount: String(unresolved.length),
+          statusKeys: [...new Set(unresolved.map((issue) => issue.status))].sort().join(","),
+          targetStatusKeys: shared.join(","),
+        },
+      );
+    }
+    return () => {
+      for (const issue of rows) {
+        const to = targetOf(issue.status);
+        if (to === issue.status) continue;
+        const from = issue.status;
+        issue.status = to;
+        issue.updatedAt = now();
+        issue.version += 1;
+        this.pushHistory(issue.id, "TRANSITIONED", this.currentUserId, {
+          from,
+          to,
+          reason: "WORKFLOW_CONFIGURATION_CHANGED",
+          workflowId: moveOf(issue.issueType)!.destination.id,
+        });
+        this.notifications.unshift(
+          this.notification("ISSUE_TRANSITIONED", "Status changed", `${issue.issueKey} moved to ${to}`, issue, now(), null),
+        );
+      }
+      const left = new Set<WorkflowDefinition>();
+      for (const move of moves) {
+        if (move.destination === this.workflow) delete bindings[move.code];
+        else bindings[move.code] = move.destination;
+        if (move.source !== this.workflow && move.source !== target) left.add(move.source);
+      }
+      for (const workflow of left) {
+        workflow.version += 1;
+        workflow.updatedAt = now();
+      }
+    };
+  }
+
+  /** `validateMappings`: both sides of every mapping a status key, else 400 (backend TAS-436). */
+  private workflowStatusMapping(mapping: Record<string, string> | undefined): Record<string, string> {
+    const entries = Object.entries(mapping ?? {});
+    if (entries.some(([from, to]) => !WORKFLOW_STATUS_KEY_PATTERN.test(from) || !WORKFLOW_STATUS_KEY_PATTERN.test(to))) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid workflow status mapping");
+    }
+    return Object.fromEntries(entries);
+  }
+
+  /** `requireRegistry`: every requested type the registry holds, else `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT` (400). */
+  private requireRegisteredTypes(projectId: string, codes: readonly string[]): void {
+    if (codes.some((code) => !this.inRegistry(projectId, code))) {
+      throw new MockApiError("INVALID_ARGUMENT", "Issue type is not registered in this project", {
+        reason: "WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT",
+      });
+    }
+  }
+
+  /**
+   * `WorkflowWriteFence.checkAvailable` as `MOCK_PROJECT_TRIGGERS.typeOperationPending`
+   * plays it: a workflow named with the trigger — as it stands or as the write
+   * would leave it — meets a pending type operation, 409 `ABORTED`.
+   */
+  private refuseTypeOperationPending(...names: (string | undefined)[]): void {
+    if (names.some((name) => name?.includes(MOCK_PROJECT_TRIGGERS.typeOperationPending))) {
+      throw new MockApiError("ABORTED", "A project issue-type operation is pending", {
+        reason: "ISSUE_TYPE_OPERATION_PENDING",
+      });
+    }
+  }
+
+  /**
+   * A repeat of a command this store answered 503 «still being applied»
+   * (`pendOnTrigger`): the same command under the same `X-Request-Id` answers
+   * what the finished command did — every time, as the server's journal keeps
+   * the receipt; the id with another command is 409 `ALREADY_EXISTS`
+   * (`REQUEST_ID_REUSED`). An id this store did not hand out — or none — is a
+   * new command.
+   */
+  private replayCommand(requestId: string | undefined, command: unknown): { done: boolean; answer?: unknown } {
+    const pending = requestId === undefined ? undefined : this.pendingCommands.get(requestId);
+    if (!pending) return { done: false };
+    if (pending.command !== JSON.stringify(command)) {
+      throw new MockApiError("ALREADY_EXISTS", "X-Request-Id was used with another command", { reason: "REQUEST_ID_REUSED" });
+    }
+    return { done: true, answer: clone(pending.answer) };
+  }
+
+  /**
+   * `MOCK_PROJECT_TRIGGERS.stillApplying`, carried out on a command that has
+   * just been applied: its answer is kept under a new request id, and the
+   * client is told 503 `UNAVAILABLE` with the pending `reason`, an
+   * `operationId` and that id — as the server answers a recoverable command it
+   * has accepted and not finished.
+   */
+  private pendOnTrigger(name: string, reason: string, message: string, command: unknown, answer: unknown): void {
+    if (!name.includes(MOCK_PROJECT_TRIGGERS.stillApplying)) return;
+    const requestId = makeId("request");
+    this.pendingCommands.set(requestId, { command: JSON.stringify(command), answer: clone(answer) });
+    throw new MockApiError("UNAVAILABLE", message, { reason, operationId: makeId("operation") }, requestId);
   }
 
   /**
@@ -4339,7 +4658,11 @@ export class MockTaskaStore {
         ...(added.transition ? [added.transition] : []),
       ],
     };
-    const violations = workflowViolations(candidate);
+    // An edit of a donor — no type left (backend TAS-436) — is not refused for
+    // it: `checkViolations` drops `ISSUE_TYPE_LIST_EMPTY`.
+    const violations = workflowViolations(candidate).filter(
+      (violation) => violation.message !== EMPTY_ISSUE_TYPE_LIST_VIOLATION,
+    );
     if (!violations.length) return;
     throw new MockApiError(
       violations.every((violation) => violation.duplicate) ? "ALREADY_EXISTS" : "INVALID_ARGUMENT",
@@ -4360,9 +4683,11 @@ export class MockTaskaStore {
    * workflow, the types bound to it in this project, `shared: false`.
    */
   private workflowAnswer(projectId: string, workflow: WorkflowDefinition): ProjectWorkflowEntry {
-    const issueTypes = Object.entries(this.workflowOverrides[projectId] ?? {})
-      .filter(([, item]) => item === workflow)
-      .map(([code]) => code);
+    // In the registry's order, as a binding change answers its desired types.
+    const bindings = this.workflowOverrides[projectId] ?? {};
+    const issueTypes = this.registryOf(projectId)
+      .map((type) => type.code)
+      .filter((code) => bindings[code] === workflow);
     return { workflow: this.workflowView(workflow), issueTypes, shared: false };
   }
 
@@ -5243,17 +5568,41 @@ export class MockTaskaStore {
    * `POST /projects/{projectId}/issue-types` in the server's order: the body
    * (the gateway's bean validation and deserialization — the code's pattern, a
    * blank or over-50 name measured before it is stripped, a colour, a shape or
-   * an icon outside its set, a `null` shape, a negative `sortOrder`, an
-   * undeclared key), the project, the role, the archive, then a code the
-   * project already holds (409). The name is stored stripped, `shape`
-   * defaults to `square`, `icon` to none and `sortOrder` to 100 (backend
-   * TAS-432); the 201 is the saved entry.
+   * an icon outside its set, a `null` shape, a negative `sortOrder`, a
+   * `workflowId` that is not a UUID, an undeclared key), the project, the
+   * role, the archive, then a code the project already holds (409). The name
+   * is stored stripped, `shape` defaults to `square`, `icon` to none and
+   * `sortOrder` to 100 (backend TAS-432).
+   *
+   * Since backend TAS-437 (develop `78019ece`, `IssueTypeCreationTransactions`
+   * and `WorkflowCreatedTypeBindingService`) the type is bound in the same
+   * operation: to `workflowId` — the shared default or an own workflow of the
+   * project, a donor included, else 400 `INVALID_ARGUMENT`
+   * `WORKFLOW_NOT_IN_PROJECT` — or, with none, to the workflow the registry's
+   * first type runs on. A project with no type has no such first one and is
+   * refused (400 `FAILED_PRECONDITION`). An own workflow it is bound to moves
+   * one version on. The 201 is `CreatedProjectIssueTypeDto`: the entry, with a
+   * new `generation`, and the `workflowId`.
    */
-  createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): ProjectIssueType {
+  createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput, requestId?: string): CreatedProjectIssueType {
     if (!isIssueTypeCreateBody(input)) throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
+    const replayed = this.replayCommand(requestId, { kind: "create-type", projectId, input });
+    if (replayed.done) return replayed.answer as CreatedProjectIssueType;
     this.requireIssueTypeAdmin(projectId);
     if (this.inRegistry(projectId, input.code)) {
       throw new MockApiError("ALREADY_EXISTS", issueTypeExistsMessage(input.code));
+    }
+    const first = this.registryOf(projectId)[0];
+    if (!first) throw new MockApiError("FAILED_PRECONDITION", "Project has no default issue type");
+    let target: WorkflowDefinition;
+    if (input.workflowId === undefined) target = this.workflowFor(projectId, first.code);
+    else if (input.workflowId === this.workflow.id) target = this.workflow;
+    else {
+      const owned = (this.ownedWorkflows[projectId] ?? []).find((workflow) => workflow.id === input.workflowId);
+      if (!owned) {
+        throw new MockApiError("INVALID_ARGUMENT", "Workflow is not owned by this project", { reason: "WORKFLOW_NOT_IN_PROJECT" });
+      }
+      target = owned;
     }
     const entry: ProjectIssueType = {
       code: input.code,
@@ -5262,9 +5611,23 @@ export class MockTaskaStore {
       shape: input.shape ?? "square",
       icon: input.icon ?? null,
       sortOrder: input.sortOrder ?? ISSUE_TYPE_DEFAULT_SORT_ORDER,
+      generation: makeId("generation"),
     };
     (this.issueTypesByProject[projectId] ??= []).push(entry);
-    return { ...entry };
+    const bindings = (this.workflowOverrides[projectId] ??= {});
+    if (target === this.workflow) delete bindings[entry.code];
+    else {
+      bindings[entry.code] = target;
+      target.version += 1;
+      target.updatedAt = now();
+    }
+    const answer: CreatedProjectIssueType = { ...entry, workflowId: target.id };
+    this.pendOnTrigger(entry.name, "ISSUE_TYPE_CREATION_PENDING", "Issue type creation is pending; retry with the same X-Request-Id", {
+      kind: "create-type",
+      projectId,
+      input,
+    }, answer);
+    return answer;
   }
 
   /**
@@ -5314,29 +5677,117 @@ export class MockTaskaStore {
    * does not count since backend TAS-418 (`includeDeleted=false`) — 400
    * `details.issueCount` as a string. The type's workflow binding goes with
    * it (backend TAS-418 fences bindings by the registry's generation): a
-   * workflow left with no type leaves the list, and a code added again runs on
-   * the shared default.
+   * workflow left with no type stays as a donor (backend TAS-436), and a code
+   * added again runs on the workflow it is created on.
+   *
+   * With `moveIssuesTo` (backend TAS-433, develop `78019ece`:
+   * `IssueTypeDeletionTransactions.begin`, then issue-service's
+   * `IssueTypeMoveService.move`): a target that is the type itself or not in
+   * the registry is 400 `INVALID_ARGUMENT` `ISSUE_TYPE_TARGET_INVALID`; a
+   * mapping or a generation without a target 400; after the role and the
+   * code, an `expectedGeneration` that is not the entry's is 409 `ABORTED`
+   * `ISSUE_TYPE_CHANGED`, and none for a code deleted once and made again
+   * `ISSUE_TYPE_GENERATION_REQUIRED`. Then the issues: a mapping onto a status
+   * the target's workflow lacks (400 `ISSUE_TYPE_STATUS_MAPPING_INVALID`),
+   * more than 5000 (`WORKFLOW_MIGRATION_LIMIT`), and any left in a status the
+   * target's workflow lacks (400 `FAILED_PRECONDITION` `ISSUE_STATUSES_UNMAPPED`,
+   * `statusKeys` sorted, `targetStatusKeys` the target workflow's — no count).
+   * Otherwise every live issue of the type takes the target and its mapped
+   * status, with one `UPDATED` entry, and the type goes.
    */
-  deleteProjectIssueType(projectId: string, code: string): void {
-    if (!ISSUE_TYPE_CODE_PATTERN.test(code)) throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
+  deleteProjectIssueType(projectId: string, code: string, input?: DeleteProjectIssueTypeInput, requestId?: string): void {
+    if (!ISSUE_TYPE_CODE_PATTERN.test(code) || (input !== undefined && !isIssueTypeDeleteBody(input))) {
+      throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
+    }
+    const replayed = this.replayCommand(requestId, { kind: "delete-type", projectId, code, input });
+    if (replayed.done) return;
+    const target = input?.moveIssuesTo;
+    const mapping = input?.statusMappings ?? {};
+    if (target !== undefined && target === code) {
+      throw new MockApiError("INVALID_ARGUMENT", "Target must be a different registered project issue type", {
+        reason: "ISSUE_TYPE_TARGET_INVALID",
+      });
+    }
+    if (target === undefined && (Object.keys(mapping).length > 0 || input?.expectedGeneration !== undefined)) {
+      throw new MockApiError("INVALID_ARGUMENT", "moveIssuesTo is required for mapping/generation");
+    }
     this.requireIssueTypeAdmin(projectId);
-    this.findIssueType(projectId, code);
+    const entry = this.findIssueType(projectId, code);
     const registry = this.issueTypesByProject[projectId] ?? [];
+    const live = this.issues.filter((item) => item.projectId === projectId && item.issueType === code && !item.deletedAt);
+    if (target !== undefined) {
+      const expected = input?.expectedGeneration;
+      if (expected !== undefined ? expected !== entry.generation : this.retiredTypeCodes[projectId]?.has(code)) {
+        throw new MockApiError(
+          "ABORTED",
+          expected !== undefined
+            ? "Issue type lifecycle changed"
+            : "This issue type code was recreated; supply expectedGeneration from the current registry",
+          {
+            reason: expected !== undefined ? "ISSUE_TYPE_CHANGED" : "ISSUE_TYPE_GENERATION_REQUIRED",
+            generation: entry.generation ?? "",
+          },
+        );
+      }
+      if (!this.inRegistry(projectId, target)) {
+        throw new MockApiError("INVALID_ARGUMENT", "Target issue type is not registered in this project", {
+          reason: "ISSUE_TYPE_TARGET_INVALID",
+        });
+      }
+    }
     if (registry.length <= 1) {
       throw new MockApiError("FAILED_PRECONDITION", LAST_ISSUE_TYPE_MESSAGE, { reason: LAST_ISSUE_TYPE_REASON });
     }
-    const count = this.issues.filter(
-      (item) => item.projectId === projectId && item.issueType === code && !item.deletedAt,
-    ).length;
-    if (count > 0) {
-      throw new MockApiError("FAILED_PRECONDITION", issueTypeInUseMessage(code, count), {
+    if (target === undefined && live.length > 0) {
+      throw new MockApiError("FAILED_PRECONDITION", issueTypeInUseMessage(code, live.length), {
         reason: ISSUE_TYPE_IN_USE_REASON,
-        issueCount: String(count),
+        issueCount: String(live.length),
       });
+    }
+    if (target !== undefined) {
+      const valid = statusesInSortOrder(this.workflowFor(projectId, target).statuses).map((status) => status.statusKey);
+      const targetOf = (statusKey: string) => (Object.hasOwn(mapping, statusKey) ? mapping[statusKey] : statusKey);
+      if (!Object.values(mapping).every((key) => valid.includes(key))) {
+        throw new MockApiError("INVALID_ARGUMENT", "Mapped target status is outside the target workflow", {
+          reason: "ISSUE_TYPE_STATUS_MAPPING_INVALID",
+          targetStatusKeys: valid.join(","),
+        });
+      }
+      if (live.length > WORKFLOW_MIGRATION_LIMIT) {
+        throw new MockApiError("FAILED_PRECONDITION", "Synchronous issue type migration is limited to 5000 issues", {
+          reason: "WORKFLOW_MIGRATION_LIMIT",
+          limit: String(WORKFLOW_MIGRATION_LIMIT),
+        });
+      }
+      const unmapped = [...new Set(live.map((issue) => issue.status))].filter((key) => !valid.includes(targetOf(key))).sort();
+      if (unmapped.length) {
+        throw new MockApiError("FAILED_PRECONDITION", "Supply mappings for source statuses absent from the target workflow", {
+          reason: "ISSUE_STATUSES_UNMAPPED",
+          statusKeys: unmapped.join(","),
+          targetStatusKeys: valid.join(","),
+        });
+      }
+      for (const issue of live) {
+        const from = issue.status;
+        Object.assign(issue, { issueType: target, status: targetOf(from), updatedAt: now(), version: issue.version + 1 });
+        this.pushHistory(issue.id, "UPDATED", this.currentUserId, {
+          field: "issue",
+          oldStatusKey: from,
+          newStatusKey: issue.status,
+          reason: "ISSUE_TYPE_DELETED",
+        });
+      }
     }
     this.issueTypesByProject[projectId] = registry.filter((type) => type.code !== code);
     const bindings = this.workflowOverrides[projectId];
     if (bindings && Object.hasOwn(bindings, code)) delete bindings[code];
+    (this.retiredTypeCodes[projectId] ??= new Set()).add(code);
+    this.pendOnTrigger(entry.name, "ISSUE_TYPE_DELETION_PENDING", "Issue type deletion is durably pending; retry the same command", {
+      kind: "delete-type",
+      projectId,
+      code,
+      input,
+    }, null);
   }
 
   /**
@@ -8364,8 +8815,12 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.createProjectLabel(projectId, input));
   }
 
-  async createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): Promise<ProjectIssueType> {
-    return wait(this.store.createProjectIssueType(projectId, input));
+  async createProjectIssueType(
+    projectId: string,
+    input: CreateProjectIssueTypeInput,
+    retry?: CommandRetry,
+  ): Promise<CreatedProjectIssueType> {
+    return wait(this.store.createProjectIssueType(projectId, input, retry?.requestId));
   }
 
   async updateProjectIssueType(
@@ -8376,8 +8831,13 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.updateProjectIssueType(projectId, code, input));
   }
 
-  async deleteProjectIssueType(projectId: string, code: string): Promise<void> {
-    this.store.deleteProjectIssueType(projectId, code);
+  async deleteProjectIssueType(
+    projectId: string,
+    code: string,
+    input?: DeleteProjectIssueTypeInput,
+    retry?: CommandRetry,
+  ): Promise<void> {
+    this.store.deleteProjectIssueType(projectId, code, input, retry?.requestId);
     await wait(null);
   }
 
@@ -8541,8 +9001,12 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.listProjectWorkflows(projectId));
   }
 
-  async createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<ProjectWorkflowEntry> {
-    return wait(this.store.createProjectWorkflow(projectId, input));
+  async createProjectWorkflow(
+    projectId: string,
+    input: CreateProjectWorkflowInput,
+    retry?: CommandRetry,
+  ): Promise<ProjectWorkflowEntry> {
+    return wait(this.store.createProjectWorkflow(projectId, input, retry?.requestId));
   }
 
   async addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<ProjectWorkflowEntry> {
@@ -8561,8 +9025,9 @@ export class MockTaskaApi implements TaskaApi {
     projectId: string,
     workflowId: string,
     input: UpdateProjectWorkflowInput,
+    retry?: CommandRetry,
   ): Promise<ProjectWorkflowEntry> {
-    return wait(this.store.updateProjectWorkflow(projectId, workflowId, input));
+    return wait(this.store.updateProjectWorkflow(projectId, workflowId, input, retry?.requestId));
   }
 
   async deleteProjectWorkflow(

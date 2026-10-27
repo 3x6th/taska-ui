@@ -3,6 +3,10 @@ import type { ProjectWorkflowEntry, WorkflowDefinition, WorkflowStatus } from ".
 import {
   andList,
   defaultCategory,
+  isTypeOperationPending,
+  sameCodes,
+  stepSourceLabel,
+  typeStepTargets,
   defaultPosition,
   defaultTransitionPair,
   freeSortOrderBetween,
@@ -387,5 +391,57 @@ describe("an edit's answer in the list", () => {
     expect(reordered?.[0].issueTypes).toEqual(["TASK", "STORY"]);
     expect(withWorkflowEntry(list, { ...answer, workflow: { ...answer.workflow, id: "" } })).toBeNull();
     expect(withWorkflowEntry(list, { ...answer, workflow: { ...answer.workflow, id: "wf-gone" } })).toBeNull();
+  });
+});
+
+/** §4.28 «Шаг сопоставления (типы)», backend TAS-436: what a binding change's step offers. */
+describe("the types mapping step", () => {
+  const st = (statusKey: string, name: string, sortOrder: number): WorkflowStatus => ({
+    id: `s-${statusKey}`,
+    statusKey,
+    name,
+    category: "IN_PROGRESS",
+    sortOrder,
+  });
+  const flow = (id: string, statuses: WorkflowStatus[]): WorkflowDefinition => ({
+    id,
+    name: id,
+    version: 1,
+    createdAt: "",
+    updatedAt: "",
+    statuses,
+    transitions: [],
+  });
+  const own = flow("own", [st("TRIAGE", "Triage", 5), st("RESOLVED", "Resolved", 40)]);
+  const shared = flow("shared", [st("TODO", "To Do", 10), st("IN_PROGRESS", "In Progress", 20), st("DONE", "Done", 30)]);
+
+  it("offers exactly the server's keys: the own workflow's in its order and labels, then the shared default's, then the rest", () => {
+    expect(typeStepTargets(["DONE", "RESOLVED", "ZZZ", "TRIAGE"], own, shared)).toEqual([
+      { key: "TRIAGE", label: "Triage" },
+      { key: "RESOLVED", label: "Resolved" },
+      { key: "DONE", label: "Done" },
+      { key: "ZZZ", label: "ZZZ" },
+    ]);
+    expect(typeStepTargets([], own, shared)).toEqual([]);
+    expect(typeStepTargets(["DONE"], own, undefined)).toEqual([{ key: "DONE", label: "Done" }]);
+  });
+
+  it("labels a source by the first workflow that has it, else by its key", () => {
+    const renamed = flow("renamed", [st("IN_PROGRESS", "Doing", 20)]);
+    expect(stepSourceLabel("IN_PROGRESS", [own, renamed, shared])).toBe("Doing");
+    expect(stepSourceLabel("BLOCKED_BY_QA", [own, shared])).toBe("BLOCKED_BY_QA");
+  });
+
+  it("compares two sets of codes whatever their order", () => {
+    expect(sameCodes(["BUG", "TASK"], ["TASK", "BUG"])).toBe(true);
+    expect(sameCodes(["BUG"], ["BUG", "TASK"])).toBe(false);
+    expect(sameCodes([], [])).toBe(true);
+  });
+
+  it("reads a pending type operation by code and reason, never alone", () => {
+    const refusal = (code: string, reason: string) => Object.assign(new Error("x"), { code, details: { reason } });
+    expect(isTypeOperationPending(refusal("ABORTED", "ISSUE_TYPE_OPERATION_PENDING"))).toBe(true);
+    expect(isTypeOperationPending(refusal("ABORTED", "ISSUE_TYPES_CHANGED"))).toBe(false);
+    expect(isTypeOperationPending(refusal("UNAVAILABLE", "ISSUE_TYPE_OPERATION_PENDING"))).toBe(false);
   });
 });

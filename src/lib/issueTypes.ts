@@ -1,8 +1,12 @@
-import { apiErrorFacts } from "../api/errors";
+import { apiErrorFacts, hasRefusalReason } from "../api/errors";
 import {
+  ISSUE_STATUSES_UNMAPPED_REASON,
+  ISSUE_TYPE_CHANGED_REASON,
   ISSUE_TYPE_CODE_MAX_LENGTH,
   ISSUE_TYPE_COLORS,
+  ISSUE_TYPE_GENERATION_REQUIRED_REASON,
   ISSUE_TYPE_IN_USE_REASON,
+  ISSUE_TYPE_TARGET_INVALID_REASON,
   ISSUE_TYPES_CHANGED_REASON,
   LAST_ISSUE_TYPE_REASON,
 } from "../api/issueTypes";
@@ -75,29 +79,71 @@ export function nextIssueTypeSortOrder(registry: readonly ProjectIssueType[]): n
 /**
  * The dialog's sentence for a refused delete (§4.30), branched on
  * `details.reason` and never on the server's prose (backend TAS-418):
- * `ISSUE_TYPE_IN_USE` names how many live issues have the type — "issues still
- * have this type" when `details.issueCount` does not parse; `LAST_ISSUE_TYPE`
- * is the last type; anything else — `PROJECT_ARCHIVED` included, whose §5.7
- * sentence is the caller's — is just "was not deleted". The server's words
- * and the request id go under it (§5.6), which is the caller's too.
+ * `LAST_ISSUE_TYPE` is the last type; anything else — `PROJECT_ARCHIVED`
+ * included, whose §5.7 sentence is the caller's — is just "was not deleted".
+ * The server's words and the request id go under it (§5.6), which is the
+ * caller's too. `ISSUE_TYPE_IN_USE` is not a refusal said here any more: since
+ * backend TAS-433 it turns the strip into its move step
+ * (`isIssueTypeInUse`).
  */
 export function issueTypeDeleteRefusalText(error: unknown, name: string): string {
   const { details } = apiErrorFacts(error);
-  if (details?.reason === ISSUE_TYPE_IN_USE_REASON) {
-    const raw = details.issueCount;
-    const count = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN;
-    const who = !Number.isSafeInteger(count)
-      ? "issues still have this type"
-      : count === 1
-        ? "1 issue has this type"
-        : `${count} issues have this type`;
-    return `${name} was not deleted: ${who}. Change their type first.`;
-  }
   if (details?.reason === LAST_ISSUE_TYPE_REASON) {
     return `${name} was not deleted: a project needs at least one issue type.`;
   }
   return `${name} was not deleted.`;
 }
+
+/** Whether a delete was refused for the live issues the type has — the move step's cue (backend TAS-418, TAS-433). */
+export const isIssueTypeInUse = (error: unknown) =>
+  hasRefusalReason(error, "FAILED_PRECONDITION", ISSUE_TYPE_IN_USE_REASON);
+
+/** Whether a delete with a move was refused for issues in a status the target's workflow lacks (backend TAS-433). */
+export const isIssueStatusesUnmapped = (error: unknown) =>
+  hasRefusalReason(error, "FAILED_PRECONDITION", ISSUE_STATUSES_UNMAPPED_REASON);
+
+/**
+ * Whether a delete with a move was refused because the type is not the one the
+ * dialog read — 409 `ABORTED` with `ISSUE_TYPE_CHANGED` (another generation) or
+ * `ISSUE_TYPE_GENERATION_REQUIRED` (the code was made again) — so the strip
+ * closes and the registry is read again (§4.30 «Отказы шага»).
+ */
+export const isIssueTypeReplaced = (error: unknown) =>
+  hasRefusalReason(error, "ABORTED", ISSUE_TYPE_CHANGED_REASON) ||
+  hasRefusalReason(error, "ABORTED", ISSUE_TYPE_GENERATION_REQUIRED_REASON);
+
+/** Whether a delete with a move named a target that is no longer a type of the project (400 `INVALID_ARGUMENT`). */
+export const isIssueTypeTargetInvalid = (error: unknown) =>
+  hasRefusalReason(error, "INVALID_ARGUMENT", ISSUE_TYPE_TARGET_INVALID_REASON);
+
+/** `details.issueCount` of an in-use refusal as a whole number, else `null`. */
+export function inUseCountOf(error: unknown): number | null {
+  const { details } = apiErrorFacts(error);
+  const raw = details && Object.hasOwn(details, "issueCount") ? details.issueCount : "";
+  return /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw)) ? Number(raw) : null;
+}
+
+/** "{N} issues have this type." / "1 issue has this type." / "Issues have this type." (§4.30). */
+const haveThisType = (count: number | null) =>
+  count === null ? "Issues have this type." : count === 1 ? "1 issue has this type." : `${count} issues have this type.`;
+
+/**
+ * The move step's sentence (§4.30 «Шаг переноса (тип)»): how many issues have
+ * the type, and that they move to another type for it to go. A single issue
+ * is "it", not "them" — DESIGN.md words only the plural.
+ */
+export const issueTypeMoveSentence = (count: number | null, name: string) =>
+  `${haveThisType(count)} Move ${count === 1 ? "it" : "them"} to another type to delete ${name}.`;
+
+/**
+ * The step once the server named statuses the target's workflow lacks (§4.30
+ * «Статусы»). The count is the in-use refusal's — `ISSUE_STATUSES_UNMAPPED`
+ * carries none.
+ */
+export const issueTypeStatusesSentence = (count: number | null, target: string) =>
+  count === 1
+    ? `${haveThisType(count)} It is in a status ${target} issues cannot have, so choose where it goes.`
+    : `${haveThisType(count)} Some are in a status ${target} issues cannot have, so choose where each status’s issues go.`;
 
 /** The dialog's sentence for any refused move (§4.30); the server's words and the request id go under it. */
 export const ISSUE_TYPE_ORDER_REFUSED_SENTENCE = "The new order was not saved. The list now shows the saved order.";

@@ -3291,6 +3291,50 @@ describe("the column + (backend TAS-428)", () => {
     await waitFor(() => expect(boardReads()).toBe(reads + 1));
   });
 
+  // §5.5, TAS-437: a create refused for its type — being deleted (400) or
+  // deleted or replaced (409) — is said in the form's own sentence, by
+  // `details.reason` whatever the code, with the words and the id; the
+  // context is read again and focus goes to the type.
+  for (const [reason, code, sentence] of [
+    [
+      "ISSUE_TYPE_DELETION_PENDING",
+      "FAILED_PRECONDITION",
+      "Bug is being deleted, so no issue can be created as Bug. Choose another type.",
+    ],
+    [
+      "ISSUE_TYPE_CHANGED",
+      "ABORTED",
+      "Bug was deleted or replaced elsewhere, so the issue was not created. Check the type and create the issue again.",
+    ],
+  ] as const) {
+    it(`says ${reason} in its own sentence, re-reads the context and puts focus on the type`, async () => {
+      failNextCreate(
+        Object.assign(new Error("Issue type lifecycle changed"), {
+          code,
+          status: code === "ABORTED" ? 409 : 400,
+          requestId: "req-437",
+          details: { reason },
+        }),
+      );
+      const queryClient = renderBoard();
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+      const contextReads = memberReads();
+      fireEvent.click(screen.getByRole("button", { name: "New" }));
+      const dialog = within(await screen.findByRole("dialog", { name: "New issue" }));
+      fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "Typed" } });
+      const type = dialog.getByLabelText("Type");
+      fireEvent.change(type, { target: { value: "BUG" } });
+      fireEvent.click(dialog.getByRole("button", { name: "Create issue" }));
+
+      expect(await dialog.findByRole("alert")).toHaveTextContent(sentence);
+      expect(dialog.getByText("Issue type lifecycle changed")).toBeVisible();
+      expect(dialog.getByText("req-437")).toBeVisible();
+      expect(dialog.getByLabelText("Summary")).toHaveValue("Typed");
+      await waitFor(() => expect(type).toHaveFocus());
+      await waitFor(() => expect(memberReads()).toBe(contextReads + 1));
+    });
+  }
+
   it("reads nothing again for a create refused for another reason", async () => {
     failNextCreate(
       Object.assign(new Error("Summary is required"), { code: "FAILED_PRECONDITION", status: 400, details: { reason: "OTHER" } }),

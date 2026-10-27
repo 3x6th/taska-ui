@@ -2,9 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { ProjectIssueType } from "../domain/types";
 import {
   defaultIssueTypeColor,
+  inUseCountOf,
+  isIssueStatusesUnmapped,
+  isIssueTypeInUse,
+  isIssueTypeReplaced,
+  isIssueTypeTargetInvalid,
   issueTypeCodeOf,
   issueTypeDeleteRefusalText,
+  issueTypeMoveSentence,
   issueTypeOrderRefusal,
+  issueTypeStatusesSentence,
   movedIssueTypeCodes,
   nextIssueTypeSortOrder,
   withIssueTypeOrder,
@@ -77,24 +84,43 @@ describe("issueTypeDeleteRefusalText", () => {
   const refusal = (details: Record<string, string> | null, message = "Something the server said") =>
     Object.assign(new Error(message), { code: "FAILED_PRECONDITION", status: 400, details });
 
-  it("names how many live issues have the type", () => {
-    expect(issueTypeDeleteRefusalText(refusal({ reason: "ISSUE_TYPE_IN_USE", issueCount: "3" }), "Epic")).toBe(
-      "Epic was not deleted: 3 issues have this type. Change their type first.",
+  // Backend TAS-433: ISSUE_TYPE_IN_USE is the move step's cue (`isIssueTypeInUse`), not a slot sentence.
+  it("names the step's count by issueCount — 'it' for one, none when it does not parse", () => {
+    const inUse = (issueCount?: string) =>
+      refusal({ reason: "ISSUE_TYPE_IN_USE", ...(issueCount === undefined ? {} : { issueCount }) });
+    expect(isIssueTypeInUse(inUse("3"))).toBe(true);
+    expect(isIssueTypeInUse(Object.assign(inUse("3"), { code: "ABORTED" }))).toBe(false);
+    expect(issueTypeMoveSentence(inUseCountOf(inUse("3")), "Epic")).toBe(
+      "3 issues have this type. Move them to another type to delete Epic.",
     );
-    expect(issueTypeDeleteRefusalText(refusal({ reason: "ISSUE_TYPE_IN_USE", issueCount: "1" }), "Epic")).toBe(
-      "Epic was not deleted: 1 issue has this type. Change their type first.",
+    expect(issueTypeMoveSentence(inUseCountOf(inUse("1")), "Epic")).toBe(
+      "1 issue has this type. Move it to another type to delete Epic.",
+    );
+    for (const issueCount of ["", "many", "-1", "1e3", undefined]) {
+      expect(issueTypeMoveSentence(inUseCountOf(inUse(issueCount)), "Epic")).toBe(
+        "Issues have this type. Move them to another type to delete Epic.",
+      );
+    }
+    expect(issueTypeStatusesSentence(3, "Task")).toBe(
+      "3 issues have this type. Some are in a status Task issues cannot have, so choose where each status’s issues go.",
+    );
+    expect(issueTypeStatusesSentence(null, "Task")).toBe(
+      "Issues have this type. Some are in a status Task issues cannot have, so choose where each status’s issues go.",
+    );
+    expect(issueTypeStatusesSentence(1, "Task")).toBe(
+      "1 issue has this type. It is in a status Task issues cannot have, so choose where it goes.",
     );
   });
 
-  it("says issues still have the type when the count does not parse", () => {
-    for (const issueCount of ["", "many", "-1", "1e3"]) {
-      expect(issueTypeDeleteRefusalText(refusal({ reason: "ISSUE_TYPE_IN_USE", issueCount }), "Epic")).toBe(
-        "Epic was not deleted: issues still have this type. Change their type first.",
-      );
-    }
-    expect(issueTypeDeleteRefusalText(refusal({ reason: "ISSUE_TYPE_IN_USE" }), "Epic")).toBe(
-      "Epic was not deleted: issues still have this type. Change their type first.",
-    );
+  it("tells the step's refusals apart by code and reason only", () => {
+    const with_ = (code: string, reason: string) => Object.assign(new Error("words"), { code, details: { reason } });
+    expect(isIssueTypeReplaced(with_("ABORTED", "ISSUE_TYPE_CHANGED"))).toBe(true);
+    expect(isIssueTypeReplaced(with_("ABORTED", "ISSUE_TYPE_GENERATION_REQUIRED"))).toBe(true);
+    expect(isIssueTypeReplaced(with_("FAILED_PRECONDITION", "ISSUE_TYPE_CHANGED"))).toBe(false);
+    expect(isIssueTypeTargetInvalid(with_("INVALID_ARGUMENT", "ISSUE_TYPE_TARGET_INVALID"))).toBe(true);
+    expect(isIssueTypeTargetInvalid(with_("FAILED_PRECONDITION", "ISSUE_TYPE_TARGET_INVALID"))).toBe(false);
+    expect(isIssueStatusesUnmapped(with_("FAILED_PRECONDITION", "ISSUE_STATUSES_UNMAPPED"))).toBe(true);
+    expect(isIssueStatusesUnmapped(with_("INVALID_ARGUMENT", "ISSUE_STATUSES_UNMAPPED"))).toBe(false);
   });
 
   it("says a project needs a type on LAST_ISSUE_TYPE", () => {
@@ -106,6 +132,9 @@ describe("issueTypeDeleteRefusalText", () => {
   it("never reads the prose or a bare count: anything else is just 'was not deleted'", () => {
     // The old shape — a count with no reason — and the server's in-use sentence alone.
     expect(issueTypeDeleteRefusalText(refusal({ issueCount: "3" }), "Epic")).toBe("Epic was not deleted.");
+    expect(issueTypeDeleteRefusalText(refusal({ reason: "ISSUE_TYPE_IN_USE", issueCount: "3" }), "Epic")).toBe(
+      "Epic was not deleted.",
+    );
     expect(issueTypeDeleteRefusalText(refusal(null, "Issue type EPIC has 3 issues"), "Epic")).toBe("Epic was not deleted.");
     expect(issueTypeDeleteRefusalText(refusal({ reason: "PROJECT_ARCHIVED" }), "Epic")).toBe("Epic was not deleted.");
     expect(issueTypeDeleteRefusalText(new Error("network"), "Epic")).toBe("Epic was not deleted.");

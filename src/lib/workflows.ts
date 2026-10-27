@@ -1,4 +1,5 @@
 import { apiErrorFacts, hasRefusalReason, type ErrorDetails } from "../api/errors";
+import { ISSUE_TYPES_CHANGED_REASON } from "../api/issueTypes";
 import type { CreateProjectWorkflowInput } from "../api/TaskaApi";
 import type {
   IssueTypeCode,
@@ -458,6 +459,36 @@ export const WORKFLOW_ISSUES_UNMAPPED_REASON = "WORKFLOW_ISSUES_UNMAPPED";
 /** `details.reason` of a delete that would move more issues than one migration may (backend TAS-427). */
 export const WORKFLOW_MIGRATION_LIMIT_REASON = "WORKFLOW_MIGRATION_LIMIT";
 
+/*
+ * The reasons of a binding change — New workflow, and an edit that sends
+ * `issueTypes` (backend TAS-436, develop `78019ece`: `WorkflowBindingTransactions`,
+ * `WorkflowWriteFence`, `WorkflowBindingMigrationService`). The first three are
+ * 400 `INVALID_ARGUMENT`, the next two 409 `ABORTED`; read with the code.
+ */
+/** An edit whose `issueTypes` is empty (`INVALID_ARGUMENT`). */
+export const WORKFLOW_ISSUE_TYPES_EMPTY_REASON = "WORKFLOW_ISSUE_TYPES_EMPTY";
+/** A change whose plan is past the internal transport limit (`INVALID_ARGUMENT`): move the types in smaller groups. */
+export const WORKFLOW_BINDING_PLAN_TOO_LARGE_REASON = "WORKFLOW_BINDING_PLAN_TOO_LARGE";
+/** A requested type the registry does not hold (`INVALID_ARGUMENT`). */
+export const WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT_REASON = "WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT";
+/** A type operation of the project is not finished (`ABORTED`), on every workflow write and on the list read. */
+export const ISSUE_TYPE_OPERATION_PENDING_REASON = "ISSUE_TYPE_OPERATION_PENDING";
+
+/** Whether a binding change was refused with `reason` — 400 `INVALID_ARGUMENT`. */
+export const isBindingRefusal = (error: unknown, reason: string) => hasRefusalReason(error, "INVALID_ARGUMENT", reason);
+
+/** Whether a moving type was deleted or made again meanwhile — 409 `ABORTED` `ISSUE_TYPES_CHANGED`. */
+export const isIssueTypesChanged = (error: unknown) => hasRefusalReason(error, "ABORTED", ISSUE_TYPES_CHANGED_REASON);
+
+/**
+ * Whether a workflow write or the list read met a type operation of the
+ * project still being applied — 409 `ABORTED` `ISSUE_TYPE_OPERATION_PENDING`.
+ * Checked before the «changed elsewhere» path, which an `ABORTED` otherwise
+ * takes (DESIGN.md §4.28 «Идёт другая операция»).
+ */
+export const isTypeOperationPending = (error: unknown) =>
+  hasRefusalReason(error, "ABORTED", ISSUE_TYPE_OPERATION_PENDING_REASON);
+
 /**
  * Whether a delete was refused for the issues it would leave behind — issue-
  * service's 400 `FAILED_PRECONDITION` "Workflow statuses have N issues; supply
@@ -533,3 +564,66 @@ export function withWorkflowEntry(
 
 /** "1 issue", "12 issues". */
 export const issueCountWords = (count: number) => `${count} ${count === 1 ? "issue" : "issues"}`;
+
+/** A select's option in a move step: a status key, and the label it is shown by. */
+export interface StepOption {
+  key: string;
+  label: string;
+}
+
+/**
+ * The options of a types mapping step's selects (DESIGN.md §4.28 «Шаг
+ * сопоставления (типы)», backend TAS-436): exactly the server's
+ * `targetStatusKeys` — the client never works out where an issue may go — in
+ * `own`'s column order and with its labels; a key `own` lacks after them, in
+ * the shared default's order and with its labels; a key neither has last, as
+ * the server sent it, by its key (§6).
+ */
+export function typeStepTargets(
+  keys: readonly string[],
+  own: WorkflowDefinition,
+  shared: WorkflowDefinition | undefined,
+): StepOption[] {
+  const inOwn = statusesInColumnOrder(own.statuses).filter((status) => keys.includes(status.statusKey));
+  const inShared = statusesInColumnOrder(shared?.statuses ?? []).filter(
+    (status) => keys.includes(status.statusKey) && !inOwn.some((item) => item.statusKey === status.statusKey),
+  );
+  const elsewhere = keys.filter(
+    (key) => ![...inOwn, ...inShared].some((status) => status.statusKey === key),
+  );
+  return [
+    ...inOwn.map((status) => ({ key: status.statusKey, label: statusLabel(status.statusKey, own.statuses) })),
+    ...inShared.map((status) => ({ key: status.statusKey, label: statusLabel(status.statusKey, shared?.statuses) })),
+    ...elsewhere.map((key) => ({ key, label: statusLabel(key, []) })),
+  ];
+}
+
+/**
+ * The label of a status the moving issues sit in (DESIGN.md §4.28): taken from
+ * the first of `workflows` that has the key — the form's own workflow first,
+ * then the dialog's list in order — else the key itself (§6).
+ */
+export function stepSourceLabel(key: string, workflows: readonly WorkflowDefinition[]): string {
+  const holder = workflows.find((workflow) => workflow.statuses.some((status) => status.statusKey === key));
+  return statusLabel(key, holder?.statuses ?? []);
+}
+
+/** Whether two sets of type codes hold the same codes, whatever their order. */
+export const sameCodes = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((code) => b.includes(code));
+
+/**
+ * The terminal sentence of a move refused by the migration limit (backend
+ * TAS-427, TAS-433: 400 `FAILED_PRECONDITION`, `details.reason`
+ * `WORKFLOW_MIGRATION_LIMIT`, `details.limit`): no mapping helps and trying
+ * again does not either, so the step offers no answer. Not the rate-limit
+ * wording — nothing here eases with time. `details.limit` that is not a whole
+ * number is left out of the words rather than guessed. `outcome` ends the
+ * sentence: "cannot be deleted", "cannot be moved".
+ */
+export const migrationLimitSentence = (refusal: unknown, subject: string, outcome = "cannot be deleted") => {
+  const limit = migrationLimitOf(refusal);
+  return limit === null
+    ? `Too many issues would have to move at once, so ${subject} ${outcome}.`
+    : `More than ${limit.toLocaleString("en-US")} issues would have to move, and the server moves at most ${limit.toLocaleString("en-US")} at once, so ${subject} ${outcome}.`;
+};

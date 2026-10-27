@@ -122,6 +122,15 @@ function renderDialog(readerRole: ProjectRole | null | undefined = "ADMIN", arch
 }
 
 const card = (name: string) => screen.getByRole("heading", { level: 3, name }).closest("section") as HTMLElement;
+/** A node's name from its `aria-labelledby`, and the text of its `aria-describedby`, as a screen reader puts them. */
+const idsText = (node: Element, attribute: string) =>
+  (node.getAttribute(attribute) ?? "")
+    .split(" ")
+    .filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent ?? "")
+    .join(" ");
+const accessibleName = (node: Element) => idsText(node, "aria-labelledby");
+const describedText = (node: Element) => idsText(node, "aria-describedby");
 const pressEscape = () => fireEvent.keyDown(document, { key: "Escape" });
 
 beforeEach(() => {
@@ -272,13 +281,41 @@ describe("what each role is offered", () => {
     expect(screen.queryByRole("region", { name: "Workflows" })).toBeNull();
   });
 
-  it("tells an ADMIN when every type already has its own workflow, in place of New workflow", async () => {
-    state.lists = [[ownEntry, { ...sharedEntry, issueTypes: [] }]];
+  // Backend TAS-436: a type with a workflow of its own moves, so New workflow
+  // is always offered while the project has types — and with no type on the
+  // shared default, the list does not carry it and the copy is the main one.
+  it("offers New workflow when every type has its own workflow, as a copy of the main one", async () => {
+    state.lists = [[{ ...ownEntry, issueTypes: ["TASK", "BUG", "STORY"] }]];
     renderDialog("ADMIN");
 
-    expect(await screen.findByText("Every issue type in this project already has its own workflow.")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "New workflow" })).toBeNull();
-    expect(within(card("Default workflow")).getByText("No issue type uses it.")).toBeVisible();
+    fireEvent.click(await screen.findByRole("button", { name: "New workflow" }));
+    expect(screen.queryByText(/already has its own workflow/)).toBeNull();
+    const form = screen.getByRole("form", { name: "New workflow" });
+    expect(within(form).getByRole("group", { name: "Issue types" })).toHaveAccessibleDescription(
+      "Starts as a copy of Development, so issues coming from it keep their status.",
+    );
+    expect(within(form).getAllByRole("checkbox").map((box) => [accessibleName(box), describedText(box)])).toEqual([
+      ["Task", "On Development"],
+      ["Bug", "On Development"],
+      ["Story", "On Development"],
+    ]);
+  });
+
+  it("says a donor has no type, and tells an ADMIN what to do with it", async () => {
+    const donor: ProjectWorkflowEntry = { workflow: { ...ownWorkflow, id: "wf-donor", name: "Old flow" }, issueTypes: [], shared: false };
+    state.lists = [[ownEntry, sharedEntry, donor]];
+    renderDialog("ADMIN");
+
+    await screen.findAllByRole("heading", { level: 3 });
+    // After the own workflows with types, before the shared default.
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([
+      "Development",
+      "Old flow",
+      "Default workflow",
+    ]);
+    expect(within(card("Old flow")).getByText("No issue type uses it. Choose its types with Edit, or delete it.")).toBeVisible();
+    fireEvent.click(within(card("Old flow")).getByRole("button", { name: "Delete Old flow" }));
+    expect(within(card("Old flow")).getByText("Delete Old flow? No issue type uses it.")).toBeVisible();
   });
 });
 
@@ -292,16 +329,21 @@ describe("New workflow", () => {
     expect(name).toHaveFocus();
     const submit = within(form).getByRole("button", { name: "Create workflow" });
     expect(submit).toHaveAttribute("aria-disabled", "true");
-    // Only the types the shared default runs; the copy's source is named.
-    expect(within(form).getAllByRole("checkbox").map((box) => box.closest("label")?.textContent)).toEqual(["Task", "Bug"]);
+    // Every type of the registry (TAS-437), each saying where it runs now; the copy's source is named.
+    expect(within(form).getAllByRole("checkbox").map((box) => [accessibleName(box), describedText(box)])).toEqual([
+      ["Task", "On Default workflow"],
+      ["Bug", "On Default workflow"],
+      ["Story", "On Development"],
+    ]);
     expect(within(form).getByRole("group", { name: "Issue types" })).toHaveAccessibleDescription(
-      "Starts as a copy of Default workflow, so issues of the types you move keep their status.",
+      "Starts as a copy of Default workflow, so issues coming from it keep their status.",
     );
 
     fireEvent.change(name, { target: { value: "  Bugs  " } });
     expect(submit).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(within(form).getByRole("checkbox", { name: "Bug" }));
     expect(submit).not.toHaveAttribute("aria-disabled");
+    expect(describedText(within(form).getByRole("checkbox", { name: "Bug" }))).toBe("Moves from Default workflow");
 
     const created = { ...ownWorkflow, id: "wf-new", name: "Bugs" };
     state.answer = { workflow: created, issueTypes: ["BUG"], shared: false };
@@ -590,7 +632,7 @@ describe("the keyboard", () => {
  * workflow — without reading the list again; a create and a workflow delete,
  * which move types on or off the shared default, read it again.
  */
-const ACTIONS = /^(Rename|Edit|Delete) /;
+const ACTIONS = /^(Edit|Delete) /;
 const answerWith = (workflow: Partial<WorkflowDefinition>): ProjectWorkflowEntry => ({
   ...ownEntry,
   workflow: { ...ownWorkflow, version: 2, ...workflow },
@@ -602,7 +644,7 @@ const openDialog = async (role: ProjectRole | null = "ADMIN") => {
 
 describe("who is offered the edits", () => {
   for (const role of ["MEMBER", "VIEWER", null] as const) {
-    it(`offers a ${role ?? "reader of unknown role"} no rename, edit or delete anywhere`, async () => {
+    it(`offers a ${role ?? "reader of unknown role"} no edit or delete anywhere`, async () => {
       await openDialog(role);
       expect(screen.queryAllByRole("button", { name: ACTIONS })).toEqual([]);
     });
@@ -617,7 +659,7 @@ describe("who is offered the edits", () => {
   it("offers an ADMIN every row of the own workflow and nothing on the shared one — and no Delete on TODO", async () => {
     await openDialog();
     const own = card("Development");
-    expect(within(own).getByRole("button", { name: "Rename Development" })).toBeVisible();
+    expect(within(own).getByRole("button", { name: "Edit Development" })).toHaveAttribute("title", "Edit");
     expect(within(own).getByRole("button", { name: "Delete Development" })).toHaveAttribute("aria-expanded", "false");
     expect(within(own).getByRole("button", { name: "Edit In Progress" })).toBeVisible();
     expect(within(own).getByRole("button", { name: "Delete In Progress" })).toBeVisible();
@@ -631,13 +673,13 @@ describe("who is offered the edits", () => {
   });
 });
 
-describe("Rename", () => {
+describe("Edit workflow: the name", () => {
   it("puts a Name field in the heading's place, sends the name with the version, and draws the answer", async () => {
     state.answer = answerWith({ name: "Delivery" });
     await openDialog();
-    fireEvent.click(within(card("Development")).getByRole("button", { name: "Rename Development" }));
+    fireEvent.click(within(card("Development")).getByRole("button", { name: "Edit Development" }));
 
-    const form = screen.getByRole("form", { name: "Rename Development" });
+    const form = screen.getByRole("form", { name: "Edit Development" });
     const name = within(form).getByRole("textbox", { name: "Name" });
     expect(name).toHaveFocus();
     expect(name).toHaveValue("Development");
@@ -645,7 +687,7 @@ describe("Rename", () => {
     fireEvent.change(name, { target: { value: "  Delivery " } });
     fireEvent.click(within(form).getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Rename Delivery" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit Delivery" })).toHaveFocus());
     expect(state.writes).toEqual([{ method: "rename", args: [PROJECT, "wf-own", { version: 1, name: "Delivery" }] }]);
     expect(card("Delivery")).toHaveClass("is-highlighted");
     expect(screen.getByText("Workflow renamed to Delivery.")).toHaveAttribute("aria-live", "polite");
@@ -653,20 +695,20 @@ describe("Rename", () => {
     expect(state.listCalls).toBe(1);
   });
 
-  it("sends nothing for the same name, and Esc puts the heading back with focus on Rename", async () => {
+  it("sends nothing when nothing changed, and Esc puts the heading back with focus on Edit", async () => {
     await openDialog();
-    fireEvent.click(within(card("Development")).getByRole("button", { name: "Rename Development" }));
-    fireEvent.click(within(screen.getByRole("form", { name: "Rename Development" })).getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Rename Development" })).toHaveFocus());
+    fireEvent.click(within(card("Development")).getByRole("button", { name: "Edit Development" }));
+    fireEvent.click(within(screen.getByRole("form", { name: "Edit Development" })).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit Development" })).toHaveFocus());
     expect(state.writes).toEqual([]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Rename Development" }));
-    const form = screen.getByRole("form", { name: "Rename Development" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Development" }));
+    const form = screen.getByRole("form", { name: "Edit Development" });
     fireEvent.change(within(form).getByRole("textbox", { name: "Name" }), { target: { value: " " } });
     expect(within(form).getByRole("button", { name: "Save" })).toHaveAttribute("aria-disabled", "true");
     pressEscape();
     expect(screen.getByRole("heading", { level: 3, name: "Development" })).toBeVisible();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Rename Development" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit Development" })).toHaveFocus());
   });
 
   it("reloads a workflow the server says changed elsewhere, and says so once with its words and id", async () => {
@@ -675,8 +717,8 @@ describe("Rename", () => {
     const { queryClient } = renderDialog("ADMIN");
     await screen.findAllByRole("heading", { level: 3 });
     const invalidated = vi.spyOn(queryClient, "invalidateQueries");
-    fireEvent.click(within(card("Development")).getByRole("button", { name: "Rename Development" }));
-    const form = screen.getByRole("form", { name: "Rename Development" });
+    fireEvent.click(within(card("Development")).getByRole("button", { name: "Edit Development" }));
+    const form = screen.getByRole("form", { name: "Edit Development" });
     fireEvent.change(within(form).getByRole("textbox", { name: "Name" }), { target: { value: "Delivery" } });
     fireEvent.click(within(form).getByRole("button", { name: "Save" }));
 
@@ -689,19 +731,19 @@ describe("Rename", () => {
     expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
       expect.arrayContaining([projectContextKey(PROJECT), boardKey(PROJECT)]),
     );
-    expect(screen.queryByRole("form", { name: /Rename/ })).toBeNull();
+    expect(screen.queryByRole("form", { name: /^Edit / })).toBeNull();
     // Not "was not renamed": a conflict is not said as a refusal of the form.
-    expect(screen.queryByText("The workflow was not renamed.")).toBeNull();
+    expect(screen.queryByText("The workflow was not saved.")).toBeNull();
     await waitFor(() => expect(screen.getByRole("heading", { level: 3, name: "Platform" })).toHaveFocus());
 
     // The next edit sends the version the server has now.
     state.writeFailure = null;
     state.answer = answerWith({ name: "Delivery", version: 5 });
-    fireEvent.click(screen.getByRole("button", { name: "Rename Platform" }));
-    fireEvent.change(within(screen.getByRole("form", { name: "Rename Platform" })).getByRole("textbox", { name: "Name" }), {
+    fireEvent.click(screen.getByRole("button", { name: "Edit Platform" }));
+    fireEvent.change(within(screen.getByRole("form", { name: "Edit Platform" })).getByRole("textbox", { name: "Name" }), {
       target: { value: "Delivery" },
     });
-    fireEvent.click(within(screen.getByRole("form", { name: "Rename Platform" })).getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("form", { name: "Edit Platform" })).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(state.writes).toHaveLength(2));
     expect(state.writes[1].args).toEqual([PROJECT, "wf-own", { version: 4, name: "Delivery" }]);
     expect(screen.queryByText(/was changed elsewhere/)).toBeNull();
@@ -1256,5 +1298,355 @@ describe("a row form or strip opened below the fold", () => {
     expect(scrolled).toHaveBeenCalledWith({ block: "nearest" });
     expect((scrolled.mock.contexts.at(-1) as HTMLElement).classList.contains("workflow-confirm")).toBe(true);
     scrolled.mockRestore();
+  });
+});
+
+/**
+ * TAS-437 (backend TAS-436, develop `78019ece`): Edit's «Used by», the binding
+ * change's mapping step, its refusals, «Ещё применяется» and «Идёт другая
+ * операция» (DESIGN.md §4.28).
+ */
+describe("Edit workflow: its types", () => {
+  const openEdit = async (lists: (unknown[] | Error)[] = [[ownEntry, sharedEntry]]) => {
+    state.lists = lists;
+    const rendered = renderDialog("ADMIN");
+    await screen.findAllByRole("heading", { level: 3 });
+    fireEvent.click(within(card("Development")).getByRole("button", { name: "Edit Development" }));
+    return { ...rendered, form: screen.getByRole("form", { name: "Edit Development" }) };
+  };
+  const box = (form: HTMLElement, name: string) => within(form).getByRole("checkbox", { name });
+  const unmapped = (details: Record<string, string>) =>
+    refusal("Supply a valid target status mapping", 400, "FAILED_PRECONDITION", { reason: "WORKFLOW_ISSUES_UNMAPPED", ...details });
+
+  it("puts Name and «Used by» in place of the heading, this workflow's types checked, every type saying where it runs", async () => {
+    const { form } = await openEdit();
+    expect(screen.queryByRole("heading", { level: 3, name: "Development" })).toBeNull();
+    expect(card("Default workflow")).toBeVisible();
+    expect(within(form).getByRole("textbox", { name: "Name" })).toHaveFocus();
+    const group = within(form).getByRole("group", { name: "Used by" });
+    expect(within(group).getAllByRole("checkbox").map((item) => [accessibleName(item), (item as HTMLInputElement).checked])).toEqual([
+      ["Task", false],
+      ["Bug", false],
+      ["Story", true],
+    ]);
+    expect(describedText(box(form, "Task"))).toBe("On Default workflow");
+
+    fireEvent.click(box(form, "Bug"));
+    expect(describedText(box(form, "Bug"))).toBe("Moves from Default workflow");
+    fireEvent.click(box(form, "Story"));
+    expect(describedText(box(form, "Story"))).toBe("Goes back to Default workflow");
+  });
+
+  it("keeps the last checked type: steadily unavailable, a press changes nothing, and a line says why", async () => {
+    const { form } = await openEdit();
+    const story = box(form, "Story");
+    expect(story).toHaveAttribute("aria-disabled", "true");
+    expect(story).toHaveClass("is-unavailable");
+    expect(describedText(story)).toBe(
+      "A workflow needs at least one type: check another before unchecking Story, or delete this workflow.",
+    );
+    fireEvent.click(story);
+    expect(story).toBeChecked();
+
+    // Another checked frees it.
+    fireEvent.click(box(form, "Task"));
+    expect(story).not.toHaveAttribute("aria-disabled");
+    fireEvent.click(story);
+    expect(story).not.toBeChecked();
+    expect(box(form, "Task")).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("does not hold a donor's empty set: it may stay empty, which saves nothing", async () => {
+    const donor: ProjectWorkflowEntry = { ...ownEntry, issueTypes: [] };
+    state.lists = [[donor, { ...sharedEntry, issueTypes: ["TASK", "BUG", "STORY"] }]];
+    renderDialog("ADMIN");
+    await screen.findAllByRole("heading", { level: 3 });
+    fireEvent.click(within(card("Development")).getByRole("button", { name: "Edit Development" }));
+    const form = screen.getByRole("form", { name: "Edit Development" });
+    fireEvent.click(box(form, "Bug"));
+    expect(box(form, "Bug")).not.toHaveAttribute("aria-disabled");
+    fireEvent.click(box(form, "Bug"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit Development" })).toHaveFocus());
+    expect(state.writes).toEqual([]);
+  });
+
+  it("sends the version and the whole set in the registry's order, reads the list again and says what moved", async () => {
+    const { form, queryClient } = await openEdit([
+      [ownEntry, sharedEntry],
+      [{ ...ownEntry, issueTypes: ["TASK", "BUG"] }, { ...sharedEntry, issueTypes: ["STORY"] }],
+    ]);
+    const invalidated = vi.spyOn(queryClient, "invalidateQueries");
+    state.answer = { ...ownEntry, issueTypes: ["TASK", "BUG"] };
+    fireEvent.click(box(form, "Bug"));
+    fireEvent.click(box(form, "Task"));
+    fireEvent.click(box(form, "Story"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit Development" })).toHaveFocus());
+    expect(state.writes).toEqual([{ method: "rename", args: [PROJECT, "wf-own", { version: 1, issueTypes: ["TASK", "BUG"] }] }]);
+    // A binding change moves types the answer does not describe: list, context and board are read.
+    expect(state.listCalls).toBe(2);
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([projectContextKey(PROJECT), boardKey(PROJECT), ["project-workflows", PROJECT]]),
+    );
+    expect(screen.getByText("Development is now used by Task and Bug. Story uses Default workflow again.")).toHaveAttribute(
+      "aria-live",
+      "polite",
+    );
+    expect(card("Development")).toHaveClass("is-highlighted");
+  });
+
+  it("names the rename first when the name changed too", async () => {
+    const { form } = await openEdit();
+    state.answer = { ...ownEntry, workflow: { ...ownWorkflow, name: "Delivery" }, issueTypes: ["BUG", "STORY"] };
+    fireEvent.change(within(form).getByRole("textbox", { name: "Name" }), { target: { value: "Delivery" } });
+    fireEvent.click(box(form, "Bug"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(state.writes).toHaveLength(1));
+    expect(state.writes[0].args[2]).toEqual({ version: 1, name: "Delivery", issueTypes: ["BUG", "STORY"] });
+    expect(await screen.findByText("Workflow renamed to Delivery. Delivery is now used by Bug and Story.")).toBeInTheDocument();
+  });
+
+  it("turns WORKFLOW_ISSUES_UNMAPPED into a mapping step, answered as a new command with the mapping", async () => {
+    const { form } = await openEdit();
+    state.failQueue = [unmapped({ issueCount: "2", statusKeys: "IN_PROGRESS", targetStatusKeys: "DONE,TODO" })];
+    fireEvent.click(box(form, "Bug"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    const select = await within(form).findByRole("combobox", { name: "Move In Progress issues to" });
+    await waitFor(() => expect(select).toHaveFocus());
+    expect(within(form).getByRole("alert")).toHaveTextContent(
+      "2 issues would be left in a status their new workflow does not have. Choose where each status’s issues go.",
+    );
+    // Exactly the server's targets, in this workflow's column order, nothing chosen.
+    expect([...(select as HTMLSelectElement).options].map((option) => [option.text, option.disabled])).toEqual([
+      ["Choose a status", true],
+      ["To Do", false],
+      ["Done", false],
+    ]);
+    // The step says the refusal; no ErrorNote repeats it, and no words or id in a step with an answer.
+    expect(within(form).queryByText("The workflow was not saved.")).toBeNull();
+    expect(within(form).queryByText("req-382")).toBeNull();
+    const submit = within(form).getByRole("button", { name: "Move and save" });
+    expect(submit).toHaveAttribute("aria-disabled", "true");
+
+    fireEvent.change(select, { target: { value: "TODO" } });
+    state.answer = { ...ownEntry, issueTypes: ["BUG", "STORY"] };
+    fireEvent.click(submit);
+    await waitFor(() => expect(state.writes).toHaveLength(2));
+    // A new command: no request id.
+    expect(state.writes[1].args).toEqual([
+      PROJECT,
+      "wf-own",
+      { version: 1, issueTypes: ["BUG", "STORY"], statusMappings: { IN_PROGRESS: "TODO" } },
+    ]);
+  });
+
+  it("drops the step when the set of types changes, and keeps it through a rename", async () => {
+    const { form } = await openEdit();
+    state.failQueue = [unmapped({ issueCount: "1", statusKeys: "IN_PROGRESS", targetStatusKeys: "TODO" })];
+    fireEvent.click(box(form, "Bug"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    await within(form).findByRole("combobox", { name: "Move In Progress issues to" });
+
+    fireEvent.change(within(form).getByRole("textbox", { name: "Name" }), { target: { value: "Delivery" } });
+    expect(within(form).getByRole("button", { name: "Move and save" })).toBeVisible();
+    fireEvent.click(box(form, "Task"));
+    expect(within(form).queryByRole("combobox")).toBeNull();
+    expect(within(form).getByRole("button", { name: "Save" })).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("offers no answer when the destinations share no status, or past the migration limit, with the words and the id", async () => {
+    const { form } = await openEdit();
+    state.failQueue = [unmapped({ issueCount: "1", statusKeys: "IN_PROGRESS", targetStatusKeys: "" })];
+    fireEvent.click(box(form, "Bug"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    expect(
+      await within(form).findByText(
+        "The types you add and the types you remove go to workflows that share no status, so one choice cannot fit both. Save them separately.",
+      ),
+    ).toBeVisible();
+    expect(within(form).getByRole("alert")).toHaveTextContent("1 issue would be left in a status their new workflow does not have.");
+    expect(within(form).getByText("Supply a valid target status mapping")).toBeVisible();
+    expect(within(form).getByText("req-382")).toBeVisible();
+    expect(within(form).getByRole("button", { name: "Move and save" })).toHaveAttribute("aria-disabled", "true");
+
+    state.failQueue = [
+      refusal("Limited", 400, "FAILED_PRECONDITION", { reason: "WORKFLOW_MIGRATION_LIMIT", limit: "5000" }),
+    ];
+    fireEvent.click(box(form, "Task"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    expect(
+      await within(form).findByText(
+        "More than 5,000 issues would have to move, and the server moves at most 5,000 at once, so these types cannot be moved.",
+      ),
+    ).toBeVisible();
+    expect(within(form).getByRole("button", { name: "Move and save" })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("says another refusal of the step's answer over the actions, and keeps the step", async () => {
+    const { form } = await openEdit();
+    state.failQueue = [
+      unmapped({ issueCount: "1", statusKeys: "IN_PROGRESS", targetStatusKeys: "TODO" }),
+      refusal("Mapped target status is wrong", 400, "INVALID_ARGUMENT", { reason: "WORKFLOW_STATUS_MAPPING_INVALID" }),
+    ];
+    fireEvent.click(box(form, "Bug"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    fireEvent.change(await within(form).findByRole("combobox", { name: "Move In Progress issues to" }), { target: { value: "TODO" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Move and save" }));
+    expect(await within(form).findByText("The workflow was not saved.")).toBeVisible();
+    expect(within(form).getByRole("combobox", { name: "Move In Progress issues to" })).toBeVisible();
+  });
+
+  for (const [reason, sentence] of [
+    ["WORKFLOW_ISSUE_TYPES_EMPTY", "The workflow was not saved: a workflow needs at least one type."],
+    [
+      "WORKFLOW_BINDING_PLAN_TOO_LARGE",
+      "The workflow was not saved: too many types would move in one change. Move them in smaller groups.",
+    ],
+    [
+      "WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT",
+      "The workflow was not saved: a type you chose is no longer one of this project’s types. The list now shows the current types.",
+    ],
+  ] as const) {
+    it(`says ${reason} in its own sentence, with the words and the id, and keeps the form`, async () => {
+      const { form, queryClient } = await openEdit();
+      const invalidated = vi.spyOn(queryClient, "invalidateQueries");
+      state.failQueue = [refusal("Refused", 400, "INVALID_ARGUMENT", { reason })];
+      fireEvent.click(box(form, "Bug"));
+      fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+      expect(await within(form).findByText(sentence)).toBeVisible();
+      expect(within(form).getByText("req-382")).toBeVisible();
+      await waitFor(() => expect(within(form).getByRole("button", { name: "Save" })).toHaveFocus());
+      const reread = invalidated.mock.calls.map(([filters]) => filters?.queryKey);
+      if (reason === "WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT") {
+        expect(reread).toEqual(expect.arrayContaining([projectContextKey(PROJECT), ["project-workflows", PROJECT]]));
+      } else {
+        expect(reread).not.toContainEqual(projectContextKey(PROJECT));
+      }
+    });
+  }
+
+  it("takes ISSUE_TYPES_CHANGED down the «changed elsewhere» path in its own sentence", async () => {
+    const { form } = await openEdit();
+    state.failQueue = [refusal("Issue type lifecycle changed", 409, "ABORTED", { reason: "ISSUE_TYPES_CHANGED" })];
+    fireEvent.click(box(form, "Bug"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    expect(
+      await screen.findByText("Issue types changed elsewhere, so nothing was saved. The list now shows the current types."),
+    ).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("form", { name: "Edit Development" })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("heading", { level: 3, name: "Development" })).toHaveFocus());
+    expect(state.listCalls).toBe(2);
+  });
+
+  it("says another type operation is being applied before the «changed elsewhere» path, and keeps the form", async () => {
+    const { form } = await openEdit();
+    state.failQueue = [refusal("A project issue-type operation is pending", 409, "ABORTED", { reason: "ISSUE_TYPE_OPERATION_PENDING" })];
+    fireEvent.click(box(form, "Bug"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    expect(
+      await within(form).findByText(
+        "Another change to this project’s types is still being applied, so this was not saved. Try again in a few seconds.",
+      ),
+    ).toBeVisible();
+    expect(within(form).getByText("A project issue-type operation is pending")).toBeVisible();
+    expect(screen.queryByText(/changed elsewhere/)).toBeNull();
+    expect(state.listCalls).toBe(1);
+  });
+
+  it("holds a command the server is still applying: frozen, said quietly with its id, and repeated with that id", async () => {
+    const { form, queryClient } = await openEdit();
+    state.failQueue = [
+      refusal("Workflow binding change is durably pending", 503, "UNAVAILABLE", { reason: "WORKFLOW_BINDING_CHANGE_PENDING" }),
+    ];
+    fireEvent.click(box(form, "Bug"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    const note = await within(form).findByText(
+      "The server has not finished this change yet. Press Save again in a few seconds to finish it; nothing is applied twice.",
+    );
+    expect(note).toHaveAttribute("role", "status");
+    expect(within(form).getByText("req-382")).toBeVisible();
+    expect(within(form).queryByRole("alert")).toBeNull();
+    const save = within(form).getByRole("button", { name: "Save" });
+    expect(save).not.toHaveAttribute("aria-disabled");
+    await waitFor(() => expect(save).toHaveFocus());
+    // Frozen: the name is read-only and a box does not change.
+    expect(within(form).getByRole("textbox", { name: "Name" })).toHaveAttribute("readonly");
+    fireEvent.click(box(form, "Task"));
+    expect(box(form, "Task")).not.toBeChecked();
+
+    state.answer = { ...ownEntry, issueTypes: ["BUG", "STORY"] };
+    fireEvent.click(save);
+    await waitFor(() => expect(state.writes).toHaveLength(2));
+    expect(state.writes[1].args).toEqual([
+      PROJECT,
+      "wf-own",
+      { version: 1, issueTypes: ["BUG", "STORY"] },
+      { requestId: "req-382" },
+    ]);
+    await waitFor(() => expect(screen.queryByRole("form", { name: "Edit Development" })).toBeNull());
+
+    // Cancel instead: the form goes and the list, the context and the board are read again.
+    state.failQueue = [
+      refusal("Workflow binding change is durably pending", 503, "UNAVAILABLE", { reason: "WORKFLOW_BINDING_CHANGE_PENDING" }),
+    ];
+    fireEvent.click(screen.getByRole("button", { name: "Edit Development" }));
+    const again = screen.getByRole("form", { name: "Edit Development" });
+    fireEvent.click(box(again, "Task"));
+    fireEvent.click(within(again).getByRole("button", { name: "Save" }));
+    await within(again).findByText(/The server has not finished this change yet/);
+    const invalidated = vi.spyOn(queryClient, "invalidateQueries");
+    pressEscape();
+    expect(screen.queryByRole("form", { name: "Edit Development" })).toBeNull();
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([["project-workflows", PROJECT], projectContextKey(PROJECT), boardKey(PROJECT)]),
+    );
+  });
+
+  it("says the list is being changed when its read meets a pending type operation", async () => {
+    state.lists = [refusal("A project issue-type operation is pending", 409, "ABORTED", { reason: "ISSUE_TYPE_OPERATION_PENDING" })];
+    renderDialog("ADMIN");
+    expect(
+      await screen.findByText("This project’s workflows are being changed right now. Reopen Workflows in a few seconds."),
+    ).toBeVisible();
+    expect(screen.queryByText("This project's workflows could not be loaded.")).toBeNull();
+  });
+});
+
+describe("New workflow: moving types", () => {
+  it("answers a mapping step with Move and create, the copy and the mapping sent as a new command", async () => {
+    renderDialog("ADMIN");
+    fireEvent.click(await screen.findByRole("button", { name: "New workflow" }));
+    const form = screen.getByRole("form", { name: "New workflow" });
+    fireEvent.change(within(form).getByRole("textbox", { name: "Name" }), { target: { value: "Stories" } });
+    fireEvent.click(within(form).getByRole("checkbox", { name: "Story" }));
+    expect(describedText(within(form).getByRole("checkbox", { name: "Story" }))).toBe("Moves from Development");
+    state.failQueue = [
+      refusal("Supply a valid target status mapping", 400, "FAILED_PRECONDITION", {
+        reason: "WORKFLOW_ISSUES_UNMAPPED",
+        statusKeys: "CODE_REVIEW",
+        targetStatusKeys: "DONE",
+      }),
+    ];
+    fireEvent.click(within(form).getByRole("button", { name: "Create workflow" }));
+    const select = await within(form).findByRole("combobox", { name: "Move CODE_REVIEW issues to" });
+    expect(within(form).getByRole("alert")).toHaveTextContent(
+      "Issues would be left in a status their new workflow does not have. Choose where each status’s issues go.",
+    );
+    fireEvent.change(select, { target: { value: "DONE" } });
+    const created = { ...ownWorkflow, id: "wf-new", name: "Stories" };
+    state.answer = { workflow: created, issueTypes: ["STORY"], shared: false };
+    state.lists = [[ownEntry, sharedEntry], [{ ...ownEntry, issueTypes: [] }, { workflow: created, issueTypes: ["STORY"], shared: false }, sharedEntry]];
+    fireEvent.click(within(form).getByRole("button", { name: "Move and create" }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 3, name: "Stories" })).toHaveFocus());
+    const [, input, retry] = state.writes[1].args as [string, { issueTypes: string[]; statusMappings: object }, unknown];
+    expect(input.issueTypes).toEqual(["STORY"]);
+    expect(input.statusMappings).toEqual({ CODE_REVIEW: "DONE" });
+    expect(retry).toBeUndefined();
+    expect(state.writes[1].args).toHaveLength(2);
   });
 });
