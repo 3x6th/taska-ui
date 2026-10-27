@@ -47,6 +47,12 @@ export function ProfileName({ user, onSaved }: { user: User; onSaved: (displayNa
       setEditing(false);
       onSaved(answer.displayName);
     },
+    onError: (error) => {
+      // Nothing answered, so the write may have landed or not (§5.9 «Отказ»):
+      // the account is read again, and a second Save of a name it now has is
+      // closed without a request by the unchanged-name rule in `submit`.
+      if (!answered(error)) void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
+    },
   });
   const pending = save.isPending;
   const problem = editing ? displayNameProblem(draft) : null;
@@ -188,21 +194,38 @@ export function ProfileName({ user, onSaved }: { user: User; onSaved: (displayNa
 }
 
 /**
- * Why the name was not saved (§5.9, §5.6): a refused request in the server's
- * own sentence — its name rule above all — and anything else in the
- * section's, with the server's words beside it; the request id under either.
- * An alert, as the sign-in forms' refusals are: the answer lands under the
- * buttons, away from focus.
+ * Whether anything answered the write: an HTTP status on the wire, or — in the
+ * mock, which has no status — a domain code standing in for one. A request
+ * that never reached the server (the network, nothing answered) carries
+ * neither, and the browser's words ("Failed to fetch") are not the server's.
+ */
+function answered(error: unknown): boolean {
+  const { status, code } = apiErrorFacts(error);
+  return status !== null || code !== null;
+}
+
+/**
+ * Why the name was not saved (§5.9 «Отказ», §5.6), in three kinds, the request
+ * id under each. A refused request in the server's own sentence — its name
+ * rule above all. One that nothing answered says the name may or may not
+ * have changed, with no server words: there were none. Anything else in the
+ * section's sentence, with the server's words beside it. An alert, as the
+ * sign-in forms' refusals are: the answer lands under the buttons, away from
+ * focus.
  *
  * A refused request is the 400 on the wire. The mock has no status, so there
  * its codes stand in — the two the gateway maps to 400.
  */
 function NameRefusal({ error, id }: { error: unknown; id: string }) {
   const { message, requestId, status, code } = apiErrorFacts(error);
+  if (!answered(error)) {
+    return (
+      <ErrorNote id={id} live="alert" requestId={requestId}>
+        The server could not be reached, so your name may or may not have changed. Save again to make sure.
+      </ErrorNote>
+    );
+  }
   const rejected = status !== null ? status === 400 : code === "INVALID_ARGUMENT" || code === "FAILED_PRECONDITION";
-  // Words only from something that answered: a request that never reached the
-  // server has the browser's ("Failed to fetch"), and those are not the server's.
-  const serverWords = status !== null || code !== null ? message : null;
   if (rejected && message) {
     return (
       <ErrorNote id={id} live="alert" requestId={requestId}>
@@ -211,7 +234,7 @@ function NameRefusal({ error, id }: { error: unknown; id: string }) {
     );
   }
   return (
-    <ErrorNote id={id} live="alert" requestId={requestId} serverWords={serverWords}>
+    <ErrorNote id={id} live="alert" requestId={requestId} serverWords={message}>
       Your name was not changed.
     </ErrorNote>
   );

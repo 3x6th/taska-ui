@@ -3180,6 +3180,9 @@ export class MockTaskaStore {
 
   /**
    * `POST /auth/invitations/accept`, in the order the stand checks it. First
+   * the gateway, which normalises a name that was sent (`AuthMapper`, TAS-425,
+   * develop `78019ece`) before the request goes anywhere: a name it refuses is
+   * the 400 `DISPLAY_NAME_INVALID`, whatever else the body holds. Then
    * auth-service's gRPC transport, before the service sees the request: a
    * blank token, then a blank password, each refused in the transport's own
    * words — "body.token must not be blank", "body.newPassword must not be
@@ -3199,6 +3202,10 @@ export class MockTaskaStore {
    */
   acceptInvitation(input: AcceptInvitationInput): void {
     const { token, newPassword, displayName } = input;
+    // TAS-425: the gateway's normalisation, and only for a name that was sent —
+    // ahead of the transport's blank checks below, which run in auth-service,
+    // so a name it refuses spends nothing: not the password check, not the link.
+    const name = displayName === undefined ? undefined : this.displayNameOrRefuse(displayName);
     // `trim() === ""` approximates Java's `String.isBlank`, and is not it: JS
     // trims U+00A0, U+2007, U+202F and U+FEFF, which `Character.isWhitespace`
     // does not count, and keeps U+001C–U+001F, which it does. Nobody types either into these
@@ -3209,11 +3216,6 @@ export class MockTaskaStore {
     if (typeof newPassword !== "string" || newPassword.trim() === "") {
       throw new MockApiError("INVALID_ARGUMENT", "body.newPassword must not be blank");
     }
-    // TAS-425: the service's first check, and only for a name that was sent —
-    // so a name it refuses spends neither the password check nor the link.
-    // Behind the transport's two blank checks above, which run before the
-    // service sees the request at all.
-    const name = displayName === undefined ? undefined : this.displayNameOrRefuse(displayName);
     const policy = passwordPolicyRefusal(newPassword);
     if (policy) throw new MockApiError("INVALID_ARGUMENT", policy);
     if (token.length > 256) {
@@ -3281,21 +3283,27 @@ export class MockTaskaStore {
   }
 
   /**
-   * `PATCH /admin/users/{userId}` (TAS-425), in auth-service's order
-   * (`UserDisplayNameService.updateByAdmin`, develop `78019ece`) after the
-   * path, which the gateway binds as a UUID before anything runs (see
-   * `adminUser`): the name, then a caller who is a `GLOBAL_ADMIN` in `ACTIVE`
-   * or `LOCKED`, then the account. Any status may be renamed, the caller's own
-   * account included. admin-service then writes the audit row, old name and
-   * new.
+   * `PATCH /admin/users/{userId}` (TAS-425), in the stand's order — the
+   * gateway, then auth-service (develop `78019ece`). The gateway first: the
+   * path, bound as a UUID before anything runs (see `adminUser`); then a
+   * caller who is not a `GLOBAL_ADMIN`, 403 "User doesn't have permission"
+   * (`GatewayContextFactory.buildAdminContext`, before the body is read — the
+   * gate `inviteUser` opens with). Then auth-service's
+   * `UserDisplayNameService.updateByAdmin`: the name, then a caller in
+   * `ACTIVE` or `LOCKED`, 403 "Global admin role is required", then the
+   * account. Any status may be renamed, the caller's own account included.
+   * admin-service then writes the audit row, old name and new.
    */
   updateUserDisplayName(userId: string, displayName: string): UserDisplayNameChange {
     if (!UUID_PATTERN.test(userId)) {
       throw new MockApiError("INVALID_ARGUMENT", `User id ${userId} is not a UUID`);
     }
-    const name = this.displayNameOrRefuse(displayName);
     const actor = this.currentUser();
-    if (actor.globalRole !== "GLOBAL_ADMIN" || (actor.status !== "ACTIVE" && actor.status !== "LOCKED")) {
+    if (actor.globalRole !== "GLOBAL_ADMIN") {
+      throw new MockApiError("PERMISSION_DENIED", "User doesn't have permission");
+    }
+    const name = this.displayNameOrRefuse(displayName);
+    if (actor.status !== "ACTIVE" && actor.status !== "LOCKED") {
       throw new MockApiError("PERMISSION_DENIED", "Global admin role is required");
     }
     const user = this.getUser(userId);

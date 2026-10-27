@@ -25,6 +25,35 @@ const DEAD_LINK = /^This invitation link no longer works — it expired, was use
 
 const NOTE = "Confirm your name and choose a password to activate your Taska account.";
 
+/**
+ * The mock with a preview the server could not answer (TAS-425, §4.27): the
+ * first `failures` previews are refused as a 503 the way `RestTaskaApi` would
+ * throw one, and the rest are the mock's own. A browser-only fixture served in
+ * place of client.ts, as `notification-preferences.spec.ts` does; plain
+ * JavaScript, so no type annotations.
+ */
+const unavailablePreviewClient = (failures: number) => `
+import { MockTaskaApi } from "/src/api/mock/MockTaskaApi.ts";
+
+export const taskaApi = new MockTaskaApi();
+
+const f = (window.taskaPreviewFixture = { failures: ${failures}, calls: 0 });
+const preview = taskaApi.previewInvitation.bind(taskaApi);
+taskaApi.previewInvitation = async (token) => {
+  f.calls++;
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  if (f.failures > 0) {
+    f.failures--;
+    throw Object.assign(new Error("Service unavailable"), {
+      status: 503,
+      code: "UNAVAILABLE",
+      requestId: "fixture-request-id",
+    });
+  }
+  return preview(token);
+};
+`;
+
 /** Leo's link, previewed (TAS-425): his address read-only, his invited name in Name, focus in New password. */
 async function expectLandedOnInvite(page: Page) {
   await expect(page.getByRole("button", { name: "Accept invite" })).toHaveClass(/is-active/);
@@ -104,6 +133,42 @@ test("an expired link is refused on arrival in the screen's own words, with no f
   await expect(page.getByText("Invalid or expired token")).toHaveCount(0);
   await expect(page.locator(".invite-preview-refusal")).toBeFocused();
   await expect(page).toHaveURL(/\/invite$/);
+});
+
+test("a link that could not be checked offers Try again, announces each refusal that answers it, and brings the form back", async ({
+  page,
+}) => {
+  await page.route("**/src/api/client.ts", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: unavailablePreviewClient(3) }),
+  );
+  await page.goto(`/?token=${LEO_TOKEN}`);
+
+  const refusal = page.locator(".invite-preview-refusal");
+  await expect(refusal.getByText("This invitation could not be checked.")).toBeVisible();
+  await expect(refusal.getByText("Service unavailable")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy request id fixture-request-id" })).toBeVisible();
+  // Found on arrival, so not announced; no form to fill in.
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByLabel("New password")).toHaveCount(0);
+
+  const retry = page.getByRole("button", { name: "Try again" });
+  await retry.click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toHaveText("This invitation could not be checked.");
+  await alert.evaluate((node) => node.setAttribute("data-answered", "1"));
+
+  // The same sentence again, on a node mounted afresh, so that it is said again.
+  await retry.click();
+  await expect(alert).toHaveText("This invitation could not be checked.");
+  await expect(alert).not.toHaveAttribute("data-answered", "1");
+  const calls = await page.evaluate(
+    () => (window as unknown as { taskaPreviewFixture: { calls: number } }).taskaPreviewFixture.calls,
+  );
+  expect(calls).toBe(3);
+
+  await retry.click();
+  await expectLandedOnInvite(page);
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("an invited person sees their address and invited name, changes the name, and signs in under it", async ({ page }) => {

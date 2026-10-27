@@ -907,6 +907,8 @@ describe("the admin Users section, renaming", () => {
     queryClient.setQueryData(["members", "p-1"], []);
     queryClient.setQueryData(["project-context", "p-1"], {});
     queryClient.setQueryData(["user-directory", "nin"], { items: [], hasMore: false });
+    // A work log's entries carry their author's name (backend TAS-421).
+    queryClient.setQueryData(["worklogs", "p-1", "i-1"], { pages: [], pageParams: [] });
     const { dialog, field } = await openRename("Nina Kowal");
     fireEvent.change(field, { target: { value: "  Nina Kay  " } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
@@ -921,7 +923,7 @@ describe("the admin Users section, renaming", () => {
     expect(within(row).getByRole("button", { name: "Rename Nina Kay" })).toHaveFocus();
     // Every other read that names people is marked to be asked again — no
     // read of its own here, since none of them is on screen.
-    for (const key of [["members", "p-1"], ["project-context", "p-1"], ["user-directory", "nin"]]) {
+    for (const key of [["members", "p-1"], ["project-context", "p-1"], ["user-directory", "nin"], ["worklogs", "p-1", "i-1"]]) {
       expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
     }
     // And the list re-read says the same as the bridge did.

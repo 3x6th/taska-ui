@@ -2026,11 +2026,13 @@ h1 {
 /* The name and its pencil (TAS-425, §5.9 «Имя»): the pencil straight after
    the text rather than at the column's far edge, and the row 28 tall, which is
    what moves the email 8 down — no negative margins, or the ring would cut
-   into the email. The name keeps its ellipsis and gives way first. */
+   into the email. The name keeps its ellipsis and gives way first. The gap is
+   8, not 4: §7's ring reaches 4 past the button and touched the name's last
+   glyph at 4, and at ≤820 the 44 hit area (inset −8) ends exactly at the text. */
 .settings-name-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   min-width: 0;
   height: 28px;
 }

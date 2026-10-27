@@ -80,8 +80,8 @@ export interface AcceptInvitationInput {
   /**
    * The name the account is activated with (TAS-425). Optional on the wire —
    * left out, the invited name stays — and always sent by the invite form,
-   * trimmed (DESIGN.md §4.27). The server normalises it before it looks at
-   * anything else, so a name it refuses does not spend the link.
+   * trimmed (DESIGN.md §4.27). The gateway normalises it before anything else
+   * in the body is looked at, so a name it refuses does not spend the link.
    */
   displayName?: string;
 }
@@ -987,7 +987,10 @@ export interface TaskaApi {
    * opens no session in any implementation, and nothing reads `/users/me` after
    * it — there is nobody signed in to read.
    *
-   * What the server checks, in order. auth-service's gRPC transport first: a
+   * What the server checks, in order. The gateway first, for a name that was
+   * sent: it normalises it (`AuthMapper`, TAS-425) and refuses a bad one with
+   * 400 `DISPLAY_NAME_INVALID`, whatever else the body holds. Then
+   * auth-service's gRPC transport: a
    * blank token, 400 "body.token must not be blank", then a blank password,
    * 400 "body.newPassword must not be blank" (`AuthGrpcService`,
    * `GrpcRequestValidators`). Then `AuthServiceImpl.setPasswordByToken`
@@ -2557,13 +2560,17 @@ export interface TaskaApi {
    * No reason is asked for: admin-service writes the old and the new name to
    * the audit log itself (`USER_DISPLAY_NAME_UPDATED`).
    *
-   * What it refuses, in auth-service's order (`UserDisplayNameService.updateByAdmin`,
-   * develop `78019ece`): the name first — 400 `INVALID_ARGUMENT`,
-   * `details.reason` `DISPLAY_NAME_INVALID`, the rule `updateMyDisplayName`
-   * states; then a caller who is not an `ACTIVE` or `LOCKED` `GLOBAL_ADMIN`,
-   * 403 `PERMISSION_DENIED` "Global admin role is required"; then an account
-   * nobody has, 404 `NOT_FOUND` "User not found". As with the status writes,
-   * hiding the control is not the permission.
+   * What it refuses, in the stand's order — the gateway, then auth-service
+   * (develop `78019ece`). The gateway: a path id that is not a UUID, 400; then
+   * a caller who is not a `GLOBAL_ADMIN`, 403 `PERMISSION_DENIED` "User
+   * doesn't have permission" (`GatewayContextFactory.buildAdminContext`,
+   * before the body is read). Then auth-service
+   * (`UserDisplayNameService.updateByAdmin`): the name — 400
+   * `INVALID_ARGUMENT`, `details.reason` `DISPLAY_NAME_INVALID`, the rule
+   * `updateMyDisplayName` states; then a caller who is not `ACTIVE` or
+   * `LOCKED`, 403 `PERMISSION_DENIED` "Global admin role is required"; then
+   * an account nobody has, 404 `NOT_FOUND` "User not found". As with the
+   * status writes, hiding the control is not the permission.
    */
   updateUserDisplayName(userId: string, displayName: string): Promise<UserDisplayNameChange>;
 }

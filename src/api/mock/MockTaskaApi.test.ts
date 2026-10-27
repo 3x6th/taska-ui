@@ -3978,7 +3978,16 @@ describe("MockTaskaApi", () => {
     });
 
     it("refuses a bad name on activation before the password and the link, and does not spend the link", async () => {
-      // A weak password and a bad name: the name is the service's first check.
+      // The gateway normalises the name before auth-service's transport looks
+      // for a blank token or password.
+      await expect(api.acceptInvitation({ token: "", newPassword: "", displayName: "\t" })).rejects.toMatchObject(
+        NAME_REFUSAL,
+      );
+      // Without a name, the transport's blank checks are still the first.
+      await expect(api.acceptInvitation({ token: "", newPassword: "" })).rejects.toMatchObject({
+        message: "body.token must not be blank",
+      });
+      // A weak password and a bad name: the name still first.
       await expect(
         api.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "weak", displayName: "Leo\tF." }),
       ).rejects.toMatchObject(NAME_REFUSAL);
@@ -4051,17 +4060,25 @@ describe("MockTaskaApi", () => {
       });
     });
 
-    it("refuses in auth-service's order: the name, then the caller's role, then the account", async () => {
+    it("refuses in the stand's order: the gateway's path and admin gate, then auth-service's name and account", async () => {
       await api.login({ email: "anna@example.com", password: "x" });
       const sofia = await idOf("sofia@example.com");
-      await expect(api.updateUserDisplayName(sofia, "\t")).rejects.toMatchObject(NAME_REFUSAL);
-      await expect(api.updateUserDisplayName(sofia, "Sofia R.")).rejects.toMatchObject({
-        code: "PERMISSION_DENIED",
-        message: "Global admin role is required",
-      });
+      const NOT_ADMIN = { code: "PERMISSION_DENIED", message: "User doesn't have permission" };
+      // The path is bound before anything runs, the caller's role is the
+      // gateway's next, and the name is not read until after both.
+      await expect(api.updateUserDisplayName("not-a-uuid", "\t")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(api.updateUserDisplayName(sofia, "\t")).rejects.toMatchObject(NOT_ADMIN);
+      await expect(api.updateUserDisplayName(sofia, "Sofia R.")).rejects.toMatchObject(NOT_ADMIN);
+      await expect(api.updateUserDisplayName("00000000-0000-4000-8000-000000000000", "\t")).rejects.toMatchObject(
+        NOT_ADMIN,
+      );
 
       await api.logout();
       await api.login({ email: "mark@example.com", password: "x" });
+      // A global admin: the name before the account.
+      await expect(api.updateUserDisplayName("00000000-0000-4000-8000-000000000000", "\t")).rejects.toMatchObject(
+        NAME_REFUSAL,
+      );
       await expect(api.updateUserDisplayName("00000000-0000-4000-8000-000000000000", "Nobody")).rejects.toMatchObject({
         code: "NOT_FOUND",
         message: "User not found",

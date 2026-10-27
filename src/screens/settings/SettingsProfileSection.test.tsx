@@ -77,6 +77,8 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     /** Names `updateMyDisplayName` was sent, in order. */
     renames: string[];
     nameFailure?: Error;
+    /** The rename lands on the server, and this is thrown in place of its answer: a reply lost on the way back. */
+    nameAnswerLost?: Error;
     /** Holds the rename open, so its in-flight frame can be looked at. */
     holdName: boolean;
   } = {
@@ -130,6 +132,7 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
       if (state.holdName) await hold();
       if (state.nameFailure) throw state.nameFailure;
       state.displayName = displayName;
+      if (state.nameAnswerLost) throw state.nameAnswerLost;
       return profile();
     },
     getNotificationPreferences: async () => ({
@@ -235,6 +238,7 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     state.displayName = "Anna Ivanova";
     state.renames = [];
     state.nameFailure = undefined;
+    state.nameAnswerLost = undefined;
     state.holdName = false;
     releaseHeld = null;
   };
@@ -1113,6 +1117,7 @@ describe("Settings → My profile", () => {
       );
       renderOnProfile();
       const { field } = await openEditor();
+      const reads = state.reads.length;
       fireEvent.change(field, { target: { value: "Anna Smith" } });
       fireEvent.keyDown(field, { key: "Enter" });
 
@@ -1123,6 +1128,9 @@ describe("Settings → My profile", () => {
       expect(field).toHaveAccessibleDescription(/^Display name must contain/);
       expect(field).toHaveValue("Anna Smith");
       expect(field).toHaveFocus();
+      // The server answered: nothing to read again.
+      await act(async () => {});
+      expect(state.reads).toHaveLength(reads);
     });
 
     it("says the name was not changed for anything else, with the server's words, and does not point at the field", async () => {
@@ -1133,13 +1141,64 @@ describe("Settings → My profile", () => {
       });
       renderOnProfile();
       const { field } = await openEditor();
+      const reads = state.reads.length;
       fireEvent.change(field, { target: { value: "Anna Smith" } });
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
       expect(await screen.findByRole("alert")).toHaveTextContent("Your name was not changed.");
       expect(screen.getByText("Auth service unavailable")).toBeVisible();
+      expect(screen.getByRole("button", { name: `Copy request id ${REQUEST_ID}` })).toBeVisible();
       expect(field).not.toHaveAttribute("aria-invalid");
       expect(document.querySelector(".settings-profile-name")).toBeNull();
+      await act(async () => {});
+      expect(state.reads).toHaveLength(reads);
+    });
+
+    it("says the name may or may not have changed when nothing answered, reads the account again, and a second Save of a name it now has sends nothing", async () => {
+      // The write landed; its answer did not come back.
+      state.nameAnswerLost = new TypeError("Failed to fetch");
+      renderOnProfile();
+      const { field } = await openEditor();
+      const reads = state.reads.length;
+      fireEvent.change(field, { target: { value: "Anna Smith" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "The server could not be reached, so your name may or may not have changed. Save again to make sure.",
+      );
+      // The browser's words are not the server's, and there is no id to give.
+      expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Copy request id/ })).not.toBeInTheDocument();
+      expect(field).not.toHaveAttribute("aria-invalid");
+      expect(field).toHaveValue("Anna Smith");
+      // `/users/me` read again, once; the top bar follows what it says.
+      await waitFor(() => expect(state.reads).toHaveLength(reads + 1));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Open profile for Anna Smith" })).toBeVisible());
+      expect(screen.getByLabelText("Name")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByLabelText("Name")).not.toBeInTheDocument());
+      expect(state.renames).toEqual(["Anna Smith"]);
+      expect(document.querySelector(".settings-profile-name")).toHaveTextContent("Anna Smith");
+    });
+
+    it("sends a name that never landed again on the second Save, and gives the id when the failure carried one", async () => {
+      state.nameFailure = Object.assign(new TypeError("Failed to fetch"), { requestId: REQUEST_ID });
+      renderOnProfile();
+      const { field } = await openEditor();
+      const reads = state.reads.length;
+      fireEvent.change(field, { target: { value: "Anna Smith" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/^The server could not be reached/);
+      expect(screen.getByRole("button", { name: `Copy request id ${REQUEST_ID}` })).toBeVisible();
+      await waitFor(() => expect(state.reads).toHaveLength(reads + 1));
+
+      state.nameFailure = undefined;
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByLabelText("Name")).not.toBeInTheDocument());
+      expect(state.renames).toEqual(["Anna Smith", "Anna Smith"]);
+      expect(document.querySelector(".settings-profile-name")).toHaveTextContent("Anna Smith");
     });
 
     it("offers no pencil while the profile is loading or could not be read", async () => {

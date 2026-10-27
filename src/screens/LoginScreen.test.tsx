@@ -486,6 +486,23 @@ describe("LoginScreen, accepting an invitation", () => {
     // The alert already says to ask for a new invitation.
     expect(screen.queryByText("Link expired? Ask the person who invited you to send a new one.")).not.toBeInTheDocument();
   });
+
+  it.each([
+    [408, "Request timeout"],
+    [429, "Too many requests"],
+  ])("answers a typed token's %i as a link that could not be checked, not as a bad token", async (status, words) => {
+    previewState.refusal = new ApiError(words, "UNAVAILABLE", status, `req-${status}`);
+    renderAuth();
+    const field = screen.getByLabelText("Invitation token");
+    fireEvent.change(field, { target: { value: TOKEN } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("This invitation could not be checked.");
+    expect(screen.getByText(words)).toBeVisible();
+    expect(screen.getByRole("button", { name: `Copy request id req-${status}` })).toBeVisible();
+    expect(field).not.toHaveAttribute("aria-invalid");
+    expect(screen.getByText("Link expired? Ask the person who invited you to send a new one.")).toBeVisible();
+  });
 });
 
 /**
@@ -612,14 +629,69 @@ describe("LoginScreen, the invitation's preview", () => {
     expect(inviteState.calls).toEqual([]);
   });
 
-  it("prints a rejected preview in the server's words, with no retry", async () => {
-    previewState.refusal = new ApiError("Invalid request parameters", "INVALID_ARGUMENT", 400, "req-400");
+  it.each([
+    [400, "INVALID_ARGUMENT", "Invalid request parameters"],
+    [403, "PERMISSION_DENIED", "Forbidden"],
+    [413, "INVALID_ARGUMENT", "Payload too large"],
+  ])("prints a rejected preview (%i) in the server's words, with no retry", async (status, code, words) => {
+    previewState.refusal = new ApiError(words, code, status, `req-${status}`);
     holdInviteToken(TOKEN);
     renderAuth();
 
-    expect(await screen.findByText("Invalid request parameters")).toBeVisible();
+    expect(await screen.findByText(words)).toBeVisible();
+    expect(screen.getByRole("button", { name: `Copy request id req-${status}` })).toBeVisible();
+    expect(screen.queryByText("This invitation could not be checked.")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [408, "Request timeout"],
+    [429, "Too many requests"],
+    [502, "Bad gateway"],
+  ])("takes a %i on arrival as a link that could not be checked, with the server's words, the id and Try again", async (status, words) => {
+    previewState.refusal = new ApiError(words, "UNAVAILABLE", status, `req-${status}`);
+    holdInviteToken(TOKEN);
+    renderAuth();
+
+    expect(await screen.findByText("This invitation could not be checked.")).toBeVisible();
+    expect(screen.getByText(words)).toBeVisible();
+    expect(screen.getByRole("button", { name: `Copy request id req-${status}` })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+    // Found on arrival, not an answer to anything done.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("announces the refusal that answers Try again, and the same sentence again on the next", async () => {
+    previewState.refusal = new TypeError("Failed to fetch");
+    holdInviteToken(TOKEN);
+    renderAuth();
+
+    const arrival = await screen.findByText("This invitation could not be checked.");
+    expect(arrival).not.toHaveAttribute("role");
+    // Nothing answered, so no words are the server's.
+    expect(screen.queryByText("Failed to fetch")).not.toBeInTheDocument();
+
+    // Held while the retry is out: the refusal stays as it was, unannounced.
+    previewState.hold = true;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await screen.findByRole("button", { name: "Checking" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    previewState.refusal = new ApiError("Service unavailable", "UNAVAILABLE", 503, "req-503");
+    await act(async () => previewState.release());
+
+    const first = await screen.findByRole("alert");
+    expect(first).toHaveTextContent("This invitation could not be checked.");
+    expect(screen.getByText("Service unavailable")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+
+    previewState.hold = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(previewState.tokens).toHaveLength(3));
+    // The same sentence, mounted afresh so that it is said again.
+    await waitFor(() => expect(screen.getByRole("alert")).not.toBe(first));
+    expect(screen.getByRole("alert")).toHaveTextContent("This invitation could not be checked.");
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
 
   it("offers Try again for a link that could not be checked, says Checking while it is out, and brings the form back", async () => {

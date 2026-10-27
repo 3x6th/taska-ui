@@ -97,6 +97,13 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const [showNewPassword, setShowNewPassword] = useState(false);
   /** The name as the reader changed it; `null` until they do, which reads the invited one (§4.27). */
   const [nameDraft, setNameDraft] = useState<string | null>(null);
+  /**
+   * How many times "Try again" has been answered by a refusal, for this link
+   * (§4.27). The refusal found on arrival is not announced; every one that
+   * answers a Try again is, and is keyed by this count so that the same
+   * sentence is mounted — and announced — again.
+   */
+  const [retryRefusals, setRetryRefusals] = useState(0);
   // Read once: a session held when the form opened is the one the notice is
   // about, and the press that signs out of it is what retires the notice —
   // not a re-read that might race the sign-out.
@@ -127,6 +134,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     if (capturedToken !== null) setMode("invite");
     // A name typed for one link is not the name of the next.
     setNameDraft(null);
+    setRetryRefusals(0);
   }
 
   // The link's preview, read as soon as a link is caught (§4.27): who it was
@@ -152,10 +160,12 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
    * The refusal "Try again" is answering, held while the retry is out: a
    * query with no data goes back to pending when it is fetched again, and the
    * refusal — with "Checking" under it — has to stay where it was (§4.27).
+   * Held until the retry's answer is in hand, a new refusal included, so that
+   * the answer is drawn once, in the same commit as `retryRefusals` moves.
    */
   const [retrying, setRetrying] = useState<{ error: unknown } | null>(null);
   const previewed = capturedToken !== null && preview?.isSuccess ? preview.data : null;
-  const previewError = preview?.isError ? preview.error : (retrying?.error ?? null);
+  const previewError = retrying ? retrying.error : preview?.isError ? preview.error : null;
   const previewRefused = capturedToken !== null && previewError !== null;
   const nameValue = nameDraft ?? previewed?.displayName ?? "";
   const nameProblem = previewed ? displayNameProblem(nameValue) : null;
@@ -470,7 +480,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
               // not an answer to anything done, so not announced — focus
               // brings it to a reader who was in the form (§4.27).
               <div className="invite-preview-refusal" ref={previewRefusalRef} tabIndex={-1}>
-                <PreviewFailureNote error={previewError} />
+                <PreviewFailureNote error={previewError} key={retryRefusals} live={retryRefusals > 0} />
                 {previewFailure(previewError) === "unavailable" ? (
                   <button
                     aria-disabled={retrying ? true : undefined}
@@ -481,6 +491,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                       void preview.refetch().then((result) => {
                         setRetrying(null);
                         if (result.isSuccess) setFocusRequest({ target: "newPassword" });
+                        else setRetryRefusals((count) => count + 1);
                       });
                     }}
                     type="button"
@@ -638,16 +649,26 @@ function isDeadLink(error: unknown): boolean {
 }
 
 /**
+ * The two 4xx a retry may change (§4.27): a request the server timed out
+ * waiting for (408), and one it would not take yet (429). They go with the 5xx.
+ */
+const RETRYABLE_CLIENT_STATUSES: ReadonlySet<number> = new Set([408, 429]);
+
+/**
  * How a preview was refused (§4.27): the link is dead (its one 401); the
- * request was refused (any other 4xx — a 400 at the gateway's edge for a body
- * it will not read), which no retry changes; or the link could not be checked
- * — a 5xx, or no answer at all — which a retry might. The mock carries no
- * status, so its codes stand in.
+ * request was refused (any other 4xx but 408 and 429 — a 400 at the gateway's
+ * edge for a body it will not read), which no retry changes; or the link could
+ * not be checked — a 5xx, a 408 or a 429, or no answer at all — which a retry
+ * might. The mock carries no status, so its codes stand in.
  */
 function previewFailure(error: unknown): "dead" | "rejected" | "unavailable" {
   if (isDeadLink(error)) return "dead";
   const { status, code } = apiErrorFacts(error);
-  if (status !== null ? status >= 400 && status < 500 : code === "INVALID_ARGUMENT" || code === "FAILED_PRECONDITION") {
+  if (
+    status !== null
+      ? status >= 400 && status < 500 && !RETRYABLE_CLIENT_STATUSES.has(status)
+      : code === "INVALID_ARGUMENT" || code === "FAILED_PRECONDITION"
+  ) {
     return "rejected";
   }
   return "unavailable";
@@ -657,8 +678,8 @@ function previewFailure(error: unknown): "dead" | "rejected" | "unavailable" {
  * What a refused preview says (§4.27): the dead link in the same words as a
  * refused activation, a rejected request in the server's own, and anything
  * else as a link that could not be checked, with the server's words beside
- * it. The request id under each. `live` for Continue's answer, which follows a
- * press; the refusal found on arrival is not announced.
+ * it. The request id under each. `live` for an answer to a press — Continue's,
+ * and Try again's — and not for the refusal found on arrival.
  */
 function PreviewFailureNote({ error, live = false }: { error: unknown; live?: boolean }) {
   const { message, requestId, status, code } = apiErrorFacts(error);
