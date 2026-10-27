@@ -2174,7 +2174,8 @@ transition is not offered on the board.» (`aria-describedby`). Безымянн
 - Переход: «Delete {From} → {To}?» (стрелка `aria-hidden`, для читалки « to ») · «Delete
   transition».
 - Workflow — под шапкой: «Delete {name}? {Types} goes/go back to {shared name}.» · «Delete
-  workflow»; тело `{version}`. У донора — «Delete {name}? No issue type uses it.»
+  workflow»; тело `{version}`. У донора — «Delete {name}? No issue type uses it.»; успех —
+  polite «Workflow {name} deleted.»
 
 В отличие от архива (§4.11) и удаления задачи (§4.10) полоса на отказе не закрывается: у шагов
 ниже в ней выбор, который нельзя терять, и все полосы диалога ведут себя одинаково. `ErrorNote`
@@ -2260,7 +2261,8 @@ at most {limit} at once, so {subject} cannot be deleted.» ({limit} — `toLocal
   status, so one choice cannot fit both. Save them separately.»
 - **Без ответа** (пусто, предел) отправка «стойко недоступна» §4.1, пока набор тот же.
 - **Смена набора типов снимает шаг**: он отвечал на прежний набор, отправка снова «Save» / «Create
-  workflow». Смена имени шаг не снимает.
+  workflow». Смена имени шаг не снимает. Шаг принадлежит набору, на который ответил: пока
+  отмечен другой набор, шага нет; тот же набор отмечен снова — шаг возвращается с прежним выбором.
 - Появление шага — фокус на первый select. Ответ — та же команда + `statusMappings`.
 
 **Порядок колонок.** Доска сводит статусы всех workflow проекта и сортирует их по
@@ -2355,7 +2357,8 @@ at most {limit} at once, so {subject} cannot be deleted.» ({limit} — `toLocal
   **Перечитывание после 2xx отказало:** форма закрыта, прежние карточки на месте, над ними
   `ApiNotice` (`live="polite"`) «Status {name} was added, but this list could not be read
   again. Reopen Workflows to see it.» (Transition {name} was added, but … / Workflow {name}
-  was created, but … / Workflow {name} was deleted, but …) со словами сервера и id чтения. Скрытая область молчит (успех звучит
+  was created, but … / Workflow {name} was deleted, but … / после правки набора типов —
+  Workflow {name} was saved, but …, где {name} новое имя; правка одного имени — «was renamed») со словами сервера и id чтения. Скрытая область молчит (успех звучит
   один раз), подсветки нет, фокус — на триггер закрытой формы. Никогда не `ErrorNote`
   «was not added»: 201 — то, что произошло.
 - **Мелочи, решённые на сборке** (art-director, 2026-10-21): нет категорий — `aria-disabled`
@@ -2565,7 +2568,8 @@ at least one issue type, so this one cannot be deleted.» Используетс
   и становится шагом по рецепту шага переноса статуса §4.28 — колонка, это вопрос, без слов
   сервера и id.
   - Предложение 12 `--fg`, `role="alert"`: «{N} issues have this type. Move them to another type
-    to delete {Name}.» Один — «1 issue has this type.»; без числа — «Issues have this type.»
+    to delete {Name}.» Один — «1 issue has this type. Move it to another type to delete {Name}.»;
+    без числа — «Issues have this type.»
   - Select «Move them to»: остальные типы в порядке реестра, подпись §6, первым `disabled`
     «Choose a type». Заранее ничего не выбрано, даже когда вариант один.
   - Ответ «Move and delete» (ответ §4.22), `aria-disabled` без фразы до выбора. Тело
@@ -2578,7 +2582,10 @@ at least one issue type, so this one cannot be deleted.» Используетс
     workflow удаляемого типа, иначе ключом.
   - Предложение: «{N} issues have this type. Some are in a status {Target} issues cannot have, so
     choose where each status’s issues go.»
-  - Тело + `statusMappings`. Смена целевого типа убирает select'ы статусов.
+  - Одна задача — «1 issue has this type. It is in a status {Target} issues cannot have, so
+    choose where it goes.»
+  - Тело + `statusMappings`. Смена целевого типа убирает select'ы статусов; тот же тип выбран
+    снова — select'ы возвращаются со сброшенным выбором.
 - **Отказы шага** — `ErrorNote` в полосе над действиями, полоса остаётся.
   - 409 `ISSUE_TYPE_CHANGED` / `ISSUE_TYPE_GENERATION_REQUIRED`: полоса закрывается, контекст
     перечитывается. В слоте «Issue types changed elsewhere, so {Name} was not deleted and no issue
@@ -2590,6 +2597,9 @@ at least one issue type, so this one cannot be deleted.» Используетс
     нет, фокус на Cancel.
   - 503 `ISSUE_TYPE_DELETION_PENDING` — «Ещё применяется» §4.28.
   - 404 — «already deleted».
+  - 403 и `PROJECT_ARCHIVED` — в слот, не в полосу: строка роли или архива снимает элементы
+    полосы, фраза в ней пропала бы вместе с ними. Полоса закрывается; фокус — на Delete строки,
+    нет её — на заметку.
   - Иное — «{Name} was not deleted.» + слова + id.
 - **Успех переноса** — polite «Type {Name} deleted. Its issues are now {Target}.» Фокус — по
   правилу успеха.
