@@ -1949,8 +1949,11 @@ Everything below is the entry as it stood, in the past tense.
   if it ever arrives.
 - **`POST /auth/signup` beyond the uniform 202** (`EmailSignupTransaction`): a new address becomes
   an `INVITED` account created via `SIGNUP`; an `INVITED` account gets a fresh link that revokes
-  the older ones and keeps its name, except a `SIGNUP`-made account whose latest link expired,
-  which is deleted and created again under the new name; `ACTIVE` and `LOCKED` accounts get an
+  the older ones and keeps its name — nothing while its latest link is under a minute old
+  (`EmailSignupTransaction.java:72-75`) — except a `SIGNUP`-made account whose latest link expired,
+  which is deleted and created again under the new name (reachable only in the gap before
+  `SignupCleanup`, which every minute deletes `INVITED` sign-up accounts whose links have all
+  expired and purges `signup_rate_limits` rows older than two hours); `ACTIVE` and `LOCKED` accounts get an
   «existing account» email (`USER_SIGNUP_EXISTING_ACCOUNT`); `BLOCKED` gets nothing. The preview's
   `kind` is the **account's** origin (`createdVia == SIGNUP`), not the link's: an admin-invited
   account that asks by email still previews `INVITATION`. The yml's `kind` has no description.
@@ -2010,8 +2013,12 @@ Everything below is the entry as it stood, in the past tense.
 - **What the UI does:** nothing reaches it today — the one caller is the add form in the members
   dialog, which only a project admin sees, and a project admin is a member. A refusal would print
   the server's words and the request id.
+- **Also hidden:** the directory and the profiles-by-id read leave out `INVITED` accounts made by
+  sign-up (`UserRepository.searchDirectory`, `findUsersWithAvatars` — `NOT (status='INVITED' AND
+  created_via='SIGNUP')`). The yml says neither; part of TAS-444 (A1).
 - **Mock:** answers the same 403 while the methods knob has sign-up on (the default); the 503 is
-  not modelled.
+  not modelled. Its search still lists an unconfirmed sign-up account (Sam Ortiz) the server hides —
+  BACKLOG «Left by TAS-426».
 - **Compensation: none.**
 - **Removal:** [TAS-444](https://jira.ozero.dev/browse/TAS-444) (A4: `details.reason`
   `PROJECT_MEMBERSHIP_REQUIRED`, and the rule in the yml).
