@@ -12,6 +12,7 @@ import type {
   AttachmentUploadTicket,
   AvatarUploadTicket,
   Board,
+  BoardColumnPage,
   DateOnly,
   DirectoryPage,
   Issue,
@@ -242,6 +243,54 @@ export interface BoardParams {
 }
 
 /**
+ * Everything `GET /projects/{projectId}/board/columns/{statusKey}/issues` takes
+ * (backend TAS-430, develop `cbd3f0af`): the board read's six filters, meant to
+ * be sent exactly as the board was read so the page continues the same column,
+ * an exclusive cursor and a page size.
+ *
+ * - `afterCreatedAt` and `afterId` are the last drawn card's `createdAt` and
+ *   `id`, **both or neither**: one without the other is refused by the
+ *   gateway's controller (`BoardController.listBoardColumnIssues`, a
+ *   `ResponseStatusException` the `GatewayErrorHandler` names by its HTTP
+ *   status) — 400 `BAD_REQUEST` "afterCreatedAt and afterId must be supplied
+ *   together". Neither is the column's first page. The cursor is exclusive, so
+ *   the card it names is not repeated; an issue created before it since the
+ *   board was read appears only when the board is read again.
+ * - `pageSize` 1–200, 50 when not sent; «Show more» sends 200, a re-read the
+ *   depth it reads again. Outside the range, a cursor that is not an instant
+ *   or an id that is not a UUID, or an empty `query` is the gateway's bean
+ *   validation (400 `INVALID_ARGUMENT` "Invalid request parameters").
+ * - What the binding lets through and the service refuses — a blank status
+ *   key, an instant outside years 1–9999 — is 400 `BAD_REQUEST` in the
+ *   service's words (`BOARD_CURSOR_REFUSAL_MESSAGE`), before the access check.
+ * - `includeDone` as on the board: the board screen always sends `true`, and
+ *   `false` and `undefined` are the same request.
+ */
+export interface BoardColumnPageParams extends Omit<BoardParams, "pageSizePerColumn"> {
+  afterCreatedAt?: string;
+  afterId?: string;
+  pageSize?: number;
+}
+
+/**
+ * The gateway controller's refusal of half a cursor on the column page
+ * (`BoardController.listBoardColumnIssues` at backend `cbd3f0af`): 400, code
+ * `BAD_REQUEST` — a `ResponseStatusException`, which `GatewayErrorHandler`
+ * names by its HTTP status. Checked after sign-in, before anything else of the
+ * request. The mock answers it in the same words.
+ */
+export const BOARD_CURSOR_PAIR_MESSAGE = "afterCreatedAt and afterId must be supplied together";
+
+/**
+ * The column page service's own refusal (`BoardServiceImpl.listBoardColumnIssues`,
+ * backend `cbd3f0af`) of what the gateway's binding let through — a blank
+ * status key, a cursor instant outside years 1–9999 — in its words: 400,
+ * `BAD_REQUEST`, as above. The mock answers it in the same words.
+ */
+export const BOARD_CURSOR_REFUSAL_MESSAGE =
+  "Invalid board cursor or pageSize (1..200); both cursor fields are required";
+
+/**
  * The shortest `query` `GET /issues/search` will answer — **three**, the
  * contract's `minLength: 3` since backend PR #200. The gateway generates its
  * controller from that contract, so it refuses a raw `query` under three
@@ -467,6 +516,22 @@ export interface SearchIssuesParams {
  */
 export interface CreateIssueInput {
   issueType: IssueTypeCode;
+  /**
+   * The status the issue starts in — `CreateIssueRequestDto.statusKey`
+   * (backend TAS-428, develop `cbd3f0af`). Left out, the server creates it in
+   * `TODO`, as before; the board's column «+» sends its column's key and «New»
+   * sends none (DESIGN.md §4.9, §5.5). The server refuses a key outside
+   * `^[A-Z][A-Z0-9_]{1,63}$` (400 `INVALID_ARGUMENT`, the gateway's "Invalid
+   * request parameters") and a key the workflow of `issueType` does not hold
+   * (400 `FAILED_PRECONDITION`, `details.reason` `STATUS_NOT_IN_WORKFLOW`).
+   * Nothing here checks it first: the form offers only types whose workflow
+   * has the column's status, and the server stays the authority.
+   *
+   * The `Idempotency-Key` binds it with every other field of the create; the
+   * rest leg mints a key per call, so a retry is a new request rather than a
+   * replay of another body.
+   */
+  statusKey?: IssueStatusKey;
   summary: string;
   description: string;
   priority: IssuePriorityCode;
@@ -1270,11 +1335,11 @@ export interface TaskaApi {
    * bucket, carries at most `pageSizePerColumn` issues (50 when not sent, at
    * most 200), with `totalCount` and `hasMore`. The filters are applied first,
    * so the counts are of matching issues — which is why the board screen sends
-   * its filters rather than narrowing a cut column itself. Nothing continues a
-   * column in its own order yet (backend A1): `/issues/search` orders newest
-   * first and places issues differently, so its "use search to continue"
-   * advice does not hold. Bean validation comes before anything: a page size
-   * outside 1–200, or an empty `query`, is 400 `INVALID_ARGUMENT`.
+   * its filters rather than narrowing a cut column itself. A column continues
+   * in its own order through `getBoardColumnPage` (backend TAS-430); the
+   * unplaced bucket has no continuation. Bean validation comes before
+   * anything: a page size outside 1–200, or an empty `query`, is 400
+   * `INVALID_ARGUMENT`.
    *
    * Order inside a column and in `unplacedIssues`, as the contract states it
    * since backend TAS-392: `createdAt` ascending, then `id`, whatever the type.
@@ -1290,6 +1355,24 @@ export interface TaskaApi {
    * other.
    */
   getBoard(projectId: string, params?: BoardParams): Promise<Board>;
+  /**
+   * `GET /projects/{projectId}/board/columns/{statusKey}/issues` (backend
+   * TAS-430, develop `cbd3f0af`) — the board's «Show more» (DESIGN.md §4.9):
+   * the column's issues after the cursor, in the board's own order (`createdAt`
+   * ascending, then `id`, `DONE` columns included), each a `BoardIssue` drawn
+   * as the board draws it. See `BoardColumnPageParams` for the parameters.
+   *
+   * Only issues whose **own type's** workflow holds `statusKey` are in it —
+   * never the issues «Outside their workflow» shows, which have no
+   * continuation. `totalCount` is the whole column under the filters,
+   * whatever the cursor; `hasMore` whether issues lie past this page.
+   *
+   * Access as on the board: a missing project is 404, a reader who is not a
+   * member 403. After that nothing is refused for being unknown: a status no
+   * column of the project has, and an `issueType` the registry does not hold
+   * (or a malformed one), answer an empty page with `totalCount` 0.
+   */
+  getBoardColumnPage(projectId: string, statusKey: string, params?: BoardColumnPageParams): Promise<BoardColumnPage>;
   /**
    * `GET /project-stats` (backend TAS-211): one entry per project the reader
    * lists — the projects of `GET /projects`, archived ones left out — with its
@@ -1884,8 +1967,10 @@ export interface TaskaApi {
    * - reorder (`PUT …/issue-types/order`, backend TAS-418): an empty or
    *   malformed `codes` (400 "Invalid request parameters"); a code named twice
    *   (400 `INVALID_ARGUMENT`, before the role); project, role, archive; a set
-   *   that is not exactly the registry's — stale or incomplete — (400
-   *   `INVALID_ARGUMENT`, nothing written). The 200 is the whole registry,
+   *   that is not exactly the registry's — a type added or deleted elsewhere
+   *   since it was read — (409 `ABORTED`, `details.reason`
+   *   `ISSUE_TYPES_CHANGED`, nothing written, since backend TAS-429; it was
+   *   400 `INVALID_ARGUMENT` with no reason before). The 200 is the whole registry,
    *   renumbered 10, 20, 30… in one transaction, in its new order — read by
    *   `toProjectIssueTypes`, never re-sorted. One request per move: `codes` is
    *   the full permutation the reader sees once the move is made.

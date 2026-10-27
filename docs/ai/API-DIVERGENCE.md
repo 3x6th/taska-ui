@@ -2007,40 +2007,40 @@ Everything below is the entry as it stood, in the past tense.
   and mock, and draws `columns` and `unplacedIssues` as sent (DESIGN.md §4.9). What the
   merged Java says that the yml does not is in the four board entries below.
 
-### Creating from a column's «+» cannot choose the status: «+» only on the `TODO` column
+### Closed by TAS-438 (2026-10-27): Creating from a column's «+» cannot choose the status: «+» only on the `TODO` column
 
 - **Endpoint:** `POST /api/v1/projects/{projectId}/issues` (develop `be5085e5`).
 - **Observed:** `CreateIssueRequestDto` has no status; issue-service always creates in `TODO` (`IssueServiceImpl`, `INIT_STATUS`). «+» on In Review used to create the issue in To Do (owner, 2026-10-26).
 - **What the UI does:** «+» only on the column whose `statusKey` is `TODO`; no such column — no «+», «New» stays. The form from «+» is titled «New issue in {Status}» and disables types whose workflow lacks the status (DESIGN.md §4.9, §5.5). No create-then-transition.
 - **Switch-off:** when the vendored contract gains `statusKey` on create — «+» on every column and the form sends it (DESIGN.md pairs gated on TAS-428).
 - **Jira:** [TAS-428](https://jira.ozero.dev/browse/TAS-428).
-- **2026-10-27:** the switch-off condition is met at backend develop `cbd3f0af` (`CreateIssueRequestDto.statusKey`; the snapshot was refreshed with TAS-434). The client still compensates — removing it is the next frontend pass, held back by the owner's scope rule (a pass takes what was merged when it started).
+- **Closed by TAS-438 (2026-10-27):** «+» stands on every column of the board and sends that column's `statusKey`; «New» sends none, so the issue starts in `TODO`. The form disables a type whose workflow lacks the status, and a refusal (`STATUS_NOT_IN_WORKFLOW`, a malformed key) shows in the form's ErrorNote with the server's words. The mock refuses the same way. Read from backend code at `cbd3f0af`, not probed on the stage.
 
-### The board is capped at 200 per column and no route continues a column
+### Closed by TAS-438 (2026-10-27): The board is capped at 200 per column and no route continues a column
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/board?pageSizePerColumn=…` (backend TAS-392).
 - **Observed:** a column (and «Outside their workflow») holds at most `pageSizePerColumn` issues (max 200) with `totalCount`/`hasMore`. The yml's advice to continue through issue search does not work: search is newest first, matches `statusKey` across types, has no `labelId`, needs `query` ≥ 3 and returns cards without labels, assignee profile or version.
 - **What the UI does:** sends 200, filters on the server, shows true counts and the foot «{n} of {total} shown. Filter to find the rest.» with no «Show more»; the link picker offers the unfiltered board's first 200 per status with a note.
 - **Switch-off:** a keyset continuation route — then «Show more» per DESIGN.md §4.9.
 - **Jira:** [TAS-430](https://jira.ozero.dev/browse/TAS-430).
-- **2026-10-27:** the switch-off condition is met at backend develop `cbd3f0af` (`GET …/board/columns/{statusKey}/issues`; the snapshot was refreshed with TAS-434). The client still compensates — removing it is the next frontend pass, held back by the owner's scope rule (a pass takes what was merged when it started).
+- **Closed by TAS-438 (2026-10-27):** «Show more» reads `GET …/board/columns/{statusKey}/issues` with the last drawn card as the exclusive cursor (`afterCreatedAt`, `afterId`), the board's filters, `includeDone=true` and `pageSize=200`; one press is one read, and a re-read of the same filters keeps the column expanded. «Outside their workflow» has no continuation (the route takes only a type's own statuses) and keeps «Filter to find the rest.». The link picker still lists the board's first 200 per status with its note: it reads the board, not a column. Read from backend code at `cbd3f0af`, not probed on the stage.
 
-### The work log total is a client sum, shown only when the list is complete
+### Closed by TAS-438 (2026-10-27): The work log total is a client sum, shown only when the list is complete
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/issues/{issueId}/worklogs` (paged since backend TAS-421); the issue reads carry no time spent.
 - **What the UI does:** «Xh Ym logged» is summed on the client and drawn only when the last loaded page says `hasMore: false`; otherwise no total.
 - **Switch-off:** `timeSpentMinutes` on the issue DTOs — then the header reads it.
 - **Jira:** [TAS-431](https://jira.ozero.dev/browse/TAS-431).
-- **2026-10-27:** the switch-off condition is met at backend develop `cbd3f0af` (`timeSpentMinutes` on the issue DTOs; the snapshot was refreshed with TAS-434). The client still compensates — removing it is the next frontend pass, held back by the owner's scope rule (a pass takes what was merged when it started).
+- **Closed by TAS-438 (2026-10-27):** «Xh Ym logged» is the issue's `timeSpentMinutes`, drawn however many pages are loaded; 0 or absent draws no total. The client sum and its «complete list» condition are gone. Read from backend code at `cbd3f0af`, not probed on the stage.
 
-### A stale issue-type reorder is refused like a bad request
+### Closed by TAS-438 (2026-10-27): A stale issue-type reorder is refused like a bad request
 
 - **Endpoint:** `PUT /api/v1/projects/{projectId}/issue-types/order` (backend TAS-418).
 - **Observed:** a code set that no longer matches the registry is 400 `INVALID_ARGUMENT` «codes must contain every current issue type exactly once», no `details` — the same code as a malformed body.
 - **What the UI does:** the client builds the set from its own registry, so it treats any refusal of this route as stale: the dialog's generic sentence, the request id, a context re-read.
 - **Switch-off:** a 409 `ABORTED` or `details.reason = ISSUE_TYPES_CHANGED` — then a dedicated sentence.
 - **Jira:** [TAS-429](https://jira.ozero.dev/browse/TAS-429).
-- **2026-10-27:** the switch-off condition is met at backend develop `cbd3f0af` (`ISSUE_TYPES_CHANGED` on a stale reorder; the snapshot was refreshed with TAS-434). The client still compensates — removing it is the next frontend pass, held back by the owner's scope rule (a pass takes what was merged when it started).
+- **Closed by TAS-438 (2026-10-27):** 409 `ABORTED` with `details.reason = ISSUE_TYPES_CHANGED` (code and reason together) shows «Issue types changed elsewhere, so the new order was not saved. The list now shows the current types.» with the request id and re-reads the context; any other refusal keeps the general sentence and the server's words. Read from backend code at `cbd3f0af`, not probed on the stage.
 
 ### Closed by TAS-417 (2026-10-26): The yml and the server name different rules for the board's `unplacedIssues`
 
@@ -2101,9 +2101,10 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** asked on TAS-213 on 2026-10-24 — a `pageSizePerColumn` parameter and per-column
   `totalCount` / `hasMore`; then the filters move to server parameters.
 
-### History events name their actor by id only
+### Closed by TAS-438 (2026-10-27): History events name their actor by id only
 
 - **TAS-417 (2026-10-26):** the actor half is closed — backend TAS-398 puts `actor` (a user summary, former members included, `null` when unavailable) on each history event, and Activity names it through the summary, then the members map, then «Unknown». Still live: people inside an `ASSIGNED` payload are ids only and are matched against members (ask in [TAS-431](https://jira.ozero.dev/browse/TAS-431)).
+- **TAS-438 (2026-10-27):** the assignee half is closed too — backend TAS-431 puts `participants` (user summaries) on each history event, and «assigned X» names the person from that summary, then the members map, then «someone». Nothing in this entry is live any more.
 
 - **Endpoint:** `GET /api/v1/issues/{issueId}`.
 - **Contract:** each history item carries `actorUserId` and nothing else about the person; the

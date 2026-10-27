@@ -4,6 +4,7 @@ import {
   defaultIssueTypeColor,
   issueTypeCodeOf,
   issueTypeDeleteRefusalText,
+  issueTypeOrderRefusal,
   movedIssueTypeCodes,
   nextIssueTypeSortOrder,
   withIssueTypeOrder,
@@ -108,5 +109,37 @@ describe("issueTypeDeleteRefusalText", () => {
     expect(issueTypeDeleteRefusalText(refusal(null, "Issue type EPIC has 3 issues"), "Epic")).toBe("Epic was not deleted.");
     expect(issueTypeDeleteRefusalText(refusal({ reason: "PROJECT_ARCHIVED" }), "Epic")).toBe("Epic was not deleted.");
     expect(issueTypeDeleteRefusalText(new Error("network"), "Epic")).toBe("Epic was not deleted.");
+  });
+});
+
+/**
+ * A refused move (§4.30): the stale registry's 409 `ABORTED`
+ * `ISSUE_TYPES_CHANGED` (backend TAS-429) has its own sentence and only the
+ * request id; anything else the general one with the server's words.
+ */
+describe("issueTypeOrderRefusal", () => {
+  const refusal = (code: string, status: number, details: Record<string, string> | null) =>
+    Object.assign(new Error("Issue type registry changed; reload the current types before reordering"), {
+      code,
+      status,
+      details,
+    });
+  const changed = {
+    sentence: "Issue types changed elsewhere, so the new order was not saved. The list now shows the current types.",
+    serverWords: false,
+  };
+  const general = { sentence: "The new order was not saved. The list now shows the saved order.", serverWords: true };
+
+  it("says the types changed elsewhere on ABORTED with ISSUE_TYPES_CHANGED, without the server's words", () => {
+    expect(issueTypeOrderRefusal(refusal("ABORTED", 409, { reason: "ISSUE_TYPES_CHANGED" }))).toEqual(changed);
+  });
+
+  it("branches on the code and the reason together, never on the prose", () => {
+    // The pre-TAS-429 shape: the same words, a bad request, no reason.
+    expect(issueTypeOrderRefusal(refusal("INVALID_ARGUMENT", 400, null))).toEqual(general);
+    expect(issueTypeOrderRefusal(refusal("ABORTED", 409, null))).toEqual(general);
+    expect(issueTypeOrderRefusal(refusal("FAILED_PRECONDITION", 400, { reason: "ISSUE_TYPES_CHANGED" }))).toEqual(general);
+    expect(issueTypeOrderRefusal(refusal("FAILED_PRECONDITION", 400, { reason: "PROJECT_ARCHIVED" }))).toEqual(general);
+    expect(issueTypeOrderRefusal(new Error("network"))).toEqual(general);
   });
 });

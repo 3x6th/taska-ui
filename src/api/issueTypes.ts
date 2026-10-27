@@ -97,11 +97,16 @@ export const ISSUE_TYPE_IN_USE_REASON = "ISSUE_TYPE_IN_USE";
  */
 export const ISSUE_TYPE_ORDER_REPEATS_MESSAGE = "codes must be a complete permutation without duplicates";
 /**
- * `PUT …/issue-types/order` whose codes are not exactly the registry's — one
- * missing, one extra, or a set that went stale while the dialog was open —
- * after the role and the archive (400 `INVALID_ARGUMENT`); nothing is written.
+ * `PUT …/issue-types/order` whose codes are not exactly the registry's — a
+ * type added or deleted elsewhere while the dialog was open — after the role
+ * and the archive (409 `ABORTED`, `details.reason` `ISSUE_TYPES_CHANGED`,
+ * backend TAS-429, `ProjectIssueTypeService.reorder` at `cbd3f0af`); nothing is
+ * written. Before TAS-429 it was 400 `INVALID_ARGUMENT` with no reason, the
+ * same code as a malformed body.
  */
-export const ISSUE_TYPE_ORDER_STALE_MESSAGE = "codes must contain every current issue type exactly once";
+export const ISSUE_TYPES_CHANGED_MESSAGE = "Issue type registry changed; reload the current types before reordering";
+/** `details.reason` of the stale reorder above — what the dialog branches on, with the `ABORTED` code. */
+export const ISSUE_TYPES_CHANGED_REASON = "ISSUE_TYPES_CHANGED";
 /** An issue write naming a well-formed key the registry does not hold (400 `INVALID_ARGUMENT`). */
 export const issueTypeNotDefinedMessage = (key: string) => `Issue type ${key} is not defined in this project`;
 /** A malformed key on an issue write — the gateway's `ResponseStatusException` (400 `BAD_REQUEST`). */
@@ -116,6 +121,17 @@ export const ISSUE_TYPE_NOT_CLEARABLE_MESSAGE = "issueType cannot be cleared";
 export const STATUS_NOT_IN_TARGET_TYPE_MESSAGE = "Current status is not available for the target issue type";
 /** `details.reason` of the refused type change above. */
 export const STATUS_NOT_IN_TARGET_WORKFLOW_REASON = "STATUS_NOT_IN_TARGET_WORKFLOW";
+/**
+ * A create whose `statusKey` the workflow of its type does not hold (400
+ * `FAILED_PRECONDITION`, `details.reason` `STATUS_NOT_IN_WORKFLOW`, backend
+ * TAS-428 — issue-service's `requireInitialStatus` at `cbd3f0af`). The create
+ * form shows it as the server's words with the request id (DESIGN.md §5.5).
+ */
+export const INITIAL_STATUS_NOT_IN_WORKFLOW_MESSAGE = "Initial status is not available for the issue type";
+/** `details.reason` of the refused create above. */
+export const STATUS_NOT_IN_WORKFLOW_REASON = "STATUS_NOT_IN_WORKFLOW";
+/** The shape `CreateIssueRequestDto.statusKey` must have; the gateway's binding refuses any other (400). */
+export const STATUS_KEY_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/;
 
 /* --- Reading the wire ------------------------------------------------------ */
 

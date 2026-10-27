@@ -185,9 +185,15 @@ function respond(url: string, init?: RequestInit): unknown {
   if (path === `/projects/${PROJECT}/issues/${ISSUE}/comments`) return { items: [], totalCount: 0 };
   if (path === `/projects/${PROJECT}/issues/${ISSUE}/worklogs` && init?.method === "POST") {
     // What issue-service does on every worklog write (backend PR #178): the
-    // issue's version goes up, and its remaining estimate moves.
+    // issue's version goes up, its remaining estimate moves, and its
+    // `timeSpentMinutes` (backend TAS-431) with it.
     const body = JSON.parse(String(init.body)) as { spentMinutes: number; workDate: string; comment?: string };
-    issue = { ...issue, version: Number(issue.version) + 1, updatedAt: NOW };
+    issue = {
+      ...issue,
+      version: Number(issue.version) + 1,
+      updatedAt: NOW,
+      timeSpentMinutes: Number(issue.timeSpentMinutes ?? 0) + body.spentMinutes,
+    };
     const entry = {
       id: "0e0e0e0e-0000-4000-8000-000000000001",
       issueId: ISSUE,

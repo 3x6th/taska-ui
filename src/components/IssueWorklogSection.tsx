@@ -17,14 +17,13 @@ import {
   formatWorkDate,
   hasProblems,
   localDateOnly,
-  totalSpentMinutes,
   updateInputOf,
   withWorklogAdded,
   withWorklogRemoved,
   withWorklogReplaced,
   withWriteAnswer,
   worklogDraftProblems,
-  worklogsComplete,
+  worklogTotalText,
   worklogsTotalCount,
   type WorklogDraft,
   type WorklogDraftField,
@@ -56,13 +55,15 @@ interface WorklogNotice {
 
 /**
  * The issue panel's work log (TAS-251, backend PR #178): who logged how much
- * time on which day, a total for the entries listed, and a form to log more.
+ * time on which day, the issue's total, and a form to log more.
  *
  * **Paged** since backend TAS-421 (DESIGN.md §4.24): 100 entries a page. The
  * pill is the server's `totalCount`, never the rows drawn; the total time is
- * drawn only once the last page has said `hasMore: false`, because no route
- * states an issue's total and a sum over part of the list is not one. Past a
- * page the list ends in §4.9's foot — "{n} of {total} shown" and "Show more".
+ * the issue's `timeSpentMinutes` (backend TAS-431), drawn however many pages
+ * are read — a sum over part of the list would not be one. It follows the
+ * issue read every write here already makes, like the remaining estimate.
+ * Past a page the list ends in §4.9's foot — "{n} of {total} shown" and "Show
+ * more".
  *
  * Gated as issue-service gates it (`issue.allowed-roles` at the PR head): every
  * member reads it; ADMIN and MEMBER log time and change their own entries; only
@@ -87,6 +88,7 @@ export function IssueWorklogSection({
   userById,
   prefetched,
   writeScope,
+  timeSpentMinutes,
 }: {
   projectId: string;
   issueId: string;
@@ -107,6 +109,8 @@ export function IssueWorklogSection({
   prefetched: boolean;
   /** The panel's issue-write queue (see above). */
   writeScope: string;
+  /** The issue's `timeSpentMinutes` as the panel's issue read states it; `null` draws no total (§4.24). */
+  timeSpentMinutes: number | null;
 }) {
   const queryClient = useQueryClient();
   const formId = useId();
@@ -122,9 +126,8 @@ export function IssueWorklogSection({
   const pages = useMemo(() => worklogsQuery.data?.pages ?? [], [worklogsQuery.data]);
   const worklogs = useMemo(() => drawnWorklogs(pages), [pages]);
   const totalCount = worklogsQuery.isSuccess || pages.length ? worklogsTotalCount(pages) : null;
-  // The sum only when every entry is here (§4.24): the last page said so.
-  const complete = worklogsComplete(pages);
-  const total = totalSpentMinutes(worklogs);
+  // The issue's own total (§4.24), whatever has been read of the list.
+  const totalText = worklogTotalText(timeSpentMinutes);
   const hasMore = worklogsQuery.hasNextPage;
 
   const [draft, setDraft] = useState<WorklogDraft>(() => emptyDraft(today));
@@ -364,7 +367,7 @@ export function IssueWorklogSection({
         <h3 id={`${formId}-heading`} ref={headingRef} tabIndex={-1}>
           Work log
           {/* The server's count of every entry, not the rows drawn (§4.24);
-              unstated, Unknown — and then there is no sum either. */}
+              unstated, Unknown. */}
           {totalCount === null ? (
             pages.length ? (
               <span className="count-pill">
@@ -375,7 +378,7 @@ export function IssueWorklogSection({
             <span className="count-pill">{totalCount}</span>
           ) : null}
         </h3>
-        {complete && worklogs.length ? <p className="worklog-total">{formatDuration(total)} logged</p> : null}
+        {totalText ? <p className="worklog-total">{totalText}</p> : null}
       </div>
 
       {showForm ? (

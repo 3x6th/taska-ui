@@ -2,6 +2,7 @@ import type {
   AcceptInvitationInput,
   AddIssueWorklogInput,
   AuthTokens,
+  BoardColumnPageParams,
   BoardParams,
   CreateAccessTokenInput,
   ConfirmAttachmentUploadInput,
@@ -43,6 +44,8 @@ import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
   ADMIN_WRITE_REASON_REQUIRED_MESSAGE,
   ADMIN_WRITE_REASON_TOO_LONG_MESSAGE,
+  BOARD_CURSOR_PAIR_MESSAGE,
+  BOARD_CURSOR_REFUSAL_MESSAGE,
   DIRECTORY_QUERY_REFUSAL_MESSAGE,
   INVITE_DISPLAY_NAME_MAX_LENGTH,
   INVITE_EMAIL_MAX_LENGTH,
@@ -86,12 +89,16 @@ import {
   ISSUE_TYPE_NAME_MAX_LENGTH,
   ISSUE_TYPE_IN_USE_REASON,
   ISSUE_TYPE_NOT_FOUND_MESSAGE,
+  INITIAL_STATUS_NOT_IN_WORKFLOW_MESSAGE,
   ISSUE_TYPE_ORDER_REPEATS_MESSAGE,
-  ISSUE_TYPE_ORDER_STALE_MESSAGE,
+  ISSUE_TYPES_CHANGED_MESSAGE,
+  ISSUE_TYPES_CHANGED_REASON,
   LAST_ISSUE_TYPE_MESSAGE,
   LAST_ISSUE_TYPE_REASON,
+  STATUS_KEY_PATTERN,
   STATUS_NOT_IN_TARGET_TYPE_MESSAGE,
   STATUS_NOT_IN_TARGET_WORKFLOW_REASON,
+  STATUS_NOT_IN_WORKFLOW_REASON,
   isIssueTypeCode,
   isIssueTypeColor,
   isIssueTypeIcon,
@@ -127,6 +134,7 @@ import type {
   AvatarUploadTicket,
   Board,
   BoardColumn,
+  BoardColumnPage,
   BoardIssue,
   DictionaryEntry,
   DirectoryPage,
@@ -661,7 +669,48 @@ export const MOCK_PROJECT_TRIGGERS = {
    * (backend TAS-394) — the stale list that refusal exists for.
    */
   adminsLeftMeanwhile: "[admins left meanwhile]",
+  /**
+   * In an issue type's name: another admin adds a type to the project, as they
+   * would in another session, just before the reader's next move in Issue
+   * types. The move then sends a set that is no longer the registry's — the
+   * 409 `ABORTED` `ISSUE_TYPES_CHANGED` of backend TAS-429, which this store
+   * otherwise cannot produce for a reader alone. Once: the type it adds stays.
+   */
+  issueTypesChangedMeanwhile: "[types changed meanwhile]",
+  /**
+   * In a project description: every column page of the project refuses —
+   * issue-service unavailable, 503 — once the access check has passed. Both
+   * «Show more» and a re-read of an expanded column's tail meet it (DESIGN.md
+   * §4.9, «Отказ», «Перечитывание»); the board read itself still answers.
+   */
+  columnPagesRefused: "[pages refused]",
 } as const;
+
+/**
+ * The years `BoardServiceImpl.listBoardColumnIssues` takes a cursor instant
+ * from — 0001-01-01 to 9999-12-31 UTC, in its epoch seconds, as milliseconds.
+ */
+const CURSOR_EARLIEST_MS = -62135596800 * 1000;
+const CURSOR_LATEST_MS = 253402300799 * 1000;
+
+/**
+ * The payload fields a history event names people by, as issue-service reads
+ * them for `participants` (`HistoryParticipants.ids`, backend TAS-431 at
+ * `cbd3f0af`), plus the `watcherIds` array.
+ */
+const HISTORY_PARTICIPANT_FIELDS = [
+  "previousAssigneeId",
+  "assigneeId",
+  "reporterId",
+  "authorUserId",
+  "uploadedBy",
+  "createdBy",
+  "deletedBy",
+  "deletedByUserId",
+] as const;
+
+/** The code of the type `issueTypesChangedMeanwhile` has another admin add. */
+const TYPE_ADDED_ELSEWHERE = "ADDED_ELSEWHERE";
 
 /**
  * The bytes that were PUT, as something an `<img>` can actually draw — see
@@ -1090,9 +1139,6 @@ export function buildMockBoard(
   };
 }
 
-/** The instant the seeded labels were put on their issues: one for all, so the label id orders them. */
-const LABELS_SEEDED_AT = "2026-06-18T10:00:00Z";
-
 /** `pageSizePerColumn` when the request states none (`BoardServiceImpl`, backend TAS-392). */
 const BOARD_DEFAULT_PAGE_SIZE = 50;
 /** The most `pageSizePerColumn` may be. */
@@ -1338,7 +1384,7 @@ function requireWorkflowTransition(workflow: WorkflowDefinition, transitionId: s
 }
 
 /** Substring, case-insensitive, over `issue_key` OR `summary` OR `description` — the probe's own OR. */
-const matchesSearchQuery = (issue: Issue, query: string | null) => {
+const matchesSearchQuery = (issue: StoredIssue, query: string | null) => {
   if (!query) return true;
   const needle = query.toLowerCase();
   return (
@@ -1539,6 +1585,13 @@ type StoredIssueWatcher = Omit<IssueWatcher, "displayName" | "avatarUrl">;
  * no read names them (backend PR #178).
  */
 type StoredWorklog = IssueWorklog & { deletedAt: string | null };
+
+/**
+ * An issue as this store keeps it: everything but `timeSpentMinutes`, which
+ * every answer computes from the live worklogs (`issueView`, `writeAnswer`), so
+ * no stored copy of it can drift from the entries it sums.
+ */
+type StoredIssue = Omit<Issue, "timeSpentMinutes">;
 
 /**
  * `issue.max-future-days` in issue-service's `application.yml` at backend PR
@@ -1902,7 +1955,7 @@ export class MockTaskaStore {
   private users: StoredUser[];
   private projects: Project[];
   private membersByProject: Record<string, ProjectMember[]>;
-  private issues: Issue[];
+  private issues: StoredIssue[];
   private historyByIssue: Record<string, IssueHistoryEvent[]>;
   private commentsByIssue: Record<string, StoredIssueComment[]>;
   private links: StoredIssueLink[] = [];
@@ -1952,8 +2005,6 @@ export class MockTaskaStore {
    * what the gateway does (TAS-119) and what copies would quietly get wrong.
    */
   private labelIdsByIssue: Record<string, string[]> = {};
-  /** When each label was put on each issue, by issue and label id: the board orders a card's labels by it. */
-  private labelBoundAt: Record<string, Record<string, string>> = {};
   private notifications: Notification[];
   /**
    * The shared default workflow, as backend PR #208's migration 0001 leaves it:
@@ -2367,12 +2418,13 @@ export class MockTaskaStore {
           ],
         },
       },
-      // A workflow with no To Do (TAS-428's case): workflow-service's create
-      // validator does not require one — an MCP or token client can make it —
-      // though every edit does. Mobile's INCIDENT runs on it, so the board
-      // draws its two columns, and the To Do column's "+" switches the type
-      // off: issue-service would create it in TODO, outside its workflow
-      // (DESIGN.md §5.5, P3′). No issue carries the type.
+      // A workflow with no To Do: workflow-service's create validator does
+      // not require one — an MCP or token client can make it — though every
+      // edit does. Mobile's INCIDENT runs on it, so the board draws its two
+      // columns; the To Do column's "+" switches the type off (the server
+      // would refuse the status, `STATUS_NOT_IN_WORKFLOW`, backend TAS-428),
+      // and Triage's "+" offers it alone (DESIGN.md §5.5). No issue carries
+      // the type in the seed.
       [MOB_PROJECT_ID]: {
         INCIDENT: {
           ...this.workflow,
@@ -2438,7 +2490,7 @@ export class MockTaskaStore {
       // positional arguments: most seeds state none of them, and the ones that
       // do are worth being able to read.
       planning: Partial<PlanningFields> = {},
-    ): Issue => ({
+    ): StoredIssue => ({
       id: makeId(`issue-${key}-${number}`),
       projectId,
       issueNumber: number,
@@ -2677,7 +2729,7 @@ export class MockTaskaStore {
     const viaCursor: ActionVia = { channel: "MCP", tokenName: "Cursor on laptop" };
     const viaToken: ActionVia = { channel: "API_TOKEN", tokenName: null };
     if (tas107) {
-      this.pushHistory(tas107.id, "ASSIGNED", ANNA_ID, { to: SOFIA_ID }, ts(16, 43));
+      this.pushHistory(tas107.id, "ASSIGNED", ANNA_ID, { previousAssigneeId: null, assigneeId: SOFIA_ID }, ts(16, 43));
       this.pushHistory(tas107.id, "TRANSITIONED", SOFIA_ID, { from: "TODO", to: "IN_PROGRESS" }, ts(17, 14), viaCursor);
       this.comment(tas107, SOFIA_ID, "Picked this up — the token refresh path needs a retry guard first.", ts(17, 20), viaCursor);
       this.comment(tas107, ANNA_ID, "Agreed. Ping me once the guard is in and I will review.", ts(18, 5));
@@ -2802,7 +2854,6 @@ export class MockTaskaStore {
       );
       if (!target || !label) return;
       (this.labelIdsByIssue[target.id] ??= []).push(label.id);
-      (this.labelBoundAt[target.id] ??= {})[label.id] = LABELS_SEEDED_AT;
     });
 
     // Watchers, seeded so every state of the section is reachable by signing in
@@ -3828,8 +3879,9 @@ export class MockTaskaStore {
     // project's context then answers 404 for every member when it has no
     // status or no visible transition (`GetWorkflowForProject`,
     // docs/ai/API-DIVERGENCE.md "A workflow with no status or no visible
-    // transition makes the project context 404"), and with no `TODO` new
-    // issues of its types land outside their workflow on the board; this store's context
+    // transition makes the project context 404"), and with no `TODO` the
+    // issues of its types created with no status land outside their workflow
+    // on the board; this store's context
     // reproduces neither. The dialog cannot send such a body — it sends a copy
     // of the shared default.
     const violations = workflowViolations(candidate);
@@ -4069,19 +4121,19 @@ export class MockTaskaStore {
     const mapping = input.statusMappings ?? {};
     const sourceKeys = workflow.statuses.map((status) => status.statusKey);
     const targets = Object.values(mapping);
-    if (
-      !Object.keys(mapping).every((key) => sourceKeys.includes(key)) ||
-      !targets.every((key) => validKeys.includes(key)) ||
-      !targets.every((key) => sourceKeys.includes(key))
-    ) {
+    // The targets only (backend TAS-429): a mapping's source may be an old
+    // status outside this workflow, which the contract allows.
+    if (!targets.every((key) => validKeys.includes(key)) || !targets.every((key) => sourceKeys.includes(key))) {
       throw new MockApiError(
         "INVALID_ARGUMENT",
         "Map to statuses present in both workflows; add a target status to the current workflow first if needed",
       );
     }
-    // The legacy scan (no source keys), and the targets a refusal names are
-    // the shared default's statuses this workflow also has, in the default's
-    // order (`WorkflowMutationService.deleteWorkflow`, TAS-427).
+    // Only this workflow's statuses and the keys the mapping names (backend
+    // TAS-429, A12): an issue in a status outside both workflows stays where it
+    // is, «Outside their workflow», and does not block the delete. The targets a
+    // refusal names are the shared default's statuses this workflow also has,
+    // in the default's order (`WorkflowMutationService.deleteWorkflow`, TAS-427).
     this.migrateWorkflowIssues(
       projectId,
       workflow.id,
@@ -4089,6 +4141,7 @@ export class MockTaskaStore {
       validKeys,
       mapping,
       validKeys.filter((key) => sourceKeys.includes(key)),
+      [...new Set([...sourceKeys, ...Object.keys(mapping)])],
     );
     const bindings = this.workflowOverrides[projectId] ?? {};
     for (const code of issueTypes) delete bindings[code];
@@ -4138,10 +4191,11 @@ export class MockTaskaStore {
 
   /**
    * issue-service's `WorkflowIssueMigrationService.migrate`, as the two
-   * deletes call it (backend TAS-427, develop `be5085e5`). With `sourceKeys`
-   * (a status delete) the project's live issues of the workflow's types in
-   * those statuses; without (a workflow delete, the legacy scan) those whose
-   * status the workflow will not keep, or that a mapping names. More than
+   * deletes call it (backend TAS-427, TAS-429, develop `cbd3f0af`): the
+   * project's live issues of the workflow's types in one of `sourceKeys` — the
+   * deleted status, or the deleted workflow's statuses and the keys its
+   * mapping names — whose status the workflow will not keep or a mapping
+   * names (`findForWorkflowMigrationBySourceStatuses`). More than
    * 5000 refuses the whole delete first — 400 `FAILED_PRECONDITION`,
    * `details.reason` `WORKFLOW_MIGRATION_LIMIT` and the `limit`. Then any left,
    * after the mapping, in a status outside `validKeys` refuses it with
@@ -4158,17 +4212,19 @@ export class MockTaskaStore {
     validKeys: readonly string[],
     mapping: Readonly<Record<string, string>>,
     targetStatusKeys: readonly string[],
-    sourceKeys?: readonly string[],
+    sourceKeys: readonly string[],
   ): void {
+    if (!sourceKeys.every((key) => STATUS_KEY_PATTERN.test(key))) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid workflow migration scope or target status");
+    }
     const targetOf = (statusKey: string) => (Object.hasOwn(mapping, statusKey) ? mapping[statusKey] : statusKey);
     const found = this.issues.filter(
       (issue) =>
         issue.projectId === projectId &&
         issue.deletedAt === null &&
         issueTypes.includes(issue.issueType) &&
-        (sourceKeys
-          ? sourceKeys.includes(issue.status)
-          : !validKeys.includes(issue.status) || Object.hasOwn(mapping, issue.status)),
+        sourceKeys.includes(issue.status) &&
+        (!validKeys.includes(issue.status) || Object.hasOwn(mapping, issue.status)),
     );
     if (found.length > WORKFLOW_MIGRATION_LIMIT) {
       throw new MockApiError(
@@ -4394,13 +4450,30 @@ export class MockTaskaStore {
     if (params.issueType && (!isIssueTypeCode(params.issueType) || !this.inRegistry(projectId, params.issueType))) {
       return { projectId, columns: [], unplacedIssues: [], unplacedTotalCount: 0, unplacedHasMore: false };
     }
-    const typeCodes = params.issueType ? [params.issueType] : this.registryOf(projectId).map((type) => type.code);
-    const types: MockBoardType[] = typeCodes.map((issueType) => ({
-      issueType,
-      statuses: this.workflowFor(projectId, issueType).statuses,
-    }));
+    const types = this.boardTypes(projectId, params.issueType);
+    return buildMockBoard(projectId, types, this.boardIssues(projectId, types, params), params);
+  }
+
+  /** The types a board read is about — the registry's in its order, or the one asked for — each with its workflow's statuses. */
+  private boardTypes(projectId: string, issueType: string | undefined): MockBoardType[] {
+    const typeCodes = issueType ? [issueType] : this.registryOf(projectId).map((type) => type.code);
+    return typeCodes.map((code) => ({ issueType: code, statuses: this.workflowFor(projectId, code).statuses }));
+  }
+
+  /**
+   * The project's live issues of `types`, narrowed by the four filters the
+   * server applies — assignee, label, priority, and `query` as a
+   * case-insensitive substring of the key, the summary or the description — as
+   * cards. The board and a column's page read the same set.
+   */
+  private boardIssues(
+    projectId: string,
+    types: readonly MockBoardType[],
+    params: Pick<BoardParams, "assigneeId" | "labelId" | "priority" | "query">,
+  ): BoardIssue[] {
+    const typeCodes = types.map((type) => type.issueType);
     const needle = params.query?.toLowerCase() ?? "";
-    const issues = this.issues
+    return this.issues
       .filter((item) => item.projectId === projectId && item.deletedAt === null)
       .filter((item) => typeCodes.includes(item.issueType))
       .filter((item) => !params.assigneeId || item.assigneeId === params.assigneeId)
@@ -4416,11 +4489,98 @@ export class MockTaskaStore {
           item.description.toLowerCase().includes(needle),
       )
       .map((item) => this.boardIssue(item));
-    return buildMockBoard(projectId, types, issues, params);
+  }
+
+  /**
+   * `GET /projects/{projectId}/board/columns/{statusKey}/issues` (backend
+   * TAS-430, `BoardController` and `BoardServiceImpl.listBoardColumnIssues` at
+   * `cbd3f0af`), in the server's order:
+   *
+   * 1. the gateway's binding — a page size outside 1–200, an empty `query`, an
+   *    `afterCreatedAt` that is not an instant or an `afterId` that is not a
+   *    UUID: 400 `INVALID_ARGUMENT` "Invalid request parameters";
+   * 2. the controller: half a cursor, 400 `BAD_REQUEST`
+   *    (`BOARD_CURSOR_PAIR_MESSAGE`); then a type filter it cannot parse is an
+   *    empty page once the access check has passed;
+   * 3. the service: a blank status key or a cursor instant outside years
+   *    1–9999, 400 `BAD_REQUEST` (`BOARD_CURSOR_REFUSAL_MESSAGE`);
+   * 4. the board's access check (404, 403). After it nothing is refused for
+   *    being unknown: a type the registry does not hold, or a status no type's
+   *    workflow has, is an empty page.
+   *
+   * `MOCK_PROJECT_TRIGGERS.columnPagesRefused` in the project's description
+   * makes every page of it refuse once the access check has passed — 503
+   * `UNAVAILABLE` — the failure a reader alone cannot otherwise make.
+   *
+   * The column is `buildMockBoard`'s, by the same rules — an issue counts only
+   * when its **own** type's workflow holds the status, and `includeDone` off
+   * drops it when that workflow files the status under `DONE` — in
+   * `compareBoardIssues` order, uncut. The page is what sorts strictly after
+   * the cursor, at most `pageSize` (50 when not given); `totalCount` is the
+   * whole column whatever the cursor, and `hasMore` whether any lies past the
+   * page.
+   */
+  getBoardColumnPage(projectId: string, statusKey: string, params: BoardColumnPageParams = {}): BoardColumnPage {
+    const pageSize = params.pageSize ?? BOARD_DEFAULT_PAGE_SIZE;
+    if (
+      !Number.isInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > BOARD_MAX_PAGE_SIZE ||
+      params.query === "" ||
+      (params.afterCreatedAt !== undefined && Number.isNaN(Date.parse(params.afterCreatedAt))) ||
+      (params.afterId !== undefined && !UUID_PATTERN.test(params.afterId))
+    ) {
+      throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
+    }
+    if ((params.afterCreatedAt === undefined) !== (params.afterId === undefined)) {
+      throw new MockApiError("BAD_REQUEST", BOARD_CURSOR_PAIR_MESSAGE);
+    }
+    const empty: BoardColumnPage = { statusKey, issues: [], totalCount: 0, hasMore: false };
+    const access = () => {
+      const project = this.projects.find((item) => item.id === projectId);
+      if (!project) throw new MockApiError("NOT_FOUND", "Project not found");
+      if (!this.membersByProject[projectId]?.some((member) => member.userId === this.currentUserId)) {
+        throw new MockApiError("PERMISSION_DENIED", "Access denied");
+      }
+      return project;
+    };
+    if (params.issueType && !isIssueTypeCode(params.issueType)) {
+      access();
+      return empty;
+    }
+    const instant = params.afterCreatedAt === undefined ? null : Date.parse(params.afterCreatedAt);
+    if (statusKey.trim() === "" || (instant !== null && (instant < CURSOR_EARLIEST_MS || instant > CURSOR_LATEST_MS))) {
+      throw new MockApiError("BAD_REQUEST", BOARD_CURSOR_REFUSAL_MESSAGE);
+    }
+    const project = access();
+    if (project.description?.includes(MOCK_PROJECT_TRIGGERS.columnPagesRefused)) {
+      throw new MockApiError("UNAVAILABLE", "issue-service is unavailable");
+    }
+    if (params.issueType && !this.inRegistry(projectId, params.issueType)) {
+      return empty;
+    }
+    const types = this.boardTypes(projectId, params.issueType);
+    const board = buildMockBoard(projectId, types, this.boardIssues(projectId, types, params), {
+      includeDone: params.includeDone,
+      pageSizePerColumn: Number.MAX_SAFE_INTEGER,
+    });
+    const column = board.columns.find((item) => item.statusKey === statusKey);
+    if (!column) return empty;
+    const cursor =
+      params.afterCreatedAt !== undefined && params.afterId !== undefined
+        ? { createdAt: params.afterCreatedAt, id: params.afterId }
+        : null;
+    const after = cursor ? column.issues.filter((issue) => compareBoardIssues(issue, cursor) > 0) : column.issues;
+    return {
+      statusKey,
+      issues: after.slice(0, pageSize),
+      totalCount: column.issues.length,
+      hasMore: after.length > pageSize,
+    };
   }
 
   /** An issue as `BoardIssueDto` states it, field by field, with the person and the labels joined in. */
-  private boardIssue(issue: Issue): BoardIssue {
+  private boardIssue(issue: StoredIssue): BoardIssue {
     const user = issue.assigneeId ? this.users.find((item) => item.id === issue.assigneeId) : undefined;
     const avatar = issue.assigneeId ? this.avatars.get(issue.assigneeId) : undefined;
     return {
@@ -4441,18 +4601,10 @@ export class MockTaskaStore {
             avatarUrl: avatar && this.avatarObjects.has(avatar.objectKey) ? avatar.downloadUrl : null,
           }
         : null,
-      // By binding time, then `labelId` — the board's order (`IssueLabelsRepository`,
-      // backend TAS-392) — where the issue read names them by name.
-      labels: this.labelsByBinding(issue.id),
+      // By name, then id — the board's order since backend TAS-431, the same
+      // as the issue read's (`labelsForIssue`).
+      labels: this.labelsForIssue(issue.id),
     };
-  }
-
-  /** An issue's live labels in the order they were put on it, the id breaking a tie. */
-  private labelsByBinding(issueId: string): Label[] {
-    const boundAt = this.labelBoundAt[issueId] ?? {};
-    return this.labelsForIssue(issueId)
-      .sort((a, b) => byText(boundAt[a.id] ?? "", boundAt[b.id] ?? "") || byText(a.id, b.id))
-      .map(({ id, name, color }) => ({ id, name, color }));
   }
 
   /**
@@ -4600,7 +4752,29 @@ export class MockTaskaStore {
    */
   private historyView(event: IssueHistoryEvent): IssueHistoryEvent {
     const hasAccount = this.users.some((user) => user.id === event.actorUserId);
-    return { ...event, actor: hasAccount ? this.personSummary(event.actorUserId) : null };
+    return {
+      ...event,
+      actor: hasAccount ? this.personSummary(event.actorUserId) : null,
+      participants: this.historyParticipants(event.payload),
+    };
+  }
+
+  /**
+   * `IssueHistoryResponseDto.participants` (backend TAS-431): a profile for
+   * each id in the payload's server-owned fields — the ones
+   * `HistoryParticipants.ids` reads at `cbd3f0af` — by anybody with an account,
+   * a former member of the project included; an id nobody holds is left out
+   * and stays in the payload. Ids in free text are never read.
+   */
+  private historyParticipants(payload: IssueHistoryEvent["payload"]): Record<string, UserSummary> {
+    const ids = HISTORY_PARTICIPANT_FIELDS.map((field) => payload[field]);
+    const watchers = Array.isArray(payload.watcherIds) ? (payload.watcherIds as unknown[]) : [];
+    const named: Record<string, UserSummary> = {};
+    for (const id of [...ids, ...watchers]) {
+      if (typeof id !== "string" || !UUID_PATTERN.test(id) || Object.hasOwn(named, id)) continue;
+      if (this.users.some((user) => user.id === id)) named[id] = this.personSummary(id);
+    }
+    return named;
   }
 
   /**
@@ -4631,21 +4805,41 @@ export class MockTaskaStore {
     return this.issueView(issue);
   }
 
+  /**
+   * `POST /projects/{projectId}/issues`. A `statusKey` the contract's pattern
+   * refuses is the gateway's binding, before anything (400 "Invalid request
+   * parameters"); then the type key's pattern (`IssueMapper`, backend #226),
+   * the project, the registry in issue-service (`IssueServiceImpl`); then,
+   * when a status was named, the workflow of the type — its own or the shared
+   * default, as the server resolves it — must hold it (400
+   * `FAILED_PRECONDITION`, `details.reason` `STATUS_NOT_IN_WORKFLOW`, backend
+   * TAS-428). The issue starts in that status, `TODO` when none was named.
+   */
   createIssue(projectId: string, input: CreateIssueInput): Issue {
-    // The gateway's pattern check first (`IssueMapper`, backend #226), then the
-    // project, then the registry in issue-service (`IssueServiceImpl`).
+    if (input.statusKey !== undefined && !STATUS_KEY_PATTERN.test(input.statusKey)) {
+      throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
+    }
     if (!isIssueTypeCode(input.issueType)) throw new MockApiError("BAD_REQUEST", INVALID_ISSUE_TYPE_KEY_MESSAGE);
     const project = this.getProject(projectId);
     this.refuseArchivedWrite(projectId);
     if (!this.inRegistry(projectId, input.issueType)) {
       throw new MockApiError("INVALID_ARGUMENT", issueTypeNotDefinedMessage(input.issueType));
     }
+    const status = input.statusKey ?? "TODO";
+    if (
+      input.statusKey !== undefined &&
+      !this.workflowFor(projectId, input.issueType).statuses.some((item) => item.statusKey === input.statusKey)
+    ) {
+      throw new MockApiError("FAILED_PRECONDITION", INITIAL_STATUS_NOT_IN_WORKFLOW_MESSAGE, {
+        reason: STATUS_NOT_IN_WORKFLOW_REASON,
+      });
+    }
     requireListed(META.priorities, input.priority);
     requirePlanningFields(input);
     const planning = resolvePlanningFields(input, emptyPlanningFields());
     const issueNumber =
       Math.max(0, ...this.issues.filter((item) => item.projectId === projectId).map((item) => item.issueNumber)) + 1;
-    const issue: Issue = {
+    const issue: StoredIssue = {
       id: makeId("issue"),
       projectId,
       issueNumber,
@@ -4653,7 +4847,7 @@ export class MockTaskaStore {
       issueType: input.issueType,
       summary: input.summary.trim(),
       description: input.description.trim(),
-      status: "TODO",
+      status,
       priority: input.priority,
       assigneeId: null,
       reporterId: this.currentUserId,
@@ -4770,6 +4964,7 @@ export class MockTaskaStore {
       next.remainingEstimateMinutes !== issue.remainingEstimateMinutes;
     if (!fieldsChanged && !assigneeChanged) return this.writeAnswer(issue);
 
+    const previousAssigneeId = issue.assigneeId;
     Object.assign(issue, next, { updatedAt: now(), version: issue.version + 1 });
     if (fieldsChanged) {
       this.pushHistory(issue.id, changedPriority ? "PRIORITY" : "UPDATED", this.currentUserId, {
@@ -4778,7 +4973,11 @@ export class MockTaskaStore {
       });
     }
     if (assigneeChanged) {
-      this.pushHistory(issue.id, "ASSIGNED", this.currentUserId, { to: next.assigneeId });
+      // The server's payload names both ends by id (`createIssueAssignedPayload`).
+      this.pushHistory(issue.id, "ASSIGNED", this.currentUserId, {
+        previousAssigneeId,
+        assigneeId: next.assigneeId,
+      });
       if (next.assigneeId) {
         this.autoWatch(issue, next.assigneeId, this.currentUserId);
         this.notifications.unshift(
@@ -4789,10 +4988,13 @@ export class MockTaskaStore {
     return this.writeAnswer(issue);
   }
 
-  /** The issue as a write answers it: no `labels`, which the server's write answer never fills. */
-  private writeAnswer(issue: Issue): IssueWriteAnswer {
+  /**
+   * The issue as a write answers it: no `labels`, which the server's write
+   * answer never fills, and its `timeSpentMinutes`, which it does.
+   */
+  private writeAnswer(issue: StoredIssue): IssueWriteAnswer {
     const { labels: _labels, ...answer } = issue;
-    return { ...answer };
+    return { ...answer, timeSpentMinutes: this.timeSpentOn(issue.id) };
   }
 
   /**
@@ -4803,7 +5005,7 @@ export class MockTaskaStore {
    * "Assigning an issue subscribes the assignee, and creating one subscribes the
    * reporter; the contract does not say so, and the mock did neither".
    */
-  private autoWatch(issue: Issue, userId: string, actorId: string): void {
+  private autoWatch(issue: StoredIssue, userId: string, actorId: string): void {
     if (this.watchers.some((item) => item.issueId === issue.id && item.userId === userId)) return;
     this.watchers.push({
       id: makeId("watcher"),
@@ -4882,7 +5084,7 @@ export class MockTaskaStore {
    * own session would — the version and `updatedAt` move, and the history says
    * who did it.
    */
-  private changeMeanwhile(issue: Issue): void {
+  private changeMeanwhile(issue: StoredIssue): void {
     if (!this.changingMeanwhile.delete(issue.id)) return;
     const someoneElse =
       (this.membersByProject[issue.projectId] ?? []).find((member) => member.userId !== this.currentUserId)?.userId ??
@@ -5144,9 +5346,13 @@ export class MockTaskaStore {
    * parameters"); a code named twice (400 `INVALID_ARGUMENT`, before the role
    * — the gateway keeps a list, not a set, so the service sees the repeat);
    * the project, the role, the archive; then a set that is not exactly the
-   * registry's (400 `INVALID_ARGUMENT`), and nothing is written. Otherwise
-   * every type is renumbered 10, 20, 30… in the order given, and the answer is
-   * the whole registry in that order.
+   * registry's — a type added or deleted elsewhere since it was read — (409
+   * `ABORTED`, `details.reason` `ISSUE_TYPES_CHANGED`, backend TAS-429), and
+   * nothing is written. Otherwise every type is renumbered 10, 20, 30… in the
+   * order given, and the answer is the whole registry in that order.
+   *
+   * `MOCK_PROJECT_TRIGGERS.issueTypesChangedMeanwhile` in a type's name makes
+   * another admin add a type first, the stale case a reader alone cannot make.
    */
   reorderProjectIssueTypes(projectId: string, codes: unknown): ProjectIssueType[] {
     if (!Array.isArray(codes) || codes.length === 0 || !codes.every(isIssueTypeCode)) {
@@ -5156,15 +5362,36 @@ export class MockTaskaStore {
       throw new MockApiError("INVALID_ARGUMENT", ISSUE_TYPE_ORDER_REPEATS_MESSAGE);
     }
     this.requireIssueTypeAdmin(projectId);
+    this.addTypeMeanwhile(projectId);
     const registry = this.issueTypesByProject[projectId] ?? [];
     if (registry.length !== codes.length || !registry.every((type) => codes.includes(type.code))) {
-      throw new MockApiError("INVALID_ARGUMENT", ISSUE_TYPE_ORDER_STALE_MESSAGE);
+      throw new MockApiError("ABORTED", ISSUE_TYPES_CHANGED_MESSAGE, { reason: ISSUE_TYPES_CHANGED_REASON });
     }
     codes.forEach((code, index) => {
       const entry = registry.find((type) => type.code === code);
       if (entry) entry.sortOrder = (index + 1) * 10;
     });
     return this.registryOf(projectId).map((type) => ({ ...type }));
+  }
+
+  /**
+   * `MOCK_PROJECT_TRIGGERS.issueTypesChangedMeanwhile`, carried out: while a
+   * type of the project carries the trigger in its name, another admin adds
+   * «Added elsewhere» (`ADDED_ELSEWHERE`) last, once — as a create from their
+   * own session would, a moment before the reader's move.
+   */
+  private addTypeMeanwhile(projectId: string): void {
+    const registry = (this.issueTypesByProject[projectId] ??= []);
+    if (!registry.some((type) => type.name.includes(MOCK_PROJECT_TRIGGERS.issueTypesChangedMeanwhile))) return;
+    if (registry.some((type) => type.code === TYPE_ADDED_ELSEWHERE)) return;
+    registry.push({
+      code: TYPE_ADDED_ELSEWHERE,
+      name: "Added elsewhere",
+      color: "slate",
+      shape: "square",
+      icon: null,
+      sortOrder: registry.reduce((largest, type) => Math.max(largest, type.sortOrder), 0) + 10,
+    });
   }
 
   listIssueLabels(projectId: string, issueId: string): Label[] {
@@ -5181,7 +5408,6 @@ export class MockTaskaStore {
       throw new MockApiError("ALREADY_EXISTS", `${issue.issueKey} already carries "${label.name}"`);
     }
     attached.push(label.id);
-    (this.labelBoundAt[issue.id] ??= {})[label.id] = now();
     // "UPDATED" rather than a LABEL_ADDED of our own invention: the gateway's
     // history DTO types `eventType` as a bare string with no enum, so this
     // build has no value to claim. The panel prints "updated this issue".
@@ -5196,7 +5422,6 @@ export class MockTaskaStore {
       throw new MockApiError("NOT_FOUND", "This issue does not carry that label");
     }
     this.labelIdsByIssue[issue.id] = attached.filter((id) => id !== labelId);
-    delete this.labelBoundAt[issue.id]?.[labelId];
     this.pushHistory(issue.id, "UPDATED", this.currentUserId, { field: "labels" });
   }
 
@@ -7489,9 +7714,25 @@ export class MockTaskaStore {
     };
   }
 
-  /** The issue as a reader sees it: the stored record plus its current labels. */
-  private issueView(issue: Issue): Issue {
-    return { ...issue, labels: this.labelsForIssue(issue.id) };
+  /**
+   * The issue as a reader sees it: the stored record plus its current labels
+   * and the minutes logged on it.
+   */
+  private issueView(issue: StoredIssue): Issue {
+    return { ...issue, labels: this.labelsForIssue(issue.id), timeSpentMinutes: this.timeSpentOn(issue.id) };
+  }
+
+  /**
+   * `timeSpentMinutes` (backend TAS-431): every live worklog minute of the
+   * issue. issue-service keeps it as a column it moves with each worklog add,
+   * edit and delete (`Issue.addWorklogMinutes` and its two siblings), so on the
+   * server too it is the sum of the live entries; here it is summed when an
+   * answer is built, whatever page of the work log anybody has read.
+   */
+  private timeSpentOn(issueId: string): number {
+    return this.worklogs
+      .filter((item) => item.issueId === issueId && item.deletedAt === null)
+      .reduce((total, item) => total + item.spentMinutes, 0);
   }
 
   /**
@@ -7501,7 +7742,7 @@ export class MockTaskaStore {
    * the gateway would not have sent. That narrowness is the whole reason
    * `IssueSearchHit` exists.
    */
-  private searchHit(issue: Issue): IssueSearchHit {
+  private searchHit(issue: StoredIssue): IssueSearchHit {
     // Backend TAS-418, TAS-432: the type's look from the issue's project
     // registry as it stands now; a type deleted from it since leaves all four
     // `null`, a type without an icon the icon alone.
@@ -7582,7 +7823,7 @@ export class MockTaskaStore {
     return value;
   }
 
-  private findIssue(projectId: string, issueId: string): Issue {
+  private findIssue(projectId: string, issueId: string): StoredIssue {
     const issue = this.issues.find((item) => item.projectId === projectId && item.id === issueId && item.deletedAt === null);
     if (!issue) {
       throw new MockApiError("NOT_FOUND", "Issue not found");
@@ -7769,7 +8010,7 @@ export class MockTaskaStore {
    * A worklog of this issue, in the server's two sentences: one that does not
    * exist, and one that belongs to another issue — both `404`.
    */
-  private worklogOfIssue(issue: Issue, worklogId: string): StoredWorklog {
+  private worklogOfIssue(issue: StoredIssue, worklogId: string): StoredWorklog {
     const worklog = this.worklogs.find((item) => item.id === worklogId && item.deletedAt === null);
     if (!worklog) throw new MockApiError("NOT_FOUND", `Worklog with id: ${worklogId} not found`);
     if (worklog.issueId !== issue.id) throw new MockApiError("NOT_FOUND", "Issue doesnt belongs to worklog");
@@ -7777,13 +8018,13 @@ export class MockTaskaStore {
   }
 
   /** `Issue.touch()`: what every worklog write does to the issue whatever else it changes. */
-  private touchIssue(issue: Issue): void {
+  private touchIssue(issue: StoredIssue): void {
     issue.updatedAt = now();
     issue.version += 1;
   }
 
   private worklog(
-    issue: Issue,
+    issue: StoredIssue,
     authorUserId: string,
     spentMinutes: number,
     workDate: string,
@@ -7844,7 +8085,7 @@ export class MockTaskaStore {
     return trimmed;
   }
 
-  private comment(issue: Issue, authorUserId: string, body: string, createdAt: string, via?: ActionVia): StoredIssueComment {
+  private comment(issue: StoredIssue, authorUserId: string, body: string, createdAt: string, via?: ActionVia): StoredIssueComment {
     const comment: StoredIssueComment = {
       id: makeId("comment"),
       issueId: issue.id,
@@ -8058,6 +8299,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async getBoard(projectId: string, params?: BoardParams): Promise<Board> {
     return wait(this.store.getBoard(projectId, params));
+  }
+
+  async getBoardColumnPage(projectId: string, statusKey: string, params?: BoardColumnPageParams): Promise<BoardColumnPage> {
+    return wait(this.store.getBoardColumnPage(projectId, statusKey, params));
   }
 
   async getProjectStats(): Promise<ProjectStats[]> {

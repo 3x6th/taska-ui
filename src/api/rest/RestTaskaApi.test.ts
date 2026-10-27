@@ -2846,6 +2846,110 @@ describe("RestTaskaApi board", () => {
       unplacedHasMore: null,
     });
   });
+
+  // Backend TAS-430: a column's next page — the cursor, the board's filters,
+  // `includeDone` only when true, `query` as given, the page size.
+  it("asks for a column's page after the cursor, with the board's filters and the page size", async () => {
+    const fetchStub = stubFetch({ statusKey: "IN_REVIEW", issues: [], totalCount: 0, hasMore: false });
+
+    await new RestTaskaApi().getBoardColumnPage("project-1", "IN_REVIEW", {
+      afterCreatedAt: "2026-10-20T09:00:00Z",
+      afterId: "7a1b2c3d-0000-4000-8000-000000000101",
+      issueType: "EPIC",
+      assigneeId: "275417fd-2b3c-4a1d-9f60-1c2d3e4f5a6b",
+      labelId: "760798da-9e59-4c54-aaac-4c93de82e68a",
+      includeDone: true,
+      priority: "HIGH",
+      query: "Board",
+      pageSize: 200,
+    });
+
+    const url = new URL(String(fetchStub.mock.calls[0][0]), "http://localhost");
+    expect(url.pathname).toBe("/api/v1/projects/project-1/board/columns/IN_REVIEW/issues");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      afterCreatedAt: "2026-10-20T09:00:00Z",
+      afterId: "7a1b2c3d-0000-4000-8000-000000000101",
+      issueType: "EPIC",
+      assigneeId: "275417fd-2b3c-4a1d-9f60-1c2d3e4f5a6b",
+      labelId: "760798da-9e59-4c54-aaac-4c93de82e68a",
+      includeDone: "true",
+      priority: "HIGH",
+      query: "Board",
+      pageSize: "200",
+    });
+    expect(fetchStub.mock.calls[0][1]).toMatchObject({ method: "GET" });
+
+    // Nothing stated: the first page, nothing on the URL; a key is a path segment.
+    vi.unstubAllGlobals();
+    const second = stubFetch({ statusKey: "A B", issues: [], totalCount: 0, hasMore: false });
+    await new RestTaskaApi().getBoardColumnPage("project-1", "A B", { includeDone: false });
+    expect(second.mock.calls[0][0]).toBe("/api/v1/projects/project-1/board/columns/A%20B/issues");
+  });
+
+  it("maps a column's page as the board maps a column: its cards, and its counts read defensively", async () => {
+    const card = {
+      id: "issue-201",
+      issueKey: "OPS-201",
+      summary: "Weekly backup check",
+      issueType: "TASK",
+      priority: "LOW",
+      statusKey: "DONE",
+      createdAt: "2026-10-20T09:00:00Z",
+      updatedAt: "2026-10-21T09:00:00Z",
+      version: 2,
+      assignee: { id: "u-1", displayName: "  ", avatarUrl: "" },
+      labels: [{ id: "l-1", name: "ops", color: "#123456" }, { name: "no id" }],
+    };
+    stubFetch({ statusKey: "DONE", issues: [card], totalCount: 205, hasMore: false });
+
+    await expect(new RestTaskaApi().getBoardColumnPage("project-1", "DONE")).resolves.toEqual({
+      statusKey: "DONE",
+      issues: [
+        {
+          id: "issue-201",
+          issueKey: "OPS-201",
+          summary: "Weekly backup check",
+          issueType: "TASK",
+          priority: "LOW",
+          statusKey: "DONE",
+          description: null,
+          createdAt: "2026-10-20T09:00:00Z",
+          updatedAt: "2026-10-21T09:00:00Z",
+          version: 2,
+          assignee: { id: "u-1", displayName: null, avatarUrl: null },
+          labels: [{ id: "l-1", name: "ops", color: "#123456" }],
+        },
+      ],
+      totalCount: 205,
+      hasMore: false,
+    });
+
+    // An unreadable count is unknown, and the column asked about stands in for
+    // an answer that names none.
+    vi.unstubAllGlobals();
+    stubFetch({ issues: [card], totalCount: "205" });
+    await expect(new RestTaskaApi().getBoardColumnPage("project-1", "DONE")).resolves.toMatchObject({
+      statusKey: "DONE",
+      totalCount: null,
+      hasMore: null,
+    });
+    // `hasMore` is never worked out from the count: it counts the whole column,
+    // so 3 against a page of none says nothing about what follows this page.
+    vi.unstubAllGlobals();
+    stubFetch({ statusKey: "DONE", totalCount: 3 });
+    await expect(new RestTaskaApi().getBoardColumnPage("project-1", "DONE")).resolves.toEqual({
+      statusKey: "DONE",
+      issues: [],
+      totalCount: 3,
+      hasMore: null,
+    });
+    vi.unstubAllGlobals();
+    stubFetch({ statusKey: "DONE", issues: [card], totalCount: 205, hasMore: "yes" });
+    await expect(new RestTaskaApi().getBoardColumnPage("project-1", "DONE")).resolves.toMatchObject({
+      totalCount: 205,
+      hasMore: null,
+    });
+  });
 });
 
 /**
@@ -3790,6 +3894,84 @@ describe("RestTaskaApi issue planning fields", () => {
       storyPoints: 2.5,
       startDate: "2026-09-01",
     });
+  });
+
+  // Backend TAS-428: the column's status goes on the create; "New" sends none.
+  it("puts statusKey on a create only when one is stated", async () => {
+    const fetchStub = stubFetch(() => storedIssue().issue, 201);
+
+    await new RestTaskaApi().createIssue("project-1", {
+      issueType: "EPIC",
+      statusKey: "IN_REVIEW",
+      summary: "From the column",
+      description: "",
+      priority: "MEDIUM",
+    });
+    await new RestTaskaApi().createIssue("project-1", { issueType: "TASK", summary: "From New", description: "", priority: "LOW" });
+
+    expect(JSON.parse(fetchStub.mock.calls[0][1]?.body ?? "{}")).toEqual({
+      issueType: "EPIC",
+      statusKey: "IN_REVIEW",
+      summary: "From the column",
+      description: "",
+      priority: "MEDIUM",
+    });
+    expect(JSON.parse(fetchStub.mock.calls[1][1]?.body ?? "{}")).not.toHaveProperty("statusKey");
+  });
+
+  // Backend TAS-431: the issue's own total, on every issue answer, read as a
+  // whole number of minutes >= 0 or nothing.
+  it("reads timeSpentMinutes off the issue as whole minutes, and anything else as null", async () => {
+    for (const [wire, read] of [
+      [3150, 3150],
+      [0, 0],
+      [undefined, null],
+      [null, null],
+      [-5, null],
+      [1.5, null],
+      ["90", null],
+    ] as const) {
+      vi.unstubAllGlobals();
+      stubFetch(() => storedIssue(wire === undefined ? {} : { timeSpentMinutes: wire }));
+      const { issue } = await new RestTaskaApi().getIssue("project-1", "issue-1");
+      expect(issue.timeSpentMinutes, String(wire)).toBe(read);
+    }
+    vi.unstubAllGlobals();
+    stubFetch(() => ({ ...storedIssue().issue, timeSpentMinutes: 45 }));
+    await expect(new RestTaskaApi().getIssueByKey("TAS-101")).resolves.toMatchObject({ timeSpentMinutes: 45 });
+  });
+
+  // Backend TAS-431: the people a history event's payload names, by id —
+  // each summary read like `actor`, anything that is not one left out.
+  it("reads a history event's participants by id, and none when the field is absent or not a map", async () => {
+    stubFetch(() => ({
+      ...storedIssue(),
+      history: [
+        {
+          id: "h-1",
+          eventType: "ASSIGNED",
+          actorUserId: "user-anna",
+          occurredAt: "2026-06-12T09:12:00Z",
+          payload: { previousAssigneeId: null, assigneeId: "user-vera" },
+          participants: {
+            "user-vera": { id: "user-vera", displayName: "Vera Former", avatarUrl: "" },
+            "user-blank": { displayName: " " },
+            "user-broken": "not a summary",
+          },
+        },
+        { id: "h-2", eventType: "CREATED", actorUserId: "user-anna", occurredAt: "2026-06-12T09:10:00Z", payload: {} },
+        { id: "h-3", eventType: "CREATED", actorUserId: "user-anna", occurredAt: "2026-06-12T09:10:00Z", payload: {}, participants: [] },
+      ],
+    }));
+
+    const { history } = await new RestTaskaApi().getIssue("project-1", "issue-1");
+
+    expect(history[0].participants).toEqual({
+      "user-vera": { id: "user-vera", displayName: "Vera Former", avatarUrl: null },
+      "user-blank": { id: "user-blank", displayName: null, avatarUrl: null },
+    });
+    expect(history[1].participants).toEqual({});
+    expect(history[2].participants).toEqual({});
   });
 
   it("refuses a create the gateway would refuse, without spending the request", async () => {

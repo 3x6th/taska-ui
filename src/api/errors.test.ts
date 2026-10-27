@@ -319,6 +319,7 @@ describe("IssueVersionConflictError", () => {
     dueDate: null,
     originalEstimateMinutes: null,
     remainingEstimateMinutes: null,
+    timeSpentMinutes: null,
   };
   // Both implementations throw this one class; REST hands it the gateway's
   // request id, the mock has none to hand. Nothing else may differ.

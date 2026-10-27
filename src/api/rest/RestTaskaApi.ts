@@ -3,6 +3,7 @@ import type {
   AddIssueWorklogInput,
   AuthTokens,
   CreateAccessTokenInput,
+  BoardColumnPageParams,
   BoardParams,
   ConfirmAttachmentUploadInput,
   ConfirmAvatarUploadInput,
@@ -101,6 +102,7 @@ import type {
   AttachmentUploadTicket,
   AvatarUploadTicket,
   Board,
+  BoardColumnPage,
   BoardIssue,
   DateOnly,
   DictionaryEntry,
@@ -414,6 +416,7 @@ type RestIssue = Omit<
   | "dueDate"
   | "originalEstimateMinutes"
   | "remainingEstimateMinutes"
+  | "timeSpentMinutes"
 > & {
   assigneeId?: string | null;
   deletedAt?: string | null;
@@ -443,6 +446,10 @@ type RestIssue = Omit<
   dueDate?: DateOnly | null;
   originalEstimateMinutes?: number | null;
   remainingEstimateMinutes?: number | null;
+  // Backend TAS-431: the issue's active logged minutes, on every issue answer
+  // (the gateway writes the column, `0` when it is unset). Read defensively —
+  // `toIssue` keeps only a whole number `>= 0`.
+  timeSpentMinutes?: unknown;
 };
 
 /**
@@ -477,9 +484,14 @@ interface RestListIssueLabelsResponse {
 /**
  * `IssueHistoryResponseDto` without `via`: the channel mark (TAS-411) is not on
  * the wire, and a wire type that declared it would say it is. `actor` is a
- * nullable `UserSummaryDto` (backend TAS-398), read field by field.
+ * nullable `UserSummaryDto` (backend TAS-398), read field by field, and so is
+ * every entry of `participants` (backend TAS-431), a map of `UserSummaryDto`
+ * by id.
  */
-type RestIssueHistoryEvent = Omit<IssueHistoryEvent, "issueId" | "via" | "actor"> & { actor?: unknown };
+type RestIssueHistoryEvent = Omit<IssueHistoryEvent, "issueId" | "via" | "actor" | "participants"> & {
+  actor?: unknown;
+  participants?: unknown;
+};
 
 interface RestIssueWithHistory {
   issue: RestIssue;
@@ -658,6 +670,18 @@ interface RestBoardResponse {
   unplacedIssues?: RestBoardIssue[];
   unplacedTotalCount?: unknown;
   unplacedHasMore?: unknown;
+}
+
+/**
+ * `BoardColumnPageResponseDto` (backend TAS-430). All four properties are
+ * required by the schema; `issues` is still read with `?? []` and the counts
+ * defensively, as on the board.
+ */
+interface RestBoardColumnPage {
+  statusKey?: unknown;
+  issues?: RestBoardIssue[];
+  totalCount?: unknown;
+  hasMore?: unknown;
 }
 
 /**
@@ -1531,6 +1555,40 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
+   * `GET /projects/{projectId}/board/columns/{statusKey}/issues` (backend
+   * TAS-430). The cursor first, then the filters by the board read's own rule —
+   * each only when it says something, `includeDone` only when `true`, `query`
+   * as given — then the page size. Half a cursor is sent as given: refusing it
+   * is the server's, in its words.
+   */
+  async getBoardColumnPage(projectId: string, statusKey: string, params: BoardColumnPageParams = {}): Promise<BoardColumnPage> {
+    const search = new URLSearchParams();
+    if (params.afterCreatedAt !== undefined) search.set("afterCreatedAt", params.afterCreatedAt);
+    if (params.afterId !== undefined) search.set("afterId", params.afterId);
+    if (params.issueType) search.set("issueType", params.issueType);
+    if (params.assigneeId) search.set("assigneeId", params.assigneeId);
+    if (params.labelId) search.set("labelId", params.labelId);
+    if (params.includeDone) search.set("includeDone", "true");
+    if (params.priority) search.set("priority", params.priority);
+    if (params.query !== undefined) search.set("query", params.query);
+    if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
+    const response = await this.request<RestBoardColumnPage>(
+      `/projects/${this.segment(projectId)}/board/columns/${this.segment(statusKey)}/issues${this.query(search)}`,
+    );
+    const issues = (response.issues ?? []).map((issue) => this.toBoardIssue(issue));
+    return {
+      // The column asked about, when the answer does not name one.
+      statusKey: typeof response.statusKey === "string" && response.statusKey !== "" ? response.statusKey : statusKey,
+      issues,
+      // The count as a column's. `hasMore` only as the server states it: the
+      // count is the whole column's, not this page's, so the page's length
+      // says nothing about what lies past it (api-contract-guard, TAS-438).
+      totalCount: boardCounts(response.totalCount, null, issues.length).totalCount,
+      hasMore: typeof response.hasMore === "boolean" ? response.hasMore : null,
+    };
+  }
+
+  /**
    * `GET /project-stats` (backend TAS-211). `items ?? []` like every other
    * collection read here; members through `toProjectMember`, the mapper the
    * member list uses, and **in the server's order** — the first five by
@@ -1618,7 +1676,8 @@ export class RestTaskaApi implements TaskaApi {
    * The body is built key by key rather than by passing `input` through: the
    * five planning fields have to be omitted when they are not set, and a
    * create has nothing to resolve them against, so `null` and `undefined`
-   * collapse to the same omission here.
+   * collapse to the same omission here. `statusKey` goes only when stated
+   * (backend TAS-428): without it the server creates in `TODO`.
    */
   async createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
     refusePlanningFields(input);
@@ -1626,6 +1685,7 @@ export class RestTaskaApi implements TaskaApi {
       method: "POST",
       body: {
         issueType: input.issueType,
+        ...(input.statusKey !== undefined ? { statusKey: input.statusKey } : {}),
         summary: input.summary,
         description: input.description,
         priority: input.priority,
@@ -2924,6 +2984,7 @@ export class RestTaskaApi implements TaskaApi {
       dueDate: issue.dueDate ?? null,
       originalEstimateMinutes: issue.originalEstimateMinutes ?? null,
       remainingEstimateMinutes: issue.remainingEstimateMinutes ?? null,
+      timeSpentMinutes: wholeMinutes(issue.timeSpentMinutes),
     };
   }
 
@@ -3091,10 +3152,14 @@ export class RestTaskaApi implements TaskaApi {
     };
     return {
       issue,
-      history: (response.history ?? []).map((event) => ({
+      history: (response.history ?? []).map(({ participants, ...event }) => ({
         ...event,
         issueId,
         actor: toNullableUserSummary(event.actor, event.actorUserId),
+        // Backend TAS-431: who the payload names, by id. Each entry read like
+        // `actor`; one that names nobody is left out, as the server leaves out
+        // an id it found no profile for.
+        participants: toParticipants(participants),
         // No channel mark from this gateway: TAS-411 has not said what the
         // field is called or what it holds, so whatever a key of that name
         // might carry is not read (docs/ai/API-DIVERGENCE.md, "TAS-412").
@@ -3736,6 +3801,32 @@ function toUserSummary(summary: RestUserSummary, fallbackId: string | null): Use
     displayName: summary.displayName?.trim() ? summary.displayName : null,
     avatarUrl: summary.avatarUrl || null,
   };
+}
+
+/**
+ * `timeSpentMinutes` (backend TAS-431): a whole number of minutes `>= 0`, or
+ * `null` — the total is drawn from nothing else (DESIGN.md §4.24).
+ */
+function wholeMinutes(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * `IssueHistoryResponseDto.participants` (backend TAS-431) — `UserSummaryDto`
+ * by the id the payload names. Not an object is no names; each entry through
+ * `toNullableUserSummary` with its key as the id it falls back to, and an entry
+ * that is not an object is dropped, as the server leaves out an id it found no
+ * profile for. A blank name stays `null`, and `personFor` then asks the member
+ * list.
+ */
+function toParticipants(value: unknown): Record<string, UserSummary> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const named: Record<string, UserSummary> = {};
+  for (const [id, wire] of Object.entries(value as Record<string, unknown>)) {
+    const summary = toNullableUserSummary(wire, id);
+    if (summary) named[id] = summary;
+  }
+  return named;
 }
 
 /** A column's (or the unplaced bucket's) `totalCount` and `hasMore`, read as `Board` states them. */

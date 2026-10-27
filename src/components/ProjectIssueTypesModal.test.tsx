@@ -150,20 +150,57 @@ describe("moving a type", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Move Bug up" }));
     await waitFor(() => expect(names(dialog)).toEqual(["Task", "Bug", "Story"]));
 
-    // The registry changed elsewhere: the stale set's refusal, no reason.
+    // Any refusal but the stale registry's: the general sentence, the
+    // server's words and the request id.
     const reads = api.getProjectContext.mock.calls.length;
-    await act(async () =>
-      first.reject(refusal("INVALID_ARGUMENT", "codes must contain every current issue type exactly once")),
-    );
+    await act(async () => first.reject(refusal("INVALID_ARGUMENT", "codes must be a complete permutation without duplicates")));
 
     expect(
       await within(dialog).findByText("The new order was not saved. The list now shows the saved order."),
     ).toBeVisible();
-    expect(within(dialog).getByText("codes must contain every current issue type exactly once")).toBeVisible();
+    expect(within(dialog).getByText("codes must be a complete permutation without duplicates")).toBeVisible();
+    expect(within(dialog).getByText("rid-1")).toBeInTheDocument();
     expect(api.getProjectContext.mock.calls.length).toBe(reads + 1);
     // The queued press was never sent, and the list is the server's again.
     expect(api.reorderProjectIssueTypes).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(names(dialog)).toEqual(["Task", "Bug", "Story"]));
+  });
+
+  // Backend TAS-429 (§4.30): a type added or deleted elsewhere makes the set
+  // stale — 409 `ABORTED`, `details.reason` `ISSUE_TYPES_CHANGED`. Its own
+  // sentence, the request id without the server's words, and the current
+  // registry read again.
+  it("says the types changed elsewhere on ISSUE_TYPES_CHANGED, with the request id, and draws the current types", async () => {
+    const first = held<ProjectIssueType[]>();
+    api.reorderProjectIssueTypes.mockReturnValueOnce(first.promise);
+    const dialog = renderDialog();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move Bug down" }));
+    await waitFor(() => expect(names(dialog)).toEqual(["Task", "Story", "Bug"]));
+
+    saved = [...seeded(), epic()];
+    const reads = api.getProjectContext.mock.calls.length;
+    await act(async () =>
+      first.reject(
+        Object.assign(new Error("Issue type registry changed; reload the current types before reordering"), {
+          code: "ABORTED",
+          status: 409,
+          details: { reason: "ISSUE_TYPES_CHANGED" },
+          requestId: "rid-429",
+        }),
+      ),
+    );
+
+    expect(
+      await within(dialog).findByText(
+        "Issue types changed elsewhere, so the new order was not saved. The list now shows the current types.",
+      ),
+    ).toBeVisible();
+    expect(within(dialog).getByText("rid-429")).toBeInTheDocument();
+    expect(within(dialog).queryByText(/reload the current types/)).toBeNull();
+    expect(within(dialog).queryByText("The new order was not saved. The list now shows the saved order.")).toBeNull();
+    expect(api.getProjectContext.mock.calls.length).toBe(reads + 1);
+    await waitFor(() => expect(names(dialog)).toEqual(["Task", "Bug", "Story", "Epic"]));
   });
 });
 

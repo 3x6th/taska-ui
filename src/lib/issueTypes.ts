@@ -3,6 +3,7 @@ import {
   ISSUE_TYPE_CODE_MAX_LENGTH,
   ISSUE_TYPE_COLORS,
   ISSUE_TYPE_IN_USE_REASON,
+  ISSUE_TYPES_CHANGED_REASON,
   LAST_ISSUE_TYPE_REASON,
 } from "../api/issueTypes";
 import type { IssueTypeColor, ProjectIssueType } from "../domain/types";
@@ -96,4 +97,27 @@ export function issueTypeDeleteRefusalText(error: unknown, name: string): string
     return `${name} was not deleted: a project needs at least one issue type.`;
   }
   return `${name} was not deleted.`;
+}
+
+/** The dialog's sentence for any refused move (§4.30); the server's words and the request id go under it. */
+export const ISSUE_TYPE_ORDER_REFUSED_SENTENCE = "The new order was not saved. The list now shows the saved order.";
+/** The sentence for a move refused because the registry changed elsewhere (§4.30, backend TAS-429). */
+export const ISSUE_TYPES_CHANGED_SENTENCE =
+  "Issue types changed elsewhere, so the new order was not saved. The list now shows the current types.";
+
+/**
+ * What the dialog says when a move is refused (§4.30): 409 `ABORTED` with
+ * `details.reason` `ISSUE_TYPES_CHANGED` — a type added or deleted elsewhere
+ * since the registry was read (backend TAS-429) — has its own sentence and
+ * only the request id under it, since the server's words would only repeat it;
+ * any other refusal the general sentence, with the server's words and the id.
+ * Branched on the code **and** the reason, never on the prose: an `ABORTED`
+ * without the reason, or the reason on another code, is any other refusal.
+ * Either way the caller reads the context again.
+ */
+export function issueTypeOrderRefusal(error: unknown): { sentence: string; serverWords: boolean } {
+  const { code, details } = apiErrorFacts(error);
+  return code === "ABORTED" && details?.reason === ISSUE_TYPES_CHANGED_REASON
+    ? { sentence: ISSUE_TYPES_CHANGED_SENTENCE, serverWords: false }
+    : { sentence: ISSUE_TYPE_ORDER_REFUSED_SENTENCE, serverWords: true };
 }

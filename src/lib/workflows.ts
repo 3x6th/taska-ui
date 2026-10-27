@@ -21,7 +21,11 @@ import { statusLabel } from "./format";
  * (backend PR #225 refuses a `sortOrder` another row holds).
  */
 
-/** The status issue-service creates every issue in, which the server never lets a workflow delete. */
+/**
+ * The status issue-service creates an issue in when the create names none —
+ * "New" (backend TAS-428: a column's "+" names its own) — and which the server
+ * never lets a workflow delete.
+ */
 export const INITIAL_STATUS_KEY = "TODO";
 
 /** The three categories this build can rank, in board order (§4.28 "Position"). */
@@ -436,21 +440,16 @@ export function namedStatusKeys(details: ErrorDetails | null): string[] {
 
 /**
  * The statuses whose issues a workflow delete has to map, after the server
- * refused it for issues: the keys `details.statusKeys` names. Those that are
- * statuses of `own` can be mapped; the rest cannot be from here (a mapping's
- * source must be a status of the workflow being deleted). Without the keys
+ * refused it for issues: the statuses of `own` that `details.statusKeys`
+ * names, in its column order. Since backend TAS-429 (A12) the delete moves
+ * only the workflow's own statuses and the keys a mapping names, so every key
+ * the refusal names is one of `own`'s; a key that is not would be a status
+ * nothing here can map, and is left out rather than offered. Without the keys
  * there is nothing to map, and the refusal is said as one.
  */
-export function statusesToMap(
-  own: WorkflowDefinition,
-  details: ErrorDetails | null,
-): { mappable: WorkflowStatus[]; unmappable: string[] } {
-  const ordered = statusesInColumnOrder(own.statuses);
+export function statusesToMap(own: WorkflowDefinition, details: ErrorDetails | null): WorkflowStatus[] {
   const keys = namedStatusKeys(details);
-  return {
-    mappable: ordered.filter((status) => keys.includes(status.statusKey)),
-    unmappable: keys.filter((key) => !ordered.some((status) => status.statusKey === key)),
-  };
+  return statusesInColumnOrder(own.statuses).filter((status) => keys.includes(status.statusKey));
 }
 
 /** `details.reason` of a delete refused for the issues it would leave behind (backend TAS-427). */

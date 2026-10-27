@@ -94,11 +94,6 @@ export function drawnWorklogs(pages: readonly IssueWorklogPage[]): IssueWorklog[
   return sorted.filter((item) => compareWorklogs(item, cutoff) <= 0);
 }
 
-/** Whether every entry has been read: the last page said `hasMore: false` in so many words. */
-export function worklogsComplete(pages: readonly IssueWorklogPage[]): boolean {
-  return pages.at(-1)?.hasMore === false;
-}
-
 /** The pill's number: the first page's `totalCount`, or `null` when the server did not state one. */
 export function worklogsTotalCount(pages: readonly IssueWorklogPage[]): number | null {
   return pages[0]?.totalCount ?? null;
@@ -144,12 +139,14 @@ export function withWriteAnswer(current: IssueWorklog, saved: IssueWorklog): Iss
 }
 
 /**
- * The minutes the listed entries add up to. A client sum, because no route
- * states the issue's total: issue-service keeps one (`time_spent_minutes`) and
- * the gateway does not send it.
+ * The work log's total, «Xh Ym logged» (DESIGN.md §4.24): the issue's own
+ * `timeSpentMinutes` (backend TAS-431), never a sum of the pages read, so it
+ * stands however few entries are loaded. `null` — no total drawn — when the
+ * issue did not state one, and when it states none logged: an issue with no
+ * work says so in the list ("No work logged yet"), not with "0m logged".
  */
-export function totalSpentMinutes(worklogs: readonly IssueWorklog[]): number {
-  return worklogs.reduce((total, worklog) => total + worklog.spentMinutes, 0);
+export function worklogTotalText(timeSpentMinutes: number | null): string | null {
+  return timeSpentMinutes !== null && timeSpentMinutes > 0 ? `${formatDuration(timeSpentMinutes)} logged` : null;
 }
 
 /**

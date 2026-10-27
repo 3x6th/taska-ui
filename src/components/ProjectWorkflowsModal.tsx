@@ -870,11 +870,13 @@ function WorkflowCard({
       )}
       {statuses.length && !hasTodo ? (
         // A fact about the data, so `--fg` rather than meta (§4.28):
-        // issue-service creates every issue in `TODO` whatever its workflow.
+        // issue-service creates an issue named no status in `TODO` whatever
+        // its workflow — "New" — while a column's "+" names its own (backend
+        // TAS-428).
         <p className="workflow-fact">
-          {`New issues always start in TODO, which this workflow does not have, so new ${
+          {`Issues created with New start in TODO, which this workflow does not have, so they land outside their workflow on the board. Create ${
             issueTypes.length ? `${andList(issueTypes.map((code) => issueTypeInSentence(code, registry)))} ` : ""
-          }issues will land outside their workflow on the board.`}
+          }issues with + on one of its columns.`}
         </p>
       ) : null}
       {editable ? (
@@ -1543,17 +1545,6 @@ function TargetSelect({
 }
 
 /**
- * "{KEY} is not a status of {workflow}, so its issues cannot be moved from
- * here." — issues a refusal names in `details.statusKeys` that sit in a status
- * the workflow does not have: no target of a delete reaches them, so the strip
- * that says this offers no answer.
- */
-const strandedSentence = (keys: readonly string[], workflowName: string) =>
-  `${andList(keys)} ${keys.length === 1 ? "is not a status" : "are not statuses"} of ${workflowName}, so ${
-    keys.length === 1 ? "its" : "their"
-  } issues cannot be moved from here.`;
-
-/**
  * The terminal sentence of a delete refused by the migration limit (backend
  * TAS-427: 400 `FAILED_PRECONDITION`, `details.reason`
  * `WORKFLOW_MIGRATION_LIMIT`, `details.limit`): no mapping helps and trying
@@ -1668,8 +1659,9 @@ function DeleteStatusStrip({
  * also has — the server moves issues only to one of **both**, backend
  * TAS-427). The strip then asks, per named status of this workflow, which of
  * those targets its issues go to — or says there is none, and offers no
- * answer. A named status this workflow does not have cannot be a mapping's
- * source, and is said as such (the workflow delete still counts them, A12). A
+ * answer. Since backend TAS-429 (A12) the delete moves only this workflow's
+ * own statuses, so every status the refusal names is one of them; issues in a
+ * status outside both workflows stay where they are and do not stop it. A
  * delete over the migration limit is a dead end, said once.
  */
 function DeleteWorkflowStrip({
@@ -1694,10 +1686,10 @@ function DeleteWorkflowStrip({
 }) {
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const limited = refusal ? isMigrationLimitRefusal(refusal) : false;
-  const toMap = refusal && !limited ? statusesToMap(workflow, apiErrorFacts(refusal).details) : null;
-  // A refusal that names no status to map is not one a mapping answers: it is
-  // said as a refusal, and the question stays as it was.
-  const step = toMap && (toMap.mappable.length > 0 || toMap.unmappable.length > 0) ? toMap : null;
+  const toMap = refusal && !limited ? statusesToMap(workflow, apiErrorFacts(refusal).details) : [];
+  // A refusal that names no status of this workflow is not one a mapping
+  // answers: it is said as a refusal, and the question stays as it was.
+  const step = toMap.length > 0 ? toMap : null;
   // The targets are the server's, labelled from this workflow's statuses and
   // drawn in its column order.
   const named = refusal && !limited ? targetStatusKeysOf(refusal) : [];
@@ -1705,12 +1697,12 @@ function DeleteWorkflowStrip({
     .filter((status) => named.includes(status.statusKey))
     .map((status) => ({ key: status.statusKey, label: statusLabel(status.statusKey, workflow.statuses) }));
   const chosen = (key: string) => (targets.some((target) => target.key === mapping[key]) ? mapping[key] : "");
-  const sent = step ? Object.fromEntries(step.mappable.map((status) => [status.statusKey, chosen(status.statusKey)])) : {};
-  const blocked = step ? step.mappable.some((status) => chosen(status.statusKey) === "") : false;
+  const sent = step ? Object.fromEntries(step.map((status) => [status.statusKey, chosen(status.statusKey)])) : {};
+  const blocked = step ? step.some((status) => chosen(status.statusKey) === "") : false;
   const count = refusal && !limited ? issueCountOf(refusal) : null;
   // No target named is the server saying the two workflows share no status.
-  const nowhere = step && step.unmappable.length === 0 && targets.length === 0;
-  const answerable = !limited && (!step || (step.unmappable.length === 0 && targets.length > 0));
+  const nowhere = step !== null && targets.length === 0;
+  const answerable = !limited && (!step || targets.length > 0);
   const left = `${count === null ? "Issues" : issueCountWords(count)} would be left in statuses ${sharedName} does not have.`;
   const one = typeCount === 1;
   const back = typesInWords
@@ -1749,14 +1741,12 @@ function DeleteWorkflowStrip({
                 blocked,
                 fields: (
                   <>
-                    {step.unmappable.length ? (
-                      <p className="workflow-confirm-note">{strandedSentence(step.unmappable, name)}</p>
-                    ) : nowhere ? (
+                    {nowhere ? (
                       <p className="workflow-confirm-note">
                         {`${name} shares no status with ${sharedName}, so these issues have nowhere to go. Add one of ${sharedName}’s statuses to ${name} first.`}
                       </p>
                     ) : (
-                      step.mappable.map((status, index) => (
+                      step.map((status, index) => (
                         <TargetSelect
                           inFlight={formProps.inFlight}
                           key={status.id}
