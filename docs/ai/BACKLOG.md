@@ -758,7 +758,7 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   (`MockTaskaApi.test.ts:385-396`); Mark's `GLOBAL_ADMIN` is pinned only indirectly by the
   mock-backed admin e2e specs — one `toMatchObject({ globalRole: "GLOBAL_ADMIN" })` after
   Mark's login there would pin it directly (`api-contract-guard`, TAS-209 post-build).
-- **Duplicate accessible name on the login screen** — the segmented mode toggle
+- ~~**Duplicate accessible name on the login screen**~~ — **closed by TAS-426** (2026-10-27, `e08eb4a`): the mode switch is a tablist, so the tab and the submit differ by role; `e2e/smoke.spec.ts` uses a role locator. — the segmented mode toggle
   and the submit button are both named "Sign in", so a role locator matches two
   elements. `e2e/smoke.spec.ts` works around it with a CSS locator; the fix
   belongs in `LoginScreen.tsx`.
@@ -2953,7 +2953,7 @@ is what recurs.
 
 ### Left open by TAS-237 (from `frontend-builder`, 2026-09-22)
 
-- **No sign-in refusal is announced at all** (`frontend-builder`, TAS-237).
+- ~~**No sign-in refusal is announced at all**~~ — **closed by TAS-426** (2026-10-27, `e08eb4a`): the sign-in refusal is `live="alert"` and remounts per attempt. (`frontend-builder`, TAS-237).
   The login form's `.form-error` carries no `role="alert"` and sits in no live
   region, so a reader who cannot see it is told nothing when a sign-in is
   refused — the new locked-account message included, but equally the plain
@@ -4341,6 +4341,6 @@ Review round 1 (e969dbd): api-contract-guard, art-director and release-reviewer 
 - **Not on the mock:** the profile name after a reload (the store is rebuilt per page load — the e2e follows it across navigation), and a server refusal of either rename (unit tests only; the client check equals the server's rule, so the UI never sends a refused name). Stand check: rename yourself, rename as admin, activate an invitation with a changed name.
 - **Backend tails** filed as [TAS-443](https://jira.ozero.dev/browse/TAS-443): a name of only Cf characters passes `DisplayNames.normalize` and shows blank; preview `kind` through `KindEnum.fromValue` (a new kind is a 500); no channel dictionary in `/meta`, so an unknown channel draws as a UI change.
 - **A lost answer re-reads only `["me"]`** (art-director r2): if the PATCH landed, members, board and work log keep the old name until their next read. Call `invalidatePeopleNames(queryClient)` beside the `["me"]` invalidation in `ProfileName`'s no-answer branch.
-- **Focus falls to `<body>` when a Try again comes back dead or rejected** (art-director r2; rare: a 5xx, then 401/400): Try again leaves the DOM. Run `LoginScreen`'s focus-rescue effect on `retryRefusals` too and move focus to `.invite-preview-refusal` (`tabIndex=-1`), the §4.27 rule for the removed form.
+- ~~**Focus falls to `<body>` when a Try again comes back dead or rejected**~~ — **closed by TAS-426** (2026-10-27, `e08eb4a`): the rescue effect also runs on `retryRefusals` and focuses `.invite-preview-refusal`. (art-director r2; rare: a 5xx, then 401/400): Try again leaves the DOM. Run `LoginScreen`'s focus-rescue effect on `retryRefusals` too and move focus to `.invite-preview-refusal` (`tabIndex=-1`), the §4.27 rule for the removed form.
 - **Admin rows used during a page load lose keyboard focus** (release-reviewer, narrow review of `403a4d4`): all four admin sections keep the previous page as `placeholderData`; a row opened or focused in that window unmounts when the next page lands and focus falls to `<body>`. No rule like §5.4's «no drag while the previous answer is drawn». One request's latency; the e2e race that made CI fail on PR #114 was this window.
 - ~~**`contract:pins` is STALE**~~ — **closed by TAS-426** (2026-10-27): header at `9fcf0253`, body unchanged. (release-reviewer): develop moved to `9fcf0253` (outbox retry and audit masking; `openapi.yml` unchanged). Refresh with the next contract pass.
