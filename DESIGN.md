@@ -2771,7 +2771,7 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   `aria-invalid` на названном поле (`DISPLAY_NAME_INVALID` — Name). 403 `SIGNUP_DISABLED` —
   «Taska isn’t open for new accounts right now. Ask a Taska admin to invite you.»; перечитанные
   способы уносят таб вместе с формой, поэтому, когда таб убрал именно этот отказ, та же фраза с id
-  переезжает в слот `.auth-notice` над табами — `ErrorNote`, не живая (alert уже прозвучал),
+  переезжает в слот `.auth-notice` над табами (обёртка `.auth-refusal`, как у отказов провайдера) — `ErrorNote`, не живая (alert уже прозвучал),
   `tabIndex=-1`, фокус на ней, а не на табе Sign in; уходит при следующей отправке, нажатии
   провайдера или смене таба, как отказы провайдера 429 — «Too many
   attempts. Try again in {wait}.» 5xx, 408, сеть — «The sign-up request could not be sent.», слова

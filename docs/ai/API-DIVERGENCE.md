@@ -1780,7 +1780,7 @@ Everything below is the entry as it stood, in the past tense.
     creating too often (read as status 429 or `RESOURCE_EXHAUSTED`, the
     invitation resend's pair; the wait shown is `details.retryAfterSeconds` when
     the server sends one, which the gateway already turns into `Retry-After` —
-    unreadable through CORS, so the detail is the only source), and
+    readable through CORS since `0b58dadc`; the client reads `details` — see the TAS-204 entry), and
     **404** `NOT_FOUND` on `DELETE` for an id the caller was never issued.
     The section reads that 404 — never the static-resource one — as a token
     already gone: the row stays out, the status says "The token “X” is already
