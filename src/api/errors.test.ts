@@ -4,6 +4,7 @@ import {
   apiErrorFacts,
   errorDetails,
   isAccountLocked,
+  isCommandPending,
   isConflict,
   isIssueVersionConflict,
   isLastAdmin,
@@ -354,5 +355,20 @@ describe("IssueVersionConflictError", () => {
     expect(isIssueVersionConflict(new ApiError("Conflict", "ABORTED", 409))).toBe(false);
     expect(isIssueVersionConflict(new MockLikeError("ABORTED", "Cannot block user"))).toBe(false);
     expect(isIssueVersionConflict({ current, expectedVersion: 4, status: 409 })).toBe(false);
+  });
+});
+
+/** Backend TAS-433/436/437: a 503 that says «still being applied» is told apart by code and reason. */
+describe("isCommandPending", () => {
+  const answer = (code: string, reason: string) => Object.assign(new Error("pending"), { code, status: 503, details: { reason } });
+
+  it("is true only for UNAVAILABLE with one of the three pending reasons", () => {
+    for (const reason of ["WORKFLOW_BINDING_CHANGE_PENDING", "ISSUE_TYPE_CREATION_PENDING", "ISSUE_TYPE_DELETION_PENDING"]) {
+      expect(isCommandPending(answer("UNAVAILABLE", reason))).toBe(true);
+    }
+    // The same reason on an issue create is a 400 refusal (DESIGN.md §5.5), not a pending command.
+    expect(isCommandPending(answer("FAILED_PRECONDITION", "ISSUE_TYPE_DELETION_PENDING"))).toBe(false);
+    expect(isCommandPending(answer("UNAVAILABLE", "SOMETHING_ELSE"))).toBe(false);
+    expect(isCommandPending(Object.assign(new Error("down"), { code: "UNAVAILABLE", status: 503, details: null }))).toBe(false);
   });
 });

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MOCK_ATTACHMENT_TRIGGERS, MOCK_INVITE_TOKENS, MOCK_PROJECT_TRIGGERS, MockTaskaApi, buildMockBoard } from "./MockTaskaApi";
 import type { UpdateIssueInput } from "../TaskaApi";
 import { DIRECTORY_QUERY_REFUSAL_MESSAGE } from "../TaskaApi";
-import type { Board, BoardIssue, Issue, NotificationType, Project } from "../../domain/types";
+import type { Board, BoardIssue, Issue, NotificationType, Project, ProjectIssueType } from "../../domain/types";
 import {
   ATTACHMENT_MAX_SIZE_BYTES,
   attachmentSizeRefusalMessage,
@@ -6002,23 +6002,67 @@ describe("MockTaskaApi", () => {
           "Transition references unknown status key:  TODO, Transition sort order must not be negative: from  TODO to TODO",
       });
 
-      // A well-formed key the registry does not hold, after the role and the body (`WorkflowCreateService`).
+      // A well-formed key the registry does not hold, after the role and the body (backend TAS-436, `requireRegistry`).
       await expect(api.createProjectWorkflow(project.id, { ...input, issueTypes: ["EPIC"] })).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
-        message: "Issue type EPIC is not defined in this project",
+        message: "Issue type is not registered in this project",
+        details: { reason: "WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT" },
       });
 
       const first = await api.createProjectWorkflow(project.id, input);
       expect(first.workflow.id).toBeTruthy();
-      await expect(api.createProjectWorkflow(project.id, { ...input, issueTypes: ["BUG", "TASK"] })).rejects.toMatchObject({
-        code: "ALREADY_EXISTS",
-        message: `Workflow binding already exists for project ${project.id} and issue types: [TASK]`,
+      // A type bound to another own workflow moves rather than being refused
+      // (backend TAS-436): the first workflow stays as a donor with no type,
+      // one version on.
+      const second = await api.createProjectWorkflow(project.id, { ...input, name: "Second", issueTypes: ["BUG", "TASK"] });
+      expect(second.issueTypes).toEqual(["TASK", "BUG"]);
+      const listed = await api.listProjectWorkflows(project.id);
+      expect(listed.map((entry) => [entry.workflow.name, entry.issueTypes, entry.workflow.version])).toEqual([
+        ["Second", ["TASK", "BUG"], 1],
+        ["Default workflow", ["STORY"], 1],
+        ["Development", [], 2],
+      ]);
+    });
+
+    it("refuses a binding change that would leave issues outside, then moves them with the mapping (backend TAS-436)", async () => {
+      const web = await projectByKey("WEB");
+      const input = await copyWithHidden(web.id, "Delivery", ["TASK"]);
+      // WEB-16 is a task in BLOCKED_BY_QA, which the copy does not have.
+      const refusal = await api.createProjectWorkflow(web.id, input).catch((error: unknown) => error);
+      expect(apiErrorFacts(refusal)).toMatchObject({
+        code: "FAILED_PRECONDITION",
+        details: {
+          reason: "WORKFLOW_ISSUES_UNMAPPED",
+          issueCount: "1",
+          statusKeys: "BLOCKED_BY_QA",
+          targetStatusKeys: "DONE,IN_PROGRESS,TODO",
+        },
+      });
+      expect((await api.listProjectWorkflows(web.id)).map((entry) => entry.workflow.name)).toEqual([
+        "Default workflow",
+        "Epic workflow",
+      ]);
+      // A mapping onto a status the destination lacks is the server's 400.
+      await expect(
+        api.createProjectWorkflow(web.id, { ...input, statusMappings: { BLOCKED_BY_QA: "IN_REVIEW" } }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", details: { reason: "WORKFLOW_STATUS_MAPPING_INVALID" } });
+
+      const created = await api.createProjectWorkflow(web.id, { ...input, statusMappings: { BLOCKED_BY_QA: "TODO" } });
+      const stray = (await api.listIssues(web.id, { pageSize: 100 })).items.find((item) => item.issueKey === "WEB-16")!;
+      expect(stray.status).toBe("TODO");
+      const { history } = await api.getIssue(web.id, stray.id);
+      expect(history.at(-1)).toMatchObject({
+        eventType: "TRANSITIONED",
+        payload: { from: "BLOCKED_BY_QA", to: "TODO", reason: "WORKFLOW_CONFIGURATION_CHANGED", workflowId: created.workflow.id },
       });
     });
 
     it("accepts a create with no status and no transition, as the server does (docs/ai/API-DIVERGENCE.md)", async () => {
+      // A project with no issue: since backend TAS-436 a type's issues would
+      // otherwise have to be mapped into a status, and there is none.
+      const fresh = await api.createProject({ projectKey: "EMPTY", name: "Empty" });
       await expect(
-        api.createProjectWorkflow(project.id, { name: "Empty", issueTypes: ["STORY"], statuses: [], transitions: [] }),
+        api.createProjectWorkflow(fresh.id, { name: "Empty", issueTypes: ["STORY"], statuses: [], transitions: [] }),
       ).resolves.toMatchObject({ workflow: { statuses: [], transitions: [] } });
     });
 
@@ -6060,7 +6104,7 @@ describe("MockTaskaApi", () => {
     it("refuses an add in the server's order: the path, the role, an unknown workflow, the shared one, another project's", async () => {
       const web = await projectByKey("WEB");
       const [shared] = await api.listProjectWorkflows(project.id);
-      const { workflow: elsewhere } = await api.createProjectWorkflow(web.id, await copyWithHidden(web.id, "Web flow", ["TASK"]));
+      const { workflow: elsewhere } = await api.createProjectWorkflow(web.id, await copyWithHidden(web.id, "Web flow", ["BUG"]));
 
       await expect(api.addWorkflowStatus(project.id, "not-a-uuid", status)).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
@@ -6441,17 +6485,19 @@ describe("MockTaskaApi", () => {
       });
 
       // Backend TAS-427: a status delete moves only the deleted status's
-      // issues (`source_status_keys`). WEB-16 is a TASK in BLOCKED_BY_QA, a
-      // status no workflow of WEB has; the legacy scan counted it and refused
-      // every status delete of a TASK workflow there.
-      it("deletes a status without counting issues already outside the workflow", async () => {
+      // issues (`source_status_keys`); the other statuses' issues stay put.
+      // (An issue left outside its workflow — WEB-16's case before TAS-436 —
+      // can no longer be made: a binding change refuses to leave one behind.)
+      it("deletes a status without moving the issues of the statuses it keeps", async () => {
         const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
-        const own = (await api.createProjectWorkflow(web.id, await copyWithHidden(web.id, "Delivery", ["TASK"]))).workflow;
+        const own = (
+          await api.createProjectWorkflow(web.id, {
+            ...(await copyWithHidden(web.id, "Delivery", ["TASK"])),
+            statusMappings: { BLOCKED_BY_QA: "TODO" },
+          })
+        ).workflow;
         const added = await api.addWorkflowStatus(web.id, own.id, status);
-        const outside = (await api.listIssues(web.id, { pageSize: 100 })).items.filter(
-          (item) => item.issueType === "TASK" && !added.workflow.statuses.some((row) => row.statusKey === item.status),
-        );
-        expect(outside.map((item) => item.status)).toContain("BLOCKED_BY_QA");
+        const before = (await api.listIssues(web.id, { pageSize: 100 })).items.filter((item) => item.issueType === "TASK");
 
         const answer = await api.deleteWorkflowStatus(web.id, own.id, statusOf(added.workflow, "CODE_REVIEW").id, {
           version: added.workflow.version,
@@ -6459,23 +6505,24 @@ describe("MockTaskaApi", () => {
 
         expect(answer.workflow.statuses.map((item) => item.statusKey)).not.toContain("CODE_REVIEW");
         const after = (await api.listIssues(web.id, { pageSize: 100 })).items;
-        for (const item of outside) expect(after.find((row) => row.id === item.id)?.status).toBe(item.status);
+        for (const item of before) expect(after.find((row) => row.id === item.id)?.status).toBe(item.status);
       });
 
-      // Backend TAS-429 (A12): a workflow delete moves only its own statuses
-      // and the keys its mapping names. WEB-16, a TASK in BLOCKED_BY_QA — a
-      // status neither workflow has — stays where it is and does not refuse
-      // the delete, which the legacy scan did.
-      it("deletes a workflow without counting issues in statuses outside both workflows", async () => {
-        const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
-        const own = (await api.createProjectWorkflow(web.id, await copyWithHidden(web.id, "Delivery", ["TASK"]))).workflow;
-        const stray = (await api.listIssues(web.id, { pageSize: 100 })).items.find((item) => item.issueKey === "WEB-16")!;
-        expect(stray).toMatchObject({ issueType: "TASK", status: "BLOCKED_BY_QA" });
+      // Backend TAS-436: a workflow whose types all moved elsewhere stays as a
+      // donor — listed with none, editable — and its delete moves nothing.
+      it("keeps a donor with its graph, edits it, and deletes it with nothing to move", async () => {
+        const first = (await api.createProjectWorkflow(project.id, await copyWithHidden(project.id, "First", ["BUG"]))).workflow;
+        await api.createProjectWorkflow(project.id, await copyWithHidden(project.id, "Second", ["BUG"]));
+        const donor = (await api.listProjectWorkflows(project.id)).find((entry) => entry.workflow.id === first.id)!;
+        expect(donor).toMatchObject({ issueTypes: [], shared: false, workflow: { version: 2 } });
+        expect(donor.workflow.statuses.map((item) => item.statusKey)).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
 
-        const answer = await api.deleteProjectWorkflow(web.id, own.id, { version: own.version });
+        const added = await api.addWorkflowStatus(project.id, first.id, status);
+        expect(added).toMatchObject({ issueTypes: [], workflow: { version: 3 } });
 
-        expect(answer).toMatchObject({ shared: true, issueTypes: ["TASK"] });
-        expect((await api.getIssue(web.id, stray.id)).issue.status).toBe("BLOCKED_BY_QA");
+        const answer = await api.deleteProjectWorkflow(project.id, first.id, { version: 3 });
+        expect(answer).toMatchObject({ shared: true, issueTypes: [] });
+        expect((await api.listProjectWorkflows(project.id)).some((entry) => entry.workflow.id === first.id)).toBe(false);
       });
 
       it("deletes a transition, which the board then no longer offers", async () => {
@@ -6562,6 +6609,141 @@ describe("MockTaskaApi", () => {
         expect(apiErrorFacts(refusal)).toMatchObject({ code: "FAILED_PRECONDITION", details: { reason: "PROJECT_ARCHIVED" } });
       });
     });
+
+    /**
+     * Backend TAS-436 (develop `78019ece`, `WorkflowBindingTransactions.replace`):
+     * a PATCH with `issueTypes` sets the workflow's whole set. Mobile is the
+     * owner's case — an own workflow (Incident) and types on the shared
+     * default, MOB-6 a bug In Progress, a status Incident lacks.
+     */
+    describe("the types of a workflow", () => {
+      const incident = async () => {
+        await signIn("mark@example.com");
+        const mob = await projectByKey("MOB");
+        const entry = (await api.listProjectWorkflows(mob.id)).find((item) => item.workflow.name === "Incident workflow")!;
+        return { mob, entry };
+      };
+
+      it("adds a type from the shared default, mapping its issues the server names, in the registry's order", async () => {
+        const { mob, entry } = await incident();
+        const input = { version: entry.workflow.version, issueTypes: ["INCIDENT", "BUG"] };
+
+        const refusal = await api.updateProjectWorkflow(mob.id, entry.workflow.id, input).catch((error: unknown) => error);
+        expect(apiErrorFacts(refusal)).toMatchObject({
+          code: "FAILED_PRECONDITION",
+          details: { reason: "WORKFLOW_ISSUES_UNMAPPED", issueCount: "1", statusKeys: "IN_PROGRESS", targetStatusKeys: "RESOLVED,TRIAGE" },
+        });
+        // Nothing moved, nothing bound.
+        expect((await api.getProjectContext(mob.id)).workflows.BUG?.name).toBe("Default workflow");
+
+        const answer = await api.updateProjectWorkflow(mob.id, entry.workflow.id, {
+          ...input,
+          statusMappings: { IN_PROGRESS: "TRIAGE" },
+        });
+        expect(answer).toMatchObject({ issueTypes: ["BUG", "INCIDENT"], shared: false, workflow: { version: entry.workflow.version + 1 } });
+        expect((await api.getProjectContext(mob.id)).workflows.BUG?.name).toBe("Incident workflow");
+        const bug = (await api.listIssues(mob.id)).items.find((item) => item.issueKey === "MOB-6")!;
+        expect(bug.status).toBe("TRIAGE");
+        expect((await api.listProjectWorkflows(mob.id)).map((item) => [item.workflow.name, item.issueTypes])).toEqual([
+          ["Default workflow", ["TASK", "STORY"]],
+          ["Incident workflow", ["BUG", "INCIDENT"]],
+        ]);
+      });
+
+      it("sends a type left out back to the shared default, and renames with the same write", async () => {
+        const { mob, entry } = await incident();
+        await api.updateProjectWorkflow(mob.id, entry.workflow.id, {
+          version: entry.workflow.version,
+          issueTypes: ["BUG", "INCIDENT"],
+          statusMappings: { IN_PROGRESS: "TRIAGE" },
+        });
+
+        const answer = await api.updateProjectWorkflow(mob.id, entry.workflow.id, {
+          version: entry.workflow.version + 1,
+          name: "  Incidents ",
+          issueTypes: ["INCIDENT"],
+          statusMappings: { TRIAGE: "TODO" },
+        });
+
+        expect(answer).toMatchObject({ issueTypes: ["INCIDENT"], workflow: { name: "Incidents" } });
+        expect((await api.getProjectContext(mob.id)).workflows.BUG?.name).toBe("Default workflow");
+        expect((await api.listIssues(mob.id)).items.find((item) => item.issueKey === "MOB-6")?.status).toBe("TODO");
+      });
+
+      it("refuses a set in the server's order: the gateway's reading, an empty set, a type the registry lacks, the version", async () => {
+        const { mob, entry } = await incident();
+        const id = entry.workflow.id;
+        const version = entry.workflow.version;
+        for (const body of [
+          { issueTypes: ["INCIDENT"] },
+          { version, issueTypes: ["INCIDENT", "INCIDENT"] },
+          { version, issueTypes: ["incident"] },
+          { version, name: "Again", statusMappings: { TRIAGE: "RESOLVED" } },
+          { version },
+        ]) {
+          await expect(api.updateProjectWorkflow(mob.id, id, body)).rejects.toMatchObject({
+            code: "INVALID_ARGUMENT",
+            message: "Invalid request parameters",
+          });
+        }
+        await expect(api.updateProjectWorkflow(mob.id, id, { version, issueTypes: [] })).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          details: { reason: "WORKFLOW_ISSUE_TYPES_EMPTY" },
+        });
+        await expect(api.updateProjectWorkflow(mob.id, id, { version, issueTypes: ["EPIC"] })).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          details: { reason: "WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT" },
+        });
+        await expect(api.updateProjectWorkflow(mob.id, id, { version: version + 3, issueTypes: ["INCIDENT", "TASK"] })).rejects.toMatchObject({
+          code: "ABORTED",
+          message: "Workflow version changed",
+        });
+      });
+
+      it("refuses every workflow write while a type operation is pending, with its reason", async () => {
+        const { mob, entry } = await incident();
+        const busy = `Triage ${MOCK_PROJECT_TRIGGERS.typeOperationPending}`;
+        for (const write of [
+          () => api.updateProjectWorkflow(mob.id, entry.workflow.id, { version: entry.workflow.version, name: busy }),
+          () =>
+            api.updateProjectWorkflow(mob.id, entry.workflow.id, {
+              version: entry.workflow.version,
+              name: busy,
+              issueTypes: ["INCIDENT"],
+            }),
+        ]) {
+          const refusal = await write().catch((error: unknown) => error);
+          expect(apiErrorFacts(refusal)).toMatchObject({ code: "ABORTED", details: { reason: "ISSUE_TYPE_OPERATION_PENDING" } });
+        }
+        await signIn("anna@example.com");
+        const refusal = await api
+          .createProjectWorkflow(project.id, await copyWithHidden(project.id, busy, ["BUG"]))
+          .catch((error: unknown) => error);
+        expect(apiErrorFacts(refusal)).toMatchObject({ code: "ABORTED", details: { reason: "ISSUE_TYPE_OPERATION_PENDING" } });
+      });
+
+      it("answers a change still being applied 503 with a request id, and the same command with it once more", async () => {
+        const input = await copyWithHidden(project.id, `Dev ${MOCK_PROJECT_TRIGGERS.stillApplying}`, ["BUG"]);
+        const pending = await api.createProjectWorkflow(project.id, input).catch((error: unknown) => error);
+        const facts = apiErrorFacts(pending);
+        expect(facts).toMatchObject({ code: "UNAVAILABLE", details: { reason: "WORKFLOW_BINDING_CHANGE_PENDING" } });
+        expect(facts.requestId).toEqual(expect.any(String));
+        // Applied all the same, as the server finishes it by itself.
+        const listed = (await api.listProjectWorkflows(project.id)).filter((entry) => !entry.shared);
+        expect(listed.map((entry) => entry.issueTypes)).toEqual([["BUG"]]);
+
+        const retry = { requestId: facts.requestId! };
+        const answer = await api.createProjectWorkflow(project.id, input, retry);
+        expect(answer.workflow.id).toBe(listed[0].workflow.id);
+        await expect(api.createProjectWorkflow(project.id, input, retry)).resolves.toMatchObject({ workflow: { id: answer.workflow.id } });
+        // Applied once: no second workflow.
+        expect((await api.listProjectWorkflows(project.id)).filter((entry) => !entry.shared)).toHaveLength(1);
+        await expect(api.createProjectWorkflow(project.id, { ...input, issueTypes: ["STORY"] }, retry)).rejects.toMatchObject({
+          code: "ALREADY_EXISTS",
+          details: { reason: "REQUEST_ID_REUSED" },
+        });
+      });
+    });
   });
 
   /**
@@ -6577,16 +6759,19 @@ describe("MockTaskaApi", () => {
 
     it("seeds every project, a new one too, in TAS-432's plain look, and orders by sortOrder then code", async () => {
       // Backend TAS-432: TASK and STORY squares, BUG a circle, none with an icon.
+      // Each entry carries its own lifecycle's generation (backend TAS-433).
+      const generation = expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
       expect((await api.getProjectContext(project.id)).issueTypes).toEqual([
-        { code: "TASK", name: "Task", color: "blue", shape: "square", icon: null, sortOrder: 10 },
-        { code: "BUG", name: "Bug", color: "red", shape: "circle", icon: null, sortOrder: 20 },
-        { code: "STORY", name: "Story", color: "green", shape: "square", icon: null, sortOrder: 30 },
+        { code: "TASK", name: "Task", color: "blue", shape: "square", icon: null, sortOrder: 10, generation },
+        { code: "BUG", name: "Bug", color: "red", shape: "circle", icon: null, sortOrder: 20, generation },
+        { code: "STORY", name: "Story", color: "green", shape: "square", icon: null, sortOrder: 30, generation },
       ]);
       expect(await codesOf((await projectByKey("OPS")).id)).toEqual(["TASK", "BUG"]);
       expect(await codesOf((await projectByKey("WEB")).id)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
       const fresh = await api.createProject({ projectKey: "NEWP", name: "New project" });
-      expect((await api.getProjectContext(fresh.id)).issueTypes).toEqual(
-        (await api.getProjectContext(project.id)).issueTypes,
+      const plain = (types: ProjectIssueType[]) => types.map(({ generation: _generation, ...type }) => type);
+      expect(plain((await api.getProjectContext(fresh.id)).issueTypes)).toEqual(
+        plain((await api.getProjectContext(project.id)).issueTypes),
       );
 
       // One type drawn by its icon and one diamond without, always on screen somewhere.
@@ -6647,8 +6832,20 @@ describe("MockTaskaApi", () => {
         message: "Issue type TASK already exists in this project",
       });
       const created = await api.createProjectIssueType(project.id, epic);
-      // Stored stripped; `sortOrder` the server's 100 when none is sent.
-      expect(created).toEqual({ code: "EPIC", name: "Epic", color: "purple", shape: "square", icon: "layers", sortOrder: 100 });
+      // Stored stripped; `sortOrder` the server's 100 when none is sent; a new
+      // generation; bound to the main workflow — the shared default here
+      // (backend TAS-437).
+      const [shared] = await api.listProjectWorkflows(project.id);
+      expect(created).toEqual({
+        code: "EPIC",
+        name: "Epic",
+        color: "purple",
+        shape: "square",
+        icon: "layers",
+        sortOrder: 100,
+        generation: expect.any(String),
+        workflowId: shared.workflow.id,
+      });
       expect(await codesOf(project.id)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
       // No shape is the server's square, and no icon — left out or null — is none (backend TAS-432).
       await expect(
@@ -6721,6 +6918,7 @@ describe("MockTaskaApi", () => {
         shape: "circle",
         icon: null,
         sortOrder: 20,
+        generation: expect.any(String),
       });
       // An icon, then a shape: each leaves the other as it was.
       await expect(api.updateProjectIssueType(project.id, "BUG", { icon: "bug" })).resolves.toMatchObject({
@@ -6739,6 +6937,7 @@ describe("MockTaskaApi", () => {
         shape: "diamond",
         icon: null,
         sortOrder: 20,
+        generation: expect.any(String),
       });
       expect((await api.getProjectContext(project.id)).issueTypes[1]).toMatchObject({ shape: "diamond", icon: null });
     });
@@ -6844,11 +7043,151 @@ describe("MockTaskaApi", () => {
       for (const item of epics) await api.deleteIssue(web.id, item.id);
       await api.deleteProjectIssueType(web.id, "EPIC");
 
-      expect((await api.listProjectWorkflows(web.id)).map((entry) => entry.workflow.name)).toEqual(["Default workflow"]);
+      // The workflow stays as a donor with no type (backend TAS-436).
+      expect((await api.listProjectWorkflows(web.id)).map((entry) => [entry.workflow.name, entry.issueTypes])).toEqual([
+        ["Default workflow", ["TASK", "BUG", "STORY"]],
+        ["Epic workflow", []],
+      ]);
       await api.createProjectIssueType(web.id, { code: "EPIC", name: "Epic", color: "purple", icon: "layers" });
       const context = await api.getProjectContext(web.id);
       expect(context.workflows.EPIC?.name).toBe("Default workflow");
       expect(context.workflows.EPIC?.statuses.map((item) => item.statusKey)).not.toContain("IN_REVIEW");
+    });
+
+    /** Backend TAS-437: a new type is bound in the same operation — to the main workflow unless one is named. */
+    it("binds a new type to the main workflow, or to the one named, and answers its workflowId", async () => {
+      const mob = async () => {
+        await signIn("mark@example.com");
+        return projectByKey("MOB");
+      };
+      const { id } = await mob();
+      const [shared, incident] = await api.listProjectWorkflows(id);
+      // TASK, the registry's first, runs on the shared default here.
+      const spike = await api.createProjectIssueType(id, { code: "SPIKE", name: "Spike", color: "teal" });
+      expect(spike.workflowId).toBe(shared.workflow.id);
+      expect((await api.getProjectContext(id)).workflows.SPIKE?.name).toBe("Default workflow");
+
+      const named = await api.createProjectIssueType(id, { code: "OUTAGE", name: "Outage", color: "red", workflowId: incident.workflow.id });
+      expect(named.workflowId).toBe(incident.workflow.id);
+      const after = (await api.listProjectWorkflows(id)).find((entry) => entry.workflow.id === incident.workflow.id)!;
+      // The own workflow it was bound to moves one version on.
+      expect(after).toMatchObject({ issueTypes: ["INCIDENT", "OUTAGE"], workflow: { version: incident.workflow.version + 1 } });
+
+      await expect(
+        api.createProjectIssueType(id, { code: "ODD", name: "Odd", color: "red", workflowId: "0f0f0f0f-0000-4000-8000-000000000437" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", details: { reason: "WORKFLOW_NOT_IN_PROJECT" } });
+      await expect(
+        api.createProjectIssueType(id, { code: "ODD", name: "Odd", color: "red", workflowId: "not-a-uuid" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Invalid request parameters" });
+    });
+
+    it("binds a new type to an own main workflow when the registry's first type runs on one", async () => {
+      await signIn("anna@example.com");
+      const [shared] = await api.listProjectWorkflows(project.id);
+      const own = await api.createProjectWorkflow(project.id, {
+        ...workflowCopyInput(shared.workflow, "Development", ["TASK"]),
+      });
+      const created = await api.createProjectIssueType(project.id, { code: "EPIC", name: "Epic", color: "purple" });
+      expect(created.workflowId).toBe(own.workflow.id);
+      expect((await api.getProjectContext(project.id)).workflows.EPIC?.id).toBe(own.workflow.id);
+    });
+
+    it("answers a create still being applied 503 with a request id, and the same create with it", async () => {
+      await signIn("anna@example.com");
+      const input = { code: "SPIKE", name: `Spike ${MOCK_PROJECT_TRIGGERS.stillApplying}`, color: "teal" } as const;
+      const pending = await api.createProjectIssueType(project.id, input).catch((error: unknown) => error);
+      const facts = apiErrorFacts(pending);
+      expect(facts).toMatchObject({ code: "UNAVAILABLE", details: { reason: "ISSUE_TYPE_CREATION_PENDING" } });
+      const created = await api.createProjectIssueType(project.id, input, { requestId: facts.requestId! });
+      expect(created).toMatchObject({ code: "SPIKE" });
+      expect(await codesOf(project.id)).toEqual(["TASK", "BUG", "STORY", "SPIKE"]);
+    });
+
+    /** Backend TAS-433: a delete that moves the type's issues to another type first. */
+    describe("deleting a type with a move", () => {
+      const mob = async () => {
+        await signIn("mark@example.com");
+        const found = await projectByKey("MOB");
+        const bug = (await api.getProjectContext(found.id)).issueTypes.find((type) => type.code === "BUG")!;
+        return { id: found.id, generation: bug.generation! };
+      };
+
+      it("moves the issues, mapping the statuses the target's workflow lacks, then deletes the type", async () => {
+        const { id, generation } = await mob();
+        // The first press, with no body, is the old refusal.
+        await expect(api.deleteProjectIssueType(id, "BUG")).rejects.toMatchObject({
+          code: "FAILED_PRECONDITION",
+          details: { reason: "ISSUE_TYPE_IN_USE", issueCount: "1" },
+        });
+        // MOB-6 is In Progress; Incident's workflow has Triage and Resolved.
+        const unmapped = await api
+          .deleteProjectIssueType(id, "BUG", { moveIssuesTo: "INCIDENT", expectedGeneration: generation })
+          .catch((error: unknown) => error);
+        expect(apiErrorFacts(unmapped)).toMatchObject({
+          code: "FAILED_PRECONDITION",
+          details: { reason: "ISSUE_STATUSES_UNMAPPED", statusKeys: "IN_PROGRESS", targetStatusKeys: "TRIAGE,RESOLVED" },
+        });
+        expect(apiErrorFacts(unmapped).details).not.toHaveProperty("issueCount");
+        await expect(
+          api.deleteProjectIssueType(id, "BUG", { moveIssuesTo: "INCIDENT", statusMappings: { IN_PROGRESS: "DONE" } }),
+        ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", details: { reason: "ISSUE_TYPE_STATUS_MAPPING_INVALID" } });
+
+        await api.deleteProjectIssueType(id, "BUG", {
+          moveIssuesTo: "INCIDENT",
+          statusMappings: { IN_PROGRESS: "TRIAGE" },
+          expectedGeneration: generation,
+        });
+        const moved = (await api.listIssues(id)).items.find((item) => item.issueKey === "MOB-6")!;
+        expect(moved).toMatchObject({ issueType: "INCIDENT", status: "TRIAGE" });
+        expect((await api.getIssue(id, moved.id)).history.at(-1)).toMatchObject({
+          eventType: "UPDATED",
+          payload: { oldStatusKey: "IN_PROGRESS", newStatusKey: "TRIAGE", reason: "ISSUE_TYPE_DELETED" },
+        });
+        expect(await codesOf(id)).toEqual(["TASK", "STORY", "INCIDENT"]);
+      });
+
+      it("refuses a target that is the type itself or not registered, and a mapping or generation with no target", async () => {
+        const { id, generation } = await mob();
+        for (const target of ["BUG", "EPIC"]) {
+          await expect(api.deleteProjectIssueType(id, "BUG", { moveIssuesTo: target })).rejects.toMatchObject({
+            code: "INVALID_ARGUMENT",
+            details: { reason: "ISSUE_TYPE_TARGET_INVALID" },
+          });
+        }
+        await expect(api.deleteProjectIssueType(id, "BUG", { expectedGeneration: generation })).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: "moveIssuesTo is required for mapping/generation",
+        });
+        await expect(
+          api.deleteProjectIssueType(id, "BUG", { moveIssuesTo: "TASK", expectedGeneration: "not-a-uuid" }),
+        ).rejects.toMatchObject({ message: "Invalid request parameters" });
+      });
+
+      it("refuses another generation, and a code made again without one, as the type having changed", async () => {
+        const { id, generation } = await mob();
+        await expect(
+          api.deleteProjectIssueType(id, "BUG", { moveIssuesTo: "TASK", expectedGeneration: "0f0f0f0f-0000-4000-8000-000000000433" }),
+        ).rejects.toMatchObject({ code: "ABORTED", details: { reason: "ISSUE_TYPE_CHANGED", generation } });
+
+        await api.deleteProjectIssueType(id, "BUG", { moveIssuesTo: "TASK", expectedGeneration: generation });
+        await api.createProjectIssueType(id, { code: "BUG", name: "Bug", color: "red" });
+        await api.createIssue(id, { issueType: "BUG", summary: "Again", description: "", priority: "MEDIUM" });
+        await expect(api.deleteProjectIssueType(id, "BUG", { moveIssuesTo: "TASK" })).rejects.toMatchObject({
+          code: "ABORTED",
+          details: { reason: "ISSUE_TYPE_GENERATION_REQUIRED" },
+        });
+      });
+
+      it("answers a delete still being applied 503 with a request id, and the same delete with it", async () => {
+        const { id, generation } = await mob();
+        await api.updateProjectIssueType(id, "BUG", { name: `Bug ${MOCK_PROJECT_TRIGGERS.stillApplying}` });
+        const move = { moveIssuesTo: "TASK", expectedGeneration: generation };
+        const pending = await api.deleteProjectIssueType(id, "BUG", move).catch((error: unknown) => error);
+        const facts = apiErrorFacts(pending);
+        expect(facts).toMatchObject({ code: "UNAVAILABLE", details: { reason: "ISSUE_TYPE_DELETION_PENDING" } });
+        await expect(api.deleteProjectIssueType(id, "BUG", move, { requestId: facts.requestId! })).resolves.toBeUndefined();
+        expect(await codesOf(id)).toEqual(["TASK", "STORY", "INCIDENT"]);
+      });
     });
 
     it("changes an issue's type through the registry, refusing a target whose workflow lacks the status with its reason", async () => {

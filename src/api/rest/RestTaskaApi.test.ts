@@ -5658,6 +5658,47 @@ describe("RestTaskaApi project workflows", () => {
     expect(bare).toMatchObject({ issueTypes: [], shared: true, workflow: { id: "", statuses: [], transitions: [] } });
   });
 
+  // Backend TAS-436: the PATCH takes the whole set of types, and both binding
+  // changes take `statusMappings` only as the answer to a refusal.
+  it("sends a binding change's fields only when given: the set in the order handed over, the mapping when stated", async () => {
+    const answer = { workflow: wireWorkflow, issueTypes: ["TASK", "BUG"], shared: false };
+    const fetchStub = stubFetch(answer);
+    const api = new RestTaskaApi();
+
+    await api.updateProjectWorkflow(PROJECT, WORKFLOW, { version: 3, issueTypes: ["TASK", "BUG"] });
+    await api.updateProjectWorkflow(PROJECT, WORKFLOW, {
+      version: 3,
+      name: "Delivery",
+      issueTypes: ["TASK", "BUG"],
+      statusMappings: { CODE_REVIEW: "IN_PROGRESS" },
+    });
+    await api.updateProjectWorkflow(PROJECT, WORKFLOW, { version: 3, name: "Delivery" });
+    const bodies = fetchStub.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies).toEqual([
+      { version: 3, issueTypes: ["TASK", "BUG"] },
+      { version: 3, name: "Delivery", issueTypes: ["TASK", "BUG"], statusMappings: { CODE_REVIEW: "IN_PROGRESS" } },
+      { version: 3, name: "Delivery" },
+    ]);
+
+    const input = {
+      name: "Development",
+      issueTypes: ["TASK"],
+      statuses: [{ statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 }],
+      transitions: [],
+    };
+    const createStub = stubFetch(answer, 201);
+    await api.createProjectWorkflow(PROJECT, input);
+    await api.createProjectWorkflow(PROJECT, { ...input, statusMappings: { CODE_REVIEW: "TODO" } }, { requestId: "req-wf" });
+    expect(JSON.parse(String(createStub.mock.calls[0][1]?.body))).not.toHaveProperty("statusMappings");
+    expect(JSON.parse(String(createStub.mock.calls[1][1]?.body)).statusMappings).toEqual({ CODE_REVIEW: "TODO" });
+    const requestIdOf = (call: number) => new Headers(createStub.mock.calls[call][1]?.headers).get("X-Request-Id");
+    expect([requestIdOf(0), requestIdOf(1)]).toEqual([null, "req-wf"]);
+
+    const patchStub = stubFetch(answer);
+    await api.updateProjectWorkflow(PROJECT, WORKFLOW, { version: 3, issueTypes: ["TASK"] }, { requestId: "req-patch" });
+    expect(new Headers(patchStub.mock.calls[0][1]?.headers).get("X-Request-Id")).toBe("req-patch");
+  });
+
   it("renames and deletes a workflow on its own path: only the fields given, the delete's body always JSON", async () => {
     const answer = { workflow: wireWorkflow, issueTypes: ["TASK"], shared: false };
     const renameStub = stubFetch(answer);
@@ -5893,7 +5934,96 @@ describe("RestTaskaApi issue-type registry", () => {
       method: "POST",
       body: { code: "EPIC", name: "Epic", color: "purple", shape: "square", icon: "layers", sortOrder: 40 },
     });
-    expect(created).toEqual(entry);
+    // No `workflowId` in an answer that predates TAS-437: none this build can read.
+    expect(created).toEqual({ ...entry, workflowId: null });
+  });
+
+  // Backend TAS-437: the create names the workflow, and the 201 is
+  // `CreatedProjectIssueTypeDto` — the entry and the workflow it runs on.
+  it("creates with the workflow named, reads its workflowId and generation, and never a malformed one", async () => {
+    const workflowId = "c5f3e4d6-0000-4000-8000-000000000437";
+    const generation = "d6a4f5e7-0000-4000-8000-000000000433";
+    const fetchStub = stubFetch({ ...entry, generation, workflowId }, 201);
+
+    const created = await new RestTaskaApi().createProjectIssueType("project-1", {
+      code: "EPIC",
+      name: "Epic",
+      color: "purple",
+      shape: "square",
+      workflowId,
+    });
+
+    expect(sent(fetchStub).body).toEqual({ code: "EPIC", name: "Epic", color: "purple", shape: "square", workflowId });
+    expect(created).toEqual({ ...entry, generation, workflowId });
+
+    stubFetch({ ...entry, generation: "g-1", workflowId: "main" }, 201);
+    const odd = await new RestTaskaApi().createProjectIssueType("project-1", { code: "EPIC", name: "Epic", color: "purple" });
+    expect(odd.workflowId).toBeNull();
+    expect(odd).not.toHaveProperty("generation");
+  });
+
+  it("reads a registry entry's generation only when it is a UUID (backend TAS-433)", async () => {
+    const generation = "d6a4f5e7-0000-4000-8000-000000000433";
+    stubFetch({
+      project: { id: "project-1", projectKey: "TAS", name: "T", createdBy: "u", createdAt: "x", updatedAt: "x", currentUserRole: "ADMIN" },
+      members: [],
+      labels: [],
+      issueTypes: [
+        { ...entry, code: "TASK", generation },
+        { ...entry, code: "BUG", generation: null },
+        { ...entry, code: "STORY", generation: "not-a-uuid" },
+        { ...entry, code: "SPIKE", generation: 7 },
+      ],
+      workflows: [],
+    });
+
+    const { issueTypes } = await new RestTaskaApi().getProjectContext("project-1");
+
+    expect(issueTypes.map((type) => type.generation)).toEqual([generation, undefined, undefined, undefined]);
+    expect(issueTypes[1]).not.toHaveProperty("generation");
+  });
+
+  it("deletes with no body on the first press, and with only the move's fields as JSON after it", async () => {
+    const fetchStub = stubFetch(undefined, 204);
+    const api = new RestTaskaApi();
+
+    await api.deleteProjectIssueType("project-1", "BUG");
+    expect(fetchStub.mock.calls[0][1]?.body).toBeUndefined();
+    expect(new Headers((fetchStub.mock.calls[0][1] as RequestInit).headers).has("Content-Type")).toBe(false);
+
+    await api.deleteProjectIssueType("project-1", "BUG", {
+      moveIssuesTo: "TASK",
+      statusMappings: { IN_PROGRESS: "TODO" },
+      expectedGeneration: "d6a4f5e7-0000-4000-8000-000000000433",
+    });
+    const init = fetchStub.mock.calls[1][1] as RequestInit;
+    expect(init.method).toBe("DELETE");
+    expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+    expect(JSON.parse(String(init.body))).toEqual({
+      moveIssuesTo: "TASK",
+      statusMappings: { IN_PROGRESS: "TODO" },
+      expectedGeneration: "d6a4f5e7-0000-4000-8000-000000000433",
+    });
+
+    // A move with no generation to send leaves the key out, never `null`.
+    await api.deleteProjectIssueType("project-1", "BUG", { moveIssuesTo: "TASK" });
+    expect(JSON.parse(String(fetchStub.mock.calls[2][1]?.body))).toEqual({ moveIssuesTo: "TASK" });
+  });
+
+  it("sends X-Request-Id only on the repeat of a pending command, the one the 503 carried", async () => {
+    const fetchStub = stubFetch({ ...entry, workflowId: null }, 201);
+    const api = new RestTaskaApi();
+    const requestIdOf = (call: number) => new Headers((fetchStub.mock.calls[call][1] as RequestInit).headers).get("X-Request-Id");
+
+    await api.createProjectIssueType("project-1", { code: "EPIC", name: "Epic", color: "purple" });
+    await api.createProjectIssueType("project-1", { code: "EPIC", name: "Epic", color: "purple" }, { requestId: "req-503" });
+    await api.createProjectIssueType("project-1", { code: "EPIC", name: "Epic", color: "purple" }, {});
+    await api.deleteProjectIssueType("project-1", "BUG", { moveIssuesTo: "TASK" });
+    await api.deleteProjectIssueType("project-1", "BUG", { moveIssuesTo: "TASK" }, { requestId: "req-del" });
+
+    expect([0, 1, 2, 3, 4].map(requestIdOf)).toEqual([null, "req-503", null, null, "req-del"]);
+    // The repeat is the same body.
+    expect(fetchStub.mock.calls[1][1]?.body).toBe(fetchStub.mock.calls[0][1]?.body);
   });
 
   it("creates a type without an icon by leaving the key out (backend TAS-432), and reads its null icon back", async () => {

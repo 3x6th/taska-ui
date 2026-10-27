@@ -87,8 +87,41 @@ class Refusal {
   ) {}
 }
 
+/** A 204 with no body. */
+const NO_CONTENT = Symbol("no content");
+
+/** The project's own workflow in the Workflows list (TAS-437): Task runs on it, Bug and Story on the shared default. */
+const OWN_WORKFLOW = "c5f3e4d6-0000-4000-8000-000000000437";
+const ownWorkflow = { ...workflow, id: OWN_WORKFLOW, name: "Delivery" };
+const sharedWorkflow = { ...workflow, id: "d6a4f5e7-0000-4000-8000-000000000437", name: "Default workflow" };
+
+/** The writes of TAS-437 the budget measures, by method and path. */
+function respondToWrite(method: string, path: string, body: unknown): unknown {
+  if (method === "PATCH" && path === `/projects/${PROJECT}/workflows/${OWN_WORKFLOW}`) {
+    return { workflow: { ...ownWorkflow, version: 2 }, issueTypes: (body as { issueTypes?: string[] }).issueTypes ?? ["TASK"], shared: false };
+  }
+  if (method === "POST" && path === `/projects/${PROJECT}/issue-types`) {
+    return { ...(body as object), shape: "square", icon: null, workflowId: sharedWorkflow.id };
+  }
+  if (method === "DELETE" && path === `/projects/${PROJECT}/issue-types/BUG`) {
+    // The first press, with no body, is refused for the bug the board holds.
+    return body === undefined
+      ? new Refusal(400, { code: "FAILED_PRECONDITION", message: "Issue type BUG has 1 issues", details: { reason: "ISSUE_TYPE_IN_USE", issueCount: "1" } })
+      : NO_CONTENT;
+  }
+  return new Refusal(404, { code: "NOT_FOUND", message: `No route ${method} ${path}` });
+}
+
 /** A plausible gateway: enough of each answer for both screens and the panel to draw. */
 function respond(path: string, search = new URLSearchParams()): unknown {
+  if (path === `/projects/${PROJECT}/workflows`) {
+    return {
+      items: [
+        { workflow: ownWorkflow, issueTypes: ["TASK"], shared: false },
+        { workflow: sharedWorkflow, issueTypes: ["BUG", "STORY"], shared: true },
+      ],
+    };
+  }
   if (path === "/projects") {
     return {
       items: projectIds.map((id, index) => ({
@@ -219,7 +252,9 @@ function respond(path: string, search = new URLSearchParams()): unknown {
 const answer = (body: unknown) =>
   body instanceof Refusal
     ? ({ status: body.status, ok: false, headers: { get: () => null }, json: async () => body.body } as unknown as Response)
-    : ({ status: 200, ok: true, headers: { get: () => null }, json: async () => body } as unknown as Response);
+    : body === NO_CONTENT
+      ? ({ status: 204, ok: true, headers: { get: () => null }, json: async () => undefined } as unknown as Response)
+      : ({ status: 200, ok: true, headers: { get: () => null }, json: async () => body } as unknown as Response);
 
 describe("the request budget of /projects and the board, and of coming back to the tab", () => {
   /** Every request, as `METHOD /path?query` with the `/api/v1` prefix off. */
@@ -239,6 +274,8 @@ describe("the request budget of /projects and the board, and of coming back to t
         requested.push(`${init?.method ?? "GET"} ${url}`);
         const [path, query = ""] = url.split("?");
         if (path === "/notifications" && server.holdNotifications) await server.holdNotifications;
+        const method = init?.method ?? "GET";
+        if (method !== "GET") return answer(respondToWrite(method, path, init?.body ? JSON.parse(String(init.body)) : undefined));
         return answer(respond(path, new URLSearchParams(query)));
       }),
     );
@@ -477,6 +514,103 @@ describe("the request budget of /projects and the board, and of coming back to t
     await settled(queryClient);
 
     expect(since(mark)).toEqual([]);
+  });
+
+  // DESIGN.md §4.28 «Чтения», TAS-437: opening Workflows from the board is the
+  // list; an edit of a workflow's types is the write and three re-reads — the
+  // list, the context and the board — since the types it moved are not in
+  // its answer.
+  it("opens Workflows for the list alone, and an edit of a workflow's types for the write and three reads", async () => {
+    const queryClient = renderAt(`/projects/${PROJECT}/board`);
+    await screen.findByRole("button", { name: /TAS-101/ });
+    await settled(queryClient);
+    let mark = requested.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Workflows" }));
+    const dialog = await screen.findByRole("dialog", { name: "Workflows" });
+    await within(dialog).findByRole("heading", { level: 3, name: "Delivery" });
+    await settled(queryClient);
+    expect(since(mark)).toEqual([`GET /projects/${PROJECT}/workflows`]);
+
+    mark = requested.length;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Edit Delivery" }));
+    const form = within(dialog).getByRole("form", { name: "Edit Delivery" });
+    fireEvent.click(within(form).getByRole("checkbox", { name: "Bug" }));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    await within(dialog).findByText("Delivery is now used by Task and Bug.");
+    await settled(queryClient);
+
+    expect([...since(mark)].sort()).toEqual(
+      [
+        `PATCH /projects/${PROJECT}/workflows/${OWN_WORKFLOW}`,
+        `GET /projects/${PROJECT}/workflows`,
+        `GET /projects/${PROJECT}/context`,
+        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
+      ].sort(),
+    );
+  });
+
+  // DESIGN.md §4.30 «Чтения», TAS-437: New type reads the workflow list when
+  // the cache has none; a create then reads the context, the board and the
+  // list it still has open again.
+  it("opens New type for the workflow list, and a create for the write and the reads it changes", async () => {
+    const queryClient = renderAt(`/projects/${PROJECT}/board`);
+    await screen.findByRole("button", { name: /TAS-101/ });
+    await settled(queryClient);
+    fireEvent.click(screen.getByRole("button", { name: "Issue types" }));
+    const dialog = await screen.findByRole("dialog", { name: "Issue types" });
+    let mark = requested.length;
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add type" }));
+    const form = within(dialog).getByRole("form", { name: "New type" });
+    await waitFor(() => expect(within(form).getByRole("combobox", { name: "Workflow" })).toHaveValue(OWN_WORKFLOW));
+    await settled(queryClient);
+    expect(since(mark)).toEqual([`GET /projects/${PROJECT}/workflows`]);
+
+    mark = requested.length;
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Spike" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Add type" }));
+    await within(dialog).findByText("Type Spike added. It uses Default workflow.");
+    await settled(queryClient);
+    expect([...since(mark)].sort()).toEqual(
+      [
+        `POST /projects/${PROJECT}/issue-types`,
+        `GET /projects/${PROJECT}/context`,
+        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
+        `GET /projects/${PROJECT}/workflows`,
+      ].sort(),
+    );
+  });
+
+  // DESIGN.md §4.30 «Первое нажатие», «Чтения» (TAS-433, TAS-437): the first
+  // press asks with no body; the move is a second DELETE; then the context and
+  // the board are read — the workflow list is not open, and no issue is.
+  it("deletes a type with issues in two DELETEs, then reads the context and the board", async () => {
+    const queryClient = renderAt(`/projects/${PROJECT}/board`);
+    await screen.findByRole("button", { name: /TAS-101/ });
+    await settled(queryClient);
+    fireEvent.click(screen.getByRole("button", { name: "Issue types" }));
+    const dialog = await screen.findByRole("dialog", { name: "Issue types" });
+    const mark = requested.length;
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete Bug" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete type" }));
+    fireEvent.change(await within(dialog).findByRole("combobox", { name: "Move them to" }), { target: { value: "TASK" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+    await within(dialog).findByText("Type Bug deleted. Its issues are now Task.");
+    await settled(queryClient);
+
+    expect(since(mark)).toEqual(
+      expect.arrayContaining([`DELETE /projects/${PROJECT}/issue-types/BUG`, `DELETE /projects/${PROJECT}/issue-types/BUG`]),
+    );
+    expect([...since(mark)].sort()).toEqual(
+      [
+        `DELETE /projects/${PROJECT}/issue-types/BUG`,
+        `DELETE /projects/${PROJECT}/issue-types/BUG`,
+        `GET /projects/${PROJECT}/context`,
+        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
+      ].sort(),
+    );
   });
 
   it("reads nothing on the board when the tab comes back, however stale", async () => {

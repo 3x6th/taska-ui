@@ -13,6 +13,7 @@ import type {
   AvatarUploadTicket,
   Board,
   BoardColumnPage,
+  CreatedProjectIssueType,
   DateOnly,
   DirectoryPage,
   Issue,
@@ -645,6 +646,41 @@ export interface CreateProjectIssueTypeInput {
   shape?: IssueTypeShape;
   icon?: IssueTypeIcon;
   sortOrder?: number;
+  /**
+   * The workflow the new type runs on (backend TAS-437): one of the project's
+   * own — a donor with no type included — or the shared default. Left out, the
+   * server binds it to the main workflow, the one the registry's first type
+   * runs on; `null` is refused, so it is never sent.
+   */
+  workflowId?: string;
+}
+
+/**
+ * `DeleteProjectIssueTypeRequestDto` (backend TAS-433): an optional command for
+ * the delete. Without `moveIssuesTo` the delete is the old one — refused
+ * `ISSUE_TYPE_IN_USE` while live issues have the type — and the dialog's first
+ * press sends no body at all. With it, every live issue of the type moves to
+ * that type first; `statusMappings` sends the issues of a status the target's
+ * workflow lacks to one it has, and `expectedGeneration` is the deleted
+ * entry's `generation`, left out when the registry carried none.
+ */
+export interface DeleteProjectIssueTypeInput {
+  moveIssuesTo?: IssueTypeCode;
+  statusMappings?: Record<string, string>;
+  expectedGeneration?: string;
+}
+
+/**
+ * The repeat of a command the server answered 503 «still being applied»
+ * (`WORKFLOW_BINDING_CHANGE_PENDING`, `ISSUE_TYPE_CREATION_PENDING`,
+ * `ISSUE_TYPE_DELETION_PENDING`; backend TAS-433, TAS-436): the same body,
+ * sent with the `X-Request-Id` that answer carried, so the server finishes the
+ * one command rather than starting a second. Only the four writes that can be
+ * pending take it, and only a repeat states it — a new command is sent
+ * without, and the gateway gives it an id of its own.
+ */
+export interface CommandRetry {
+  requestId?: string;
 }
 
 /**
@@ -823,9 +859,20 @@ export interface WorkflowTransitionInput {
  */
 export interface CreateProjectWorkflowInput {
   name: string;
+  /**
+   * Since backend TAS-436 a type bound to another workflow of the project's
+   * own moves here too — no 409 — and a workflow left with no type stays as a
+   * donor. Empty is refused `WORKFLOW_ISSUE_TYPES_EMPTY`.
+   */
   issueTypes: IssueTypeCode[];
   statuses: WorkflowStatusInput[];
   transitions: WorkflowTransitionInput[];
+  /**
+   * Where the moving types' issues in a status the new workflow lacks go:
+   * source key → a key of the new workflow. Sent only as the answer to a
+   * `WORKFLOW_ISSUES_UNMAPPED` refusal.
+   */
+  statusMappings?: Record<string, string>;
 }
 
 /**
@@ -841,9 +888,20 @@ interface WorkflowVersion {
   version?: number;
 }
 
-/** `PatchWorkflowRequestDto`: a new name, 1–100 characters, not blank — required (`@NotBlank`, backend TAS-427). */
+/**
+ * `PatchWorkflowRequestDto` (backend TAS-427, TAS-436): a name, the full set of
+ * the workflow's types, or both — at least one. A field left out is unchanged.
+ * `name` is 1–100 characters, not blank. `issueTypes` is the whole set, not a
+ * difference: a type added moves here from the shared default or another own
+ * workflow, a type left out goes back to the shared default; it requires
+ * `version`, and empty is refused `WORKFLOW_ISSUE_TYPES_EMPTY`.
+ * `statusMappings` only beside `issueTypes`, as the answer to a
+ * `WORKFLOW_ISSUES_UNMAPPED` refusal.
+ */
 export interface UpdateProjectWorkflowInput extends WorkflowVersion {
-  name: string;
+  name?: string;
+  issueTypes?: IssueTypeCode[];
+  statusMappings?: Record<string, string>;
 }
 
 /**
@@ -1917,7 +1975,13 @@ export interface TaskaApi {
    *   issue-type registry in its order (backend #226), resolves each type to
    *   the project's own workflow or the shared default, and answers each
    *   workflow once, at the position of the first type on it. Statuses and transitions by `sortOrder`, hidden
-   *   transitions included.
+   *   transitions included. Since backend TAS-436 (develop `78019ece`,
+   *   `ProjectWorkflowListService`) the project's own workflows that no type
+   *   runs on any more — donors, kept with their graph — follow, with
+   *   `issueTypes: []`, in id order; and the shared default is listed only
+   *   while a type runs on it. While a type operation of the project is
+   *   pending the read is 409 `ABORTED`, `details.reason`
+   *   `ISSUE_TYPE_OPERATION_PENDING` (`WorkflowWriteFence.requireReadable`).
    * - The three writes are ADMIN-only, refused by workflow-service: 404
    *   "Project not found", 403 "Access denied" for a non-member, 403 "Not
    *   allowed role" for anybody else.
@@ -1964,6 +2028,30 @@ export interface TaskaApi {
    *   count since backend TAS-418 — (400 `FAILED_PRECONDITION`,
    *   `details.reason` `ISSUE_TYPE_IN_USE`, `details.issueCount` as a string).
    *   Read the two apart by `details.reason`, never by prose.
+   * - delete with `moveIssuesTo` (backend TAS-433, `IssueTypeDeletionTransactions`
+   *   and issue-service's `IssueTypeMoveService` at `78019ece`): a target that
+   *   is the type itself, malformed or not in the registry is 400
+   *   `INVALID_ARGUMENT` `ISSUE_TYPE_TARGET_INVALID`; an `expectedGeneration`
+   *   that is not the entry's is 409 `ABORTED` `ISSUE_TYPE_CHANGED`, and none
+   *   for a code created again since an earlier delete is 409 `ABORTED`
+   *   `ISSUE_TYPE_GENERATION_REQUIRED`; more than 5000 issues is 400
+   *   `FAILED_PRECONDITION` `WORKFLOW_MIGRATION_LIMIT` with `limit`; issues in a
+   *   status the target's workflow lacks and no mapping for it are 400
+   *   `FAILED_PRECONDITION` `ISSUE_STATUSES_UNMAPPED` with `statusKeys` and
+   *   `targetStatusKeys` (comma-joined, no count); a mapping onto a status the
+   *   target's workflow lacks is 400 `INVALID_ARGUMENT`
+   *   `ISSUE_TYPE_STATUS_MAPPING_INVALID`. Each moved issue gets one `UPDATED`.
+   *   A move the server has not finished is 503 `UNAVAILABLE`
+   *   `ISSUE_TYPE_DELETION_PENDING` — repeat the same command
+   *   (`CommandRetry`); while it is pending, another type write of the project
+   *   is 409 `ABORTED` `PROJECT_TYPE_OPERATION_PENDING`.
+   * - create since backend TAS-437: the type and its binding in one recoverable
+   *   operation. A `workflowId` that is neither an own workflow of this project
+   *   nor the shared default is 400 `INVALID_ARGUMENT` `WORKFLOW_NOT_IN_PROJECT`;
+   *   an unfinished create is 503 `UNAVAILABLE` `ISSUE_TYPE_CREATION_PENDING`
+   *   — repeat it with the same `X-Request-Id` (`CommandRetry`); the same id
+   *   with another body is 409 `ALREADY_EXISTS` `REQUEST_ID_REUSED`. The 201 is
+   *   `CreatedProjectIssueTypeDto`: the entry and the `workflowId` it runs on.
    * - reorder (`PUT …/issue-types/order`, backend TAS-418): an empty or
    *   malformed `codes` (400 "Invalid request parameters"); a code named twice
    *   (400 `INVALID_ARGUMENT`, before the role); project, role, archive; a set
@@ -1975,18 +2063,56 @@ export interface TaskaApi {
    *   `toProjectIssueTypes`, never re-sorted. One request per move: `codes` is
    *   the full permutation the reader sees once the move is made.
    */
-  createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput): Promise<ProjectIssueType>;
+  createProjectIssueType(
+    projectId: string,
+    input: CreateProjectIssueTypeInput,
+    retry?: CommandRetry,
+  ): Promise<CreatedProjectIssueType>;
   updateProjectIssueType(projectId: string, code: IssueTypeCode, input: UpdateProjectIssueTypeInput): Promise<ProjectIssueType>;
-  deleteProjectIssueType(projectId: string, code: IssueTypeCode): Promise<void>;
+  /** Without `input` — the dialog's first press — no body is sent at all. */
+  deleteProjectIssueType(
+    projectId: string,
+    code: IssueTypeCode,
+    input?: DeleteProjectIssueTypeInput,
+    retry?: CommandRetry,
+  ): Promise<void>;
   reorderProjectIssueTypes(projectId: string, codes: readonly IssueTypeCode[]): Promise<ProjectIssueType[]>;
   /**
    * `POST /projects/{projectId}/workflows`. Refused in the server's order: the
    * role; the whole body ("Workflow creation failed: …", 400 — on create a
-   * duplicate key or pair is 400 too); then any requested type already bound in
-   * the project, 409 `ALREADY_EXISTS`. The 201 is the new workflow with its
+   * duplicate key or pair is 400 too). The 201 is the new workflow with its
    * types and `shared: false`, `version` 1.
+   *
+   * Since backend TAS-436 (develop `78019ece`, `WorkflowBindingTransactions`)
+   * the requested types move here from wherever they run — the shared default
+   * or another own workflow, which stays as a donor if it is left with none —
+   * and the 409 for a bound type is gone. The refusals of a binding change, the
+   * same for `updateProjectWorkflow` with `issueTypes`, each read by
+   * `details.reason`:
+   *
+   * - 400 `INVALID_ARGUMENT`: `WORKFLOW_ISSUE_TYPES_EMPTY` (no type),
+   *   `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT` (a type the registry lacks),
+   *   `WORKFLOW_BINDING_PLAN_TOO_LARGE` (too many moves for one change),
+   *   `WORKFLOW_STATUS_MAPPING_INVALID` (a mapping onto a status the
+   *   destination lacks);
+   * - 400 `FAILED_PRECONDITION`: `WORKFLOW_MIGRATION_LIMIT` (`limit`) and
+   *   `WORKFLOW_ISSUES_UNMAPPED` — the moving types' issues in a status their
+   *   new workflow lacks, with `issueCount`, `statusKeys` and
+   *   `targetStatusKeys` (the statuses every destination has, comma-joined);
+   *   the answer is the same command with `statusMappings`;
+   * - 409 `ABORTED`: `ISSUE_TYPE_OPERATION_PENDING` (a type operation of the
+   *   project is not finished) and `ISSUE_TYPES_CHANGED` (a moving type was
+   *   deleted or made again meanwhile);
+   * - 503 `UNAVAILABLE` `WORKFLOW_BINDING_CHANGE_PENDING`: accepted and not
+   *   finished — repeat the same command with its `X-Request-Id`
+   *   (`CommandRetry`); the same id with another command is 409
+   *   `ALREADY_EXISTS`.
    */
-  createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<ProjectWorkflowEntry>;
+  createProjectWorkflow(
+    projectId: string,
+    input: CreateProjectWorkflowInput,
+    retry?: CommandRetry,
+  ): Promise<ProjectWorkflowEntry>;
   /**
    * `POST …/workflows/{workflowId}/statuses`. After the role: an unknown
    * workflow is 404, the shared default 400 `FAILED_PRECONDITION` (not a
@@ -2037,11 +2163,18 @@ export interface TaskaApi {
    *   entry.
    *
    * Every edit raises `version` by one.
+   *
+   * A PATCH with `issueTypes` (backend TAS-436) is a binding change, refused
+   * as `createProjectWorkflow` lists, and raises the version of every own
+   * workflow a type left too. Its answer is the workflow with the types it now
+   * has; the types that went back to the shared default are not in it, so the
+   * list is read again after one.
    */
   updateProjectWorkflow(
     projectId: string,
     workflowId: string,
     input: UpdateProjectWorkflowInput,
+    retry?: CommandRetry,
   ): Promise<ProjectWorkflowEntry>;
   /**
    * `DELETE …/workflows/{workflowId}`, with a JSON body (a body of any other

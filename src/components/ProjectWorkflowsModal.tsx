@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Trash2 } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import type {
   CreateProjectWorkflowInput,
   DeleteProjectWorkflowInput,
@@ -14,7 +14,7 @@ import type {
 } from "../api/TaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
+import { apiErrorFacts, isCommandPending, isUndeployedRoute } from "../api/errors";
 import { refusalWords } from "../lib/projectArchive";
 import type {
   ProjectIssueType,
@@ -24,6 +24,7 @@ import type {
   WorkflowDefinitionTransition,
   WorkflowStatus,
 } from "../domain/types";
+import { useRevealOnOpen } from "../hooks/useRevealOnOpen";
 import { useUnanswered } from "../hooks/useUnanswered";
 import { issueTypeInSentence, issueTypeLabel, keyBadgeStyle, statusLabel, type IssueTypeRegistry } from "../lib/format";
 import { boardKey } from "../lib/boardQuery";
@@ -32,6 +33,9 @@ import {
   INITIAL_STATUS_KEY,
   STATUS_KEY_MAX_LENGTH,
   STATUS_KEY_PATTERN,
+  WORKFLOW_BINDING_PLAN_TOO_LARGE_REASON,
+  WORKFLOW_ISSUE_TYPES_EMPTY_REASON,
+  WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT_REASON,
   WORKFLOW_NAME_MAX_LENGTH,
   andList,
   categoryLabel,
@@ -39,49 +43,74 @@ import {
   defaultPosition,
   defaultTransitionPair,
   firstTargetFrom,
+  isBindingRefusal,
   isIssueCountRefusal,
+  isIssueTypesChanged,
   isMigrationLimitRefusal,
+  isTypeOperationPending,
   issueCountOf,
   issueCountWords,
-  migrationLimitOf,
+  migrationLimitSentence,
+  namedStatusKeys,
   nextTransitionSortOrder,
   normalizeStatusKey,
   orderWorkflowEntries,
   positionOptions,
   positionValue,
+  sameCodes,
   statusCategoriesOf,
   statusEditPositions,
   statusKeyFromName,
   statusesInColumnOrder,
   statusesToMap,
+  stepSourceLabel,
   targetStatusKeysOf,
   transitionBetween,
   transitionButtonLabel,
   transitionEditPositions,
   transitionPositionValue,
   transitionsInListOrder,
+  typeStepTargets,
   unreachedStatusIds,
   withWorkflowEntry,
   workflowCopyInput,
 } from "../lib/workflows";
 import { ApiNotice } from "./ApiNotice";
+import {
+  ConfirmStrip,
+  PendingNote,
+  StepColumn,
+  TargetSelect,
+  type MoveStep,
+  type Register,
+} from "./ConfirmStrip";
 import { ErrorNote } from "./ErrorNote";
 import { CategoryDot, TypeChip } from "./IssueBits";
 import { Modal } from "./Modal";
-import { RequestId } from "./RequestId";
 import { WorkflowDiagram } from "./WorkflowDiagram";
 import { projectWorkflowsKey, projectWorkflowsOptions } from "./projectWorkflowsQuery";
 
 /**
+ * The refusal that turned New workflow or Edit into its mapping step (§4.28
+ * «Шаг сопоставления (типы)»), and the set of types it answered: a different
+ * set drops the step, because it answered the old one.
+ */
+interface TypeStep {
+  refusal: unknown;
+  types: readonly string[];
+}
+
+/**
  * The one form or confirmation a dialog may have open (§4.28: opening another
  * closes this one, draft and all). A delete strip carries the refusal that
- * turned it into its move step, once one has come.
+ * turned it into its move step, once one has come; New workflow and Edit the
+ * refusal that turned them into their mapping step.
  */
 type OpenForm =
-  | { kind: "create" }
+  | { kind: "create"; step?: TypeStep }
   | { kind: "status"; workflowId: string }
   | { kind: "transition"; workflowId: string }
-  | { kind: "rename"; workflowId: string }
+  | { kind: "edit-workflow"; workflowId: string; step?: TypeStep }
   | { kind: "delete-workflow"; workflowId: string; refusal?: unknown }
   | { kind: "edit-status"; workflowId: string; statusId: string }
   | { kind: "delete-status"; workflowId: string; statusId: string; refusal?: unknown }
@@ -102,11 +131,17 @@ interface Said {
   staleIn?: string;
 }
 
+/**
+ * A write as it is sent. The two binding changes — New workflow, and Edit with
+ * `issueTypes` — carry `requestId` only when they repeat a command the server
+ * answered «still being applied» (`CommandRetry`); every new command goes
+ * without one.
+ */
 type WorkflowWrite =
-  | { kind: "create"; input: CreateProjectWorkflowInput; said: Said }
+  | { kind: "create"; input: CreateProjectWorkflowInput; said: Said; requestId?: string }
   | { kind: "status"; workflowId: string; input: WorkflowStatusInput; said: Said }
   | { kind: "transition"; workflowId: string; input: WorkflowTransitionInput; said: Said }
-  | { kind: "rename"; workflowId: string; input: UpdateProjectWorkflowInput; said: Said }
+  | { kind: "edit-workflow"; workflowId: string; input: UpdateProjectWorkflowInput; said: Said; requestId?: string }
   | { kind: "delete-workflow"; workflowId: string; input: DeleteProjectWorkflowInput; said: Said }
   | { kind: "edit-status"; workflowId: string; statusId: string; input: UpdateWorkflowStatusInput; said: Said }
   | { kind: "delete-status"; workflowId: string; statusId: string; params: DeleteWorkflowStatusParams; said: Said }
@@ -135,7 +170,7 @@ function triggerKey(form: OpenForm | WorkflowWrite): string {
       return "trigger:create";
     case "status":
     case "transition":
-    case "rename":
+    case "edit-workflow":
     case "delete-workflow":
       return `trigger:${form.kind}:${form.workflowId}`;
     case "edit-status":
@@ -169,6 +204,37 @@ const isStale = (error: unknown) => {
   return code === "ABORTED" || code === "NOT_FOUND" || status === 404;
 };
 
+/** Whether a write is a binding change — the two that can be pending, and whose step is about types. */
+const isBindingWrite = (sent: WorkflowWrite): sent is Extract<WorkflowWrite, { kind: "create" | "edit-workflow" }> =>
+  sent.kind === "create" || (sent.kind === "edit-workflow" && sent.input.issueTypes !== undefined);
+
+/**
+ * Whether a binding change's refusal is one its form answers with a step:
+ * issues left behind with the statuses they sit in (`WORKFLOW_ISSUES_UNMAPPED`
+ * with `statusKeys` — without them there is nothing to map, and it is an
+ * ordinary refusal), or the migration limit, said once as a dead end.
+ */
+const isTypeStepRefusal = (error: unknown) =>
+  isMigrationLimitRefusal(error) ||
+  (isIssueCountRefusal(error) && namedStatusKeys(apiErrorFacts(error).details).length > 0);
+
+/**
+ * The sentence of a binding change's refusal (§4.28 «Правка workflow»),
+ * branched on `details.reason` with the code — never on the words, which
+ * follow it on the detail line.
+ */
+function bindingRefusedSentence(error: unknown, verb: "saved" | "created"): string {
+  const refused = `The workflow was not ${verb}`;
+  if (isBindingRefusal(error, WORKFLOW_ISSUE_TYPES_EMPTY_REASON)) return `${refused}: a workflow needs at least one type.`;
+  if (isBindingRefusal(error, WORKFLOW_BINDING_PLAN_TOO_LARGE_REASON)) {
+    return `${refused}: too many types would move in one change. Move them in smaller groups.`;
+  }
+  if (isBindingRefusal(error, WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT_REASON)) {
+    return `${refused}: a type you chose is no longer one of this project’s types. The list now shows the current types.`;
+  }
+  return `${refused}.`;
+}
+
 /**
  * The `version` an edit sends: the one of the workflow on screen, so the
  * server refuses the edit if anybody changed it since. A workflow that came
@@ -200,7 +266,7 @@ function highlightOf(answer: ProjectWorkflowEntry, sent: WorkflowWrite): Highlig
       const id = madeId(answer, sent);
       return id ? { kind: sent.kind, id } : null;
     }
-    case "rename":
+    case "edit-workflow":
       return { kind: "card", id: sent.workflowId };
     // The shared card that took the deleted workflow's types back.
     case "delete-workflow":
@@ -307,14 +373,18 @@ interface ProjectWorkflowsModalProps {
  * and #225): every workflow its issue types run on, each once, with its
  * statuses and every transition — the hidden ones the board never offers
  * included — and for an ADMIN, on the project's own workflows, every write the
- * server has: a new workflow, renamed or deleted; a status added, changed,
- * moved or deleted; a transition added, renamed, moved, hidden or deleted.
+ * server has: a new workflow — for any of the project's types, which move to it
+ * (TAS-437) — edited (its name and the full set of its types) or deleted; a
+ * status added, changed, moved or deleted; a transition added, renamed,
+ * moved, hidden or deleted. A workflow whose types all went elsewhere stays,
+ * listed with none, as a donor (backend TAS-436).
  *
  * **Every reader can open it**; the list is the board's own configuration and
  * no secret. The shared default is read-only for everybody — the server
  * refuses a write to it — so its card carries no control at all.
  *
- * **A new workflow is a verbatim copy of the shared default**, not editable
+ * **A new workflow is a verbatim copy of the shared default** — or, when no
+ * type runs on it, of the project's main workflow — not editable
  * before it is sent (docs/ai/API-DIVERGENCE.md); it is edited afterwards, one
  * row at a time, and every edit is re-validated whole on the server, which
  * keeps a `TODO` status and a visible transition in every workflow.
@@ -354,7 +424,14 @@ export function ProjectWorkflowsModal({
   const categories = useMemo(() => statusCategoriesOf(listed ?? []), [listed]);
   const shared = entries.find((entry) => entry.shared);
   const isAdmin = readerRole === "ADMIN" && !archived;
-  const canCreate = isAdmin && Boolean(shared?.issueTypes.length);
+  // A new workflow is a copy of the shared default — or, when the list does
+  // not carry it (no type runs on it), of the project's main workflow, the one
+  // the registry's first type runs on (§4.28 «New workflow»).
+  const firstType = registry?.[0]?.code;
+  const copySource = shared ?? entries.find((entry) => firstType !== undefined && entry.issueTypes.includes(firstType));
+  // Always, while the project has types: since backend TAS-436 a type with a
+  // workflow of its own moves rather than being refused.
+  const canCreate = isAdmin && (registry?.length ?? 0) > 0 && copySource !== undefined;
 
   const [openedForm, setForm] = useState<OpenForm | null>(null);
   // A form whose row went with a re-read is not drawn, so it is not open.
@@ -369,6 +446,13 @@ export function ProjectWorkflowsModal({
   const [notice, setNotice] = useState<{ sentence: string; error: unknown } | null>(null);
   /** Statuses this dialog added, so Add transition can offer the one nothing leads to yet. */
   const [addedStatusIds, setAddedStatusIds] = useState<string[]>([]);
+  /**
+   * A binding change the server answered «still being applied» (§4.28 «Ещё
+   * применяется»): the command as it was sent and the `X-Request-Id` of the
+   * 503. Its form stays with every field frozen, and its submit sends exactly
+   * this again with that id.
+   */
+  const [pending, setPending] = useState<{ sent: WorkflowWrite; requestId: string | null } | null>(null);
 
   /**
    * Where focus goes after the next render — a form's trigger once it closes,
@@ -409,13 +493,17 @@ export function ProjectWorkflowsModal({
     mutationFn: (sent: WorkflowWrite): Promise<ProjectWorkflowEntry> => {
       switch (sent.kind) {
         case "create":
-          return taskaApi.createProjectWorkflow(projectId, sent.input);
+          return sent.requestId
+            ? taskaApi.createProjectWorkflow(projectId, sent.input, { requestId: sent.requestId })
+            : taskaApi.createProjectWorkflow(projectId, sent.input);
         case "status":
           return taskaApi.addWorkflowStatus(projectId, sent.workflowId, sent.input);
         case "transition":
           return taskaApi.addWorkflowTransition(projectId, sent.workflowId, sent.input);
-        case "rename":
-          return taskaApi.updateProjectWorkflow(projectId, sent.workflowId, sent.input);
+        case "edit-workflow":
+          return sent.requestId
+            ? taskaApi.updateProjectWorkflow(projectId, sent.workflowId, sent.input, { requestId: sent.requestId })
+            : taskaApi.updateProjectWorkflow(projectId, sent.workflowId, sent.input);
         case "delete-workflow":
           return taskaApi.deleteProjectWorkflow(projectId, sent.workflowId, sent.input);
         case "edit-status":
@@ -431,7 +519,24 @@ export function ProjectWorkflowsModal({
     // Awaited by the mutation, so a stale write stays in flight until the list
     // it is reloaded into has answered.
     onError: async (error, sent) => {
-      if (sent.kind !== "create" && sent.said.staleIn !== undefined && isStale(error)) {
+      // «Ещё применяется» (§4.28): not a refusal — the server has the command
+      // and finishes it. The form stays, frozen, and its submit repeats this
+      // command with the 503's request id. Only a binding change can be
+      // pending; any other answer to a repeat goes down its own branch below.
+      if (isBindingWrite(sent) && isCommandPending(error)) {
+        setPending({ sent, requestId: apiErrorFacts(error).requestId });
+        pendingFocus.current = ["submit"];
+        return;
+      }
+      setPending(null);
+      // «Идёт другая операция»: before the «changed elsewhere» path, which an
+      // `ABORTED` would otherwise take. The form stays; `WriteRefusal` says it.
+      if (isTypeOperationPending(error)) {
+        pendingFocus.current = ["submit"];
+        return;
+      }
+      const typesChanged = isBindingWrite(sent) && isIssueTypesChanged(error);
+      if (typesChanged || (sent.kind !== "create" && sent.said.staleIn !== undefined && isStale(error))) {
         // The form was drawn from a workflow the server no longer has: close
         // it, read the list again, and say what happened once, in the
         // server's words with its request id. The draft goes with the form —
@@ -441,11 +546,31 @@ export function ProjectWorkflowsModal({
         void queryClient.invalidateQueries({ queryKey: boardKey(projectId) });
         const { failed } = await reread();
         setForm(null);
-        setNotice({ sentence: staleSentence(sent.said.staleIn, failed), error });
-        pendingFocus.current = [`heading:${sent.workflowId}`, "notice"];
+        setNotice({
+          sentence: typesChanged ? typesChangedSentence(failed) : staleSentence(sent.said.staleIn ?? "", failed),
+          error,
+        });
+        pendingFocus.current =
+          sent.kind === "create" ? ["trigger:create", "notice"] : [`heading:${"workflowId" in sent ? sent.workflowId : ""}`, "notice"];
+        return;
+      }
+      if (isBindingWrite(sent) && isBindingRefusal(error, WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT_REASON)) {
+        // A type the reader chose has left the registry: the context and the
+        // list are read again, the form stays and its rows follow the registry.
+        void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+        void queryClient.invalidateQueries({ queryKey: listKey });
+        pendingFocus.current = ["submit"];
         return;
       }
       if (isGoneOrTaken(error)) void queryClient.invalidateQueries({ queryKey: listKey });
+      if (isBindingWrite(sent) && isTypeStepRefusal(error)) {
+        // The form takes its mapping step — or, past the migration limit, its
+        // dead end — for the set of types it sent.
+        const types = sent.input.issueTypes ?? [];
+        setForm((current) => (current && isFormOf(current, sent) ? { ...current, step: { refusal: error, types } } : current));
+        pendingFocus.current = ["step", "submit"];
+        return;
+      }
       if (
         (sent.kind === "delete-status" || sent.kind === "delete-workflow") &&
         (isIssueCountRefusal(error) || isMigrationLimitRefusal(error))
@@ -473,8 +598,9 @@ export function ProjectWorkflowsModal({
       // An edit answers the whole workflow, and that is what is drawn. A create
       // and a workflow delete also move types on or off the shared default,
       // which their answer does not describe: the list is read again for those.
+      setPending(null);
       let placed = false;
-      if (sent.kind !== "create" && sent.kind !== "delete-workflow") {
+      if (sent.kind !== "create" && sent.kind !== "delete-workflow" && !isBindingWrite(sent)) {
         await queryClient.cancelQueries({ queryKey: listKey });
         const current = queryClient.getQueryData<ProjectWorkflowEntry[]>(listKey);
         const next = current ? withWorkflowEntry(current, answer) : null;
@@ -507,21 +633,59 @@ export function ProjectWorkflowsModal({
   });
   const inFlight = write.isPending;
 
+  /**
+   * Closing the dialog over a pending command reads what it changes again too:
+   * the board under the scrim shows what the server finishes (§4.28).
+   */
+  const pendingOnClose = useRef(false);
+  useEffect(() => {
+    pendingOnClose.current = pending !== null;
+  });
+  useEffect(
+    () => () => {
+      if (!pendingOnClose.current) return;
+      void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+      void queryClient.invalidateQueries({ queryKey: boardKey(projectId) });
+    },
+    [queryClient, projectId],
+  );
+  /** The open form's command, while the server is still applying it. */
+  const pendingHere = pending && form && isFormOf(form, pending.sent) ? pending : null;
+  /**
+   * The command a pending form was waiting on goes through without its repeat:
+   * once the form is gone the list, the context and the board are read again,
+   * so what the server finishes still reaches the screen (§4.28).
+   */
+  const settlePending = () => {
+    if (!pending) return;
+    setPending(null);
+    void queryClient.invalidateQueries({ queryKey: listKey });
+    void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+    void queryClient.invalidateQueries({ queryKey: boardKey(projectId) });
+  };
   const openForm = (next: OpenForm) => {
     if (inFlight) return;
     write.reset();
+    settlePending();
     setNotice(null);
     setForm(next);
   };
   const closeForm = () => {
     if (inFlight || !form) return;
     write.reset();
+    settlePending();
     pendingFocus.current = [triggerKey(form)];
     setForm(null);
   };
   const send = (sent: WorkflowWrite) => {
     if (inFlight) return;
     setAnnouncement("");
+    // A pending command is repeated as it was sent, with the 503's id — its
+    // fields are frozen, so it is the command the form shows.
+    if (pendingHere && isFormOf(form, sent) && isBindingWrite(pendingHere.sent)) {
+      write.mutate({ ...pendingHere.sent, requestId: pendingHere.requestId ?? undefined });
+      return;
+    }
     write.mutate(sent);
   };
 
@@ -556,7 +720,13 @@ export function ProjectWorkflowsModal({
   /** The refusal of the open form's write, if the last write was this form's. */
   const formError = write.isError && form && write.variables && isFormOf(form, write.variables) ? write.error : null;
 
-  const formProps = { inFlight, error: formError, onCancel: closeForm, register };
+  const formProps: FormProps = {
+    inFlight,
+    frozen: inFlight || pendingHere !== null,
+    error: formError,
+    onCancel: closeForm,
+    register,
+  };
 
   return (
     <Modal
@@ -596,22 +766,26 @@ export function ProjectWorkflowsModal({
           <p className="workflows-note">Your role on this project is unknown, so workflows cannot be changed here.</p>
         ) : null}
 
-        {isAdmin && listed && listed.length > 0 ? (
-          canCreate && shared ? (
-            form?.kind === "create" ? (
-              <NewWorkflowForm {...formProps} registry={registry} shared={shared} send={send} />
-            ) : (
-              <AddTrigger
-                focusKey="trigger:create"
-                inFlight={inFlight}
-                label="New workflow"
-                onOpen={() => openForm({ kind: "create" })}
-                register={register}
-                unavailable={null}
-              />
-            )
+        {canCreate && copySource && listed && listed.length > 0 ? (
+          form?.kind === "create" ? (
+            <NewWorkflowForm
+              {...formProps}
+              copySource={copySource}
+              entries={entries}
+              registry={registry ?? []}
+              send={send}
+              shared={shared}
+              step={form.step}
+            />
           ) : (
-            <p className="workflows-note">Every issue type in this project already has its own workflow.</p>
+            <AddTrigger
+              focusKey="trigger:create"
+              inFlight={inFlight}
+              label="New workflow"
+              onOpen={() => openForm({ kind: "create" })}
+              register={register}
+              unavailable={null}
+            />
           )
         ) : null}
 
@@ -629,6 +803,7 @@ export function ProjectWorkflowsModal({
                 <WorkflowCard
                   addedStatusIds={addedStatusIds}
                   categories={categories}
+                  entries={entries}
                   entry={entry}
                   form={form}
                   formProps={formProps}
@@ -651,6 +826,9 @@ export function ProjectWorkflowsModal({
           // list (no hidden transitions, no shared flag), and drawing them here
           // would be the compensation AGENTS.md rules out.
           <p className="workflows-empty">Workflows are not on this gateway yet, so they cannot be shown here.</p>
+        ) : unread.unanswered && isTypeOperationPending(unread.error) ? (
+          // «Идёт другая операция» (§4.28): a moment's state, not a failure.
+          <p className="workflows-empty">This project&rsquo;s workflows are being changed right now. Reopen Workflows in a few seconds.</p>
         ) : unread.unanswered ? (
           // A state found on opening, not an answer to anything the reader
           // did, so not announced (§5.6). Reopening the dialog asks again.
@@ -670,8 +848,6 @@ export function ProjectWorkflowsModal({
   );
 }
 
-/** A ref callback that files a node under a key, for `pendingFocus` to find. */
-type Register = (key: string) => (node: HTMLElement | null) => void;
 
 /**
  * The notice over the cards about a write (`notice`), in a box focus can land
@@ -687,9 +863,14 @@ function WriteNotice({ sentence, error, register }: { sentence: string; error: u
   );
 }
 
-/** What every form gets from the dialog: the write's state, the way out, and where its submit is filed. */
+/**
+ * What every form gets from the dialog: the write's state, the way out, and
+ * where its submit is filed. `frozen` is `inFlight`, or the form's command
+ * held for its repeat (§4.28 «Ещё применяется»): fields keep what they show.
+ */
 interface FormProps {
   inFlight: boolean;
+  frozen: boolean;
   error: Error | null;
   onCancel: () => void;
   register: Register;
@@ -705,6 +886,7 @@ interface RowControls {
 
 function WorkflowCard({
   entry,
+  entries,
   shared,
   categories,
   addedStatusIds,
@@ -719,6 +901,8 @@ function WorkflowCard({
   send,
 }: {
   entry: ProjectWorkflowEntry;
+  /** Every card's entry in the dialog's order — where the types an edit can take run now. */
+  entries: readonly ProjectWorkflowEntry[];
   /** The shared default's entry, which a delete sends this workflow's types back to. */
   shared: ProjectWorkflowEntry | undefined;
   categories: string[];
@@ -756,16 +940,25 @@ function WorkflowCard({
   const typesInWords = andList(issueTypes.map((code) => issueTypeLabel(code, registry)));
   const sharedName = shared?.workflow.name.trim() || "the shared workflow";
   const deleteStripId = `${ids}-delete`;
-  const renaming = formHere?.kind === "rename";
+  const editing = formHere?.kind === "edit-workflow" ? formHere : null;
 
   return (
     <section
-      aria-label={renaming ? name : undefined}
-      aria-labelledby={renaming ? undefined : headingId}
+      aria-label={editing ? name : undefined}
+      aria-labelledby={editing ? undefined : headingId}
       className={`workflow-card${lit("card", workflow.id) ? " is-highlighted" : ""}`}
     >
-      {renaming ? (
-        <RenameWorkflowForm {...formProps} name={name} send={send} workflow={workflow} />
+      {editing ? (
+        <EditWorkflowForm
+          {...formProps}
+          entries={entries}
+          entry={entry}
+          name={name}
+          registry={registry ?? []}
+          send={send}
+          shared={shared}
+          step={editing.step}
+        />
       ) : (
         <div className="workflow-card-head">
           {/* Focusable only from script: where focus lands when this card is new. */}
@@ -776,13 +969,13 @@ function WorkflowCard({
           {editable ? (
             <span className="workflow-row-actions workflow-card-actions">
               <RowAction
-                focusKey={`trigger:rename:${workflow.id}`}
+                focusKey={`trigger:edit-workflow:${workflow.id}`}
                 icon={<Pencil size={14} />}
                 inFlight={inFlight}
-                label={`Rename ${name}`}
-                onClick={() => onOpenForm({ kind: "rename", workflowId: workflow.id })}
+                label={`Edit ${name}`}
+                onClick={() => onOpenForm({ kind: "edit-workflow", workflowId: workflow.id })}
                 register={register}
-                title="Rename"
+                title="Edit"
               />
               <RowAction
                 controls={formHere?.kind === "delete-workflow" ? deleteStripId : undefined}
@@ -814,24 +1007,30 @@ function WorkflowCard({
         />
       ) : null}
 
-      <div className="workflow-types">
-        <span className="workflow-types-label">Used by</span>
-        {issueTypes.length ? (
-          // As the server sent them, not narrowed to the types the board
-          // offers: the list may name one the project does not allow
-          // (docs/ai/BACKLOG.md), and hiding it would misstate the binding.
-          <ul className="workflow-type-list">
-            {issueTypes.map((code) => (
-              <li className="workflow-type" key={code}>
-                <TypeChip registry={registry} type={code} />
-                <span>{issueTypeLabel(code, registry)}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <span className="workflow-types-none">No issue type uses it.</span>
-        )}
-      </div>
+      {editing ? null : (
+        <div className="workflow-types">
+          <span className="workflow-types-label">Used by</span>
+          {issueTypes.length ? (
+            // As the server sent them, not narrowed to the types the board
+            // offers: the list may name one the project does not allow
+            // (docs/ai/BACKLOG.md), and hiding it would misstate the binding.
+            <ul className="workflow-type-list">
+              {issueTypes.map((code) => (
+                <li className="workflow-type" key={code}>
+                  <TypeChip registry={registry} type={code} />
+                  <span>{issueTypeLabel(code, registry)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            // A donor (backend TAS-436): its types went to another workflow,
+            // and the server keeps it with its graph.
+            <span className="workflow-types-none">
+              No issue type uses it.{editable ? " Choose its types with Edit, or delete it." : null}
+            </span>
+          )}
+        </div>
+      )}
 
       {entry.shared ? (
         <p className="workflows-note">
@@ -947,6 +1146,16 @@ const staleSentence = (workflowName: string, rereadFailed: boolean) =>
   rereadFailed
     ? `${workflowName} was changed elsewhere, so nothing was saved, and this list could not be read again. Reopen Workflows to see it.`
     : `${workflowName} was changed elsewhere, so it has been reloaded. Nothing was saved.`;
+
+/**
+ * The notice of a binding change refused because a moving type was deleted or
+ * made again meanwhile (409 `ABORTED` `ISSUE_TYPES_CHANGED`, §4.28): the
+ * «changed elsewhere» path, in its own sentence.
+ */
+const typesChangedSentence = (rereadFailed: boolean) =>
+  rereadFailed
+    ? "Issue types changed elsewhere, so nothing was saved, and this list could not be read again. Reopen Workflows to see it."
+    : "Issue types changed elsewhere, so nothing was saved. The list now shows the current types.";
 
 /**
  * One status: its line — and, for an ADMIN on a workflow of the project's own,
@@ -1155,7 +1364,7 @@ function TransitionRow({
         </>
       )}
       {deleting ? (
-        <ConfirmStrip
+        <WorkflowStrip
           {...formProps}
           answerLabel="Delete transition"
           id={stripId}
@@ -1303,11 +1512,15 @@ function AddTrigger({
 
 /**
  * A refusal of the open form's or strip's write: the gateway that serves the
- * list and not this route says so quietly; anything else is `ErrorNote` with
- * the dialog's sentence, the server's words and the request id (§4.28).
+ * list and not this route says so quietly; a command still being applied says
+ * so quietly too, naming the button that finishes it (`label`); a type
+ * operation of the project still pending has its own sentence (§4.28 «Идёт
+ * другая операция»); anything else is `ErrorNote` with the dialog's sentence,
+ * the server's words and the request id (§4.28).
  */
-function WriteRefusal({ error, refusedSentence }: { error: Error; refusedSentence: string }) {
+function WriteRefusal({ error, refusedSentence, label }: { error: Error; refusedSentence: string; label: string }) {
   const facts = apiErrorFacts(error);
+  if (isCommandPending(error)) return <PendingNote error={error} label={label} />;
   return isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE) ? (
     // The list answered and the write did not: a gateway serving one of
     // the routes and not the other. Quiet, as Edit project's own line,
@@ -1317,7 +1530,9 @@ function WriteRefusal({ error, refusedSentence }: { error: Error; refusedSentenc
     </p>
   ) : (
     <ErrorNote live="alert" requestId={facts.requestId} serverWords={refusalWords(error)}>
-      {refusedSentence}
+      {isTypeOperationPending(error)
+        ? "Another change to this project’s types is still being applied, so this was not saved. Try again in a few seconds."
+        : refusedSentence}
     </ErrorNote>
   );
 }
@@ -1338,7 +1553,8 @@ function FormFoot({
   error,
   onCancel,
   register,
-}: FormProps & {
+}: Omit<FormProps, "frozen"> & {
+  frozen?: boolean;
   submitLabel: string;
   refusedSentence: string;
   reason: string | null;
@@ -1355,7 +1571,7 @@ function FormFoot({
           {reason}
         </p>
       ) : null}
-      {error ? <WriteRefusal error={error} refusedSentence={refusedSentence} /> : null}
+      {error ? <WriteRefusal error={error} label={submitLabel} refusedSentence={refusedSentence} /> : null}
       <div className="workflow-form-actions">
         <button
           aria-disabled={inFlight || undefined}
@@ -1380,184 +1596,21 @@ function FormFoot({
 }
 
 /**
- * A row form or a strip opened below the fold is brought into the body's view
- * once, on opening — the whole box, so its Save or its answer is on screen
- * (art-director, TAS-416) — as §4.22 brings its notice: `nearest`, no
- * `behavior`, so reduced motion has nothing to take away.
+ * §4.22's strip in a card (`ConfirmStrip`), its refusals said as this dialog
+ * says a write's (`WriteRefusal`).
  */
-function useRevealOnOpen<T extends HTMLElement>() {
-  const box = useRef<T>(null);
-  useEffect(() => {
-    box.current?.scrollIntoView({ block: "nearest" });
-  }, []);
-  return box;
-}
-
-/**
- * §4.22's confirmation strip, in a card: the question, Cancel first and
- * focused, and the answer edged in `--danger`. A delete refused for the issues
- * it would leave behind becomes a step in the same strip (`step`): its own
- * sentence, said as an alert, then the fields that move the issues and the
- * answer that sends them. A step is a question, so it does not print the
- * server's words, which instruct an API client (art-director, TAS-416) —
- * except a step with nowhere to move the issues and so no answer, which reads
- * sentence, why, then the server's words and the request id, then Cancel.
- * Any other refusal is said above the actions, as a form's is.
- */
-function ConfirmStrip({
-  id,
-  sentence,
-  answerLabel,
-  onAnswer,
+function WorkflowStrip({
   refusedSentence,
-  step,
-  inFlight,
-  error,
-  onCancel,
-  register,
-}: FormProps & {
-  id: string;
-  sentence: ReactNode;
-  answerLabel: string;
-  /** Leaves the answer out when there is nothing it could send. */
-  onAnswer: (() => void) | null;
-  refusedSentence: string;
-  step?: {
-    refusal: unknown;
-    sentence: string;
-    fields: ReactNode;
-    /** A field still empty: the answer is steadily unavailable, with no sentence (§4.28). */
-    blocked: boolean;
-  };
-}) {
-  const sentenceId = `${id}-sentence`;
-  const box = useRevealOnOpen<HTMLDivElement>();
-  // Only a step with no answer prints the refusal it came from.
-  const deadEnd = step && !onAnswer ? step : null;
-  const stepFacts = deadEnd ? apiErrorFacts(deadEnd.refusal) : null;
-  const stepWords = deadEnd ? refusalWords(deadEnd.refusal) : null;
-  const blocked = step?.blocked ?? false;
-  // The step says its refusal itself; only a later one of another kind is said again.
-  const otherError = error && (!step || error !== step.refusal) ? error : null;
-
+  ...props
+}: Omit<ComponentProps<typeof ConfirmStrip>, "className" | "sayRefusal"> & { refusedSentence: string }) {
   return (
-    <div className={`member-confirm workflow-confirm${step ? " is-step" : ""}`} id={id} ref={box}>
-      {step ? (
-        <div className="workflow-confirm-step">
-          <p className="member-confirm-sentence" id={sentenceId} role="alert">
-            {step.sentence}
-          </p>
-          {step.fields}
-          {stepWords || stepFacts?.requestId ? (
-            <p className="error-note-detail workflow-confirm-detail">
-              {stepWords ? <span>{stepWords}</span> : null}
-              {stepFacts?.requestId ? <RequestId value={stepFacts.requestId} /> : null}
-            </p>
-          ) : null}
-        </div>
-      ) : (
-        <p className="member-confirm-sentence" id={sentenceId}>
-          {sentence}
-        </p>
-      )}
-      {otherError ? (
-        <div className="workflow-confirm-refusal">
-          <WriteRefusal error={otherError} refusedSentence={refusedSentence} />
-        </div>
-      ) : null}
-      <div className="member-confirm-actions">
-        <button
-          aria-disabled={inFlight || undefined}
-          autoFocus={!step}
-          className="secondary-button compact-button"
-          onClick={onCancel}
-          ref={register("cancel")}
-          type="button"
-        >
-          Cancel
-        </button>
-        {onAnswer ? (
-          <button
-            aria-describedby={sentenceId}
-            aria-disabled={inFlight || blocked || undefined}
-            className={`secondary-button compact-button member-confirm-accept${blocked && !inFlight ? " is-unavailable" : ""}`}
-            onClick={() => {
-              if (!inFlight && !blocked) onAnswer();
-            }}
-            ref={register("submit")}
-            type="button"
-          >
-            {answerLabel}
-          </button>
-        ) : null}
-      </div>
-    </div>
+    <ConfirmStrip
+      {...props}
+      className="workflow-confirm"
+      sayRefusal={(error) => <WriteRefusal error={error} label={props.answerLabel} refusedSentence={refusedSentence} />}
+    />
   );
 }
-
-/**
- * A select of statuses an issue can be moved to, with nothing chosen until the
- * reader chooses: a delete moves every issue in the status, and the strip's
- * answer stays steadily unavailable until a target is named. A change while
- * the write is out is ignored, as every field of the dialog's (§4.28).
- */
-function TargetSelect({
-  label,
-  options,
-  value,
-  onChange,
-  inFlight,
-  register,
-  focusKey,
-}: {
-  label: string;
-  options: readonly { key: string; label: string }[];
-  value: string;
-  onChange: (key: string) => void;
-  inFlight: boolean;
-  register: Register;
-  /** The step's first field is where focus goes when the step appears. */
-  focusKey?: string;
-}) {
-  const fieldId = useId();
-  return (
-    <div className="workflow-field">
-      <label htmlFor={fieldId}>{label}</label>
-      <select
-        id={fieldId}
-        onChange={(event) => {
-          if (!inFlight) onChange(event.target.value);
-        }}
-        ref={focusKey ? register(focusKey) : undefined}
-        value={value}
-      >
-        <option disabled value="">
-          Choose a status
-        </option>
-        {options.map((option) => (
-          <option key={option.key} value={option.key}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-/**
- * The terminal sentence of a delete refused by the migration limit (backend
- * TAS-427: 400 `FAILED_PRECONDITION`, `details.reason`
- * `WORKFLOW_MIGRATION_LIMIT`, `details.limit`): no mapping helps and trying
- * again does not either, so the strip offers no answer. Not the rate-limit
- * wording — nothing here eases with time. `details.limit` that is not a whole
- * number is left out of the words rather than guessed.
- */
-const migrationLimitSentence = (refusal: unknown, subject: string) => {
-  const limit = migrationLimitOf(refusal);
-  return limit === null
-    ? `Too many issues would have to move at once, so ${subject} cannot be deleted.`
-    : `More than ${limit.toLocaleString("en-US")} issues would have to move, and the server moves at most ${limit.toLocaleString("en-US")} at once, so ${subject} cannot be deleted.`;
-};
 
 /**
  * Delete status (§4.28): the status and every transition from or to it. A
@@ -1599,7 +1652,7 @@ function DeleteStatusStrip({
   const left = `${count === null ? "Issues" : issueCountWords(count)} would be left in a status this workflow no longer has.`;
 
   return (
-    <ConfirmStrip
+    <WorkflowStrip
       {...formProps}
       answerLabel={refusal ? "Move and delete" : "Delete status"}
       id={id}
@@ -1634,7 +1687,7 @@ function DeleteStatusStrip({
                 blocked: !chosen,
                 fields: (
                   <TargetSelect
-                    inFlight={formProps.inFlight}
+                    frozen={formProps.inFlight}
                     label="Move its issues to"
                     onChange={setTarget}
                     focusKey="step"
@@ -1705,12 +1758,16 @@ function DeleteWorkflowStrip({
   const answerable = !limited && (!step || targets.length > 0);
   const left = `${count === null ? "Issues" : issueCountWords(count)} would be left in statuses ${sharedName} does not have.`;
   const one = typeCount === 1;
-  const back = typesInWords
-    ? `${typesInWords} ${one ? "goes" : "go"} back to ${sharedName}.`
-    : `Its issue types go back to ${sharedName}.`;
+  // A donor (backend TAS-436) sends nothing back anywhere.
+  const back =
+    typeCount === 0
+      ? "No issue type uses it."
+      : typesInWords
+        ? `${typesInWords} ${one ? "goes" : "go"} back to ${sharedName}.`
+        : `Its issue types go back to ${sharedName}.`;
 
   return (
-    <ConfirmStrip
+    <WorkflowStrip
       {...formProps}
       answerLabel={step ? "Move and delete" : "Delete workflow"}
       id={id}
@@ -1722,7 +1779,10 @@ function DeleteWorkflowStrip({
                 workflowId: workflow.id,
                 input: { version: versionOf(workflow), ...(step ? { statusMappings: sent } : {}) },
                 said: {
-                  done: `Workflow ${name} deleted. ${typesInWords ? `${typesInWords} ${one ? "uses" : "use"}` : "Its issue types use"} ${sharedName} again.`,
+                  done:
+                    typeCount === 0
+                      ? `Workflow ${name} deleted.`
+                      : `Workflow ${name} deleted. ${typesInWords ? `${typesInWords} ${one ? "uses" : "use"}` : "Its issue types use"} ${sharedName} again.`,
                   unread: `Workflow ${name} was deleted, but this list could not be read again. Reopen Workflows to see it.`,
                   staleIn: name,
                 },
@@ -1748,7 +1808,7 @@ function DeleteWorkflowStrip({
                     ) : (
                       step.map((status, index) => (
                         <TargetSelect
-                          inFlight={formProps.inFlight}
+                          frozen={formProps.inFlight}
                           key={status.id}
                           label={`Move ${statusLabel(status.statusKey, workflow.statuses)} issues to`}
                           onChange={(key) => setMapping((current) => ({ ...current, [status.statusKey]: key }))}
@@ -1768,30 +1828,248 @@ function DeleteWorkflowStrip({
   );
 }
 
+/** The shared default's name in a sentence; «the shared workflow» when the list does not carry it (§4.28 «Мелочи»). */
+const sharedNameOf = (shared: ProjectWorkflowEntry | undefined) => shared?.workflow.name.trim() || "the shared workflow";
+
+/** A workflow's name in a sentence; «Unnamed workflow» for a blank one (§4.28 «Мелочи»). */
+const workflowNameOf = (workflow: WorkflowDefinition) => workflow.name.trim() || "Unnamed workflow";
+
 /**
- * New workflow (§4.28): a name and the types to move, and nothing else — the
- * statuses and transitions are the shared default's, copied as the list sent
- * them. Only a type that runs on the shared default now is offered: one with a
- * workflow of its own would be refused 409.
+ * «Список типов формы» (§4.28, TAS-437): every type of the registry, in its
+ * order, one checkbox row each — a column, since the note does not fit beside
+ * the type in a row at 390. The note says where a type runs and what sending
+ * will do to it: a type of this workflow (Edit only) is quiet while it stays
+ * and «Goes back to {shared}» when unchecked; a type of another workflow is
+ * «On {X}», and «Moves from {X}» once checked.
+ *
+ * `locked` is the last checked type of a workflow that had types (Edit): its
+ * checkbox is steadily unavailable (§4.1) — a press and Space do nothing, the
+ * Tab stop stays — and the line under the list says why. A change while the
+ * form is `frozen` is ignored too, without a fade.
+ */
+function TypeChoiceList({
+  legend,
+  registry,
+  entries,
+  ownWorkflowId,
+  shared,
+  picked,
+  onToggle,
+  locked,
+  frozen,
+  describedBy,
+}: {
+  legend: string;
+  registry: readonly ProjectIssueType[];
+  entries: readonly ProjectWorkflowEntry[];
+  /** The workflow the form is about; `null` for a new one, which has no type yet. */
+  ownWorkflowId: string | null;
+  shared: ProjectWorkflowEntry | undefined;
+  picked: readonly string[];
+  onToggle: (code: string, checked: boolean) => void;
+  locked: string | null;
+  frozen: boolean;
+  /** The line under the group that describes it, if any. */
+  describedBy?: string;
+}) {
+  const ids = useId();
+  const lockedNoteId = `${ids}-locked`;
+  const sharedName = sharedNameOf(shared);
+  const noteOf = (code: string, checked: boolean) => {
+    const home = entries.find((entry) => entry.issueTypes.includes(code));
+    if (ownWorkflowId !== null && home?.workflow.id === ownWorkflowId) return checked ? null : `Goes back to ${sharedName}`;
+    // A type no own workflow lists runs on the shared default.
+    const there = home ? (home.shared ? sharedName : workflowNameOf(home.workflow)) : sharedName;
+    return checked ? `Moves from ${there}` : `On ${there}`;
+  };
+  return (
+    <fieldset aria-describedby={describedBy} className="workflow-types-field">
+      <legend>{legend}</legend>
+      <div className="workflow-type-choices">
+        {registry.map(({ code }, index) => {
+          const checked = picked.includes(code);
+          const note = noteOf(code, checked);
+          const isLocked = locked === code;
+          const labelId = `${ids}-${index}-label`;
+          const noteId = `${ids}-${index}-note`;
+          return (
+            <label className="workflow-type-choice" key={code}>
+              <input
+                aria-describedby={[note ? noteId : "", isLocked ? lockedNoteId : ""].filter(Boolean).join(" ") || undefined}
+                aria-disabled={isLocked || undefined}
+                aria-labelledby={labelId}
+                checked={checked}
+                className={isLocked ? "is-unavailable" : undefined}
+                // A press and Space on the last checked type, or on any box
+                // while the form is frozen, change nothing (§4.1): the box is
+                // controlled, so a change not taken is put back. Not
+                // `preventDefault` on the click, which React and the browser's
+                // cancelled activation leave showing the wrong state.
+                onChange={(event) => {
+                  if (!frozen && !isLocked) onToggle(code, event.target.checked);
+                }}
+                type="checkbox"
+              />
+              <TypeChip registry={registry} type={code} />
+              <span className="workflow-type-choice-name" id={labelId}>
+                {issueTypeLabel(code, registry)}
+              </span>
+              {note ? (
+                <span className="workflow-type-choice-note" id={noteId}>
+                  {note}
+                </span>
+              ) : null}
+            </label>
+          );
+        })}
+      </div>
+      {locked ? (
+        <p className="workflows-note workflow-type-choices-note" id={lockedNoteId}>
+          {`A workflow needs at least one type: check another before unchecking ${issueTypeLabel(locked, registry)}, or delete this workflow.`}
+        </p>
+      ) : null}
+    </fieldset>
+  );
+}
+
+/**
+ * The mapping step of a binding change (§4.28 «Шаг сопоставления (типы)»),
+ * from the refusal it answers: issues the moving types would leave in a status
+ * their new workflow lacks (`WORKFLOW_ISSUES_UNMAPPED`), or more than the
+ * server moves at once (`WORKFLOW_MIGRATION_LIMIT`). One select per key the
+ * server names, offering exactly the keys it names — one mapping per key for
+ * every moving issue, whichever type it is. `own` is the workflow the form is
+ * about (a new one's copy), whose labels and order the options take.
+ *
+ * `null` when there is no step. Otherwise the step to draw, whether it has an
+ * answer at all — none past the limit, or when the destinations share no
+ * status — whether its answer still waits on a select, and the mappings it
+ * sends.
+ */
+function useTypeStep({
+  step,
+  own,
+  entries,
+  shared,
+  frozen,
+  register,
+}: {
+  step: TypeStep | null;
+  own: WorkflowDefinition;
+  entries: readonly ProjectWorkflowEntry[];
+  shared: ProjectWorkflowEntry | undefined;
+  frozen: boolean;
+  register: Register;
+}): { view: MoveStep; answerable: boolean; statusMappings: Record<string, string> } | null {
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+  if (!step) return null;
+  const { refusal } = step;
+  if (isMigrationLimitRefusal(refusal)) {
+    return {
+      view: { refusal, sentence: migrationLimitSentence(refusal, "these types", "cannot be moved"), fields: null, blocked: true },
+      answerable: false,
+      statusMappings: {},
+    };
+  }
+  const keys = namedStatusKeys(apiErrorFacts(refusal).details);
+  const targets = typeStepTargets(targetStatusKeysOf(refusal), own, shared?.workflow);
+  const count = issueCountOf(refusal);
+  const left = `${count === null ? "Issues" : issueCountWords(count)} would be left in a status their new workflow does not have.`;
+  if (targets.length === 0) {
+    return {
+      view: {
+        refusal,
+        sentence: left,
+        blocked: true,
+        fields: (
+          <p className="workflow-confirm-note">
+            The types you add and the types you remove go to workflows that share no status, so one choice cannot fit
+            both. Save them separately.
+          </p>
+        ),
+      },
+      answerable: false,
+      statusMappings: {},
+    };
+  }
+  const chosen = (key: string) => (targets.some((target) => target.key === mapping[key]) ? mapping[key] : "");
+  const sources = [own, ...entries.map((entry) => entry.workflow)];
+  return {
+    view: {
+      refusal,
+      sentence: `${left} Choose where each status’s issues go.`,
+      blocked: keys.some((key) => chosen(key) === ""),
+      fields: keys.map((key, index) => (
+        <TargetSelect
+          focusKey={index === 0 ? "step" : undefined}
+          frozen={frozen}
+          key={key}
+          label={`Move ${stepSourceLabel(key, sources)} issues to`}
+          onChange={(target) => setMapping((current) => ({ ...current, [key]: target }))}
+          options={targets}
+          register={register}
+          value={chosen(key)}
+        />
+      )),
+    },
+    answerable: true,
+    statusMappings: Object.fromEntries(keys.map((key) => [key, chosen(key)])),
+  };
+}
+
+/** The mapping step inside a form: between the type list and the actions, on the box's own `--surface` (§4.28). */
+function FormStep({ step }: { step: { view: MoveStep; answerable: boolean } }) {
+  return (
+    <div className="workflow-form-step">
+      <StepColumn deadEnd={!step.answerable} step={step.view} />
+    </div>
+  );
+}
+
+/**
+ * New workflow (§4.28, TAS-437): a name and the types to move. The statuses
+ * and transitions are a copy of the shared default — or, when no type runs on
+ * it, of the project's main workflow — as the list sent them. **Every** type
+ * of the registry is offered: one that runs on a workflow of the project's own
+ * moves here too (backend TAS-436). Issues of a moving type in a status the
+ * copy lacks turn the form into its mapping step.
  */
 function NewWorkflowForm({
+  copySource,
+  entries,
   shared,
   registry,
+  step,
   send,
   ...formProps
 }: FormProps & {
-  shared: ProjectWorkflowEntry;
-  registry: IssueTypeRegistry;
+  copySource: ProjectWorkflowEntry;
+  entries: readonly ProjectWorkflowEntry[];
+  shared: ProjectWorkflowEntry | undefined;
+  registry: readonly ProjectIssueType[];
+  step: TypeStep | undefined;
   send: (sent: WorkflowWrite) => void;
 }) {
   const ids = useId();
   const [name, setName] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
-  // Re-read against the list on every render, so a type that has left the
-  // shared default since the box was ticked is not sent.
-  const chosen = shared.issueTypes.filter((code) => picked.includes(code));
-  const sharedName = shared.workflow.name.trim() || "the shared workflow";
-  const blocked = name.trim() === "" || chosen.length === 0;
+  // In the registry's order, and only the registry's: a type deleted since
+  // the box was ticked is not sent.
+  const chosen = registry.map((entry) => entry.code).filter((code) => picked.includes(code));
+  const sourceName = copySource.shared ? sharedNameOf(copySource) : workflowNameOf(copySource.workflow);
+  const typeStep = useTypeStep({
+    step: step && sameCodes(step.types, chosen) ? step : null,
+    own: copySource.workflow,
+    entries,
+    shared,
+    frozen: formProps.frozen,
+    register: formProps.register,
+  });
+  const trimmed = name.trim();
+  const blocked = trimmed === "" || chosen.length === 0 || (typeStep !== null && typeStep.view.blocked);
+  const submitLabel = typeStep ? "Move and create" : "Create workflow";
+  // The refusal the step answers is said by the step, never again over the actions.
+  const error = formProps.error && formProps.error !== step?.refusal ? formProps.error : null;
 
   return (
     <form
@@ -1801,11 +2079,13 @@ function NewWorkflowForm({
       onSubmit={(event) => {
         event.preventDefault();
         if (formProps.inFlight || blocked) return;
-        const trimmed = name.trim();
         const types = andList(chosen.map((code) => issueTypeLabel(code, registry)));
         send({
           kind: "create",
-          input: workflowCopyInput(shared.workflow, trimmed, chosen),
+          input: {
+            ...workflowCopyInput(copySource.workflow, trimmed, chosen),
+            ...(typeStep?.answerable ? { statusMappings: typeStep.statusMappings } : {}),
+          },
           said: {
             done: `Workflow ${trimmed} created for ${types}.`,
             unread: `Workflow ${trimmed} was created, but this list could not be read again. Reopen Workflows to see it.`,
@@ -1820,86 +2100,134 @@ function NewWorkflowForm({
           autoFocus
           id={`${ids}-name`}
           maxLength={WORKFLOW_NAME_MAX_LENGTH}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => {
+            if (!formProps.frozen) setName(event.target.value);
+          }}
+          readOnly={formProps.frozen}
           value={name}
         />
       </div>
-      <fieldset aria-describedby={`${ids}-copy`} className="workflow-types-field">
-        <legend>Issue types</legend>
-        <div className="workflow-type-options">
-          {shared.issueTypes.map((code) => (
-            <label className="workflow-type-option" key={code}>
-              <input
-                checked={picked.includes(code)}
-                onChange={(event) =>
-                  setPicked((current) =>
-                    event.target.checked ? [...current, code] : current.filter((item) => item !== code),
-                  )
-                }
-                type="checkbox"
-              />
-              <TypeChip registry={registry} type={code} />
-              <span>{issueTypeLabel(code, registry)}</span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
+      <TypeChoiceList
+        describedBy={`${ids}-copy`}
+        entries={entries}
+        frozen={formProps.frozen}
+        legend="Issue types"
+        locked={null}
+        onToggle={(code, checked) =>
+          setPicked((current) => (checked ? [...current, code] : current.filter((item) => item !== code)))
+        }
+        ownWorkflowId={null}
+        picked={chosen}
+        registry={registry}
+        shared={shared}
+      />
       <p className="workflows-note" id={`${ids}-copy`}>
-        Starts as a copy of {sharedName}, so issues of the types you move keep their status.
+        Starts as a copy of {sourceName}, so issues coming from it keep their status.
       </p>
+      {typeStep ? <FormStep step={typeStep} /> : null}
       <FormFoot
         {...formProps}
         blocked={blocked}
         describedBy=""
+        error={error}
         reason={null}
-        refusedSentence="The workflow was not created."
-        submitLabel="Create workflow"
+        refusedSentence={bindingRefusedSentence(error, "created")}
+        submitLabel={submitLabel}
       />
     </form>
   );
 }
 
 /**
- * Rename (§4.28): the card's heading becomes a Name field with Cancel and
- * Save. A name left as it was sends nothing and closes the form; an empty one
- * turns Save off.
+ * «Правка workflow» (§4.28, TAS-437): the card's heading and its «Used by»
+ * become a Name field and the registry's types, this workflow's checked. Save
+ * sends the version, the name if it changed, and — if the set changed — the
+ * whole set of checked types in the registry's order; nothing changed sends
+ * nothing and closes the form, as Cancel. The last checked type of a workflow
+ * that had types cannot be unchecked: a workflow needs one, and the way to have
+ * none is Delete. A donor opened with none may stay with none, which changes
+ * nothing.
  */
-function RenameWorkflowForm({
-  workflow,
+function EditWorkflowForm({
+  entry,
+  entries,
+  shared,
+  registry,
   name: shownName,
+  step,
   send,
   ...formProps
 }: FormProps & {
-  workflow: WorkflowDefinition;
+  entry: ProjectWorkflowEntry;
+  entries: readonly ProjectWorkflowEntry[];
+  shared: ProjectWorkflowEntry | undefined;
+  registry: readonly ProjectIssueType[];
   name: string;
+  step: TypeStep | undefined;
   send: (sent: WorkflowWrite) => void;
 }) {
   const ids = useId();
   const box = useRevealOnOpen<HTMLFormElement>();
+  const { workflow } = entry;
   const [name, setName] = useState(workflow.name);
+  const [picked, setPicked] = useState<string[]>(() => [...entry.issueTypes]);
+  const [hadTypes] = useState(() => entry.issueTypes.length > 0);
+  const codes = registry.map((item) => item.code);
+  const chosen = codes.filter((code) => picked.includes(code));
+  const current = codes.filter((code) => entry.issueTypes.includes(code));
+  const typeStep = useTypeStep({
+    step: step && sameCodes(step.types, chosen) ? step : null,
+    own: workflow,
+    entries,
+    shared,
+    frozen: formProps.frozen,
+    register: formProps.register,
+  });
   const trimmed = name.trim();
-  const blocked = trimmed === "";
+  const blocked = trimmed === "" || (typeStep !== null && typeStep.view.blocked);
+  const locked = hadTypes && chosen.length === 1 ? chosen[0] : null;
+  const submitLabel = typeStep ? "Move and save" : "Save";
+  const error = formProps.error && formProps.error !== step?.refusal ? formProps.error : null;
+  const label = (list: readonly string[]) => andList(list.map((code) => issueTypeLabel(code, registry)));
 
   return (
     <form
-      aria-label={`Rename ${shownName}`}
+      aria-label={`Edit ${shownName}`}
       ref={box}
-      className="workflow-form workflow-rename"
+      className="workflow-form workflow-rename workflow-edit"
       noValidate
       onSubmit={(event) => {
         event.preventDefault();
         if (formProps.inFlight || blocked) return;
-        if (trimmed === workflow.name.trim()) {
+        const renamed = trimmed !== workflow.name.trim();
+        const retyped = !sameCodes(chosen, current);
+        if (!renamed && !retyped) {
           formProps.onCancel();
           return;
         }
+        const newName = renamed ? trimmed : shownName;
+        const back = current.filter((code) => !chosen.includes(code));
+        const done = [
+          renamed ? `Workflow renamed to ${trimmed}.` : "",
+          retyped ? `${newName} is now used by ${label(chosen)}.` : "",
+          retyped && back.length
+            ? `${label(back)} ${back.length === 1 ? "uses" : "use"} ${sharedNameOf(shared)} again.`
+            : "",
+        ].filter(Boolean);
         send({
-          kind: "rename",
+          kind: "edit-workflow",
           workflowId: workflow.id,
-          input: { version: versionOf(workflow), name: trimmed },
+          input: {
+            version: versionOf(workflow),
+            ...(renamed ? { name: trimmed } : {}),
+            ...(retyped ? { issueTypes: chosen } : {}),
+            ...(retyped && typeStep?.answerable ? { statusMappings: typeStep.statusMappings } : {}),
+          },
           said: {
-            done: `Workflow renamed to ${trimmed}.`,
-            unread: `Workflow ${trimmed} was renamed, but this list could not be read again. Reopen Workflows to see it.`,
+            done: done.join(" "),
+            unread: retyped
+              ? `Workflow ${newName} was saved, but this list could not be read again. Reopen Workflows to see it.`
+              : `Workflow ${trimmed} was renamed, but this list could not be read again. Reopen Workflows to see it.`,
             staleIn: shownName,
           },
         });
@@ -1911,18 +2239,35 @@ function RenameWorkflowForm({
           autoFocus
           id={`${ids}-name`}
           maxLength={WORKFLOW_NAME_MAX_LENGTH}
-          onChange={(event) => setName(event.target.value)}
-          readOnly={formProps.inFlight}
+          onChange={(event) => {
+            if (!formProps.frozen) setName(event.target.value);
+          }}
+          readOnly={formProps.frozen}
           value={name}
         />
       </div>
+      <TypeChoiceList
+        entries={entries}
+        frozen={formProps.frozen}
+        legend="Used by"
+        locked={locked}
+        onToggle={(code, checked) =>
+          setPicked((list) => (checked ? [...list, code] : list.filter((item) => item !== code)))
+        }
+        ownWorkflowId={workflow.id}
+        picked={chosen}
+        registry={registry}
+        shared={shared}
+      />
+      {typeStep ? <FormStep step={typeStep} /> : null}
       <FormFoot
         {...formProps}
         blocked={blocked}
         describedBy=""
+        error={error}
         reason={null}
-        refusedSentence="The workflow was not renamed."
-        submitLabel="Save"
+        refusedSentence={bindingRefusedSentence(error, "saved")}
+        submitLabel={submitLabel}
       />
     </form>
   );

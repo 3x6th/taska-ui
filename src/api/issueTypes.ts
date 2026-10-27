@@ -107,6 +107,38 @@ export const ISSUE_TYPE_ORDER_REPEATS_MESSAGE = "codes must be a complete permut
 export const ISSUE_TYPES_CHANGED_MESSAGE = "Issue type registry changed; reload the current types before reordering";
 /** `details.reason` of the stale reorder above — what the dialog branches on, with the `ABORTED` code. */
 export const ISSUE_TYPES_CHANGED_REASON = "ISSUE_TYPES_CHANGED";
+/*
+ * The reasons of backend TAS-433 and TAS-437 (develop `78019ece`) that the
+ * Issue types dialog and New issue branch on — always with `details.reason`,
+ * never the prose. Read in `IssueTypeDeletionTransactions`,
+ * `IssueTypeCreationCoordinator` (project-service) and `IssueTypeMoveService`,
+ * `IssueTypeWriteGuard` (issue-service).
+ */
+/** A delete with a move whose target is the type itself, malformed or not registered (400 `INVALID_ARGUMENT`). */
+export const ISSUE_TYPE_TARGET_INVALID_REASON = "ISSUE_TYPE_TARGET_INVALID";
+/** A delete with a move whose `expectedGeneration` is not the entry's (409 `ABORTED`, `details.generation`). */
+export const ISSUE_TYPE_CHANGED_REASON = "ISSUE_TYPE_CHANGED";
+/** A delete with a move and no `expectedGeneration` for a code created again (409 `ABORTED`). */
+export const ISSUE_TYPE_GENERATION_REQUIRED_REASON = "ISSUE_TYPE_GENERATION_REQUIRED";
+/** A move that leaves issues in a status the target's workflow lacks (400 `FAILED_PRECONDITION`, `statusKeys`, `targetStatusKeys`). */
+export const ISSUE_STATUSES_UNMAPPED_REASON = "ISSUE_STATUSES_UNMAPPED";
+/** A move's mapping onto a status the target's workflow lacks (400 `INVALID_ARGUMENT`, `targetStatusKeys`). */
+export const ISSUE_TYPE_STATUS_MAPPING_INVALID_REASON = "ISSUE_TYPE_STATUS_MAPPING_INVALID";
+/**
+ * A type's delete the server has not finished: 503 `UNAVAILABLE` with
+ * `operationId` on the delete — repeat the same command — and, on an issue
+ * create naming the type while it is pending, 400 `FAILED_PRECONDITION`.
+ */
+export const ISSUE_TYPE_DELETION_PENDING_REASON = "ISSUE_TYPE_DELETION_PENDING";
+/** A type's create the server has not finished (503 `UNAVAILABLE`, `operationId`): repeat it with the same `X-Request-Id`. */
+export const ISSUE_TYPE_CREATION_PENDING_REASON = "ISSUE_TYPE_CREATION_PENDING";
+/** A create whose `workflowId` is neither an own workflow of the project nor the shared default (400 `INVALID_ARGUMENT`). */
+export const WORKFLOW_NOT_IN_PROJECT_REASON = "WORKFLOW_NOT_IN_PROJECT";
+/** A type write while another type operation of the project is pending (409 `ABORTED`, project-service). */
+export const PROJECT_TYPE_OPERATION_PENDING_REASON = "PROJECT_TYPE_OPERATION_PENDING";
+/** A pending command's `X-Request-Id` sent again with another body (409 `ALREADY_EXISTS`). */
+export const REQUEST_ID_REUSED_REASON = "REQUEST_ID_REUSED";
+
 /** An issue write naming a well-formed key the registry does not hold (400 `INVALID_ARGUMENT`). */
 export const issueTypeNotDefinedMessage = (key: string) => `Issue type ${key} is not defined in this project`;
 /** A malformed key on an issue write — the gateway's `ResponseStatusException` (400 `BAD_REQUEST`). */
@@ -167,7 +199,16 @@ export function toProjectIssueTypes(value: unknown): ProjectIssueType[] {
   return registry;
 }
 
-/** One `ProjectIssueTypeDto`, or `null` when it carries no usable code. See `toProjectIssueTypes`. */
+/** `ProjectIssueTypeDto.generation`'s format: a UUID (backend TAS-433). */
+const GENERATION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * One `ProjectIssueTypeDto`, or `null` when it carries no usable code. See
+ * `toProjectIssueTypes`. `generation` (backend TAS-433) is nullable and read
+ * defensively: kept only when it is a UUID, and left out otherwise — a delete
+ * with a move then goes without `expectedGeneration` rather than with a value
+ * the gateway's `format: uuid` would refuse.
+ */
 export function toProjectIssueType(value: unknown): ProjectIssueType | null {
   if (typeof value !== "object" || value === null) return null;
   const wire = value as Record<string, unknown>;
@@ -180,6 +221,9 @@ export function toProjectIssueType(value: unknown): ProjectIssueType | null {
     shape: isIssueTypeShape(wire.shape) ? wire.shape : null,
     icon: isIssueTypeIcon(wire.icon) ? wire.icon : null,
     sortOrder: typeof wire.sortOrder === "number" && Number.isInteger(wire.sortOrder) ? wire.sortOrder : 0,
+    ...(typeof wire.generation === "string" && GENERATION_PATTERN.test(wire.generation)
+      ? { generation: wire.generation }
+      : {}),
   };
 }
 

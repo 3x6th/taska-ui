@@ -1829,6 +1829,8 @@ navigates the tab.
 футера и `Cmd/Ctrl+Enter` нет, каждая форма уходит по Enter. Ручки — backend PR #208
 (TAS-381, влит 2026-10-22 как `594f637`, в снапшоте `docs/contract/openapi.yml`):
 `GET /projects/{projectId}/workflows` читает любой участник, три `POST` — только ADMIN.
+Набор типов своего workflow — backend TAS-436 (PR #259, develop `78019ece`; фронт TAS-437): `PATCH`
+workflow с `issueTypes`, `POST` с занятыми типами, доноры в списке.
 Правка и удаление — backend PR #225 (TAS-384, develop `6ba4ed6`; фронт TAS-416): шесть ручек
 ADMIN'а только у своего workflow проекта — `PATCH`/`DELETE` workflow, статуса и перехода. Каждая
 запись, три `POST` включительно, отвечает `ProjectWorkflowDto` целиком: все статусы и все
@@ -1857,15 +1859,17 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
 фокус на триггер.
 
 **Тело, сверху вниз.**
-- ADMIN: secondary compact «New workflow» (`Plus` 13). Если на общем default не осталось
-  типов — вместо кнопки строка 11.5 `--fg-2` «Every issue type in this project already has
-  its own workflow.»
+- ADMIN: secondary compact «New workflow» (`Plus` 13) — всегда, когда у проекта есть типы: с
+  TAS-437 тип со своим workflow переносится, а не отказывается. Строки «Every issue type in this
+  project already has its own workflow.» больше нет, на её месте ничего не встаёт.
 - MEMBER/VIEWER: строка 11.5 `--fg-2` «Only a project admin can change workflows.» Роль
   неизвестна (§5.7) — «Your role on this project is unknown, so workflows cannot be changed
   here.» Пока роль читается — ничего.
 - Карточки workflow, `gap:14`. Workflow — одна карточка со всеми своими типами, карточки на
   каждый тип нет. Порядок: свои workflow проекта — по порядку типов доски
-  (`allowedIssueTypes`) их первого типа; общий default — последним.
+  (`allowedIssueTypes`) их первого типа; свои workflow без типов (доноры, backend TAS-436) —
+  после них, в порядке ответа; общий default — последним. Общего в списке может не быть: сервер
+  перечисляет его, только пока на нём есть тип.
 
 **Карточка.** `<section>`, `1px solid var(--border)`, radius 11, padding 14, без заливки и
 тени. Фон — `--surface` модалки, поля форм — `--surface-2`, третьего уровня нет (§1).
@@ -1873,8 +1877,9 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
   §5.8: 10.5 моно `--fg-2`, `1px --border`, radius 6, padding 2 7.
 - **Типы.** «Used by» 11.5 `--fg-2`, затем тип-чип §4.6 + подпись 12/550 `--fg` (функция
   §6), `gap:8`, с переносом. Список типов — как прислал сервер, без пересечения с
-  контекстом (он может назвать тип, которого проект не разрешает; BACKLOG). Типов нет —
-  «No issue type uses it.»
+  контекстом (он может назвать тип, которого проект не разрешает; BACKLOG). Типов нет (донор: свой workflow, чьи типы забрал другой; сервер хранит его с графом) —
+  «No issue type uses it.»; ADMIN'у вторым предложением «Choose its types with Edit, or delete
+  it.» В остальном карточка донора как любая своя: схема, списки, действия.
 - **Строка общего default.** 11.5 `--fg-2` «Shared by every Taska project, so it cannot be
   changed here.» ADMIN'у, когда есть что переносить, — второе предложение «A new workflow
   starts as a copy of it.»
@@ -1998,14 +2003,15 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
 
 **Действия строк и шапки** (TAS-416). Ghost icon-button §4.1 28×28 (§1), radius 7, lucide 14:
 `Pencil` — правка, `Trash2` — удаление, `gap:2`, последними в строке. Доступное имя называет
-предмет: «Rename {workflow}», «Delete {workflow}», «Edit {status}», «Delete {status}», «Edit
+предмет: «Edit {workflow}», «Delete {workflow}», «Edit {status}», «Delete {status}», «Edit
 {From} to {To}», «Delete {From} to {To}»; `title` — глагол. Delete — destructive ghost §4.1, как
 корзина Members: `--danger` только на hover и пока открыт его вопрос (`aria-expanded`,
 `aria-controls` полосы). В полёте `aria-disabled`, без затемнения. Всегда видимы, не по
 наведению: на таче наведения нет, а Members и Labels рисуют действия строки так же (§4.22).
 Иконки, а не текстовые ссылки Work log (§4.24): строка статуса несёт ещё имя, ключ и категорию,
 и текст «Edit · Delete» вытеснил бы их на 294.
-- Шапка карточки: `h3` · `shared` · справа (`margin-left:auto`) Rename и Delete.
+- Шапка карточки: `h3` · `shared` · справа (`margin-left:auto`) Edit и Delete. `Pencil` шапки
+  (`title` «Edit») открывает «Правку workflow» (ниже) на месте `h3` и строки «Used by».
 - Строка статуса: dot · имя · ключ · категория · Edit · Delete. Ключ уступает место первым
   (`flex:1 1 0`): имя обрезается многоточием, только когда ключ сжат до нуля; полный ключ — в
   `title`. У `TODO` Delete нет: сервер его не удаляет (400 `FAILED_PRECONDITION` «The initial
@@ -2026,8 +2032,9 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
 настройка сервера (`workflow.validation.*`), и его 400 называет проблему сам.
 
 Открыта одна форма или одна полоса на диалог: открытие любой закрывает текущую вместе с
-черновиком. Форма правки встаёт на место своей строки (Rename — на место `h3`; секция тогда
-названа `aria-label` с именем); Cancel и `Esc` возвращают строку и фокус на её Edit/Rename. Save
+черновиком. Форма правки встаёт на место своей строки (правка workflow — на место `h3` и строки
+«Used by»; секция тогда названа `aria-label` с именем); Cancel и `Esc` возвращают строку и фокус на
+её Edit. Save
 без изменений запроса не шлёт и закрывает форму, как Cancel; пустое имя — Save `aria-disabled`
 без фразы. Тело — только изменённые поля и `version` workflow на экране; неизменённое поле не
 шлётся, `null` — никогда (DTO `additionalProperties:false`). Текстовые поля правки в полёте
@@ -2037,13 +2044,16 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
 **New workflow.** Бокс карточки (рамка `--border`, radius 11, padding 14) над карточками,
 `h3` «New workflow» 14/650.
 - «Name» — до 100 символов.
-- `fieldset` «Issue types»: чекбокс только на каждый тип, который сейчас на общем default
-  (тип со своим workflow сервер второй раз не привяжет, 409). Строка — `label`,
-  `min-height:28`, `gap:8`: нативный checkbox 14, `accent-color:var(--accent)`, `margin:0`;
-  тип-чип; подпись 12.5/500 `--fg`. Группа `flex-wrap`, `column-gap:16`.
-- Под группой 11.5 `--fg-2`, `aria-describedby` группы: «Starts as a copy of {shared name},
-  so issues of the types you move keep their status.»
-- Кнопка — «Create workflow».
+- `fieldset` «Issue types» — «Список типов формы» (ниже): **все** типы реестра, ни один не
+  отмечен заранее. Отмеченный тип переезжает сюда с общего default или со своего workflow
+  (backend TAS-436); 409 за занятый тип больше нет. Ни один не отмечен — «Create workflow»
+  `aria-disabled` без фразы.
+- Копия — общий default, как прежде; нет его в списке — основной workflow проекта (в чьих
+  `issueTypes` первый тип реестра). Под группой 11.5 `--fg-2`, `aria-describedby` группы: «Starts
+  as a copy of {source}, so issues coming from it keep their status.» Задачам типов из других
+  workflow — «Шаг сопоставления (типы)».
+- Кнопка — «Create workflow», на шаге — «Move and create». Отказы — как у правки ниже, с «was not
+  created».
 - **Тело запроса — копия общего default как есть**: ключи, имена, категории, `sortOrder` и
   `hidden` всех статусов и всех переходов, скрытые включительно (их даёт только список,
   контекста мало). Копию до отправки править нельзя: сервер не проверяет, что в workflow
@@ -2052,6 +2062,20 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
   новые задачи этих типов попадают в группу «Outside their workflow» (§4.9). Копия несёт и то и другое. Копия — источник на экране,
   без лишнего запроса; это поведение UI по умолчанию, а не компенсация
   (`api-contract-guard`).
+
+**Список типов формы** (TAS-437; New workflow и правка). Колонка, а не ряд с переносом: пометка в
+ряд не входит (284 на 390). `fieldset`, `legend` — рецепт подписи 11.5/550 `--fg-2`. Строки —
+`gap:2`, в порядке реестра (§6).
+- Строка — `label` во всю ширину, `display:flex; flex-wrap:wrap; align-items:center; column-gap:8;
+  row-gap:2`, `min-height:28`; ≤820 — 44, вся строка — цель нажатия. Состав: нативный checkbox 14
+  (`accent-color:var(--accent)`, `margin:0`); тип-чип 14 (§4.6); подпись 12.5/500,
+  `color:var(--fg)` явно (§6); справа (`margin-left:auto; text-align:right; overflow-wrap:anywhere`)
+  пометка 11.5, `color:var(--fg-2)`. Не входит — уходит второй строкой вправо, как имя перехода.
+- Имя чекбокса — подпись (`aria-labelledby`), пометка — `aria-describedby`.
+- Пометка говорит, где тип и что сделает отправка: тип этого workflow (только правка): отмечен —
+  без пометки; снят — «Goes back to {shared}». Тип другого workflow: не отмечен — «On {X}»;
+  отмечен — «Moves from {X}». {X} — имя своего workflow или общего default по списку диалога.
+  {shared}, если общего нет в списке, — «the shared workflow» (прецедент «Мелочей»).
 
 **Add status.**
 - `.form-two`: «Name» (до 100) | «Key» (`.mono-input`, до 64). Ключ: верхний регистр при
@@ -2094,8 +2118,32 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
   transition» `aria-disabled`, под ним `.workflow-hint` «A transition joins two statuses, so
   add a status first.» — как у «Add status» без категорий.
 
-**Rename.** «Name» (до 100), ряд Cancel · primary compact «Save». Отказ — «The workflow was not
-renamed.»
+**Правка workflow** (TAS-437). Форма на месте `h3` и строки «Used by» (секция названа `aria-label`
+с именем), `aria-label="Edit {workflow}"`. Только у своего workflow.
+- «Name» (до 100).
+- `fieldset` «Used by» — «Список типов формы», отмечены типы этого workflow.
+- Последний отмеченный снять нельзя (`WORKFLOW_ISSUE_TYPES_EMPTY`). Его checkbox «стойко
+  недоступен» §4.1: `aria-disabled`, `.58` только на самом чекбоксе, щелчок и Space гасятся,
+  Tab-стоп остаётся. Под списком 11.5 `--fg-2`, `aria-describedby` этого чекбокса: «A workflow
+  needs at least one type: check another before unchecking {Type}, or delete this workflow.»
+  Правило действует, только если при открытии у workflow были типы: у донора пустой набор значит
+  «типы не меняются».
+- Ряд Cancel · primary compact «Save», на шаге — «Move and save».
+- Тело: `version` всегда; `name` — если изменён; `issueTypes` — если набор изменился, полный набор
+  отмеченных кодов в порядке реестра. Ничего не изменено — запроса нет, форма закрывается, как
+  Cancel.
+- Отказы — ветка по `details.reason`. `ErrorNote` над действиями: предложение, слова сервера, id.
+  - Иное — «The workflow was not saved.»
+  - `WORKFLOW_ISSUE_TYPES_EMPTY` — «The workflow was not saved: a workflow needs at least one
+    type.»
+  - `WORKFLOW_BINDING_PLAN_TOO_LARGE` — «The workflow was not saved: too many types would move in
+    one change. Move them in smaller groups.»
+  - `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT` — «The workflow was not saved: a type you chose is no
+    longer one of this project’s types. The list now shows the current types.» Контекст и список
+    перечитываются, форма остаётся, строки следуют за реестром.
+  - 409 `ABORTED` `ISSUE_TYPES_CHANGED` — путь «изменился в другом месте» с предложением «Issue
+    types changed elsewhere, so nothing was saved. The list now shows the current types.»
+  - `WORKFLOW_ISSUES_UNMAPPED` и `WORKFLOW_MIGRATION_LIMIT` — «Шаг сопоставления (типы)» ниже.
 
 **Edit status.** Форма Add status на месте строки, заполненная. `.form-two`: «Name» | «Key» —
 `readOnly` (§4.3: без заливки, рамка `--border`, на фокусе кольцо §7, без рамки `--accent`), под
@@ -2126,7 +2174,8 @@ transition is not offered on the board.» (`aria-describedby`). Безымянн
 - Переход: «Delete {From} → {To}?» (стрелка `aria-hidden`, для читалки « to ») · «Delete
   transition».
 - Workflow — под шапкой: «Delete {name}? {Types} goes/go back to {shared name}.» · «Delete
-  workflow»; тело `{version}`.
+  workflow»; тело `{version}`. У донора — «Delete {name}? No issue type uses it.»; успех —
+  polite «Workflow {name} deleted.»
 
 В отличие от архива (§4.11) и удаления задачи (§4.10) полоса на отказе не закрывается: у шагов
 ниже в ней выбор, который нельзя терять, и все полосы диалога ведут себя одинаково. `ErrorNote`
@@ -2179,14 +2228,42 @@ at most {limit} at once, so {subject} cannot be deleted.» ({limit} — `toLocal
   shares no status with {shared}, so these issues have nowhere to go. Add one of {shared}’s statuses
   to {name} first.»; ответа нет, фокус на Cancel. {shared} — имя общего default, без него в списке —
   «the shared workflow».
-- `statusKeys` называет ключ не из этого workflow (задача в статусе, которого нет ни в одном из двух:
-  удаление workflow их ещё считает, backend A12) — «{KEY} is not a status of {name}, so its issues
-  cannot be moved from here.», ответа нет. Уходит вместе с A12 ([TAS-429](https://jira.ozero.dev/browse/TAS-429)).
 - По отказу сопоставлять нечего — обычный `ErrorNote` «The workflow was not deleted.», вопрос
   прежний.
 - Предел переноса — как у статуса выше.
-- Каждый вариант без ответа («shares no status», «is not a status of», предел) — колонка шага без
+- Каждый вариант без ответа («shares no status», предел) — колонка шага без
   ответа: предложение → строка-причина → слова сервера и id.
+- Ветки «is not a status of» нет (TAS-438): удаление workflow переносит только его статусы и
+  сопоставленные ключи, так что каждый названный ключ — его статус.
+
+**Шаг сопоставления (типы, TAS-437).** New workflow и правка получают `FAILED_PRECONDITION`
+`WORKFLOW_ISSUES_UNMAPPED` (`issueCount`, `statusKeys`, `targetStatusKeys`).
+- Переносится из шага удаления workflow: узнавание только по `reason` + `statusKeys`; в шаге с
+  ответом нет слов сервера и id; select на каждый ключ `statusKeys`, варианты — ровно
+  `details.targetStatusKeys`, первым `disabled` «Choose a status», заранее ничего не выбрано; ответ
+  `aria-disabled`, пока не выбраны все; тот же отказ повторно обновляет шаг, иной — `ErrorNote` над
+  действиями, шаг остаётся; предел — «Предел переноса»: «…, so these types cannot be moved.»;
+  варианты без ответа — колонка без ответа.
+- **Место.** Шаг — в форме, не полоса: между списком типов и рядом действий, на `--surface` бокса
+  (два уровня §1). Ответ — primary формы, «Move and save» / «Move and create»: это сохранение, а
+  не подтверждение удаления.
+- **Предложение** 12 `--fg`, `role="alert"`: «{N} issue(s) would be left in a status their new
+  workflow does not have. Choose where each status’s issues go.» Без числа — «Issues would be
+  left…». «Their new» — потому что типы могут уходить в два workflow: сюда и на общий default.
+- **Select'ы** «Move {status} issues to». Источник — статус любого workflow: подпись берётся у
+  первого workflow списка, где ключ есть, начиная с этого; нигде нет — ключ (§6). Варианты — в
+  порядке колонок и с подписями этого workflow; ключа в нём нет — общего default. Ветки «is not a
+  status of» нет.
+- **Одно сопоставление на ключ** для всех переезжающих задач: сервер не делит его по типам, и
+  подпись «{status} issues» это говорит.
+- **`targetStatusKeys` пуст** — только когда типы уходят в два workflow без общего статуса. Вместо
+  select'ов 12 `--fg`: «The types you add and the types you remove go to workflows that share no
+  status, so one choice cannot fit both. Save them separately.»
+- **Без ответа** (пусто, предел) отправка «стойко недоступна» §4.1, пока набор тот же.
+- **Смена набора типов снимает шаг**: он отвечал на прежний набор, отправка снова «Save» / «Create
+  workflow». Смена имени шаг не снимает. Шаг принадлежит набору, на который ответил: пока
+  отмечен другой набор, шага нет; тот же набор отмечен снова — шаг возвращается с прежним выбором.
+- Появление шага — фокус на первый select. Ответ — та же команда + `statusMappings`.
 
 **Порядок колонок.** Доска сводит статусы всех workflow проекта и сортирует их по
 `sortOrder` поперёк workflow (`mergeWorkflowStatuses`). Поэтому копия при создании несёт
@@ -2227,6 +2304,24 @@ at most {limit} at once, so {subject} cannot be deleted.» ({limit} — `toLocal
   Правка или удаление существующего, получившие 409 `ABORTED` или 404, идут путём «изменился в
   другом месте» (ниже); 409 `ALREADY_EXISTS` по-прежнему оставляет форму и перечитывает список.
   `ABORTED` от `ALREADY_EXISTS` отличается только `code`.
+- **Ещё применяется** (TAS-437). 503 `UNAVAILABLE` с `details.reason`
+  `WORKFLOW_BINDING_CHANGE_PENDING`, `ISSUE_TYPE_CREATION_PENDING` или `ISSUE_TYPE_DELETION_PENDING`
+  (§4.30) — не отказ: сервер принял команду и доводит её сам.
+  - Форма или полоса остаётся, поля заморожены по правилу «в полёте»: повтор обязан быть той же
+    командой, иначе 409 «request reused». Отправка доступна, подпись прежняя.
+  - На месте `ErrorNote` — `.save-failed-note` (`--fg-2`, `role="status"`): «The server has not
+    finished this change yet. Press {label} again in a few seconds to finish it; nothing is applied
+    twice.», ниже `X-Request-Id`.
+  - Повтор — то же тело с `X-Request-Id` из ответа 503. Каждая новая команда (в том числе ответ
+    шага) — без него, шлюз даст новый. Ответ повтора — по своей ветке.
+  - Cancel и `Esc` закрывают форму или полосу; список, контекст и доска перечитываются: команда
+    дойдёт и без повтора. Автоповтора нет (§5.5).
+- **Идёт другая операция.** 409 `ABORTED` `ISSUE_TYPE_OPERATION_PENDING` (пока в проекте не
+  завершён перенос типов) проверяется раньше пути «изменился в другом месте».
+  - Запись: форма остаётся, `ErrorNote` «Another change to this project’s types is still being
+    applied, so this was not saved. Try again in a few seconds.» + слова + id.
+  - Чтение списка: вместо `ApiNotice` отказа — «This project’s workflows are being changed right
+    now. Reopen Workflows in a few seconds.»
 - **Workflow изменился в другом месте.** Запись к существующему (правка, удаление) получила 409
   `ABORTED` («Workflow version changed») или 404 — строки или workflow уже нет; незадеплоенный
   маршрут сюда не относится. Форма или полоса закрывается вместе с черновиком, список
@@ -2241,26 +2336,29 @@ at most {limit} at once, so {subject} cannot be deleted.» ({limit} — `toLocal
   здесь сервер отказал записи, и у отказа есть слова и id.
 - **Успех.** Ответ правки, Add status и Add transition (`ProjectWorkflowDto` целиком, backend
   PR #225) встаёт в кэш списка на место своей записи, без перечитывания; типы записи остаются
-  из списка — правка привязок не меняет, а сервер отдаёт их в ответе без порядка (TAS-427). Create и удаление
-  workflow переносят типы на общий default или с него, а ответ этого не описывает, — после них
-  список перечитывается, как раньше. Ответ без совпадающего `id` — тоже перечитывание. Форма
+  из списка — правка имени привязок не меняет, а сервер отдаёт их в ответе без порядка (TAS-427). Create,
+  правка набора типов и удаление workflow переносят типы на общий default или с него, а ответ этого не
+  описывает, — после них список перечитывается, как раньше. Ответ без совпадающего `id` — тоже перечитывание. Форма
   остаётся «в полёте» (§4.1), пока ответ не на экране; контекст проекта и доска инвалидируются
   тогда же, но не ожидаются — доска обновляется под скримом и о своих отказах говорит сама
   (§5.6). `Esc` в полёте инертен; Close и скрим диалог закрывают, запись и перечитывание не
   отменяются. Затем форма закрывается. Подсветка 2 с — `color-mix(in oklab, var(--accent) 14%,
   transparent)` (рецепт `.admin-key.is-copied`, §5.8), radius 7, без анимации — у правленой
-  строки, у карточки после Rename, у новой строки или карточки, у карточки общего default после
+  строки, у карточки после правки, у новой строки или карточки, у карточки общего default после
   удаления workflow; у удалённой строки подсветки нет. Постоянная визуально скрытая
   polite-область диалога говорит: «Workflow {name} created for {types}.» / «Status {name} added.
   Add a transition so issues can move into it.» / «Transition {name} added: {From} to {To}.» /
   «Workflow renamed to {name}.» / «Status {name} saved.» / «Transition {name} saved: {From} to
   {To}.» / «Status {name} deleted, with its transitions.» / «Status {name} deleted. Its issues
   moved to {target}.» / «Transition {From} to {To} deleted.» / «Workflow {name} deleted. {Types}
-  uses/use {shared} again.»; фокус — по правилу ниже.
+  uses/use {shared} again.» / правка набора типов (TAS-437) — «{name} is now used by {Types}.», если
+  типы вернулись — вторым «{Types} uses/use {shared} again.», если сменилось и имя — первым «Workflow
+  renamed to {name}.»; фокус — по правилу ниже.
   **Перечитывание после 2xx отказало:** форма закрыта, прежние карточки на месте, над ними
   `ApiNotice` (`live="polite"`) «Status {name} was added, but this list could not be read
   again. Reopen Workflows to see it.» (Transition {name} was added, but … / Workflow {name}
-  was created, but … / Workflow {name} was deleted, but …) со словами сервера и id чтения. Скрытая область молчит (успех звучит
+  was created, but … / Workflow {name} was deleted, but … / после правки набора типов —
+  Workflow {name} was saved, but …, где {name} новое имя; правка одного имени — «was renamed») со словами сервера и id чтения. Скрытая область молчит (успех звучит
   один раз), подсветки нет, фокус — на триггер закрытой формы. Никогда не `ErrorNote`
   «was not added»: 201 — то, что произошло.
 - **Мелочи, решённые на сборке** (art-director, 2026-10-21): нет категорий — `aria-disabled`
@@ -2277,19 +2375,19 @@ at most {limit} at once, so {subject} cannot be deleted.» ({limit} — `toLocal
   (`0 0 14px 14px`), иначе кольцо срезано на двух углах.
 - **Фокус после успеха.** New workflow → `h3` новой карточки (`tabIndex=-1`, кольцо 2px).
   Add status → «Add transition» той же карточки (без перехода колонка недостижима). Add
-  transition → «Add transition». Rename → Rename; Edit status / Edit transition → Edit этой
+  transition → «Add transition». Правка workflow → Edit; Edit status / Edit transition → Edit этой
   строки; удалён статус → «Add status» карточки; удалён переход → «Add transition»; удалён
-  workflow → `h3` общего default.
+  workflow → `h3` общего default, нет его — «New workflow».
 - **Архив.** Действия строк, формы правки и полосы уходят вместе с триггерами, как формы
   ADMIN'а; отказ `PROJECT_ARCHIVED` шагом переноса не становится.
 
 **Клавиатура.** Первый фокус — Close (правило `Modal.tsx`: полей при открытии нет). Tab:
-Close → New workflow → в каждой своей карточке Rename → Delete → схема (один стоп) → по строкам
+Close → New workflow → в каждой своей карточке Edit → Delete → схема (один стоп) → по строкам
 статусов Edit → Delete (у `TODO` только Edit) → Add status → по строкам переходов Edit → Delete →
 Add transition; у общего default — только схема; читатель без записи: Close → тело-скроллер →
 схемы карточек. `Esc`: во время IME — ничего; открытая форма или полоса не в полёте — закрывает
-её (`preventDefault`), фокус на её триггер (Rename, Edit, Delete, Add …); в полёте — ничего;
-иначе закрывает модалку. Enter в текстовом поле отправляет его форму. Для
+её (`preventDefault`), фокус на её триггер (Edit, Delete, Add …); в полёте — ничего;
+иначе закрывает модалку. В форме правки workflow: Name → чекбоксы → select'ы шага → Cancel → Save. Enter в текстовом поле отправляет его форму. Для
 MEMBER, VIEWER и неизвестной роли `.modal-body` — фокусируемый скроллер: `tabIndex=0`,
 `aria-label="Workflows"`, кольцо по исключению 1 §7.
 
@@ -2309,7 +2407,7 @@ MEMBER, VIEWER и неизвестной роли `.modal-body` — фокуси
 **Чтения.** Открытие с доски — один запрос (список; контекст уже в кэше), холодный
 переход — два параллельно. Ключ `["project-workflows", projectId]`. Правка, удаление статуса или
 перехода, Add status и Add transition — одна запись, ответ в кэш и параллельные перечитывания
-контекста и доски. Create и удаление workflow — запись и три перечитывания: список, контекст,
+контекста и доски. Create, правка набора типов и удаление workflow — запись и три перечитывания: список, контекст,
 доска. Ключи задач не трогаются.
 
 ### 4.29 Switch (TAS-387)
@@ -2423,6 +2521,21 @@ TAS-418): сервер атомарно пишет `sortOrder` 10, 20, 30… и 
 - Причины (`.admin-write-hint`, по одной): «{CODE} is already a type in this project.» / «A
   code starts with a letter and has 2–32 capital letters, digits or underscores.» Пустые имя или
   код, а в правке ещё и «ничего не изменено» — отправка `aria-disabled` без фразы.
+- **«Workflow»** (только создание, TAS-437). Нативный select 32 во всю ширину, после «Icon», перед
+  действиями: облик держится у живого чипа, поведение — у отправки.
+  - Варианты: свои workflow в порядке диалога Workflows, доноры включительно, «{name}»; затем
+    общий, если он в списке, — «{name} (shared)».
+  - Основной (workflow первого типа реестра) подписан «{name} (same as {First})», у общего —
+    «(shared, same as {First})». Он выбран, пока select не трогали, и следует за перестановкой.
+    Шлётся `workflowId` выбранного.
+  - Список читается открытием формы (ключ `["project-workflows", projectId]`, общий с §4.28).
+  - Пока список читается или не прочитан — один вариант «Same as {First}» без `workflowId`: сервер
+    возьмёт тот же основной, форма не ждёт. Отказ чтения — под select'ом 11.5 `--fg-2`: «Other
+    workflows could not be loaded, so only this one is offered.»
+  - Пустой реестр — поля нет. В правке поля нет: workflow типа меняет «Used by» в Workflows.
+- **Ответ 201** (`CreatedProjectIssueTypeDto`) — в кэш контекста, как прежде. Polite: «Type {Name}
+  added. It uses {workflow}.» Имя — по `workflowId` из списка; нет его там — «the shared workflow».
+- **503 `ISSUE_TYPE_CREATION_PENDING`** — «Ещё применяется» §4.28, подпись «Add type».
 - Кнопки: «Cancel» и «Add type» / «Save changes». Создание шлёт `sortOrder` = наибольший + 10 —
   новый тип всегда последний; правка шлёт только изменённые поля.
 - Отказы: «The type was not added.» / «The type was not saved.» + слова сервера +
@@ -2430,7 +2543,7 @@ TAS-418): сервер атомарно пишет `sortOrder` 10, 20, 30… и 
   in this project.»; 404 правки — «{Name} is no longer one of this project's issue types.» и
   перечитывание контекста. 404 правки и 403 на записи формы говорятся в слоте уведомлений
   диалога: форма с ними уходит.
-- Клавиатура: Name → Code → цвета → формы → иконки → Cancel → отправка. Enter в поле отправляет; `Esc`
+- Клавиатура: Name → Code → цвета → формы → иконки → Workflow (только создание) → Cancel → отправка. Enter в поле отправляет; `Esc`
   закрывает форму, фокус — на её триггер (§4.11; имя и код — значения, `Esc` не держат).
 
 **Удаление** предлагается, только когда типов ≥ 2. У единственного — ни корзины, ни вопроса:
@@ -2438,17 +2551,58 @@ TAS-418): сервер атомарно пишет `sortOrder` 10, 20, 30… и 
 at least one issue type, so this one cannot be deleted.» Используется ли тип, клиент заранее не
 знает и не угадывает — решает сервер.
 - Вопрос — полоса §4.22 под строкой, отступ 22 (чип 14 + gap 8): «{Name} will be deleted
-  from this project for everyone. A type cannot be deleted while any issue has it.» Cancel (фокус первым) и «Delete type» (ответ §4.22, `aria-describedby` →
+  from this project for everyone. If issues have this type, you will choose another type for
+  them first.» Cancel (фокус первым) и «Delete type» (ответ §4.22, `aria-describedby` →
   предложение). В полёте обе `aria-disabled`, подписи прежние. Без оптимизма.
 - Успех (204; 404 — тот же путь, polite «{Name} was already deleted.»): строка уходит в том же
   кадре; фокус — на Delete строки, вставшей на её место, иначе предыдущей, иначе на «Add type».
   Polite: «Type {Name} deleted.»
+- **Первое нажатие** — DELETE без тела. Число задач знает только сервер и отдаёт его только
+  отказом, поэтому заранее не спрашиваем. 204 — успех, как прежде.
 - Отказ — в слоте, фокус на Delete строки. Ветка по `details.reason`, никогда по тексту
   (backend TAS-418; считаются только живые задачи): `PROJECT_ARCHIVED` — §5.7;
-  `ISSUE_TYPE_IN_USE` — «{Name} was not deleted: {N} issues have this type. Change their type
-  first.» (1 — «1 issue has this type»; `details.issueCount` не разобралось — «issues still have
-  this type»); `LAST_ISSUE_TYPE` — «{Name} was not deleted: a project needs at least one issue
-  type.»; иное — «{Name} was not deleted.» Ниже — слова сервера и `X-Request-Id` (§5.6).
+  `ISSUE_TYPE_IN_USE` — шаг переноса (ниже); `LAST_ISSUE_TYPE` — «{Name} was not deleted: a
+  project needs at least one issue type.»; иное — «{Name} was not deleted.» Ниже — слова сервера и
+  `X-Request-Id` (§5.6).
+- **Шаг переноса (тип, TAS-433, TAS-437).** `ISSUE_TYPE_IN_USE` не уходит в слот: полоса остаётся
+  и становится шагом по рецепту шага переноса статуса §4.28 — колонка, это вопрос, без слов
+  сервера и id.
+  - Предложение 12 `--fg`, `role="alert"`: «{N} issues have this type. Move them to another type
+    to delete {Name}.» Один — «1 issue has this type. Move it to another type to delete {Name}.»;
+    без числа — «Issues have this type.»
+  - Select «Move them to»: остальные типы в порядке реестра, подпись §6, первым `disabled`
+    «Choose a type». Заранее ничего не выбрано, даже когда вариант один.
+  - Ответ «Move and delete» (ответ §4.22), `aria-disabled` без фразы до выбора. Тело
+    `{moveIssuesTo, expectedGeneration}`; `generation` `null` — поле не шлётся. Появление шага —
+    фокус на select.
+- **Статусы.** `ISSUE_STATUSES_UNMAPPED` добавляет под select'ом типа по select'у на ключ «Move
+  {status} issues to».
+  - Варианты — `targetStatusKeys` в порядке колонок и с подписями workflow целевого типа
+    (`context.workflows`), первым `disabled` «Choose a status». Источник подписывается по
+    workflow удаляемого типа, иначе ключом.
+  - Предложение: «{N} issues have this type. Some are in a status {Target} issues cannot have, so
+    choose where each status’s issues go.»
+  - Одна задача — «1 issue has this type. It is in a status {Target} issues cannot have, so
+    choose where it goes.»
+  - Тело + `statusMappings`. Смена целевого типа убирает select'ы статусов; тот же тип выбран
+    снова — select'ы возвращаются со сброшенным выбором.
+- **Отказы шага** — `ErrorNote` в полосе над действиями, полоса остаётся.
+  - 409 `ISSUE_TYPE_CHANGED` / `ISSUE_TYPE_GENERATION_REQUIRED`: полоса закрывается, контекст
+    перечитывается. В слоте «Issue types changed elsewhere, so {Name} was not deleted and no issue
+    moved. The list now shows the current types.» + id. Фокус — на Delete строки с тем же кодом,
+    нет её — на «Add type».
+  - `ISSUE_TYPE_TARGET_INVALID` — контекст перечитывается, select сбрасывается: «{Target} is no
+    longer one of this project’s types. Choose another.»
+  - `WORKFLOW_MIGRATION_LIMIT` — «Предел переноса» §4.28: «…, so {Name} cannot be deleted.» Ответа
+    нет, фокус на Cancel.
+  - 503 `ISSUE_TYPE_DELETION_PENDING` — «Ещё применяется» §4.28.
+  - 404 — «already deleted».
+  - 403 и `PROJECT_ARCHIVED` — в слот, не в полосу: строка роли или архива снимает элементы
+    полосы, фраза в ней пропала бы вместе с ними. Полоса закрывается; фокус — на Delete строки,
+    нет её — на заметку.
+  - Иное — «{Name} was not deleted.» + слова + id.
+- **Успех переноса** — polite «Type {Name} deleted. Its issues are now {Target}.» Фокус — по
+  правилу успеха.
 
 **403 на любой записи** — предложение своего действия, слова сервера, перечитывание контекста;
 строка роли делает диалог только для чтения.
@@ -2472,7 +2626,8 @@ Move up → Move down → Edit → Delete (недоступные остаютс
 200 — `setQueryData` в контекст, без перечитываний. Перестановка — один `PUT …/order`, ответ
 (реестр целиком) — `setQueryData` в контекст. Создание, удаление и перестановка затем
 инвалидируют доску и список workflows (перечитываются смонтированные), создание и удаление —
-ещё и контекст.
+ещё и контекст. Удаление с переносом (TAS-437) перечитывает контекст, доску, список workflows и
+кэши задач проекта. Открытие New type читает список workflows, если его нет в кэше.
 
 **Темы и движение.** Только токены §2, чипы — §2.2. На `--surface`: имя `--fg` 17.88 /
 15.73, строки `--fg-2` 7.26 / 6.75, код `--fg-3` 3.14 / 3.05 (мета). Движения — только `tk-pop`
@@ -2644,7 +2799,13 @@ Transition на `padding-left` нет никогда. Выбор применя�
 - **Порядок дат.** Отказ «начало позже срока» печатается не словами сервера, а советом, выбранным по полю, из которого читатель только что вышел: «The start date cannot be later than this issue's current due date — move the due date first» / «The due date cannot be earlier than this issue's current start date — move the start date first». Панель сохраняет по одному полю, так что сдвиг окна целиком — две записи в нужном порядке, и совет называет порядок. Поле возвращает сохранённую дату; request id — под советом.
 - **Прочий отказ.** Поле планирования возвращает сохранённое значение — только то, что было отправлено; заголовок и описание оставляют текст читателя. В слоте — слова сервера. Тоста нет (§5.6, TAS-140).
 - **«None» — живая фишка**, когда задача назначена и читатель может править: нажатие отправляет `assigneeId: null` (старый маршрут назначения снимать исполнителя не умел). На неназначенной задаче «None» — активная фишка, нажатие которой ничего не отправляет: `aria-disabled`, а не `disabled` — иначе фокус того, кто только что снял исполнителя с клавиатуры, падает в `<body>` (§4.21), — и без затемнения, потому что это текущее значение поля. `disabled` — только у `VIEWER` и при неизвестной роли (§5.7).
-- **Тип** (TAS-417) — строка «Type» в `.meta-grid` между Assignee и Priority. Кто пишет: нативный select высотой 30, radius 9, `1px --border-strong`, фон `--surface`, 12.5/500 `--fg`; внутри слева чип выбранного типа 14 (`position:absolute; left:8`, по центру высоты), `padding-left:28`; имя — `aria-labelledby` на подпись строки. Варианты — реестр в его порядке; текущий тип вне реестра — последним, ключом, выбранным (как приоритет, §4.2). Тип, в workflow которого (`context.workflows`) нет текущего статуса задачи, — `<option disabled>` «{Name} — no {status} status» (подпись статуса §6); у задачи без статуса и у типа без записи в `workflows` вариант не выключается — решает сервер. Запись — одним полем, в общей очереди; чип и имя в хедере меняются в том же кадре, слот переходов пересчитывается по workflow нового типа. Конфликт — шаблон выбора выше со словом «type». Прочий отказ — слова сервера и request id в слоте, select возвращает сохранённое; устаревший выбор («Current status is not available for the target issue type») — так же, без ветки по тексту. Кто не пишет (VIEWER, роль неизвестна или ещё не пришла, архив) — не `disabled` select, а статичная строка: чип 14 + имя 12.5/500 `--fg`, `min-height:30`, чтобы приход роли не сдвигал сетку (довод §4.3). Модалка создания — тот же select высотой 30 в `.form-two` рядом с Priority, по умолчанию первый тип реестра; пустой реестр — прежняя строка «This project allows no issue types.» **Открытая «+» колонки** (у каждой колонки, §4.9; задача создаётся с `statusKey` колонки, отказ сервера — `ErrorNote` модалки со словами сервера и `X-Request-Id`) — заголовок модалки «New issue in {Status}» (подпись §6 колонки; это и доступное имя диалога), поля статуса нет. Тип, в workflow которого (`context.workflows`) статуса колонки нет, — `<option disabled>` «{Name} — no {Status} status», как в панели: сервер такую задачу откажет. Тип без записи в `workflows` не выключается — решает сервер. По умолчанию — тип, по которому отфильтрована доска, иначе первый тип реестра со статусом колонки. Выключены все (контекст разошёлся с доской) — «Create issue» `aria-disabled` по рецепту «стойко недоступен» §4.1 и строка 11.5 `--fg-2` над футером «No issue type in this project has a {Status} status.» Открытая «New» — «New issue», без выключенных вариантов, как прежде.
+- **Тип** (TAS-417) — строка «Type» в `.meta-grid` между Assignee и Priority. Кто пишет: нативный select высотой 30, radius 9, `1px --border-strong`, фон `--surface`, 12.5/500 `--fg`; внутри слева чип выбранного типа 14 (`position:absolute; left:8`, по центру высоты), `padding-left:28`; имя — `aria-labelledby` на подпись строки. Варианты — реестр в его порядке; текущий тип вне реестра — последним, ключом, выбранным (как приоритет, §4.2). Тип, в workflow которого (`context.workflows`) нет текущего статуса задачи, — `<option disabled>` «{Name} — no {status} status» (подпись статуса §6); у задачи без статуса и у типа без записи в `workflows` вариант не выключается — решает сервер. Запись — одним полем, в общей очереди; чип и имя в хедере меняются в том же кадре, слот переходов пересчитывается по workflow нового типа. Конфликт — шаблон выбора выше со словом «type». Прочий отказ — слова сервера и request id в слоте, select возвращает сохранённое; устаревший выбор («Current status is not available for the target issue type») — так же, без ветки по тексту. Кто не пишет (VIEWER, роль неизвестна или ещё не пришла, архив) — не `disabled` select, а статичная строка: чип 14 + имя 12.5/500 `--fg`, `min-height:30`, чтобы приход роли не сдвигал сетку (довод §4.3). Модалка создания — тот же select высотой 30 в `.form-two` рядом с Priority, по умолчанию первый тип реестра; пустой реестр — прежняя строка «This project allows no issue types.» **Открытая «+» колонки** (у каждой колонки, §4.9; задача создаётся с `statusKey` колонки, отказ сервера — `ErrorNote` модалки со словами сервера и `X-Request-Id`) — заголовок модалки «New issue in {Status}» (подпись §6 колонки; это и доступное имя диалога), поля статуса нет. Тип, в workflow которого (`context.workflows`) статуса колонки нет, — `<option disabled>` «{Name} — no {Status} status», как в панели: сервер такую задачу откажет. Тип без записи в `workflows` не выключается — решает сервер. По умолчанию — тип, по которому отфильтрована доска, иначе первый тип реестра со статусом колонки. Выключены все (контекст разошёлся с доской) — «Create issue» `aria-disabled` по рецепту «стойко недоступен» §4.1 и строка 11.5 `--fg-2` над футером «No issue type in this project has a {Status} status.» Открытая «New» — «New issue», без выключенных вариантов, как прежде. Отказ создания по
+`details.reason` (TAS-437; ветка по `reason`, не по `code`: первый — 400, второй — 409):
+`ISSUE_TYPE_DELETION_PENDING` — «{Type} is being deleted, so no issue can be created as {Type}.
+Choose another type.»; `ISSUE_TYPE_CHANGED` — «{Type} was deleted or replaced elsewhere, so the
+issue was not created. Check the type and create the issue again.» Оба — со словами сервера и id.
+Контекст перечитывается, введённое остаётся, фокус — на select типа. Тип пропал из реестра —
+select встаёт по своему правилу по умолчанию, предложение остаётся.
 
 ### 5.6 Empty / loading / error
 - **Контекст проекта** читается одним запросом и отказывает одним баннером (TAS-251).

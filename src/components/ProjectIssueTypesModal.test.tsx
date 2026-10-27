@@ -23,6 +23,7 @@ const { api } = vi.hoisted(() => ({
     deleteProjectIssueType: vi.fn(),
     createProjectIssueType: vi.fn(),
     updateProjectIssueType: vi.fn(),
+    listProjectWorkflows: vi.fn(),
   },
 }));
 vi.mock("../api/client", () => ({ taskaApi: api }));
@@ -42,6 +43,7 @@ const epic = (): ProjectIssueType => ({
   sortOrder: 40,
 });
 let saved: ProjectIssueType[];
+let savedWorkflows: ProjectContext["workflows"];
 const contextOf = (issueTypes: ProjectIssueType[]): ProjectContext =>
   ({
     project: { id: PROJECT, projectKey: "TAS", name: "Taska", createdBy: "u", createdAt: "x", updatedAt: "x", archivedAt: null },
@@ -49,7 +51,7 @@ const contextOf = (issueTypes: ProjectIssueType[]): ProjectContext =>
     members: [],
     labels: [],
     issueTypes,
-    workflows: {},
+    workflows: savedWorkflows,
   }) as unknown as ProjectContext;
 
 /** What the board does: reads the context and hands the dialog its registry. */
@@ -64,6 +66,7 @@ function Board() {
       archived={false}
       contextError={null}
       issueTypes={data?.issueTypes}
+      workflows={data?.workflows}
       onClose={() => {}}
       projectId={PROJECT}
       projectKey="TAS"
@@ -103,7 +106,10 @@ function held<T>() {
 beforeEach(() => {
   vi.resetAllMocks();
   saved = seeded();
+  savedWorkflows = {};
   api.getProjectContext.mockImplementation(async () => contextOf(saved));
+  // The list New type reads (TAS-437): unanswered unless a case answers it.
+  api.listProjectWorkflows.mockImplementation(() => new Promise(() => {}));
 });
 
 describe("moving a type", () => {
@@ -205,23 +211,26 @@ describe("moving a type", () => {
 });
 
 describe("a refused delete", () => {
-  it("names how many issues have the type, in the slot, with the server's words, and focus back on Delete", async () => {
-    api.deleteProjectIssueType.mockRejectedValueOnce(
-      refusal("FAILED_PRECONDITION", "Issue type BUG has 3 issues", { reason: "ISSUE_TYPE_IN_USE", issueCount: "3" }),
-    );
+  it("says any other refusal of the first press in the slot, with the server's words, and focus back on Delete", async () => {
+    api.deleteProjectIssueType.mockRejectedValueOnce(refusal("INTERNAL", "Something broke"));
     const dialog = renderDialog();
 
     const remove = within(dialog).getByRole("button", { name: "Delete Bug" });
     fireEvent.click(remove);
+    expect(
+      within(dialog).getByText(
+        "Bug will be deleted from this project for everyone. If issues have this type, you will choose another type for them first.",
+      ),
+    ).toBeVisible();
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete type" }));
 
-    expect(
-      await within(dialog).findByText("Bug was not deleted: 3 issues have this type. Change their type first."),
-    ).toBeVisible();
-    expect(within(dialog).getByText("Issue type BUG has 3 issues")).toBeVisible();
+    expect(await within(dialog).findByText("Bug was not deleted.")).toBeVisible();
+    expect(within(dialog).getByText("Something broke")).toBeVisible();
     expect(within(dialog).getByText("rid-1")).toBeInTheDocument();
     await waitFor(() => expect(remove).toHaveFocus());
     expect(names(dialog)).toEqual(["Task", "Bug", "Story"]);
+    // The first press sends no body (§4.30).
+    expect(api.deleteProjectIssueType).toHaveBeenCalledWith(PROJECT, "BUG");
   });
 
   it("reads the context again on LAST_ISSUE_TYPE: Delete was offered from a registry that was stale", async () => {
@@ -389,5 +398,349 @@ describe("the add and edit forms' shape and icon (TAS-434)", () => {
 
     await waitFor(() => expect(api.updateProjectIssueType).toHaveBeenCalledTimes(1));
     expect(api.updateProjectIssueType).toHaveBeenCalledWith(PROJECT, "TASK", { name: "Chore" });
+  });
+});
+
+/** The workflow list New type reads (TAS-437): the shared default with Task and Bug, an own one with Story, a donor. */
+const SHARED_ID = "11111111-1111-1111-1111-111111111111";
+const OWN_ID = "22222222-2222-2222-2222-222222222222";
+const DONOR_ID = "33333333-3333-3333-3333-333333333333";
+const flow = (id: string, name: string, statuses: { statusKey: string; name: string; sortOrder: number }[] = []) => ({
+  id,
+  name,
+  version: 1,
+  createdAt: "",
+  updatedAt: "",
+  statuses: statuses.map((status) => ({ ...status, id: `${id}-${status.statusKey}`, category: "IN_PROGRESS" })),
+  transitions: [],
+});
+const workflowList = () => [
+  { workflow: flow(SHARED_ID, "Default workflow"), issueTypes: ["TASK", "BUG"], shared: true },
+  { workflow: flow(OWN_ID, "Stories"), issueTypes: ["STORY"], shared: false },
+  { workflow: flow(DONOR_ID, "Old flow"), issueTypes: [], shared: false },
+];
+
+describe("New type's workflow (TAS-437)", () => {
+  const openNew = () => {
+    const dialog = renderDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add type" }));
+    return { dialog, form: within(dialog).getByRole("form", { name: "New type" }) };
+  };
+  const options = (select: HTMLElement) =>
+    [...(select as HTMLSelectElement).options].map((option) => [option.text, option.value]);
+
+  it("offers only «Same as {First}» while the list is read, and sends no workflowId then", async () => {
+    api.createProjectIssueType.mockImplementation(async (_project: string, input: ProjectIssueType) => ({ ...input, workflowId: SHARED_ID }));
+    const { form } = openNew();
+    const select = within(form).getByRole("combobox", { name: "Workflow" });
+    expect(options(select)).toEqual([["Same as Task", ""]]);
+    expect(api.listProjectWorkflows).toHaveBeenCalledWith(PROJECT);
+
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Spike" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Add type" }));
+    await waitFor(() => expect(api.createProjectIssueType).toHaveBeenCalledTimes(1));
+    expect(api.createProjectIssueType.mock.calls[0][1]).not.toHaveProperty("workflowId");
+  });
+
+  it("offers the own workflows, donors included, then the shared one, the main one chosen and named after the first type", async () => {
+    api.listProjectWorkflows.mockResolvedValue(workflowList());
+    api.createProjectIssueType.mockImplementation(async (_project: string, input: ProjectIssueType) => ({
+      ...input,
+      workflowId: OWN_ID,
+    }));
+    const { dialog, form } = openNew();
+    const select = within(form).getByRole("combobox", { name: "Workflow" });
+    await waitFor(() =>
+      expect(options(select)).toEqual([
+        ["Stories", OWN_ID],
+        ["Old flow", DONOR_ID],
+        ["Default workflow (shared, same as Task)", SHARED_ID],
+      ]),
+    );
+    expect(select).toHaveValue(SHARED_ID);
+
+    fireEvent.change(select, { target: { value: OWN_ID } });
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Spike" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Add type" }));
+    await waitFor(() => expect(api.createProjectIssueType).toHaveBeenCalledTimes(1));
+    expect(api.createProjectIssueType.mock.calls[0][1]).toMatchObject({ code: "SPIKE", workflowId: OWN_ID });
+    // The answer's workflowId names the workflow; the registry entry goes in without it.
+    expect(await within(dialog).findByText("Type Spike added. It uses Stories.")).toHaveAttribute("aria-live", "polite");
+    expect(api.createProjectIssueType.mock.calls[0]).toHaveLength(2);
+  });
+
+  it("names an own main workflow «(same as {First})», and says when the list could not be read", async () => {
+    api.listProjectWorkflows.mockResolvedValue([
+      { workflow: flow(OWN_ID, "Delivery"), issueTypes: ["TASK"], shared: false },
+      { workflow: flow(SHARED_ID, "Default workflow"), issueTypes: ["BUG", "STORY"], shared: true },
+    ]);
+    const { form } = openNew();
+    const select = within(form).getByRole("combobox", { name: "Workflow" });
+    await waitFor(() =>
+      expect(options(select)).toEqual([
+        ["Delivery (same as Task)", OWN_ID],
+        ["Default workflow (shared)", SHARED_ID],
+      ]),
+    );
+    expect(select).toHaveValue(OWN_ID);
+  });
+
+  it("offers only the main one, and says why, when the list cannot be read", async () => {
+    api.listProjectWorkflows.mockRejectedValue(refusal("UNAVAILABLE", "down"));
+    const { form } = openNew();
+    const select = within(form).getByRole("combobox", { name: "Workflow" });
+    // After the read's one retry.
+    expect(
+      await within(form).findByText("Other workflows could not be loaded, so only this one is offered.", undefined, { timeout: 4000 }),
+    ).toBeVisible();
+    expect(options(select)).toEqual([["Same as Task", ""]]);
+    expect(select).toHaveAccessibleDescription("Other workflows could not be loaded, so only this one is offered.");
+  });
+
+  it("holds a create the server is still applying, frozen, and repeats it with the 503's request id", async () => {
+    api.listProjectWorkflows.mockResolvedValue(workflowList());
+    api.createProjectIssueType
+      .mockRejectedValueOnce(
+        Object.assign(refusal("UNAVAILABLE", "Issue type creation is pending", { reason: "ISSUE_TYPE_CREATION_PENDING" }), {
+          status: 503,
+          requestId: "req-503",
+        }),
+      )
+      .mockImplementationOnce(async (_project: string, input: ProjectIssueType) => ({ ...input, workflowId: SHARED_ID }));
+    const { dialog, form } = openNew();
+    await waitFor(() => expect(within(form).getByRole("combobox", { name: "Workflow" })).toHaveValue(SHARED_ID));
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Spike" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Add type" }));
+
+    const note = await within(form).findByText(
+      "The server has not finished this change yet. Press Add type again in a few seconds to finish it; nothing is applied twice.",
+    );
+    expect(note).toHaveAttribute("role", "status");
+    expect(within(form).getByText("req-503")).toBeInTheDocument();
+    expect(within(form).queryByText("The type was not added.")).toBeNull();
+    expect(within(form).getByLabelText("Name")).toHaveAttribute("readonly");
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Other" } });
+    expect(within(form).getByLabelText("Name")).toHaveValue("Spike");
+
+    fireEvent.click(within(form).getByRole("button", { name: "Add type" }));
+    await waitFor(() => expect(api.createProjectIssueType).toHaveBeenCalledTimes(2));
+    expect(api.createProjectIssueType.mock.calls[1]).toEqual([
+      PROJECT,
+      api.createProjectIssueType.mock.calls[0][1],
+      { requestId: "req-503" },
+    ]);
+    expect(api.createProjectIssueType.mock.calls[0]).toHaveLength(2);
+    expect(await within(dialog).findByText("Type Spike added. It uses Default workflow.")).toBeInTheDocument();
+  });
+});
+
+describe("deleting a type with issues (TAS-433, TAS-437)", () => {
+  const GENERATION = "d6a4f5e7-0000-4000-8000-000000000433";
+  const inUse = (count = "3") =>
+    refusal("FAILED_PRECONDITION", `Issue type BUG has ${count} issues`, { reason: "ISSUE_TYPE_IN_USE", issueCount: count });
+  const openStep = async (count = "3") => {
+    saved = seeded().map((entry) => (entry.code === "BUG" ? { ...entry, generation: GENERATION } : entry));
+    savedWorkflows = {
+      BUG: { ...flow(SHARED_ID, "Default workflow", [{ statusKey: "IN_PROGRESS", name: "Doing", sortOrder: 20 }]) },
+      TASK: { ...flow(OWN_ID, "Delivery", [{ statusKey: "TODO", name: "To Do", sortOrder: 10 }, { statusKey: "DONE", name: "Done", sortOrder: 30 }]) },
+    } as unknown as ProjectContext["workflows"];
+    api.deleteProjectIssueType.mockRejectedValueOnce(inUse(count));
+    const dialog = renderDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete Bug" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete type" }));
+    const select = await within(dialog).findByRole("combobox", { name: "Move them to" });
+    return { dialog, select };
+  };
+
+  it("turns ISSUE_TYPE_IN_USE into the move step: the count, the other types, nothing chosen, focus on the select", async () => {
+    const { dialog, select } = await openStep();
+    await waitFor(() => expect(select).toHaveFocus());
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("3 issues have this type. Move them to another type to delete Bug.");
+    expect([...(select as HTMLSelectElement).options].map((option) => [option.text, option.disabled])).toEqual([
+      ["Choose a type", true],
+      ["Task", false],
+      ["Story", false],
+    ]);
+    // A question, not a report: no words, no id, no slot sentence.
+    expect(within(dialog).queryByText("Issue type BUG has 3 issues")).toBeNull();
+    expect(within(dialog).queryByText("rid-1")).toBeNull();
+    const answer = within(dialog).getByRole("button", { name: "Move and delete" });
+    expect(answer).toHaveAttribute("aria-disabled", "true");
+    expect(api.deleteProjectIssueType).toHaveBeenCalledWith(PROJECT, "BUG");
+  });
+
+  it("moves with the target and the entry's generation, then deletes: the issues' caches read again", async () => {
+    const { dialog, select } = await openStep("1");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("1 issue has this type. Move it to another type to delete Bug.");
+    api.deleteProjectIssueType.mockResolvedValueOnce(undefined);
+    const invalidated = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    fireEvent.change(select, { target: { value: "TASK" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+
+    expect(await within(dialog).findByText("Type Bug deleted. Its issues are now Task.")).toHaveAttribute("aria-live", "polite");
+    expect(api.deleteProjectIssueType).toHaveBeenLastCalledWith(PROJECT, "BUG", { moveIssuesTo: "TASK", expectedGeneration: GENERATION }, undefined);
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([projectContextKey(PROJECT), ["board", PROJECT], ["project-workflows", PROJECT], ["issue", PROJECT]]),
+    );
+    invalidated.mockRestore();
+  });
+
+  it("sends no generation when the registry carried none", async () => {
+    api.deleteProjectIssueType.mockRejectedValueOnce(inUse()).mockResolvedValueOnce(undefined);
+    const dialog = renderDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete Bug" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete type" }));
+    fireEvent.change(await within(dialog).findByRole("combobox", { name: "Move them to" }), { target: { value: "STORY" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+    await waitFor(() => expect(api.deleteProjectIssueType).toHaveBeenCalledTimes(2));
+    expect(api.deleteProjectIssueType.mock.calls[1][2]).toEqual({ moveIssuesTo: "STORY" });
+  });
+
+  it("adds a select per status the target's workflow lacks, for that target only, and sends the mapping", async () => {
+    const { dialog, select } = await openStep();
+    api.deleteProjectIssueType.mockRejectedValueOnce(
+      refusal("FAILED_PRECONDITION", "Supply mappings", {
+        reason: "ISSUE_STATUSES_UNMAPPED",
+        statusKeys: "IN_PROGRESS",
+        targetStatusKeys: "DONE,TODO",
+      }),
+    );
+    fireEvent.change(select, { target: { value: "TASK" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+
+    const status = await within(dialog).findByRole("combobox", { name: "Move Doing issues to" });
+    await waitFor(() => expect(status).toHaveFocus());
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "3 issues have this type. Some are in a status Task issues cannot have, so choose where each status’s issues go.",
+    );
+    // The target workflow's column order and labels.
+    expect([...(status as HTMLSelectElement).options].map((option) => option.text)).toEqual(["Choose a status", "To Do", "Done"]);
+    expect(within(dialog).getByRole("button", { name: "Move and delete" })).toHaveAttribute("aria-disabled", "true");
+
+    fireEvent.change(status, { target: { value: "DONE" } });
+    api.deleteProjectIssueType.mockResolvedValueOnce(undefined);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+    await waitFor(() => expect(api.deleteProjectIssueType).toHaveBeenCalledTimes(3));
+    expect(api.deleteProjectIssueType.mock.calls[2]).toEqual([
+      PROJECT,
+      "BUG",
+      { moveIssuesTo: "TASK", expectedGeneration: GENERATION, statusMappings: { IN_PROGRESS: "DONE" } },
+      undefined,
+    ]);
+  });
+
+  it("takes the status selects away when another target is chosen", async () => {
+    const { dialog, select } = await openStep();
+    api.deleteProjectIssueType.mockRejectedValueOnce(
+      refusal("FAILED_PRECONDITION", "Supply mappings", { reason: "ISSUE_STATUSES_UNMAPPED", statusKeys: "IN_PROGRESS", targetStatusKeys: "TODO" }),
+    );
+    fireEvent.change(select, { target: { value: "TASK" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+    await within(dialog).findByRole("combobox", { name: "Move Doing issues to" });
+    fireEvent.change(select, { target: { value: "STORY" } });
+    expect(within(dialog).queryByRole("combobox", { name: "Move Doing issues to" })).toBeNull();
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("3 issues have this type. Move them to another type to delete Bug.");
+  });
+
+  it("closes on ISSUE_TYPE_CHANGED, reads the registry again and says nothing moved, with the id only", async () => {
+    const { dialog, select } = await openStep();
+    const reads = api.getProjectContext.mock.calls.length;
+    api.deleteProjectIssueType.mockRejectedValueOnce(
+      Object.assign(refusal("ABORTED", "Issue type lifecycle changed", { reason: "ISSUE_TYPE_CHANGED", generation: "x" }), { status: 409 }),
+    );
+    fireEvent.change(select, { target: { value: "TASK" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+
+    expect(
+      await within(dialog).findByText(
+        "Issue types changed elsewhere, so Bug was not deleted and no issue moved. The list now shows the current types.",
+      ),
+    ).toBeVisible();
+    expect(within(dialog).getByText("rid-1")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Issue type lifecycle changed")).toBeNull();
+    expect(within(dialog).queryByRole("combobox", { name: "Move them to" })).toBeNull();
+    await waitFor(() => expect(api.getProjectContext.mock.calls.length).toBe(reads + 1));
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Delete Bug" })).toHaveFocus());
+  });
+
+  it("says a target that left the registry in the strip, reads it again and starts the select over", async () => {
+    const { dialog, select } = await openStep();
+    api.deleteProjectIssueType.mockRejectedValueOnce(
+      refusal("INVALID_ARGUMENT", "Target issue type is not registered in this project", { reason: "ISSUE_TYPE_TARGET_INVALID" }),
+    );
+    fireEvent.change(select, { target: { value: "STORY" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+
+    expect(await within(dialog).findByText("Story is no longer one of this project’s types. Choose another.")).toBeVisible();
+    expect(within(dialog).getByText("Target issue type is not registered in this project")).toBeVisible();
+    const fresh = within(dialog).getByRole("combobox", { name: "Move them to" });
+    expect(fresh).toHaveValue("");
+    await waitFor(() => expect(fresh).toHaveFocus());
+  });
+
+  it("ends at the migration limit with one sentence, the words and the id, no answer, focus on Cancel", async () => {
+    const { dialog, select } = await openStep();
+    api.deleteProjectIssueType.mockRejectedValueOnce(
+      refusal("FAILED_PRECONDITION", "Synchronous issue type migration is limited to 5000 issues", {
+        reason: "WORKFLOW_MIGRATION_LIMIT",
+        limit: "5000",
+      }),
+    );
+    fireEvent.change(select, { target: { value: "TASK" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+
+    expect(
+      await within(dialog).findByText(
+        "More than 5,000 issues would have to move, and the server moves at most 5,000 at once, so Bug cannot be deleted.",
+      ),
+    ).toBeVisible();
+    expect(within(dialog).getByText("Synchronous issue type migration is limited to 5000 issues")).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: "Move and delete" })).toBeNull();
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus());
+  });
+
+  it("says a 403 on the move in the slot, which outlives the strip the role line takes away", async () => {
+    const { dialog, select } = await openStep();
+    api.deleteProjectIssueType.mockRejectedValueOnce(
+      Object.assign(refusal("PERMISSION_DENIED", "Project ADMIN role is required"), { status: 403 }),
+    );
+    fireEvent.change(select, { target: { value: "TASK" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+
+    expect(await within(dialog).findByText("Bug was not deleted.")).toBeVisible();
+    expect(within(dialog).getByText("Project ADMIN role is required")).toBeVisible();
+    expect(within(dialog).queryByRole("combobox", { name: "Move them to" })).toBeNull();
+  });
+
+  it("holds a delete the server is still applying and repeats the same command with its request id", async () => {
+    const { dialog, select } = await openStep();
+    api.deleteProjectIssueType
+      .mockRejectedValueOnce(
+        Object.assign(refusal("UNAVAILABLE", "Issue type deletion is durably pending", { reason: "ISSUE_TYPE_DELETION_PENDING" }), {
+          status: 503,
+          requestId: "req-del",
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    fireEvent.change(select, { target: { value: "TASK" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+
+    expect(
+      await within(dialog).findByText(
+        "The server has not finished this change yet. Press Move and delete again in a few seconds to finish it; nothing is applied twice.",
+      ),
+    ).toHaveAttribute("role", "status");
+    // Frozen: the target stays as sent.
+    fireEvent.change(select, { target: { value: "STORY" } });
+    expect(select).toHaveValue("TASK");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+    await waitFor(() => expect(api.deleteProjectIssueType).toHaveBeenCalledTimes(3));
+    expect(api.deleteProjectIssueType.mock.calls[2]).toEqual([
+      PROJECT,
+      "BUG",
+      { moveIssuesTo: "TASK", expectedGeneration: GENERATION },
+      { requestId: "req-del" },
+    ]);
+    expect(await within(dialog).findByText("Type Bug deleted. Its issues are now Task.")).toBeInTheDocument();
   });
 });

@@ -175,6 +175,30 @@ export function hasRefusalReason(error: unknown, code: string, reason: string): 
   );
 }
 
+/**
+ * The three `details.reason`s of a 503 `UNAVAILABLE` that is not a failure: a
+ * recoverable command the server has accepted and not finished (backend
+ * TAS-433, TAS-436, TAS-437, develop `78019ece` — `WorkflowBindingCoordinator`,
+ * `IssueTypeCreationCoordinator`, `IssueTypeDeletionTransactions`). The
+ * server finishes it by itself; the same command sent again with the answer's
+ * `X-Request-Id` (`CommandRetry`) is answered once, with what it did.
+ */
+export const PENDING_COMMAND_REASONS: readonly string[] = [
+  "WORKFLOW_BINDING_CHANGE_PENDING",
+  "ISSUE_TYPE_CREATION_PENDING",
+  "ISSUE_TYPE_DELETION_PENDING",
+];
+
+/**
+ * Whether a write was answered «still being applied» — `UNAVAILABLE` with one
+ * of `PENDING_COMMAND_REASONS` — rather than refused. The pair is the key, as
+ * everywhere here: `ISSUE_TYPE_DELETION_PENDING` also refuses an issue create
+ * as a 400 `FAILED_PRECONDITION`, which is a refusal (DESIGN.md §5.5).
+ */
+export function isCommandPending(error: unknown): boolean {
+  return PENDING_COMMAND_REASONS.some((reason) => hasRefusalReason(error, "UNAVAILABLE", reason));
+}
+
 /** `details.reason` on the refused role change or removal of a project's only admin (backend TAS-394). */
 export const LAST_ADMIN_REASON = "LAST_ADMIN";
 
