@@ -27,6 +27,7 @@ import {
   defaultIssueTypeColor,
   issueTypeCodeOf,
   issueTypeDeleteRefusalText,
+  issueTypeOrderRefusal,
   movedIssueTypeCodes,
   nextIssueTypeSortOrder,
   withIssueTypeOrder,
@@ -93,8 +94,6 @@ const COLOR_CHOICES = ISSUE_TYPE_COLORS.map((color) => ({
 const DEFAULT_SHAPE: IssueTypeShape = "square";
 /** How long a row a write made holds §4.28's highlight. */
 const HIGHLIGHT_MS = 2000;
-/** The registry's dialog sentence when a move is refused (§4.30). */
-const ORDER_REFUSED_SENTENCE = "The new order was not saved. The list now shows the saved order.";
 
 type OpenForm = { kind: "create" } | { kind: "edit"; code: string };
 
@@ -109,6 +108,8 @@ type WriteAnswer = { entry: ProjectIssueType } | { alreadyGone: boolean };
 interface Notice {
   sentence: string;
   error?: unknown;
+  /** `false` keeps the server's words off the slot's second line, leaving the request id (§4.30's stale move). */
+  serverWords?: boolean;
 }
 
 /** A ref callback that files a node under a key, for `pendingFocus` to find. */
@@ -350,11 +351,11 @@ export function ProjectIssueTypesModal({
    * Move up / Move down (§4.30, backend TAS-418): one `PUT …/order` per press
    * with the whole order as it stands once the move is made — optimistic in
    * the context cache in the same frame, so the filter and New issue follow —
-   * and the writes go one at a time in the order pressed. Any refusal — the
-   * stale set's 400 `INVALID_ARGUMENT` among them, which carries no reason
-   * (backend ask A10) and is never told apart by its words — stops what is
-   * still queued, reads the context again and says so in the slot; the board
-   * and Workflows are read again once the queue is empty.
+   * and the writes go one at a time in the order pressed. Any refusal stops
+   * what is still queued, reads the context again and says so in the slot —
+   * a stale set (409 `ABORTED`, `ISSUE_TYPES_CHANGED`, backend TAS-429) in a
+   * sentence of its own (`issueTypeOrderRefusal`); the board and Workflows are
+   * read again once the queue is empty.
    */
   const orderQueue = useRef<string[][]>([]);
   const orderRunning = useRef(false);
@@ -373,7 +374,7 @@ export function ProjectIssueTypesModal({
         if (orderQueue.current.length === 0) setRegistry(() => saved);
       } catch (error) {
         orderQueue.current = [];
-        setNotice({ sentence: ORDER_REFUSED_SENTENCE, error });
+        setNotice({ ...issueTypeOrderRefusal(error), error });
         await queryClient.invalidateQueries({ queryKey: contextKey });
       }
     }
@@ -640,15 +641,15 @@ function NoticeSlot({ notice, register }: { notice: Notice | null; register: Reg
       <p aria-live="polite" className="member-note-sentence">
         {notice?.sentence ?? ""}
       </p>
-      <NoteDetail error={notice?.error} />
+      <NoteDetail error={notice?.error} serverWords={notice?.serverWords ?? true} />
     </div>
   );
 }
 
-/** The slot's second line: the server's words — §5.7's for an archive — and the request id. */
-function NoteDetail({ error }: { error: unknown }) {
+/** The slot's second line: the server's words — §5.7's for an archive — unless left off, and the request id. */
+function NoteDetail({ error, serverWords }: { error: unknown; serverWords: boolean }) {
   const { requestId } = apiErrorFacts(error);
-  const message = error ? refusalWords(error) : null;
+  const message = error && serverWords ? refusalWords(error) : null;
   if (!message && !requestId) return null;
   return (
     <p className="member-note-detail">

@@ -15,6 +15,7 @@ import {
   avatarTypeRefusalMessage,
 } from "../avatars";
 import { IssueVersionConflictError, apiErrorFacts } from "../errors";
+import { compareBoardIssues } from "../boardOrder";
 import { datesOutOfOrderServerMessage } from "../issuePatch";
 import { ObjectStoreError } from "../objectStore";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
@@ -287,8 +288,8 @@ describe("MockTaskaApi", () => {
       expect(Object.keys(context.workflows).sort()).toEqual(["BUG", "TASK"]);
     });
 
-    // Mobile's INCIDENT runs on a workflow with no To Do (TAS-428's case): the
-    // column "+" switches it off.
+    // Mobile's INCIDENT runs on a workflow with no To Do: To Do's "+" switches
+    // it off, and Triage's offers it alone (backend TAS-428).
     it("seeds a type whose workflow has no To Do", async () => {
       await api.login({ email: "mark@example.com", password: "anything" });
       const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB")!;
@@ -365,6 +366,40 @@ describe("MockTaskaApi", () => {
       await expect(api.transitionIssue(web.id, epic.id, byName("Send to review"))).resolves.toMatchObject({
         status: "IN_REVIEW",
       });
+    });
+
+    // Backend TAS-428: a create may name its status — one of its own type's
+    // workflow; the pattern is the gateway's binding, before anything.
+    it("creates in the status the create names, within the type's own workflow, and refuses one outside it", async () => {
+      const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
+      const base = { summary: "From a column", description: "", priority: "MEDIUM" };
+
+      const epic = await api.createIssue(web.id, { ...base, issueType: "EPIC", statusKey: "IN_REVIEW" });
+      expect(epic).toMatchObject({ issueType: "EPIC", status: "IN_REVIEW" });
+      const inReview = (await api.getBoard(web.id, { includeDone: true })).columns.find((c) => c.statusKey === "IN_REVIEW");
+      expect(inReview?.issues.map((issue) => issue.id)).toContain(epic.id);
+      // Without a status: TODO, as before.
+      await expect(api.createIssue(web.id, { ...base, issueType: "TASK" })).resolves.toMatchObject({ status: "TODO" });
+
+      // TASK runs on the shared default, which has no In Review.
+      const refusal = await api
+        .createIssue(web.id, { ...base, issueType: "TASK", statusKey: "IN_REVIEW" })
+        .catch((error: unknown) => error);
+      expect(apiErrorFacts(refusal)).toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: "Initial status is not available for the issue type",
+        details: { reason: "STATUS_NOT_IN_WORKFLOW" },
+      });
+      // The binding's refusal comes before the type key's.
+      for (const statusKey of ["in_review", "", "A", "IN REVIEW"]) {
+        await expect(api.createIssue(web.id, { ...base, issueType: "not a type", statusKey })).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: "Invalid request parameters",
+        });
+      }
+      // Nothing was created by the refusals.
+      const titled = (await api.listIssues(web.id, { pageSize: 100 })).items.filter((item) => item.summary === "From a column");
+      expect(titled).toHaveLength(2);
     });
 
     it("accepts a priority /meta lists and refuses one it does not, on create and on edit", async () => {
@@ -1118,7 +1153,11 @@ describe("MockTaskaApi", () => {
 
       await expect(edit(issue.id, { assigneeId: null })).resolves.toMatchObject({ assigneeId: null });
       const { history } = await api.getIssue(project.id, issue.id);
-      expect(history.at(-1)).toMatchObject({ eventType: "ASSIGNED", payload: { to: null } });
+      // The server's payload names both ends (`createIssueAssignedPayload`).
+      const tom = (await memberNamed("Tom Becker")).userId;
+      expect(history.at(-1)).toMatchObject({ eventType: "ASSIGNED", payload: { previousAssigneeId: tom, assigneeId: null } });
+      // And the details read names the people it carries (backend TAS-431).
+      expect(history.at(-1)?.participants).toEqual({ [tom]: expect.objectContaining({ id: tom, displayName: "Tom Becker" }) });
     });
 
     it("lets the reader assign themselves, and subscribes them as the server does", async () => {
@@ -1693,13 +1732,9 @@ describe("MockTaskaApi", () => {
         });
       }
       const cardOfLabelled = cardsOf(board).find((issue) => issue.id === labelled.id)!;
-      // The same labels, in the board's own order (backend TAS-392): by when
-      // each was put on — the seed's all at one instant — then by id.
-      expect(cardOfLabelled.labels).toEqual(
-        labelled.labels
-          .map(({ id, name, color }) => ({ id, name, color }))
-          .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
-      );
+      // The same labels, in the order the issue read gives them: by name,
+      // then id — the board's order since backend TAS-431.
+      expect(cardOfLabelled.labels).toEqual(labelled.labels.map(({ id, name, color }) => ({ id, name, color })));
     });
 
     it("filters server-side by assignee, label, priority and query, down to every column empty", async () => {
@@ -1871,6 +1906,122 @@ describe("MockTaskaApi", () => {
       const notAnnas = (await api.listProjects()).find((item) => !["TAS", "WEB", "OPS"].includes(item.projectKey))!;
       await api.login({ email: "anna@example.com", password: "mock-accepts-anything" });
       await expect(api.getBoard(notAnnas.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED", message: "Access denied" });
+    });
+
+    /**
+     * A column's next page (backend TAS-430, `BoardServiceImpl.listBoardColumnIssues`
+     * at `cbd3f0af`): Infra and Ops' Done holds 205 weekly checks, the board
+     * draws 200 of them.
+     */
+    describe("a column's page", () => {
+      const opsProject = async () => (await api.listProjects()).find((item) => item.projectKey === "OPS")!;
+
+      it("continues the column after an exclusive cursor in the board's order, counting the whole column", async () => {
+        const ops = await opsProject();
+        const board = await api.getBoard(ops.id, { includeDone: true, pageSizePerColumn: 200 });
+        const done = board.columns.find((column) => column.statusKey === "DONE")!;
+        expect(done).toMatchObject({ totalCount: 205, hasMore: true });
+        const last = done.issues.at(-1)!;
+
+        const page = await api.getBoardColumnPage(ops.id, "DONE", {
+          afterCreatedAt: last.createdAt,
+          afterId: last.id,
+          includeDone: true,
+          pageSize: 200,
+        });
+
+        expect(page).toMatchObject({ statusKey: "DONE", totalCount: 205, hasMore: false });
+        expect(page.issues).toHaveLength(5);
+        const all = [...done.issues, ...page.issues];
+        expect(new Set(all.map((issue) => issue.id)).size).toBe(205);
+        expect([...all].sort(compareBoardIssues)).toEqual(all);
+        // The same cards the board draws, field for field.
+        const first = (await api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, pageSize: 1 })).issues[0];
+        expect(first).toEqual(done.issues[0]);
+      });
+
+      it("cuts at the page size, 50 when none is given, and says whether more follow", async () => {
+        const ops = await opsProject();
+        const fifty = await api.getBoardColumnPage(ops.id, "DONE", { includeDone: true });
+        expect(fifty).toMatchObject({ totalCount: 205, hasMore: true });
+        expect(fifty.issues).toHaveLength(50);
+        const two = await api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, pageSize: 2 });
+        const next = await api.getBoardColumnPage(ops.id, "DONE", {
+          includeDone: true,
+          pageSize: 2,
+          afterCreatedAt: two.issues[1].createdAt,
+          afterId: two.issues[1].id,
+        });
+        expect(next.issues.map((issue) => issue.issueKey)).toEqual(["OPS-1002", "OPS-1003"]);
+        expect(next.hasMore).toBe(true);
+      });
+
+      it("applies the board's filters and includeDone, before the count", async () => {
+        const ops = await opsProject();
+        // "week 1" is week 1, weeks 10–19 and weeks 100–199.
+        await expect(
+          api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, query: "week 1", pageSize: 200 }),
+        ).resolves.toMatchObject({ totalCount: 111, hasMore: false });
+        // Without `includeDone`, a DONE-category status of the issue's own workflow is left out.
+        await expect(api.getBoardColumnPage(ops.id, "DONE", { pageSize: 200 })).resolves.toEqual({
+          statusKey: "DONE",
+          issues: [],
+          totalCount: 0,
+          hasMore: false,
+        });
+        await expect(
+          api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, issueType: "BUG", pageSize: 200 }),
+        ).resolves.toMatchObject({ totalCount: 0 });
+      });
+
+      it("answers an unknown column, an unknown type and a status outside every own workflow with an empty page", async () => {
+        const ops = await opsProject();
+        const empty = (statusKey: string) => ({ statusKey, issues: [], totalCount: 0, hasMore: false });
+        await expect(api.getBoardColumnPage(ops.id, "NOPE", { includeDone: true })).resolves.toEqual(empty("NOPE"));
+        await expect(api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, issueType: "EPIC" })).resolves.toEqual(
+          empty("DONE"),
+        );
+        await expect(api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, issueType: "not a type" })).resolves.toEqual(
+          empty("DONE"),
+        );
+        // WEB-16 sits in BLOCKED_BY_QA, a status no workflow of WEB has: the
+        // board draws it outside their workflow, and no column page has it.
+        const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
+        await expect(api.getBoardColumnPage(web.id, "BLOCKED_BY_QA", { includeDone: true })).resolves.toEqual(
+          empty("BLOCKED_BY_QA"),
+        );
+      });
+
+      it("refuses what the gateway's binding refuses, half a cursor in the service's words, and a project not the reader's", async () => {
+        const ops = await opsProject();
+        const binding = { code: "INVALID_ARGUMENT", message: "Invalid request parameters" };
+        for (const params of [
+          { pageSize: 0 },
+          { pageSize: 201 },
+          { pageSize: 1.5 },
+          { query: "" },
+          { afterCreatedAt: "yesterday", afterId: "7a1b2c3d-0000-4000-8000-000000000101" },
+          { afterCreatedAt: "2026-01-05T08:00:00Z", afterId: "issue-1" },
+        ]) {
+          await expect(api.getBoardColumnPage(ops.id, "DONE", params)).rejects.toMatchObject(binding);
+        }
+        const half = {
+          code: "INVALID_ARGUMENT",
+          message: "Invalid board cursor or pageSize (1..200); both cursor fields are required",
+        };
+        await expect(api.getBoardColumnPage(ops.id, "DONE", { afterCreatedAt: "2026-01-05T08:00:00Z" })).rejects.toMatchObject(
+          half,
+        );
+        await expect(
+          api.getBoardColumnPage(ops.id, "DONE", { afterId: "7a1b2c3d-0000-4000-8000-000000000101" }),
+        ).rejects.toMatchObject(half);
+        await expect(api.getBoardColumnPage("no-such-project", "DONE")).rejects.toMatchObject({ code: "NOT_FOUND" });
+        await api.login({ email: "priya@example.com", password: "anything" });
+        await expect(api.getBoardColumnPage(ops.id, "DONE")).rejects.toMatchObject({
+          code: "PERMISSION_DENIED",
+          message: "Access denied",
+        });
+      });
     });
   });
 
@@ -2462,7 +2613,7 @@ describe("MockTaskaApi", () => {
       expect(Object.keys(carrier.labels[0]).sort()).toEqual(["color", "id", "name"]);
     });
 
-    it("lists labels by name, then id — on the project, on the issue — and on the board by when they were put on", async () => {
+    it("lists labels by name, then id — on the project, on the issue and on the board", async () => {
       // The order both label reads declare since backend PR #200. Created
       // last, named to sort first: insertion order would put it at the end.
       const first = await api.createProjectLabel(project.id, { name: "a11y", color: "#0052cc" });
@@ -2481,13 +2632,11 @@ describe("MockTaskaApi", () => {
       );
 
       // The board's card carries the same labels with their names and colours
-      // (backend #205) — in the order they were put on (TAS-392), not by name.
+      // (backend #205), by name then id like the issue (backend TAS-431) — no
+      // longer in the order they were put on.
       const board = await api.getBoard(project.id, { issueType: "TASK", includeDone: true });
       const card = board.columns.flatMap((column) => column.issues).find((issue) => issue.id === bare.id)!;
-      expect(card.labels.map((label) => label.id)).toEqual([...labels].reverse().slice(0, 3).map((label) => label.id));
-      expect([...card.labels].sort((a, b) => a.name.localeCompare(b.name, "en"))).toEqual(
-        onIssue.map(({ id, name, color }) => ({ id, name, color })),
-      );
+      expect(card.labels).toEqual(onIssue.map(({ id, name, color }) => ({ id, name, color })));
     });
 
     it("creates a label, trimming the name the caller typed", async () => {
@@ -5442,6 +5591,31 @@ describe("MockTaskaApi", () => {
     };
     const signIn = (email: string) => api.login({ email, password: "anything" });
 
+    // Backend TAS-431: the issue's own total of every live entry, on every
+    // issue answer, whatever page of the work log anybody has read.
+    it("states the issue's timeSpentMinutes on every issue answer, moved by each worklog write", async () => {
+      const tas109 = await issueByKey("TAS-109");
+      expect(tas109.timeSpentMinutes).toBe(105 * 30);
+      expect((await api.getIssue(project.id, tas109.id)).issue.timeSpentMinutes).toBe(3150);
+      expect((await api.listIssueWorklogs(project.id, tas109.id, { page: 0, pageSize: 100 })).hasMore).toBe(true);
+
+      const issue = await issueByKey("TAS-101");
+      expect(issue.timeSpentMinutes).toBe(90 + 120 + 45);
+      const added = await api.addIssueWorklog(project.id, issue.id, { spentMinutes: 30, workDate: "2026-06-14" });
+      expect((await api.getIssueByKey("TAS-101")).timeSpentMinutes).toBe(285);
+      await api.updateIssueWorklog(project.id, issue.id, added.id, { spentMinutes: 60 });
+      expect((await api.getIssue(project.id, issue.id)).issue.timeSpentMinutes).toBe(315);
+      await api.deleteIssueWorklog(project.id, issue.id, added.id);
+      const current = (await api.getIssue(project.id, issue.id)).issue;
+      expect(current.timeSpentMinutes).toBe(255);
+      // A write's answer carries it too.
+      await expect(api.updateIssue(project.id, issue.id, { priority: "LOW" }, current.version)).resolves.toMatchObject({
+        timeSpentMinutes: 255,
+      });
+      // Nothing logged is a count of nought, not an absence.
+      expect((await issueByKey("TAS-102")).timeSpentMinutes).toBe(0);
+    });
+
     // Backend TAS-421: a page, its count and whether more follow; each row
     // names its author, a former account as `null`.
     it("lists the seeded entries newest first, each named, for every member role", async () => {
@@ -6259,6 +6433,22 @@ describe("MockTaskaApi", () => {
         for (const item of outside) expect(after.find((row) => row.id === item.id)?.status).toBe(item.status);
       });
 
+      // Backend TAS-429 (A12): a workflow delete moves only its own statuses
+      // and the keys its mapping names. WEB-16, a TASK in BLOCKED_BY_QA — a
+      // status neither workflow has — stays where it is and does not refuse
+      // the delete, which the legacy scan did.
+      it("deletes a workflow without counting issues in statuses outside both workflows", async () => {
+        const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
+        const own = (await api.createProjectWorkflow(web.id, await copyWithHidden(web.id, "Delivery", ["TASK"]))).workflow;
+        const stray = (await api.listIssues(web.id, { pageSize: 100 })).items.find((item) => item.issueKey === "WEB-16")!;
+        expect(stray).toMatchObject({ issueType: "TASK", status: "BLOCKED_BY_QA" });
+
+        const answer = await api.deleteProjectWorkflow(web.id, own.id, { version: own.version });
+
+        expect(answer).toMatchObject({ shared: true, issueTypes: ["TASK"] });
+        expect((await api.getIssue(web.id, stray.id)).issue.status).toBe("BLOCKED_BY_QA");
+      });
+
       it("deletes a transition, which the board then no longer offers", async () => {
         const created = await ownWorkflow();
         const close = transitionNamed(created, "Close");
@@ -6302,10 +6492,16 @@ describe("MockTaskaApi", () => {
           code: "INVALID_ARGUMENT",
           message: "Map to statuses present in both workflows; add a target status to the current workflow first if needed",
         };
-        const wrong: Record<string, string>[] = [{ CODE_REVIEW: "CODE_REVIEW" }, { NOPE: "TODO" }, { CODE_REVIEW: "NOPE" }];
+        // The targets are checked; a source outside this workflow is allowed
+        // since backend TAS-429 — and maps nothing here, so the issue in
+        // CODE_REVIEW still has nowhere to go.
+        const wrong: Record<string, string>[] = [{ CODE_REVIEW: "CODE_REVIEW" }, { CODE_REVIEW: "NOPE" }];
         for (const statusMappings of wrong) {
           await expect(api.deleteProjectWorkflow(project.id, created.id, { version, statusMappings })).rejects.toMatchObject(both);
         }
+        await expect(
+          api.deleteProjectWorkflow(project.id, created.id, { version, statusMappings: { NOPE: "TODO" } }),
+        ).rejects.toMatchObject({ code: "FAILED_PRECONDITION", details: { reason: "WORKFLOW_ISSUES_UNMAPPED", statusKeys: "CODE_REVIEW" } });
         await expect(
           api.deleteProjectWorkflow(project.id, created.id, { version: 1, statusMappings: { CODE_REVIEW: "IN_PROGRESS" } }),
         ).rejects.toMatchObject({ code: "ABORTED" });
@@ -6535,12 +6731,14 @@ describe("MockTaskaApi", () => {
       });
 
       await signIn("anna@example.com");
+      // Not the registry's set — a type added or deleted elsewhere — is 409
+      // `ABORTED` with its reason since backend TAS-429, not a bad request.
       for (const stale of [["BUG", "TASK"], ["BUG", "TASK", "STORY", "EPIC"], ["BUG", "TASK", "EPIC"]]) {
         const refusal = await api.reorderProjectIssueTypes(project.id, stale).catch((error: unknown) => error);
         expect(apiErrorFacts(refusal)).toMatchObject({
-          code: "INVALID_ARGUMENT",
-          message: "codes must contain every current issue type exactly once",
-          details: null,
+          code: "ABORTED",
+          message: "Issue type registry changed; reload the current types before reordering",
+          details: { reason: "ISSUE_TYPES_CHANGED" },
         });
       }
       // Nothing was written.
@@ -6553,6 +6751,27 @@ describe("MockTaskaApi", () => {
         ["BUG", 30],
       ]);
       expect((await api.getProjectContext(project.id)).issueTypes).toEqual(saved);
+    });
+
+    // `MOCK_PROJECT_TRIGGERS.issueTypesChangedMeanwhile`: another admin adds a
+    // type just before the move — the stale set's 409 the dialog says in its
+    // own sentence (backend TAS-429).
+    it("has another admin add a type before a move while a type's name carries the trigger, once", async () => {
+      await signIn("anna@example.com");
+      await api.updateProjectIssueType(project.id, "STORY", {
+        name: `Story ${MOCK_PROJECT_TRIGGERS.issueTypesChangedMeanwhile}`,
+      });
+
+      const refusal = await api
+        .reorderProjectIssueTypes(project.id, ["BUG", "TASK", "STORY"])
+        .catch((error: unknown) => error);
+
+      expect(apiErrorFacts(refusal)).toMatchObject({ code: "ABORTED", details: { reason: "ISSUE_TYPES_CHANGED" } });
+      const read = await codesOf(project.id);
+      expect(read).toEqual(["TASK", "BUG", "STORY", "ADDED_ELSEWHERE"]);
+      // Read again, the move goes through, and nobody adds a second type.
+      const saved = await api.reorderProjectIssueTypes(project.id, ["BUG", "TASK", "STORY", "ADDED_ELSEWHERE"]);
+      expect(saved.map((type) => type.code)).toEqual(["BUG", "TASK", "STORY", "ADDED_ELSEWHERE"]);
     });
 
     it("refuses deleting the last type with LAST_ISSUE_TYPE and no count", async () => {

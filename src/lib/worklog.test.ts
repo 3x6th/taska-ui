@@ -8,13 +8,12 @@ import {
   formatWorkDate,
   localDateOnly,
   sortWorklogs,
-  totalSpentMinutes,
   updateInputOf,
   withWorklogAdded,
   withWorklogRemoved,
   withWriteAnswer,
   worklogDraftProblems,
-  worklogsComplete,
+  worklogTotalText,
   worklogsTotalCount,
 } from "./worklog";
 
@@ -99,9 +98,13 @@ describe("the work log list", () => {
     expect(sorted.map((item) => item.id)).toEqual(["c", "b", "a"]);
   });
 
-  it("totals the listed minutes", () => {
-    expect(totalSpentMinutes([entry({ spentMinutes: 90 }), entry({ spentMinutes: 120 })])).toBe(210);
-    expect(totalSpentMinutes([])).toBe(0);
+  // Backend TAS-431 (DESIGN.md §4.24): the issue's own total, whatever pages are read.
+  it("words the issue's timeSpentMinutes as the total, and draws none for nothing logged or nothing stated", () => {
+    expect(worklogTotalText(3150)).toBe("52h 30m logged");
+    expect(worklogTotalText(45)).toBe("45m logged");
+    expect(worklogTotalText(120)).toBe("2h logged");
+    expect(worklogTotalText(0)).toBeNull();
+    expect(worklogTotalText(null)).toBeNull();
   });
 
   it("prints a day without moving it across a zone, and its year only when it is not this one", () => {
@@ -156,11 +159,7 @@ describe("the work log in pages", () => {
     ]);
   });
 
-  it("says the list is complete only when the last page said hasMore: false, and counts by the first page", () => {
-    expect(worklogsComplete([page([newest]), page([middle], { hasMore: false })])).toBe(true);
-    expect(worklogsComplete([page([newest])])).toBe(false);
-    expect(worklogsComplete([page([newest], { hasMore: null })])).toBe(false);
-    expect(worklogsComplete([])).toBe(false);
+  it("counts by the first page", () => {
     expect(worklogsTotalCount([page([newest], { totalCount: 205 })])).toBe(205);
     expect(worklogsTotalCount([page([newest], { totalCount: null })])).toBeNull();
     expect(worklogsTotalCount([])).toBeNull();

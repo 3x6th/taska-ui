@@ -887,6 +887,15 @@ export interface Issue {
   dueDate: DateOnly | null;
   originalEstimateMinutes: number | null;
   remainingEstimateMinutes: number | null;
+  /**
+   * Every active work log minute on the issue — `timeSpentMinutes` on
+   * `IssueResponseDto` and `IssueDetailsResponseDto` (backend TAS-431, develop
+   * `cbd3f0af`): a column issue-service moves with each worklog add, edit and
+   * delete, independent of how many worklog pages anybody has read. The work
+   * log's «Xh Ym logged» reads it (DESIGN.md §4.24). `null` when the answer did
+   * not carry a whole number of minutes `>= 0` — then the panel draws no total.
+   */
+  timeSpentMinutes: number | null;
 }
 
 /**
@@ -1026,7 +1035,11 @@ export interface BoardColumn {
   name: string;
   category: string;
   sortOrder: number;
-  /** The first page of the column: at most `pageSizePerColumn` issues (backend TAS-392). */
+  /**
+   * The first page of the column — at most `pageSizePerColumn` issues (backend
+   * TAS-392) — and, once the reader pressed «Show more», the pages read after
+   * it (`BoardColumnPage`), appended in the column's order without repeats.
+   */
   issues: BoardIssue[];
   /**
    * Every issue of the column that matches the read's filters, before the page
@@ -1040,6 +1053,24 @@ export interface BoardColumn {
    * it is not a boolean, `totalCount > issues.length` if the count is known, and
    * `null` — no foot, no claim — if it is not.
    */
+  hasMore: boolean | null;
+}
+
+/**
+ * `GET /projects/{projectId}/board/columns/{statusKey}/issues` —
+ * `BoardColumnPageResponseDto` (backend TAS-430, develop `cbd3f0af`): the next
+ * page of one board column, in the column's own order (`createdAt`, then
+ * `id`), after an exclusive cursor — the board's «Show more» (DESIGN.md §4.9).
+ *
+ * `totalCount` counts the whole column under the read's filters, whatever the
+ * cursor; `hasMore` says whether issues lie past the last one of this page.
+ * Read as `BoardColumn` reads them: a count that is not a whole number is
+ * `null`, and a `hasMore` that is not a boolean is worked out from it.
+ */
+export interface BoardColumnPage {
+  statusKey: string;
+  issues: BoardIssue[];
+  totalCount: number | null;
   hasMore: boolean | null;
 }
 
@@ -1063,9 +1094,10 @@ export interface BoardColumn {
  * **Capped since backend TAS-392**: each column, and `unplacedIssues` as one
  * bucket, carries at most `pageSizePerColumn` issues (the board screen asks for
  * 200, the most it may), with the true count and whether more lie past the
- * page. Nothing continues a column in its own order yet (backend A1, TAS-430),
- * so the board says how many it shows of how many and the filters — which the
- * server applies before the cap — find the rest (DESIGN.md §4.9, §5.4).
+ * page. A column continues in its own order through its page route since
+ * backend TAS-430 (`BoardColumnPage`, the board's «Show more»); the unplaced
+ * bucket has no continuation, and its foot says the filters find the rest
+ * (DESIGN.md §4.9, §5.4).
  */
 export interface Board {
   projectId: string;
@@ -1177,6 +1209,18 @@ export interface IssueHistoryEvent {
    * then to "Unknown" (`personFor`, DESIGN.md §4.26).
    */
   actor?: UserSummary | null;
+  /**
+   * The people the event's payload names by id, as the server names them
+   * (`IssueHistoryResponseDto.participants`, backend TAS-431): profiles keyed
+   * by the UUIDs in its server-owned fields — `assigneeId` and
+   * `previousAssigneeId` of an `ASSIGNED` event among them — former members
+   * of the project included. An id the server found no profile for is simply
+   * not a key; the id stays in the payload. Only the details read carries it,
+   * and absent reads as no names. Activity names the assignee of an
+   * `ASSIGNED` event from here first, then from the member list (DESIGN.md
+   * §4.26).
+   */
+  participants?: Readonly<Record<string, UserSummary>>;
   occurredAt: string;
   /** The channel mark (`ActionVia`): mock only until TAS-411. */
   via?: ActionVia | null;

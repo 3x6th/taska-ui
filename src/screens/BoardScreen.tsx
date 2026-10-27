@@ -79,8 +79,25 @@ import { useMeta } from "../hooks/useMeta";
 import { carriesFiles, closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
 import { focusLost, tabbables } from "../lib/focusTrap";
 import { personFor, type NamedBy, type Person } from "../lib/people";
-import { BOARD_PAGE_SIZE_PER_COLUMN, NO_BOARD_FILTERS, boardKey, boardQueryOptions, type BoardFilters } from "../lib/boardQuery";
-import { boardCards, boardHasMore, boardIssueCount, moveCardOnBoard, withCardVersion, withoutCardOnBoard } from "../lib/boardCards";
+import {
+  BOARD_PAGE_SIZE_PER_COLUMN,
+  NO_BOARD_FILTERS,
+  boardColumnPageParams,
+  boardKey,
+  boardQueryOptions,
+  boardReadKey,
+  type BoardFilters,
+} from "../lib/boardQuery";
+import {
+  boardCards,
+  boardHasMore,
+  boardIssueCount,
+  columnCursor,
+  moveCardOnBoard,
+  withCardVersion,
+  withColumnPage,
+  withoutCardOnBoard,
+} from "../lib/boardCards";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { allowedIssueTypes, projectContextKey, workflowFor } from "../lib/projectContext";
 import { archivedOnDay, PROJECT_ARCHIVED_SENTENCE, refusalWords, rereadContextAfterRefusal } from "../lib/projectArchive";
@@ -264,6 +281,8 @@ function mergeWriteAnswer(data: IssueDetailsWithHistory, answer: IssueWriteAnswe
       dueDate: answer.dueDate,
       originalEstimateMinutes: answer.originalEstimateMinutes,
       remainingEstimateMinutes: answer.remainingEstimateMinutes,
+      // The column every issue answer carries (backend TAS-431), a write's too.
+      timeSpentMinutes: answer.timeSpentMinutes,
       updatedAt: answer.updatedAt,
       version: answer.version,
       assignee: answer.assigneeId === issue.assigneeId ? issue.assignee : null,
@@ -405,9 +424,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const topbarRef = useRef<HTMLElement>(null);
   const [creating, setCreating] = useState(false);
   /**
-   * The column whose "+" opened the create form (§5.5, P3′), or `null` for
-   * "New". Until backend TAS-428 the server creates every issue in `TODO`, so
-   * only that column offers a "+" (§4.9).
+   * The column whose "+" opened the create form (§4.9, §5.5), or `null` for
+   * "New". The form creates the issue in that column's status (backend
+   * TAS-428); "New" names none, and the server creates it in `TODO`.
    */
   const [creatingIn, setCreatingIn] = useState<ColumnStatus | null>(null);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
@@ -701,6 +720,75 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   useEffect(() => {
     shownIssueId.current = issueId;
   }, [issueId]);
+
+  /**
+   * «Show more» on a column cut at its page (§4.9, backend TAS-430): one read
+   * of the column's next page per press — the cursor of the last card drawn,
+   * the filters the drawn board was read with, `includeDone`, 200 — appended
+   * to that board read in the column's order without repeats
+   * (`withColumnPage`). A re-read of the board keeps what was appended
+   * (`keepExpandedColumns`). Per column and per combination of filters: in
+   * flight, a second press does nothing; a refusal stays in the column until
+   * the next press of the same button.
+   *
+   * While the board drawn is an earlier answer under new filters (§5.4) the
+   * button is in flight too: its cursor and filters would belong to two
+   * different reads.
+   */
+  const [columnMore, setColumnMore] = useState<Record<string, ColumnMoreState>>({});
+  const columnMoreOut = useRef(new Set<string>());
+  /** The card focus goes to once a page has drawn (§4.9: the first new one). */
+  const moreFocus = useRef<string | null>(null);
+  const moreKey = (statusKey: string) => JSON.stringify([filters, statusKey]);
+  const showMore = async (status: ColumnStatus) => {
+    const key = moreKey(status.statusKey);
+    if (awaitingFilter || columnMoreOut.current.has(key)) return;
+    const readKey = boardReadKey(projectId, filters);
+    const drawn = queryClient.getQueryData<Board>(readKey);
+    const column = drawn?.columns.find((item) => item.statusKey === status.statusKey);
+    const cursor = column ? columnCursor(column) : null;
+    if (!column || !cursor) return;
+    columnMoreOut.current.add(key);
+    setColumnMore((current) => ({ ...current, [key]: { inFlight: true, error: null } }));
+    // Emptied on the press, so the same refusal twice over is said twice (§4.9).
+    setBoardStatus("");
+    try {
+      const page = await taskaApi.getBoardColumnPage(projectId, status.statusKey, boardColumnPageParams(filters, cursor));
+      const latest = queryClient.getQueryData<Board>(readKey);
+      const before = new Set(latest ? boardCards(latest).map((issue) => issue.id) : []);
+      queryClient.setQueryData<Board>(readKey, (current) => (current ? withColumnPage(current, page) : current));
+      // The first new card, or — when the page brought none and the foot goes
+      // with it — the last one drawn, so focus is not left on a button that
+      // has gone.
+      moreFocus.current =
+        page.issues.find((issue) => !before.has(issue.id))?.id ??
+        (page.hasMore === false ? (column.issues.at(-1)?.id ?? null) : null);
+      setColumnMore((current) => {
+        const { [key]: _done, ...rest } = current;
+        return rest;
+      });
+    } catch (error) {
+      setColumnMore((current) => ({ ...current, [key]: { inFlight: false, error } }));
+      setBoardStatus(`More ${statusLabel(status.statusKey, [status])} issues could not be loaded.`);
+    } finally {
+      columnMoreOut.current.delete(key);
+    }
+  };
+  // After the page has drawn: focus on the card, the scroll left where it is
+  // (§4.9), and drawn, since a pointer press would otherwise leave it invisible.
+  useEffect(() => {
+    const id = moreFocus.current;
+    const root = boardRef.current;
+    if (!id || !root) return;
+    const target = findDeleteFocusTarget(root, { card: id });
+    if (!target) return;
+    moreFocus.current = null;
+    try {
+      target.focus({ preventScroll: true, focusVisible: true });
+    } catch {
+      target.focus({ preventScroll: true });
+    }
+  }, [board]);
 
   /**
    * A write refused because the project was archived meanwhile (§5.7, «Архив
@@ -1381,6 +1469,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                     setCreatingIn(status);
                     setCreating(true);
                   }}
+                  more={columnMore[moreKey(status.statusKey)]}
+                  moreHeld={awaitingFilter}
+                  onShowMore={() => void showMore(status)}
                   onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
                   registry={registry}
                 />
@@ -1604,13 +1695,6 @@ function boardColumnCounts(boardColumns: number, outsideShown: boolean): CSSProp
 type ColumnStatus = Pick<BoardColumnData, "statusKey" | "name" | "category" | "sortOrder">;
 
 /**
- * The status issue-service creates every issue in (`IssueServiceImpl`), and so
- * the one column a "+" may sit on until a create can name its status (backend
- * TAS-428, DESIGN.md §4.9).
- */
-const CREATE_STATUS_KEY = "TODO";
-
-/**
  * The delete's 404: the issue is not there any more — deleted elsewhere in
  * the meantime — which is the outcome the reader asked for, so it takes the
  * success path with its own sentence (§4.10).
@@ -1653,6 +1737,9 @@ function BoardColumn({
   canCreate,
   offersCreate,
   onAdd,
+  more,
+  moreHeld,
+  onShowMore,
   onOpenIssue,
   registry,
 }: {
@@ -1675,6 +1762,11 @@ function BoardColumn({
   /** Whether the "+" is drawn at all: not for a VIEWER (§5.7), who gets no New either. */
   offersCreate: boolean;
   onAdd: () => void;
+  /** «Show more» of this column under the board's filters: in flight, or refused (§4.9). */
+  more: ColumnMoreState | undefined;
+  /** The board drawn is an earlier answer under new filters: «Show more» waits for the one asked for (§5.4). */
+  moreHeld: boolean;
+  onShowMore: () => void;
   onOpenIssue: (issueId: string) => void;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: status.statusKey, disabled: !canEdit });
@@ -1694,11 +1786,9 @@ function BoardColumn({
         <strong>{name}</strong>
         {/* The issues that match the filters, never the cards drawn (§4.9). */}
         <span className="count-pill">{issuesUnknown || totalCount === null ? <Unknown /> : totalCount}</span>
-        {/* Only on the To Do column, by its key (§4.9): until backend TAS-428
-            the server creates every issue in TODO, and a "+" on another column
-            would put the issue somewhere other than where it was pressed.
-            Nothing stands in for it on the others. */}
-        {offersCreate && status.statusKey === CREATE_STATUS_KEY ? (
+        {/* On every column of the board (§4.9): the form it opens creates the
+            issue in this column's status (backend TAS-428). */}
+        {offersCreate ? (
           <button
             aria-label={`Create issue in ${name}`}
             className="icon-button mini"
@@ -1727,7 +1817,16 @@ function BoardColumn({
             />
           </ErrorBoundary>
         ))}
-        {!issuesUnknown && hasMore === true ? <ColumnFoot drawn={issues.length} total={totalCount} /> : null}
+        {!issuesUnknown && hasMore === true ? (
+          <ColumnMore
+            drawn={issues.length}
+            error={more?.error ?? null}
+            inFlight={moreHeld || more?.inFlight === true}
+            name={name}
+            onShowMore={onShowMore}
+            total={totalCount}
+          />
+        ) : null}
         {/* Three different empty columns. A column whose contents are unknown
             must not invite a card, and the dashed frame §5.6 gives the empty
             state is exactly that invitation; a reader who cannot drop one must
@@ -1743,12 +1842,74 @@ function BoardColumn({
   );
 }
 
+/** A column's «Show more» under one combination of filters (§4.9). */
+interface ColumnMoreState {
+  inFlight: boolean;
+  /** The refused read, said in the column until the next press; `null` when none is. */
+  error: unknown;
+}
+
 /**
- * The foot of a column cut at its page (§4.9, «Колонка не целиком»): the last
- * item of the list, how many of how many are drawn — `{total}` is the count
- * pill's number. No «Show more»: nothing continues a column in its own order
- * yet (backend A1, TAS-430), so the sentence says how to find the rest. Not a
- * live region; the same for every role and on an archived project.
+ * The foot of a board column cut at its page (§4.9, «Колонка не целиком»): the
+ * last item of the list — how many of how many are drawn, `{total}` being the
+ * count pill's number — and «Show more», which reads the column's next page
+ * (backend TAS-430). In flight the button is `aria-disabled` with the progress
+ * cursor and keeps its words (§4.1); a press then does nothing. A refused read
+ * stands above the row as §5.6's box with the server's words and the request
+ * id; its sentence is said by the board's status region, so the box is not
+ * live. Reading, so the same for every role and on an archived project.
+ */
+function ColumnMore({
+  name,
+  drawn,
+  total,
+  inFlight,
+  error,
+  onShowMore,
+}: {
+  name: string;
+  drawn: number;
+  total: number | null;
+  inFlight: boolean;
+  error: unknown;
+  onShowMore: () => void;
+}) {
+  const countId = useId();
+  return (
+    <>
+      {error ? (
+        <ErrorNote requestId={apiErrorFacts(error).requestId} serverWords={refusalWords(error)}>
+          {`More ${name} issues could not be loaded.`}
+        </ErrorNote>
+      ) : null}
+      <div className="list-more">
+        <span className="list-more-count" id={countId}>
+          {drawn} of {total === null ? <Unknown /> : total} shown
+        </span>
+        <button
+          aria-describedby={countId}
+          aria-disabled={inFlight || undefined}
+          aria-label={`Show more ${name} issues`}
+          className="secondary-button compact-button list-more-button"
+          data-busy={inFlight || undefined}
+          onClick={() => {
+            if (!inFlight) onShowMore();
+          }}
+          type="button"
+        >
+          Show more
+        </button>
+      </div>
+    </>
+  );
+}
+
+/**
+ * The foot of «Outside their workflow» cut at its page (§4.9): how many of how
+ * many are drawn, and — since nothing continues the group (the column page
+ * route reads only statuses of each type's own workflow, backend TAS-430) — that
+ * the filters find the rest. Not a live region; the same for every role and on
+ * an archived project.
  */
 function ColumnFoot({ drawn, total }: { drawn: number; total: number | null }) {
   return (
@@ -3545,6 +3706,7 @@ function IssuePanel({
           userById={userById}
           prefetched={worklogsPrefetched}
           writeScope={issueWriteScope(issueId)}
+          timeSpentMinutes={issue.timeSpentMinutes}
         />
 
         <CommentsSection
@@ -6789,11 +6951,11 @@ function CreateIssueModal({
    */
   issueTypes: readonly ProjectIssueType[];
   /**
-   * The column whose "+" opened the form (§5.5, P3′), or `null` for "New". The
-   * server creates in `TODO` until backend TAS-428, so the form names the
-   * column in its title and switches off a type whose workflow lacks its
-   * status: such an issue would land in «Outside their workflow», not where
-   * "+" was pressed.
+   * The column whose "+" opened the form (§4.9, §5.5), or `null` for "New".
+   * The issue is created in that column's status — `statusKey` on the create
+   * (backend TAS-428) — so the form names the column in its title and switches
+   * off a type whose workflow lacks the status: the server would refuse it
+   * (`STATUS_NOT_IN_WORKFLOW`). "New" sends no status.
    */
   inStatus: ColumnStatus | null;
   /** The type the board is filtered by: the "+" form's default when it can take it. */
@@ -6814,8 +6976,8 @@ function CreateIssueModal({
   const statusName = inStatus ? statusLabel(inStatus.statusKey, [inStatus]) : null;
   /**
    * A type the "+" form switches off (§5.5): its workflow is in the context
-   * and has no status of the column's key. A type with no workflow entry is
-   * left on — the server decides.
+   * and has no status of the column's key, so the server would refuse the
+   * create. A type with no workflow entry is left on — the server decides.
    */
   const lacksStatus = (code: IssueTypeCode) => {
     if (!inStatus) return false;
@@ -6954,8 +7116,19 @@ function CreateIssueModal({
   };
 
   const createIssue = useMutation({
+    // From a column's "+", in that column's status (backend TAS-428); from
+    // "New", no status — the server's `TODO`. A refusal (the type's workflow
+    // lacks the status, which the form switches off but the server decides) is
+    // the form's slot below: the server's words and the request id (§5.5).
     mutationFn: (type: IssueTypeCode) =>
-      taskaApi.createIssue(projectId, { issueType: type, priority, summary, description, ...planningInput(planning) }),
+      taskaApi.createIssue(projectId, {
+        issueType: type,
+        ...(inStatus ? { statusKey: inStatus.statusKey } : {}),
+        priority,
+        summary,
+        description,
+        ...planningInput(planning),
+      }),
     // The panel's rule, on this form's one write: the slot holds a single line,
     // so a date refusal must not caption the answer to a create, and a create
     // that is refused must not be silent behind one (TAS-231, art-director).
@@ -7540,7 +7713,9 @@ function historyText(
   if (event.eventType === "ASSIGNED") {
     const assigneeId = event.payload.to ?? event.payload.assigneeId;
     if (!assigneeId || typeof assigneeId !== "string") return "cleared the assignee";
-    return `assigned ${userById.get(assigneeId)?.displayName ?? "someone"}`;
+    // The event's own summary of the person first — a former member included
+    // (backend TAS-431, `participants`) — then the member list (§4.26).
+    return `assigned ${personFor(assigneeId, event.participants?.[assigneeId], userById)?.displayName || "someone"}`;
   }
   if (event.eventType === "PRIORITY") {
     const to = event.payload.to;

@@ -307,17 +307,18 @@ describe("what a delete moves issues out of", () => {
     statuses: [...shared.statuses, status("s-qa", "QA", "IN_PROGRESS", 25, "QA"), status("s-ship", "SHIP", "DONE", 40, "Ship")],
   };
 
-  it("takes the statuses the details name, and keeps apart the ones that are not this workflow's", () => {
-    expect(statusesToMap(own, { issueCount: "4", statusKeys: "SHIP,BLOCKED" })).toEqual({
-      mappable: [own.statuses[4]],
-      unmappable: ["BLOCKED"],
-    });
+  // Backend TAS-429 (A12): a workflow delete moves only its own statuses, so
+  // the keys a refusal names are this workflow's; one that is not is nothing
+  // to map, and is no longer said as a dead end of its own.
+  it("takes the statuses of this workflow the details name, in column order, and leaves out any other key", () => {
+    expect(statusesToMap(own, { issueCount: "4", statusKeys: "SHIP,BLOCKED,QA" })).toEqual([own.statuses[3], own.statuses[4]]);
+    expect(statusesToMap(own, { issueCount: "1", statusKeys: "BLOCKED" })).toEqual([]);
   });
 
   // Never guessed from the shared default: without the keys there is nothing to map.
   it("maps nothing when the details name no status", () => {
-    expect(statusesToMap(own, null)).toEqual({ mappable: [], unmappable: [] });
-    expect(statusesToMap(own, { issueCount: "4" })).toEqual({ mappable: [], unmappable: [] });
+    expect(statusesToMap(own, null)).toEqual([]);
+    expect(statusesToMap(own, { issueCount: "4" })).toEqual([]);
   });
 
   it("reads the named status keys as the server joins them, and none when they did not come", () => {

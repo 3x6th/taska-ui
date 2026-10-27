@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import type { IssueWorklog, IssueWorklogPage } from "../domain/types";
@@ -88,7 +88,7 @@ const entry: IssueWorklog = {
 const refusal = (message: string, status: number, code: string) =>
   Object.assign(new Error(message), { status, code, requestId: "req-251" });
 
-function renderSection(props: Partial<{ canLog: boolean; isProjectAdmin: boolean }> = {}) {
+function renderSection(props: Partial<{ canLog: boolean; isProjectAdmin: boolean; timeSpentMinutes: number | null }> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
@@ -101,6 +101,8 @@ function renderSection(props: Partial<{ canLog: boolean; isProjectAdmin: boolean
         projectId={PROJECT}
         userById={new Map([[ANNA, { id: ANNA, displayName: "Anna Ivanova" }]])}
         writeScope={`issue-write:${ISSUE}`}
+        // The issue's own total (backend TAS-431): the seeded entry's 45m unless a test says otherwise.
+        timeSpentMinutes={props.timeSpentMinutes === undefined ? 45 : props.timeSpentMinutes}
       />
     </QueryClientProvider>,
   );
@@ -240,16 +242,17 @@ describe("the work log section", () => {
     });
   const heading = () => screen.getByRole("heading", { name: /^Work log/ });
 
-  // Backend TAS-421: the list is paged at 100, the pill is the server's count,
-  // and no sum is drawn until every entry is read (DESIGN.md §4.24).
-  it("reads 100 a page, counts by the server, and holds the sum back until every entry is read", async () => {
+  // Backend TAS-421: the list is paged at 100 and the pill is the server's
+  // count; backend TAS-431: the total is the issue's own, drawn on the first
+  // page already (DESIGN.md §4.24).
+  it("reads 100 a page, counts by the server, and draws the issue's total with only the first page read", async () => {
     state.worklogs = many(105);
-    renderSection();
+    renderSection({ timeSpentMinutes: 3150 });
 
     await waitFor(() => expect(document.querySelectorAll(".worklog-row")).toHaveLength(100));
     expect(state.pageReads).toEqual([{ page: 0, pageSize: 100 }]);
     expect(heading().querySelector(".count-pill")).toHaveTextContent("105");
-    expect(document.querySelector(".worklog-total")).toBeNull();
+    expect(document.querySelector(".worklog-total")).toHaveTextContent("52h 30m logged");
     const foot = document.querySelector(".list-more") as HTMLElement;
     expect(foot.tagName).toBe("LI");
     expect(foot).toBe(document.querySelector(".worklog-list")?.lastElementChild);
@@ -259,9 +262,9 @@ describe("the work log section", () => {
     expect(more).toHaveAccessibleDescription("100 of 105 shown");
   });
 
-  it("appends the next page on Show more, focuses its first row, and then draws the sum and no foot", async () => {
+  it("appends the next page on Show more, focuses its first row, and draws no foot and the same total", async () => {
     state.worklogs = many(105);
-    renderSection();
+    renderSection({ timeSpentMinutes: 3150 });
     const more = await screen.findByRole("button", { name: "Show more work log entries" });
     more.focus();
     fireEvent.click(more);
@@ -293,15 +296,27 @@ describe("the work log section", () => {
     expect(screen.getByRole("button", { name: "Show more work log entries" })).toBeVisible();
   });
 
-  it("names an unstated count Unknown, draws no sum, and never reads an unstated hasMore as complete", async () => {
+  it("names an unstated count Unknown, and never reads an unstated hasMore as complete", async () => {
     state.totalCount = null;
     state.hasMore = null;
     renderSection();
 
     await screen.findByText("Pairing");
     expect(heading().querySelector(".count-pill")).toHaveTextContent("unknown");
-    expect(document.querySelector(".worklog-total")).toBeNull();
     expect(document.querySelector(".list-more")).toBeNull();
+  });
+
+  // Backend TAS-431 (§4.24): the total is the issue's `timeSpentMinutes`, never
+  // a sum of the rows read — here one row of 45m on an issue with 10h logged.
+  it("draws the issue's timeSpentMinutes as the total, not the rows' sum, and none when it is not stated", async () => {
+    renderSection({ timeSpentMinutes: 600 });
+    await screen.findByText("Pairing");
+    expect(document.querySelector(".worklog-total")).toHaveTextContent("10h logged");
+    cleanup();
+
+    renderSection({ timeSpentMinutes: null });
+    await screen.findByText("Pairing");
+    expect(document.querySelector(".worklog-total")).toBeNull();
   });
 
   // Backend TAS-421: each row names its author — a former member by the

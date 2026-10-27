@@ -1,5 +1,5 @@
 import { compareBoardIssues } from "../api/boardOrder";
-import type { Board, BoardColumn, BoardIssue } from "../domain/types";
+import type { Board, BoardColumn, BoardColumnPage, BoardIssue } from "../domain/types";
 
 /**
  * The board read's arithmetic, kept out of the screen so each rule is tested by
@@ -103,6 +103,84 @@ export function withoutCardOnBoard(board: Board, issueId: string): Board {
       ? stillMore(unplacedTotalCount, unplacedIssues.length, board.unplacedHasMore)
       : board.unplacedHasMore,
   };
+}
+
+/**
+ * The cursor of a column's «Show more» (§4.9, backend TAS-430): the last card
+ * the column draws, whose `createdAt` and `id` the next page starts after.
+ * `null` for a column that draws none — its first page is the board read's,
+ * and nothing continues an empty one.
+ */
+export function columnCursor(column: Pick<BoardColumn, "issues">): { afterCreatedAt: string; afterId: string } | null {
+  const last = column.issues.at(-1);
+  return last ? { afterCreatedAt: last.createdAt, afterId: last.id } : null;
+}
+
+/**
+ * `board` with a column's next page appended (§4.9, «Нажатие»): the page's
+ * cards after the ones drawn, in the server's order, **without repeats** — a
+ * card the board already draws anywhere, in this column or another one an
+ * optimistic move put it in, is not drawn twice. The column's count and
+ * `hasMore` become the page's: it was read after the board and counts the same
+ * column under the same filters. Unchanged when the board has no such column.
+ */
+export function withColumnPage(board: Board, page: BoardColumnPage): Board {
+  if (!board.columns.some((column) => column.statusKey === page.statusKey)) return board;
+  const drawn = new Set(boardCards(board).map((issue) => issue.id));
+  return {
+    ...board,
+    columns: board.columns.map((column) => {
+      if (column.statusKey !== page.statusKey) return column;
+      const fresh = page.issues.filter((issue) => !drawn.has(issue.id));
+      const issues = [...column.issues, ...fresh];
+      const totalCount = page.totalCount ?? column.totalCount;
+      return {
+        ...column,
+        issues,
+        totalCount,
+        hasMore: page.hasMore ?? stillMore(totalCount, issues.length, column.hasMore),
+      };
+    }),
+  };
+}
+
+/**
+ * A board read again — after a write, or on return to a combination of filters
+ * already read — laid over the board it replaces (§4.9, «Перечитывание»): a
+ * column the reader expanded with «Show more» is not collapsed back to its
+ * first page. Pure; `previous` is the cached board, with every optimistic move
+ * and delete already in it.
+ *
+ * Per column of `fresh` that still has more than its first page
+ * (`hasMore: true`), the cards `previous` drew in that column past `fresh`'s
+ * last card stay at the end, in the order they were drawn — unless `fresh`
+ * draws them anywhere (they left the column; the server's word wins), or the
+ * column's page is empty. What `fresh` draws is the server's and is never
+ * touched. A column the server now sends complete takes `fresh` as it is: every
+ * issue of it is there. `hasMore` follows the count, which is `fresh`'s.
+ *
+ * What it cannot know without another read is that a kept card left the
+ * column since: it stays until the board is read under other filters or the
+ * page is reloaded. No read is made to find out — one page per «Show more» is
+ * the whole of the cost (§4.9).
+ */
+export function keepExpandedColumns(previous: Board | undefined, fresh: Board): Board {
+  if (!previous) return fresh;
+  const freshIds = new Set(boardCards(fresh).map((issue) => issue.id));
+  let kept = false;
+  const columns = fresh.columns.map((column) => {
+    const before = previous.columns.find((item) => item.statusKey === column.statusKey);
+    const last = column.issues.at(-1);
+    if (!before || column.hasMore !== true || last === undefined || before.issues.length <= column.issues.length) {
+      return column;
+    }
+    const past = before.issues.filter((issue) => !freshIds.has(issue.id) && compareBoardIssues(issue, last) > 0);
+    if (past.length === 0) return column;
+    kept = true;
+    const issues = [...column.issues, ...past];
+    return { ...column, issues, hasMore: stillMore(column.totalCount, issues.length, column.hasMore) };
+  });
+  return kept ? { ...fresh, columns } : fresh;
 }
 
 /**

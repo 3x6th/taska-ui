@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import type { BoardParams, TaskaApi } from "../api/TaskaApi";
+import type { BoardColumnPageParams, BoardParams, TaskaApi } from "../api/TaskaApi";
 import type { IssueComment, IssueHistoryEvent, Notification } from "../domain/types";
 import { BoardScreen } from "./BoardScreen";
 import { ATTACHMENT_MAX_SIZE_BYTES } from "../api/attachments";
@@ -121,6 +121,10 @@ const {
   seedWorkflowsByType,
   metaReads,
   createCalls,
+  columnPageCalls,
+  failNextColumnPage,
+  holdColumnPages,
+  releaseColumnPages,
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
@@ -170,7 +174,8 @@ const {
     issueType: "TASK" as const,
     summary,
     description,
-    status: "TODO" as const,
+    // Open (TAS-173): a create names any column's status (backend TAS-428).
+    status: "TODO" as string,
     priority: "MEDIUM" as const,
     assigneeId: null,
     reporterId: "user-anna",
@@ -231,6 +236,13 @@ const {
     boardCap: number | null;
     /** The board read held open: the window before it answers. */
     boardHeld: boolean;
+    /** Every column page asked for (backend TAS-430): the column and the parameters, in order. */
+    columnPageCalls: { statusKey: string; params: BoardColumnPageParams }[];
+    /** The next column page answers with this refusal. */
+    columnPageFailure?: Error;
+    /** Column pages held open, each answering when released. */
+    columnPageHeld: boolean;
+    columnPageReleases: (() => void)[];
     /** The held board reads, each answering with the state of the moment it is released. */
     boardReleases: (() => void)[];
     /**
@@ -445,6 +457,9 @@ const {
     boardCountsUnstated: false,
     boardCap: null,
     boardHeld: false,
+    columnPageCalls: [],
+    columnPageHeld: false,
+    columnPageReleases: [],
     boardReleases: [],
     transitionCalls: [],
     transitionConflictNext: false,
@@ -543,6 +558,7 @@ const {
     dueDate: "2026-06-26",
     originalEstimateMinutes: 480,
     remainingEstimateMinutes: null,
+    timeSpentMinutes: null,
     ...(state.extraIssues.find((item) => item.id === issueId) ?? {}),
     ...(state.edits[issueId] ?? {}),
     assigneeId: state.assigneeId,
@@ -577,6 +593,60 @@ const {
       ...state.contextWorkflowParts,
     };
     return Object.hasOwn(state.workflowsByType, issueType) ? { ...workflow, ...state.workflowsByType[issueType] } : workflow;
+  };
+
+  /**
+   * The board's columns and «Outside their workflow», built the way the gateway
+   * builds them (backend #205, #226) and **not** cut at a page: the workflows of
+   * the registry's types in its order, merged by key, first type winning, then
+   * by `sortOrder`; an issue in a status its own type's workflow lacks goes to
+   * the group; an issue of a type the registry does not hold is not read at
+   * all; the filters applied first. The board and a column's page both cut it.
+   */
+  const wholeBoard = (params: Pick<BoardParams, "issueType" | "assigneeId" | "labelId" | "query">) => {
+    const types = params.issueType !== undefined ? [params.issueType] : [...state.issueTypes];
+    // The filters, applied by the server before the cap (TAS-392).
+    const needle = params.query?.toLowerCase();
+    const matches = (issue: ReturnType<typeof storedIssues>[number]) =>
+      (params.assigneeId === undefined || issue.assigneeId === params.assigneeId) &&
+      (params.labelId === undefined || (issue.labels ?? []).some((label) => label.id === params.labelId)) &&
+      (needle === undefined ||
+        [issue.issueKey, issue.summary, issue.description].some(
+          (text) => typeof text === "string" && text.toLowerCase().includes(needle),
+        ));
+    const statusesOf = (type: string) => contextWorkflow(type).statuses;
+    const byKey = new Map<string, { statusKey: string; name: string; category: string; sortOrder: number }>();
+    for (const type of types) for (const status of statusesOf(type)) if (!byKey.has(status.statusKey)) byKey.set(status.statusKey, status);
+    const columns = [...byKey.values()]
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map(({ statusKey, name, category, sortOrder }) => ({ statusKey, name, category, sortOrder, issues: [] as unknown[] }));
+    const unplacedIssues: unknown[] = [];
+    for (const issue of storedIssues()) {
+      if (typeof issue.issueType === "string" && !types.includes(issue.issueType)) continue;
+      if (!matches(issue)) continue;
+      const assigneeId = issue.assigneeId as string | null;
+      const card = {
+        id: issue.id,
+        issueKey: issue.issueKey,
+        summary: issue.summary,
+        issueType: issue.issueType,
+        priority: issue.priority,
+        statusKey: issue.status,
+        description: issue.description,
+        createdAt: issue.createdAt,
+        updatedAt: issue.updatedAt,
+        version: issue.version,
+        assignee: assigneeId
+          ? { id: assigneeId, displayName: state.boardNames[assigneeId] ?? null, avatarUrl: null }
+          : null,
+        labels: issue.labels ?? [],
+      };
+      const own = statusesOf(String(issue.issueType)).some((status) => status.statusKey === issue.status);
+      const column = own ? columns.find((item) => item.statusKey === issue.status) : undefined;
+      if (column) column.issues.push(card);
+      else unplacedIssues.push(card);
+    }
+    return { columns, unplacedIssues };
   };
 
   const api = {
@@ -670,48 +740,7 @@ const {
       if (params.issueType !== undefined && !state.issueTypes.includes(params.issueType)) {
         return { projectId, columns: [], unplacedIssues: [], unplacedTotalCount: 0, unplacedHasMore: false };
       }
-      const types = params.issueType !== undefined ? [params.issueType] : [...state.issueTypes];
-      // The filters, applied by the server before the cap (TAS-392).
-      const needle = params.query?.toLowerCase();
-      const matches = (issue: ReturnType<typeof storedIssues>[number]) =>
-        (params.assigneeId === undefined || issue.assigneeId === params.assigneeId) &&
-        (params.labelId === undefined || (issue.labels ?? []).some((label) => label.id === params.labelId)) &&
-        (needle === undefined ||
-          [issue.issueKey, issue.summary, issue.description].some(
-            (text) => typeof text === "string" && text.toLowerCase().includes(needle),
-          ));
-      const statusesOf = (type: string) => contextWorkflow(type).statuses;
-      const byKey = new Map<string, { statusKey: string; name: string; category: string; sortOrder: number }>();
-      for (const type of types) for (const status of statusesOf(type)) if (!byKey.has(status.statusKey)) byKey.set(status.statusKey, status);
-      const columns = [...byKey.values()]
-        .sort((a, b) => a.sortOrder - b.sortOrder)
-        .map(({ statusKey, name, category, sortOrder }) => ({ statusKey, name, category, sortOrder, issues: [] as unknown[] }));
-      const unplacedIssues: unknown[] = [];
-      for (const issue of storedIssues()) {
-        if (typeof issue.issueType === "string" && !types.includes(issue.issueType)) continue;
-        if (!matches(issue)) continue;
-        const assigneeId = issue.assigneeId as string | null;
-        const card = {
-          id: issue.id,
-          issueKey: issue.issueKey,
-          summary: issue.summary,
-          issueType: issue.issueType,
-          priority: issue.priority,
-          statusKey: issue.status,
-          description: issue.description,
-          createdAt: issue.createdAt,
-          updatedAt: issue.updatedAt,
-          version: issue.version,
-          assignee: assigneeId
-            ? { id: assigneeId, displayName: state.boardNames[assigneeId] ?? null, avatarUrl: null }
-            : null,
-          labels: issue.labels ?? [],
-        };
-        const own = statusesOf(String(issue.issueType)).some((status) => status.statusKey === issue.status);
-        const column = own ? columns.find((item) => item.statusKey === issue.status) : undefined;
-        if (column) column.issues.push(card);
-        else unplacedIssues.push(card);
-      }
+      const { columns, unplacedIssues } = wholeBoard(params);
       // The cap after the filters, with the counts the server states — or
       // states as nothing a count can be read from (`boardCountsUnstated`).
       const cap = state.boardCap ?? params.pageSizePerColumn ?? 50;
@@ -727,6 +756,29 @@ const {
         unplacedTotalCount: unplaced.totalCount,
         unplacedHasMore: unplaced.hasMore,
       };
+    },
+    // A column's next page (backend TAS-430): the board's own column, uncut,
+    // after the exclusive cursor, at most a page — this fixture's cap when one
+    // is set, so a test reaches a second «Show more».
+    getBoardColumnPage: async (_projectId: string, statusKey: string, params: BoardColumnPageParams = {}) => {
+      state.columnPageCalls.push({ statusKey, params: { ...params } });
+      if (state.columnPageHeld) await new Promise<void>((resolve) => state.columnPageReleases.push(resolve));
+      if (state.columnPageFailure) {
+        const failure = state.columnPageFailure;
+        state.columnPageFailure = undefined;
+        throw failure;
+      }
+      const column = wholeBoard(params).columns.find((item) => item.statusKey === statusKey);
+      const all = (column?.issues ?? []) as { id: string; createdAt: string }[];
+      const after =
+        params.afterCreatedAt !== undefined && params.afterId !== undefined
+          ? all.filter(
+              (issue) =>
+                issue.createdAt > params.afterCreatedAt! || (issue.createdAt === params.afterCreatedAt && issue.id > params.afterId!),
+            )
+          : all;
+      const size = state.boardCap ?? params.pageSize ?? 50;
+      return { statusKey, issues: after.slice(0, size), totalCount: all.length, hasMore: after.length > size };
     },
     // The board's drop move. Held, it settles when the test says so; landed, it
     // moves the issue to the status the transition leads to, the way the next
@@ -754,14 +806,18 @@ const {
       return panelIssue(PROJECT_ID, issueId);
     },
     // Both of these move the board the next read answers, the way a server would.
-    createIssue: async (_projectId: string, input: { summary: string; description: string }) => {
+    createIssue: async (_projectId: string, input: { summary: string; description: string; statusKey?: string }) => {
       state.createCalls.push({ ...input });
       if (state.createFailure) {
         const failure = state.createFailure;
         state.createFailure = undefined;
         throw failure;
       }
-      const created = makeIssue(`issue-${state.created.length + 2}`, `TAS-20${state.created.length}`, input.summary, input.description);
+      // In the status the create named (backend TAS-428), `TODO` without one.
+      const created = {
+        ...makeIssue(`issue-${state.created.length + 2}`, `TAS-20${state.created.length}`, input.summary, input.description),
+        status: input.statusKey ?? "TODO",
+      };
       state.created = [...state.created, created];
       return created;
     },
@@ -1347,7 +1403,24 @@ const {
     },
     metaReads: () => state.metaReads,
     createCalls: () => state.createCalls,
+    columnPageCalls: () => state.columnPageCalls.map((call) => ({ ...call, params: { ...call.params } })),
+    failNextColumnPage: (error: Error) => {
+      state.columnPageFailure = error;
+    },
+    holdColumnPages: (held: boolean) => {
+      state.columnPageHeld = held;
+    },
+    releaseColumnPages: () => {
+      state.columnPageHeld = false;
+      const waiting = state.columnPageReleases;
+      state.columnPageReleases = [];
+      for (const release of waiting) release();
+    },
     reset: () => {
+      state.columnPageCalls = [];
+      state.columnPageFailure = undefined;
+      state.columnPageHeld = false;
+      state.columnPageReleases = [];
       state.issueTypes = ["TASK", "BUG", "STORY"];
       state.typeNames = {};
       state.workflowsByType = {};
@@ -2468,14 +2541,17 @@ describe("the board's filters", () => {
 
     fireEvent.change(screen.getByRole("combobox", { name: "Type" }), { target: { value: "BUG" } });
     await waitFor(() => expect(names()).toEqual(["Triage", "Fixed"]));
-    // No To Do column on this board, so no "+" anywhere (§4.9).
-    expect(document.querySelectorAll(".column-head button")).toHaveLength(0);
+    // Each column of this board has its "+", To Do or not (backend TAS-428, §4.9).
+    expect([...document.querySelectorAll(".column-head button")].map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Create issue in Triage",
+      "Create issue in Fixed",
+    ]);
   });
 
   // §4.9 «Колонка не целиком»: a column cut at its page counts every matching
-  // issue, says how many it shows of how many, and offers no «Show more» —
-  // nothing continues a column in its own order yet (backend A1).
-  it("counts a column cut at its page by the server's total, and says so at its foot", async () => {
+  // issue, says how many it shows of how many, and continues with «Show more»
+  // (backend TAS-430) — the button and the line it is described by.
+  it("counts a column cut at its page by the server's total, and offers Show more at its foot", async () => {
     seedBoardCap(2);
     seedExtraIssues([
       { id: "issue-2", issueKey: "TAS-103", summary: "Second", createdAt: "2026-08-02T09:00:00Z" },
@@ -2489,8 +2565,11 @@ describe("the board's filters", () => {
     expect(screen.getByText("3 of 3")).toBeVisible();
     const foot = column.querySelector(".issue-list > .list-more") as HTMLElement;
     expect(foot).toBe(column.querySelector(".issue-list")?.lastElementChild);
-    expect(foot).toHaveTextContent("2 of 3 shown. Filter to find the rest.");
-    expect(within(foot).queryByRole("button")).toBeNull();
+    expect(within(foot).getByText("2 of 3 shown")).toBeVisible();
+    const more = within(foot).getByRole("button", { name: "Show more To Do issues" });
+    expect(more).toHaveTextContent("Show more");
+    expect(more).toHaveAccessibleDescription("2 of 3 shown");
+    expect(foot).not.toHaveTextContent(/Filter to find the rest/);
     expect(foot.closest("[aria-live], [role='status'], [role='alert']")).toBeNull();
   });
 
@@ -3119,11 +3198,12 @@ describe("a card dropped on another column", () => {
 });
 
 /**
- * The column "+" until backend TAS-428 (DESIGN.md §4.9, §5.5 P3′): on the To Do
- * column only — the server creates every issue in TODO — opening "New issue in
- * {Status}", with a type whose workflow lacks that status switched off.
+ * The column "+" (DESIGN.md §4.9, §5.5; backend TAS-428): on every column of
+ * the board, opening "New issue in {Status}" with a type whose workflow lacks
+ * that status switched off, and creating the issue in the column's status.
+ * "New" names no status.
  */
-describe("the column + (TAS-428 interim)", () => {
+describe("the column + (backend TAS-428)", () => {
   const twoStatuses = {
     statuses: [
       { id: "s-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
@@ -3145,19 +3225,76 @@ describe("the column + (TAS-428 interim)", () => {
     seedContextWorkflowParts(twoStatuses);
   });
 
-  it("sits on the To Do column only, named for it, and opens New issue in To Do", async () => {
+  it("sits on every column, named for it, and creates the issue in that column's status", async () => {
     renderBoard();
-    await waitFor(() => expect(plusIn("To Do")).toBeEnabled());
+    await waitFor(() => expect(plusIn("In Progress")).toBeEnabled());
     expect(plusIn("To Do")).toHaveAttribute("title", "Create issue in To Do");
-    expect(plusIn("In Progress")).toBeNull();
+    expect(plusIn("In Progress")).toHaveAttribute("title", "Create issue in In Progress");
 
-    fireEvent.click(plusIn("To Do")!);
-    const dialog = within(await screen.findByRole("dialog", { name: "New issue in To Do" }));
-    expect(dialog.getByRole("heading", { name: "New issue in To Do" })).toBeVisible();
-    // "New" is unchanged.
-    fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
-    fireEvent.click(await screen.findByRole("button", { name: "New" }));
-    expect(await screen.findByRole("dialog", { name: "New issue" })).toBeInTheDocument();
+    fireEvent.click(plusIn("In Progress")!);
+    const dialog = within(await screen.findByRole("dialog", { name: "New issue in In Progress" }));
+    expect(dialog.getByRole("heading", { name: "New issue in In Progress" })).toBeVisible();
+    fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "Started already" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Create issue" }));
+
+    await waitFor(() => expect(createCalls()).toHaveLength(1));
+    expect(createCalls()[0]).toMatchObject({ issueType: "TASK", statusKey: "IN_PROGRESS", summary: "Started already" });
+    // The board read again draws it where "+" was pressed.
+    const column = screen.getByRole("region", { name: "In Progress column" });
+    expect(await within(column).findByRole("button", { name: /Started already/ })).toBeVisible();
+  });
+
+  it("sends no status from New, which is titled as before", async () => {
+    renderBoard();
+    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "New issue" }));
+    fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "From the bar" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Create issue" }));
+
+    await waitFor(() => expect(createCalls()).toHaveLength(1));
+    expect(createCalls()[0]).not.toHaveProperty("statusKey");
+  });
+
+  // §5.5: the server decides; its refusal (`STATUS_NOT_IN_WORKFLOW`) is the
+  // form's slot — the server's words and the request id — and the form stays.
+  it("says the server's refusal of the status in the form, with its words and the request id", async () => {
+    failNextCreate(
+      Object.assign(new Error("Initial status is not available for the issue type"), {
+        code: "FAILED_PRECONDITION",
+        status: 400,
+        requestId: "req-428",
+        details: { reason: "STATUS_NOT_IN_WORKFLOW" },
+      }),
+    );
+    renderBoard();
+    await waitFor(() => expect(plusIn("In Progress")).toBeEnabled());
+    fireEvent.click(plusIn("In Progress")!);
+    const dialog = within(await screen.findByRole("dialog", { name: "New issue in In Progress" }));
+    fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "Refused" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Create issue" }));
+
+    expect(await dialog.findByRole("alert")).toHaveTextContent("Initial status is not available for the issue type");
+    expect(dialog.getByText("req-428")).toBeVisible();
+    expect(dialog.getByLabelText("Summary")).toHaveValue("Refused");
+  });
+
+  it("switches off a type whose workflow lacks the status in any column's form", async () => {
+    seedIssueTypes(["BUG", "TASK", "STORY"]);
+    seedWorkflowsByType({ BUG: noTodo });
+    renderBoard();
+    await waitFor(() => expect(plusIn("In Progress")).toBeEnabled());
+    fireEvent.click(plusIn("In Progress")!);
+    const dialog = within(await screen.findByRole("dialog", { name: "New issue in In Progress" }));
+
+    const type = dialog.getByRole("combobox", { name: "Type" });
+    const options = within(type).getAllByRole("option") as HTMLOptionElement[];
+    expect(options.map((option) => [option.textContent, option.disabled])).toEqual([
+      ["Bug — no In Progress status", true],
+      ["Task", false],
+      ["Story", false],
+    ]);
+    expect(type).toHaveValue("TASK");
   });
 
   it("switches off a type whose workflow lacks the status, and defaults to the first that has it", async () => {
@@ -3180,7 +3317,7 @@ describe("the column + (TAS-428 interim)", () => {
     fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "From the column" } });
     fireEvent.click(dialog.getByRole("button", { name: "Create issue" }));
     await waitFor(() => expect(createCalls()).toHaveLength(1));
-    expect(createCalls()[0]).toMatchObject({ issueType: "TASK" });
+    expect(createCalls()[0]).toMatchObject({ issueType: "TASK", statusKey: "TODO" });
   });
 
   it("defaults to the type the board is filtered by, and from New offers every type as before", async () => {
@@ -3212,6 +3349,174 @@ describe("the column + (TAS-428 interim)", () => {
     fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "Nowhere to go" } });
     fireEvent.click(create);
     expect(createCalls()).toEqual([]);
+  });
+});
+
+/**
+ * «Show more» on a board column cut at its page (DESIGN.md §4.9, backend
+ * TAS-430): one read of the column's next page per press — the cursor of the
+ * last card drawn, the board's filters, `includeDone`, 200 — appended without
+ * repeats, focus on the first new card; in flight it does nothing; a refusal
+ * in the column with the server's words and the request id; a re-read of the
+ * board keeps what was appended. This fixture's server cuts at 2.
+ */
+describe("Show more on a board column (backend TAS-430)", () => {
+  const column = () => screen.getByRole("region", { name: "To Do column" });
+  const cards = () => within(column()).queryAllByRole("button", { name: /^TAS-\d+/ });
+  const more = () => within(column()).getByRole("button", { name: "Show more To Do issues" });
+  const boardStatus = () =>
+    [...document.querySelectorAll(".board-shell > p.visually-hidden[role='status']")].map((node) => node.textContent);
+  /** Five To Do issues, a day apart, oldest first: TAS-102 (the seed) to TAS-106. */
+  const fiveInToDo = () =>
+    seedExtraIssues(
+      [3, 4, 5, 6].map((number, index) => ({
+        id: `issue-${number - 1}`,
+        issueKey: `TAS-10${number}`,
+        summary: `Card ${number}`,
+        createdAt: `2026-08-0${index + 2}T09:00:00Z`,
+      })),
+    );
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+    seedBoardCap(2);
+    fiveInToDo();
+  });
+
+  it("reads the page after the last card drawn, appends it in order, and focuses its first new card", async () => {
+    renderBoard();
+    await waitFor(() => expect(cards()).toHaveLength(2));
+    const readsBefore = boardReads();
+
+    fireEvent.click(more());
+
+    await waitFor(() => expect(cards()).toHaveLength(4));
+    expect(columnPageCalls()).toEqual([
+      {
+        statusKey: "TODO",
+        params: { afterCreatedAt: "2026-08-02T09:00:00Z", afterId: "issue-2", includeDone: true, pageSize: 200 },
+      },
+    ]);
+    expect(cards().map((card) => card.getAttribute("data-issue-id"))).toEqual(["issue-1", "issue-2", "issue-3", "issue-4"]);
+    await waitFor(() => expect(cards()[2]).toHaveFocus());
+    expect(within(column()).getByText("4 of 5 shown")).toBeVisible();
+    expect(column().querySelector(".column-head .count-pill")).toHaveTextContent("5");
+
+    // The last page: the foot goes, focus on its first card.
+    fireEvent.click(more());
+    await waitFor(() => expect(cards()).toHaveLength(5));
+    expect(columnPageCalls().at(-1)?.params).toMatchObject({ afterCreatedAt: "2026-08-04T09:00:00Z", afterId: "issue-4" });
+    await waitFor(() => expect(cards()[4]).toHaveFocus());
+    expect(column().querySelector(".list-more")).toBeNull();
+    // One page per press, and nothing else read.
+    expect(columnPageCalls()).toHaveLength(2);
+    expect(boardReads()).toBe(readsBefore);
+  });
+
+  it("sends the board's filters with the page", async () => {
+    renderBoard();
+    await waitFor(() => expect(cards()).toHaveLength(2));
+    fireEvent.change(screen.getByRole("textbox", { name: "Filter issues by key, summary or description" }), {
+      target: { value: "TAS-10" },
+    });
+    await waitFor(() => expect(boardParams().at(-1)).toMatchObject({ query: "TAS-10" }));
+    await waitFor(() => expect(document.querySelector(".columns-area")).not.toHaveAttribute("aria-busy"));
+
+    fireEvent.click(more());
+
+    await waitFor(() => expect(columnPageCalls()).toHaveLength(1));
+    expect(columnPageCalls()[0].params).toEqual({
+      afterCreatedAt: "2026-08-02T09:00:00Z",
+      afterId: "issue-2",
+      includeDone: true,
+      query: "TAS-10",
+      pageSize: 200,
+    });
+    await waitFor(() => expect(cards()).toHaveLength(4));
+  });
+
+  it("does nothing on a second press while the page is out, and keeps its words", async () => {
+    holdColumnPages(true);
+    renderBoard();
+    await waitFor(() => expect(cards()).toHaveLength(2));
+
+    fireEvent.click(more());
+    await waitFor(() => expect(more()).toHaveAttribute("aria-disabled", "true"));
+    expect(more()).toHaveAttribute("data-busy", "true");
+    expect(more()).toHaveTextContent("Show more");
+    expect(more()).toBeEnabled();
+    fireEvent.click(more());
+    expect(columnPageCalls()).toHaveLength(1);
+
+    releaseColumnPages();
+    await waitFor(() => expect(cards()).toHaveLength(4));
+    expect(more()).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("says a refused page in the column, with the server's words and the request id, keeps focus, and clears on the next press", async () => {
+    failNextColumnPage(
+      Object.assign(new Error("Access denied"), { code: "PERMISSION_DENIED", status: 403, requestId: "req-430" }),
+    );
+    renderBoard();
+    await waitFor(() => expect(cards()).toHaveLength(2));
+    more().focus();
+
+    fireEvent.click(more());
+
+    const note = await within(column()).findByText("More To Do issues could not be loaded.");
+    const box = note.closest(".error-note") as HTMLElement;
+    expect(box.parentElement).toBe(column().querySelector(".issue-list"));
+    // Above the foot, which stays the list's last item.
+    expect(box.nextElementSibling).toBe(column().querySelector(".issue-list > .list-more"));
+    expect(within(box).getByText("Access denied")).toBeVisible();
+    expect(within(box).getByText("req-430")).toBeVisible();
+    // Said by the board's status region; the box is not live.
+    expect(box.closest("[aria-live], [role='status'], [role='alert']")).toBeNull();
+    expect(note).not.toHaveAttribute("role");
+    expect(note).not.toHaveAttribute("aria-live");
+    expect(boardStatus()).toEqual(["More To Do issues could not be loaded."]);
+    expect(more()).toHaveFocus();
+    expect(cards()).toHaveLength(2);
+
+    fireEvent.click(more());
+    await waitFor(() => expect(cards()).toHaveLength(4));
+    expect(within(column()).queryByText("More To Do issues could not be loaded.")).toBeNull();
+  });
+
+  // §4.9 «Перечитывание»: a re-read after a write keeps an expanded column
+  // expanded, and reads no page again for it.
+  it("keeps an expanded column expanded when the board is read again", async () => {
+    const queryClient = renderBoard();
+    await waitFor(() => expect(cards()).toHaveLength(2));
+    fireEvent.click(more());
+    await waitFor(() => expect(cards()).toHaveLength(4));
+    const readsBefore = boardReads();
+
+    await queryClient.invalidateQueries({ queryKey: ["board"] });
+
+    await waitFor(() => expect(boardReads()).toBeGreaterThan(readsBefore));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(cards()).toHaveLength(4);
+    expect(within(column()).getByText("4 of 5 shown")).toBeVisible();
+    expect(columnPageCalls()).toHaveLength(1);
+  });
+
+  // «Outside their workflow» has no continuation (the page route reads only
+  // statuses of each type's own workflow): its foot keeps the sentence.
+  it("leaves the group outside their workflow without Show more", async () => {
+    reset();
+    seedBoardCap(1);
+    seedExtraIssues([
+      { id: "issue-q1", issueKey: "TAS-160", summary: "Held at QA", status: "BLOCKED_BY_QA" },
+      { id: "issue-q2", issueKey: "TAS-161", summary: "Also held", status: "BLOCKED_BY_QA" },
+    ]);
+    renderBoard();
+    const group = await screen.findByRole("region", { name: "Outside their workflow" });
+
+    const foot = await waitFor(() => group.querySelector(".issue-list > .list-more") as HTMLElement);
+    expect(foot).toHaveTextContent("1 of 2 shown. Filter to find the rest.");
+    expect(within(foot).queryByRole("button")).toBeNull();
   });
 });
 
@@ -3918,11 +4223,11 @@ describe("the write controls a role is shown", () => {
       const panel = await openPanel();
 
       await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
-      // "+" on To Do only, until backend TAS-428 (§4.9): the server creates there.
+      // "+" on every column since backend TAS-428 (§4.9), each in its own status.
       const todo = screen.getByRole("region", { name: "To Do column" });
       expect(within(todo).getByRole("button", { name: "Create issue in To Do" })).toBeEnabled();
       const inProgress = screen.getByRole("region", { name: "In Progress column" });
-      expect(within(inProgress).queryByRole("button", { name: /^Create issue/ })).not.toBeInTheDocument();
+      expect(within(inProgress).getByRole("button", { name: "Create issue in In Progress" })).toBeEnabled();
       expect(await panel.findByRole("button", { name: "Start Progress, move to In Progress" })).toBeEnabled();
       expect(panel.getByRole("button", { name: "Delete issue TAS-102" })).toBeEnabled();
       expect(document.querySelector(".transition-row .arrow")).not.toBeNull();
@@ -3939,7 +4244,10 @@ describe("the write controls a role is shown", () => {
     expect(
       within(screen.getByRole("region", { name: "To Do column" })).getByRole("button", { name: "Create issue in To Do" }),
     ).toBeDisabled();
-    expect(columnHeads().flatMap((column) => within(column).queryAllByRole("button", { name: /^Create issue/ }))).toHaveLength(1);
+    // On every column (backend TAS-428, §4.9), each switched off.
+    const pluses = columnHeads().flatMap((column) => within(column).queryAllByRole("button", { name: /^Create issue/ }));
+    expect(pluses).toHaveLength(columnHeads().length);
+    for (const plus of pluses) expect(plus).toBeDisabled();
     expect(await panel.findByRole("button", { name: "Start Progress, move to In Progress" })).toBeDisabled();
     const remove = panel.getByRole("button", { name: "Delete issue TAS-102" });
     expect(remove).toBeDisabled();
@@ -4201,9 +4509,9 @@ describe("deleting an issue from its panel", () => {
     await waitFor(() => expect(within(column).getByRole("button", { name: "Create issue in To Do" })).toHaveFocus());
   });
 
-  // The column "+" is on To Do only until backend TAS-428 (§4.9): a column
-  // without one is a step the chain falls through, to "New".
-  it("falls through to New when the column left empty has no +", async () => {
+  // Every column has its "+" since backend TAS-428 (§4.9), so a column left
+  // empty that is not To Do hands focus to its own "+", not on to "New".
+  it("goes to the + of any column left empty, To Do or not", async () => {
     seedContextWorkflowParts({
       statuses: [
         { id: "s-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
@@ -4217,7 +4525,8 @@ describe("deleting an issue from its panel", () => {
     fireEvent.click(panel.getByRole("button", { name: "Delete issue TAS-107" }));
     fireEvent.click(within(zone()!).getByRole("button", { name: "Delete issue" }));
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toHaveFocus());
+    const column = await screen.findByRole("region", { name: "In Progress column" });
+    await waitFor(() => expect(within(column).getByRole("button", { name: "Create issue in In Progress" })).toHaveFocus());
   });
 
   it("takes a 404 as already deleted: the same path, in its own words", async () => {
@@ -6916,6 +7225,38 @@ describe("the activity feed's disclosure", () => {
     } finally {
       window.removeEventListener("error", onError);
     }
+  });
+
+  // Backend TAS-431: an ASSIGNED event names its people in `participants`, a
+  // former member included; Activity takes the assignee from there first,
+  // then the member list, and "someone" when neither names them.
+  it("names the assignee of an assigned event from the event's own summaries, then the members", async () => {
+    seedMembers([
+      { userId: "user-tom", role: "MEMBER", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", user: { displayName: "Tom Baker", email: "tom@example.com" } },
+    ]);
+    const assigned = (id: string, assigneeId: string, at: string, participants?: IssueHistoryEvent["participants"]) => ({
+      id,
+      issueId: "issue-1",
+      eventType: "ASSIGNED" as const,
+      actorUserId: "user-anna",
+      occurredAt: at,
+      payload: { previousAssigneeId: null, assigneeId },
+      ...(participants ? { participants } : {}),
+    });
+    seedHistory([
+      assigned("history-1", "user-vera", "2026-08-01T09:00:00Z", {
+        "user-vera": { id: "user-vera", displayName: "Vera Former", avatarUrl: null },
+      }),
+      assigned("history-2", "user-tom", "2026-08-01T10:00:00Z"),
+      assigned("history-3", "user-gone", "2026-08-01T11:00:00Z", {}),
+    ]);
+    renderBoard(ISSUE_PATH);
+    await openPanel();
+
+    await waitFor(() => expect(items()).toHaveLength(3));
+    expect(items()[2]).toHaveTextContent("assigned Vera Former");
+    expect(items()[1]).toHaveTextContent("assigned Tom Baker");
+    expect(items()[0]).toHaveTextContent("assigned someone");
   });
 
   it("says so when the issue has no history, without a count, and folds that line away too", async () => {

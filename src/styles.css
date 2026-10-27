@@ -7572,8 +7572,9 @@ button.attachment-open:hover:not(:disabled) {
 /* §4.9 «Колонка не целиком», shared by a capped board column and the work
    log (§4.24): the list's last item, "{n} of {total} shown" on the left on the
    line of the status dot, and «Show more» on the right. `--fg-2`, not `--fg-3`:
-   on `--surface-2` the latter gives 2.76. The board's foot has no button yet
-   (backend A1) and lets its sentence wrap instead (`.list-more-note`). */
+   on `--surface-2` the latter gives 2.76. «Outside their workflow» has no
+   continuation, so its foot has no button and lets its sentence wrap instead
+   (`.list-more-note`). */
 .list-more {
   display: flex;
   align-items: center;
@@ -7604,6 +7605,12 @@ button.attachment-open:hover:not(:disabled) {
 .list-more-button {
   position: relative;
   flex: none;
+}
+
+/* A refused «Show more» on the board (§4.9): §5.6's box above the foot, inside
+   the list, whose gap spaces it. */
+.issue-list > .error-note {
+  margin: 0;
 }
 
 /* §4.1 in flight: no dimming, the progress cursor. */

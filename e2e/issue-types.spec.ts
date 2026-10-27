@@ -193,6 +193,35 @@ test("an ADMIN reorders types from the keyboard; focus stays on the button, and 
 
 });
 
+// Backend TAS-429 (§4.30): a type added elsewhere makes the order the dialog
+// sends stale — 409 `ABORTED`, `ISSUE_TYPES_CHANGED` — said in a sentence of
+// its own; the registry is read again and shows the type that was added. The
+// mock's trigger in a type's name has another admin add one just before the move.
+test("a move made stale by a type added elsewhere says so, and the list then shows the current types", async ({ page }) => {
+  await openBoard(page, "Taska Platform");
+  const dialog = await openIssueTypes(page);
+  const story = "Story [types changed meanwhile]";
+  await dialog.getByRole("button", { name: "Edit Story" }).click();
+  const form = dialog.getByRole("form", { name: "Edit Story" });
+  await form.getByLabel("Name").fill(story);
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await expect(rowNames(dialog)).toHaveText(["Task", "Bug", story]);
+
+  await dialog.getByRole("button", { name: `Move ${story} up` }).click();
+
+  const sentence = "Issue types changed elsewhere, so the new order was not saved. The list now shows the current types.";
+  await expect(dialog.getByText(sentence)).toBeVisible();
+  await expect(rowNames(dialog)).toHaveText(["Task", "Bug", story, "Added elsewhere"]);
+  // Not the general sentence, and not the server's own words.
+  await expect(dialog.getByText("The new order was not saved. The list now shows the saved order.")).toHaveCount(0);
+  await expect(dialog.getByText(/reload the current types/)).toHaveCount(0);
+
+  // Moved again over the list as it now stands, it goes through.
+  await dialog.getByRole("button", { name: `Move ${story} up` }).click();
+  await expect(rowNames(dialog)).toHaveText(["Task", story, "Bug", "Added elsewhere"]);
+  await expect(dialog.getByText(sentence)).toHaveCount(0);
+});
+
 test("a delete is refused while issues have the type, saying how many, and goes through for an unused one", async ({
   page,
 }) => {

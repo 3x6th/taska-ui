@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { Board, BoardColumn, BoardIssue } from "../domain/types";
-import { boardHasMore, boardIssueCount, moveCardOnBoard, withCardVersion, withoutCardOnBoard } from "./boardCards";
+import type { Board, BoardColumn, BoardColumnPage, BoardIssue } from "../domain/types";
+import {
+  boardHasMore,
+  boardIssueCount,
+  columnCursor,
+  keepExpandedColumns,
+  moveCardOnBoard,
+  withCardVersion,
+  withColumnPage,
+  withoutCardOnBoard,
+} from "./boardCards";
 
 /**
  * A board read cut at its page (backend TAS-392, DESIGN.md §4.9, §5.3): what
@@ -123,5 +132,96 @@ describe("an optimistic delete and a write's version on a capped board", () => {
     const after = withCardVersion(before, "a", 7, "2026-05-01T00:00:00Z");
     expect(after.columns[0].issues[0]).toMatchObject({ version: 7, updatedAt: "2026-05-01T00:00:00Z" });
     expect(withCardVersion(before, "nope", 7, "x")).toBe(before);
+  });
+});
+
+/**
+ * «Show more» (DESIGN.md §4.9, backend TAS-430): the cursor a column's next
+ * page starts after, the page appended without repeats, and an expanded column
+ * kept across a re-read of the board.
+ */
+describe("a column continued with Show more", () => {
+  const a = card("a", "2026-01-01");
+  const b = card("b", "2026-01-02");
+  const c = card("c", "2026-01-03");
+  const d = card("d", "2026-01-04");
+  const e = card("e", "2026-01-05");
+  const page = (issues: BoardIssue[], over: Partial<BoardColumnPage> = {}): BoardColumnPage => ({
+    statusKey: "TODO",
+    issues,
+    totalCount: 5,
+    hasMore: true,
+    ...over,
+  });
+
+  it("starts the next page after the last card drawn, and has no cursor for a column that draws none", () => {
+    expect(columnCursor(column("TODO", [a, b]))).toEqual({ afterCreatedAt: "2026-01-02", afterId: "b" });
+    expect(columnCursor(column("TODO", []))).toBeNull();
+  });
+
+  it("appends the page after the cards drawn and takes its count and hasMore", () => {
+    const capped = board([column("TODO", [a, b], { totalCount: 4, hasMore: true }), column("DONE", [])]);
+
+    const next = withColumnPage(capped, page([c, d], { totalCount: 5, hasMore: true }));
+
+    expect(ids(next.columns[0].issues)).toEqual(["a", "b", "c", "d"]);
+    expect(next.columns[0]).toMatchObject({ totalCount: 5, hasMore: true });
+    expect(next.columns[1]).toBe(capped.columns[1]);
+    const last = withColumnPage(next, page([e], { hasMore: false }));
+    expect(ids(last.columns[0].issues)).toEqual(["a", "b", "c", "d", "e"]);
+    expect(last.columns[0].hasMore).toBe(false);
+  });
+
+  it("draws no card twice — one the column already draws, or one another column does", () => {
+    const moved = card("c", "2026-01-03", "DONE");
+    const capped = board([column("TODO", [a, b], { totalCount: 5, hasMore: true }), column("DONE", [moved])]);
+
+    const next = withColumnPage(capped, page([b, c, d]));
+
+    expect(ids(next.columns[0].issues)).toEqual(["a", "b", "d"]);
+    expect(ids(next.columns[1].issues)).toEqual(["c"]);
+  });
+
+  it("keeps the column's count when the page states none, and works hasMore out from it", () => {
+    const capped = board([column("TODO", [a, b], { totalCount: 3, hasMore: true })]);
+    const next = withColumnPage(capped, page([c], { totalCount: null, hasMore: null }));
+    expect(next.columns[0]).toMatchObject({ totalCount: 3, hasMore: false });
+  });
+
+  it("leaves a board without the page's column as it was", () => {
+    const capped = board([column("TODO", [a])]);
+    expect(withColumnPage(capped, page([b], { statusKey: "LATER" }))).toBe(capped);
+  });
+
+  describe("across a re-read of the board", () => {
+    const fresh = (issues: BoardIssue[], over: Partial<BoardColumn> = {}) =>
+      board([column("TODO", issues, { totalCount: 5, hasMore: true, ...over }), column("DONE", [])]);
+    const expanded = board([column("TODO", [a, b, c, d], { totalCount: 5, hasMore: true }), column("DONE", [])]);
+
+    it("keeps the cards read past the first page, after it, and counts by the new read", () => {
+      const kept = keepExpandedColumns(expanded, fresh([a, b]));
+      expect(ids(kept.columns[0].issues)).toEqual(["a", "b", "c", "d"]);
+      expect(kept.columns[0]).toMatchObject({ totalCount: 5, hasMore: true });
+      // A sixth issue counted: still more to read.
+      expect(keepExpandedColumns(expanded, fresh([a, b], { totalCount: 6 })).columns[0].hasMore).toBe(true);
+      // Every issue drawn now: no foot.
+      expect(keepExpandedColumns(expanded, fresh([a, b], { totalCount: 4 })).columns[0].hasMore).toBe(false);
+    });
+
+    it("drops a kept card the new read draws anywhere, or one that sorts inside its page", () => {
+      const movedToDone = board([column("TODO", [a, b], { totalCount: 4, hasMore: true }), column("DONE", [card("c", "2026-01-03", "DONE")])]);
+      expect(ids(keepExpandedColumns(expanded, movedToDone).columns[0].issues)).toEqual(["a", "b", "d"]);
+      // `b` left; the page now reaches to `c`: what it draws is the server's.
+      expect(ids(keepExpandedColumns(expanded, fresh([a, c])).columns[0].issues)).toEqual(["a", "c", "d"]);
+    });
+
+    it("takes the new read as it is when the column is whole, was not expanded, or there was nothing before", () => {
+      const whole = fresh([a, b, c], { totalCount: 3, hasMore: false });
+      expect(keepExpandedColumns(expanded, whole)).toBe(whole);
+      const firstPage = board([column("TODO", [a, b], { totalCount: 5, hasMore: true })]);
+      const again = fresh([a, b]);
+      expect(keepExpandedColumns(firstPage, again)).toBe(again);
+      expect(keepExpandedColumns(undefined, again)).toBe(again);
+    });
   });
 });

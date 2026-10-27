@@ -12,7 +12,8 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 // The seed: TAS-101 carries three entries — Sofia 1h 30m on Jun 12, Mark 2h
 // and Anna 45m on Jun 13, 4h 15m in all — and a remaining estimate of 4h.
 // TAS-107 carries one by an account nobody can name. TAS-109 carries 105, half
-// an hour a day — more than one page of 100 (backend TAS-421). Anna is an ADMIN
+// an hour a day — more than one page of 100 (backend TAS-421) — 52h 30m in all,
+// which the issue states itself (backend TAS-431). Anna is an ADMIN
 // of Taska Platform (any entry), Mark a MEMBER (his own), Tom a VIEWER (none).
 
 async function signIn(page: Page, email = "anna@example.com") {
@@ -177,15 +178,17 @@ test("an entry by somebody nobody can name is drawn as Unknown", async ({ page }
 });
 
 // Backend TAS-421: the list is paged at 100. The pill is the server's count,
-// the foot says how many of how many are drawn, and the total time waits until
-// every entry is read (DESIGN.md §4.24, §4.9).
-test("a work log past one page ends in Show more, and its total waits for the last page", async ({ page }) => {
+// the foot says how many of how many are drawn; backend TAS-431: the total
+// time is the issue's own, there with only the first page read (DESIGN.md
+// §4.24, §4.9).
+test("a work log past one page ends in Show more, and its total is the issue's from the first page", async ({ page }) => {
   await signIn(page);
   const section = workLog(await openIssuePanel(page, "TAS-109"));
 
   await expect(rows(section)).toHaveCount(100);
   await expect(section.getByRole("heading", { name: /^Work log/ }).locator(".count-pill")).toHaveText("105");
-  await expect(section.locator(".worklog-total")).toHaveCount(0);
+  // 105 entries of 30m, though only 100 are read: never the 50h the rows add up to.
+  await expect(section.locator(".worklog-total")).toHaveText("52h 30m logged");
   const foot = section.locator(".list-more");
   await expect(foot).toContainText("100 of 105 shown");
   const more = foot.getByRole("button", { name: "Show more work log entries" });
