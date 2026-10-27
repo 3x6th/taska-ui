@@ -21,7 +21,11 @@ import { statusLabel } from "./format";
  * (backend PR #225 refuses a `sortOrder` another row holds).
  */
 
-/** The status issue-service creates every issue in, which the server never lets a workflow delete. */
+/**
+ * The status issue-service creates an issue in when the create names none —
+ * "New" (backend TAS-428: a column's "+" names its own) — and which the server
+ * never lets a workflow delete.
+ */
 export const INITIAL_STATUS_KEY = "TODO";
 
 /** The three categories this build can rank, in board order (§4.28 "Position"). */

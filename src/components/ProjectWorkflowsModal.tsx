@@ -870,11 +870,13 @@ function WorkflowCard({
       )}
       {statuses.length && !hasTodo ? (
         // A fact about the data, so `--fg` rather than meta (§4.28):
-        // issue-service creates every issue in `TODO` whatever its workflow.
+        // issue-service creates an issue named no status in `TODO` whatever
+        // its workflow — "New" — while a column's "+" names its own (backend
+        // TAS-428).
         <p className="workflow-fact">
-          {`New issues always start in TODO, which this workflow does not have, so new ${
+          {`Issues created with New start in TODO, which this workflow does not have, so they land outside their workflow on the board. Create ${
             issueTypes.length ? `${andList(issueTypes.map((code) => issueTypeInSentence(code, registry)))} ` : ""
-          }issues will land outside their workflow on the board.`}
+          }issues with + on one of its columns.`}
         </p>
       ) : null}
       {editable ? (

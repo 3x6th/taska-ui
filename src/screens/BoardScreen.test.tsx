@@ -125,6 +125,7 @@ const {
   failNextColumnPage,
   holdColumnPages,
   releaseColumnPages,
+  deleteElsewhere,
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
@@ -1409,6 +1410,10 @@ const {
     },
     holdColumnPages: (held: boolean) => {
       state.columnPageHeld = held;
+    },
+    /** Another member deletes an issue: the next read no longer finds it. */
+    deleteElsewhere: (issueId: string) => {
+      state.deleted.add(issueId);
     },
     releaseColumnPages: () => {
       state.columnPageHeld = false;
@@ -3267,8 +3272,11 @@ describe("the column + (backend TAS-428)", () => {
         details: { reason: "STATUS_NOT_IN_WORKFLOW" },
       }),
     );
-    renderBoard();
+    const queryClient = renderBoard();
     await waitFor(() => expect(plusIn("In Progress")).toBeEnabled());
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    const contextReads = memberReads();
+    const reads = boardReads();
     fireEvent.click(plusIn("In Progress")!);
     const dialog = within(await screen.findByRole("dialog", { name: "New issue in In Progress" }));
     fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "Refused" } });
@@ -3277,6 +3285,30 @@ describe("the column + (backend TAS-428)", () => {
     expect(await dialog.findByRole("alert")).toHaveTextContent("Initial status is not available for the issue type");
     expect(dialog.getByText("req-428")).toBeVisible();
     expect(dialog.getByLabelText("Summary")).toHaveValue("Refused");
+    // The switched-off options or the column were stale: both are read again
+    // (api-contract-guard, TAS-438; the panel's STATUS_NOT_IN_TARGET_WORKFLOW rule).
+    await waitFor(() => expect(memberReads()).toBe(contextReads + 1));
+    await waitFor(() => expect(boardReads()).toBe(reads + 1));
+  });
+
+  it("reads nothing again for a create refused for another reason", async () => {
+    failNextCreate(
+      Object.assign(new Error("Summary is required"), { code: "FAILED_PRECONDITION", status: 400, details: { reason: "OTHER" } }),
+    );
+    const queryClient = renderBoard();
+    await waitFor(() => expect(plusIn("In Progress")).toBeEnabled());
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    const contextReads = memberReads();
+    const reads = boardReads();
+    fireEvent.click(plusIn("In Progress")!);
+    const dialog = within(await screen.findByRole("dialog", { name: "New issue in In Progress" }));
+    fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "Refused" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Create issue" }));
+
+    expect(await dialog.findByRole("alert")).toHaveTextContent("Summary is required");
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(memberReads()).toBe(contextReads);
+    expect(boardReads()).toBe(reads);
   });
 
   it("switches off a type whose workflow lacks the status in any column's form", async () => {
@@ -3484,9 +3516,10 @@ describe("Show more on a board column (backend TAS-430)", () => {
     expect(within(column()).queryByText("More To Do issues could not be loaded.")).toBeNull();
   });
 
-  // §4.9 «Перечитывание»: a re-read after a write keeps an expanded column
-  // expanded, and reads no page again for it.
-  it("keeps an expanded column expanded when the board is read again", async () => {
+  // §4.9 «Перечитывание» (release-reviewer, TAS-438): a re-read reads the
+  // expanded column's tail again with it — after the board's last card, as
+  // deep as it was drawn — so kept cards are the server's.
+  it("reads an expanded column's tail again with the board, to the same depth, and keeps it expanded", async () => {
     const queryClient = renderBoard();
     await waitFor(() => expect(cards()).toHaveLength(2));
     fireEvent.click(more());
@@ -3499,7 +3532,110 @@ describe("Show more on a board column (backend TAS-430)", () => {
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     expect(cards()).toHaveLength(4);
     expect(within(column()).getByText("4 of 5 shown")).toBeVisible();
-    expect(columnPageCalls()).toHaveLength(1);
+    expect(columnPageCalls()).toHaveLength(2);
+    expect(columnPageCalls()[1]).toEqual({
+      statusKey: "TODO",
+      params: { afterCreatedAt: "2026-08-02T09:00:00Z", afterId: "issue-2", includeDone: true, pageSize: 2 },
+    });
+  });
+
+  it("draws an edit to a kept card on its face once the panel's write has been read back", async () => {
+    renderBoard();
+    await waitFor(() => expect(cards()).toHaveLength(2));
+    fireEvent.click(more());
+    await waitFor(() => expect(cards()).toHaveLength(4));
+
+    fireEvent.click(within(column()).getByRole("button", { name: /TAS-104/ }));
+    const panel = within(await screen.findByRole("dialog", { name: "TAS-104 issue" }));
+    await waitFor(() => expect(document.querySelector("textarea.summary-textarea")).not.toBeNull());
+    const summary = document.querySelector("textarea.summary-textarea") as HTMLTextAreaElement;
+    fireEvent.change(summary, { target: { value: "Card 4, renamed" } });
+    fireEvent.blur(summary);
+    await waitFor(() => expect(updateCalls()).toHaveLength(1));
+    fireEvent.click(panel.getByRole("button", { name: "Close" }));
+
+    expect(await within(column()).findByRole("button", { name: /Card 4, renamed/ })).toBeVisible();
+    expect(cards()).toHaveLength(4);
+  });
+
+  it("takes a card off an expanded column when it left it elsewhere, and fills the depth from the server", async () => {
+    const queryClient = renderBoard();
+    await waitFor(() => expect(cards()).toHaveLength(2));
+    fireEvent.click(more());
+    await waitFor(() => expect(cards()).toHaveLength(4));
+
+    deleteElsewhere("issue-3");
+    await queryClient.invalidateQueries({ queryKey: ["board"] });
+
+    await waitFor(() => expect(within(column()).queryByRole("button", { name: /TAS-104/ })).toBeNull());
+    expect(cards().map((card) => card.getAttribute("data-issue-id"))).toEqual(["issue-1", "issue-2", "issue-4", "issue-5"]);
+    expect(column().querySelector(".list-more")).toBeNull();
+  });
+
+  it("puts the column back to its first page when its tail cannot be read again, silently, focus on Show more", async () => {
+    const queryClient = renderBoard();
+    await waitFor(() => expect(cards()).toHaveLength(2));
+    fireEvent.click(more());
+    await waitFor(() => expect(cards()).toHaveLength(4));
+    const kept = within(column()).getByRole("button", { name: /TAS-105/ });
+    kept.focus();
+    expect(kept).toHaveFocus();
+
+    failNextColumnPage(Object.assign(new Error("issue-service is unavailable"), { code: "UNAVAILABLE", status: 503 }));
+    await queryClient.invalidateQueries({ queryKey: ["board"] });
+
+    await waitFor(() => expect(cards()).toHaveLength(2));
+    expect(within(column()).getByText("2 of 5 shown")).toBeVisible();
+    // No message of its own: no box, nothing said.
+    expect(column().querySelector(".error-note")).toBeNull();
+    expect(boardStatus()).toEqual([""]);
+    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(more()).toHaveFocus());
+  });
+
+  // The cache is read after the board has answered: a page «Show more» drew
+  // while the re-read was out is counted in the depth, not written over.
+  it("keeps a page that landed while the board was being read again", async () => {
+    const queryClient = renderBoard();
+    await waitFor(() => expect(cards()).toHaveLength(2));
+    holdBoard(true);
+    void queryClient.invalidateQueries({ queryKey: ["board"] });
+    await waitFor(() => expect(queryClient.isFetching()).toBeGreaterThan(0));
+
+    fireEvent.click(more());
+    await waitFor(() => expect(cards()).toHaveLength(4));
+    releaseBoard();
+
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(cards()).toHaveLength(4);
+    expect(columnPageCalls().map((call) => [call.params.afterId, call.params.pageSize])).toEqual([
+      ["issue-2", 200],
+      ["issue-2", 2],
+    ]);
+  });
+
+  // §4.9 «Нажатие» and «Отказ» (art-director, TAS-438): the first new card,
+  // and after a refusal the button, are brought into the list's view, nearest.
+  it("brings the first new card into view, and after a refusal the button", async () => {
+    const scrolls = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      renderBoard();
+      await waitFor(() => expect(cards()).toHaveLength(2));
+      fireEvent.click(more());
+      await waitFor(() => expect(cards()[2]).toHaveFocus());
+      expect(scrolls.mock.contexts).toContain(cards()[2]);
+      expect(scrolls.mock.calls[scrolls.mock.contexts.indexOf(cards()[2])][0]).toEqual({ block: "nearest" });
+
+      scrolls.mockClear();
+      failNextColumnPage(Object.assign(new Error("Access denied"), { code: "PERMISSION_DENIED", status: 403 }));
+      fireEvent.click(more());
+      await within(column()).findByText("More To Do issues could not be loaded.");
+      const button = more();
+      await waitFor(() => expect(scrolls.mock.contexts).toContain(button));
+      expect(scrolls.mock.calls[scrolls.mock.contexts.indexOf(button)][0]).toEqual({ block: "nearest", inline: "nearest" });
+    } finally {
+      scrolls.mockRestore();
+    }
   });
 
   // «Outside their workflow» has no continuation (the page route reads only

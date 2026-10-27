@@ -2924,8 +2924,8 @@ describe("RestTaskaApi board", () => {
       hasMore: false,
     });
 
-    // An unreadable count is unknown, `hasMore` worked out from a known one,
-    // and the column asked about stands in for an answer that names none.
+    // An unreadable count is unknown, and the column asked about stands in for
+    // an answer that names none.
     vi.unstubAllGlobals();
     stubFetch({ issues: [card], totalCount: "205" });
     await expect(new RestTaskaApi().getBoardColumnPage("project-1", "DONE")).resolves.toMatchObject({
@@ -2933,13 +2933,21 @@ describe("RestTaskaApi board", () => {
       totalCount: null,
       hasMore: null,
     });
+    // `hasMore` is never worked out from the count: it counts the whole column,
+    // so 3 against a page of none says nothing about what follows this page.
     vi.unstubAllGlobals();
     stubFetch({ statusKey: "DONE", totalCount: 3 });
     await expect(new RestTaskaApi().getBoardColumnPage("project-1", "DONE")).resolves.toEqual({
       statusKey: "DONE",
       issues: [],
       totalCount: 3,
-      hasMore: true,
+      hasMore: null,
+    });
+    vi.unstubAllGlobals();
+    stubFetch({ statusKey: "DONE", issues: [card], totalCount: 205, hasMore: "yes" });
+    await expect(new RestTaskaApi().getBoardColumnPage("project-1", "DONE")).resolves.toMatchObject({
+      totalCount: 205,
+      hasMore: null,
     });
   });
 });

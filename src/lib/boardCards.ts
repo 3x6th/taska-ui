@@ -111,7 +111,7 @@ export function withoutCardOnBoard(board: Board, issueId: string): Board {
  * `null` for a column that draws none — its first page is the board read's,
  * and nothing continues an empty one.
  */
-export function columnCursor(column: Pick<BoardColumn, "issues">): { afterCreatedAt: string; afterId: string } | null {
+export function columnCursor(column: Pick<BoardColumn, "issues">): ColumnCursor | null {
   const last = column.issues.at(-1);
   return last ? { afterCreatedAt: last.createdAt, afterId: last.id } : null;
 }
@@ -144,43 +144,77 @@ export function withColumnPage(board: Board, page: BoardColumnPage): Board {
   };
 }
 
+/** The cursor a column page starts after: the `createdAt` and `id` of the last card before it. */
+export interface ColumnCursor {
+  afterCreatedAt: string;
+  afterId: string;
+}
+
+/** One read of a column's page after `cursor`, `pageSize` deep, under the board read's own filters. */
+export type ColumnPageReader = (statusKey: string, cursor: ColumnCursor, pageSize: number) => Promise<BoardColumnPage>;
+
 /**
  * A board read again — after a write, or on return to a combination of filters
- * already read — laid over the board it replaces (§4.9, «Перечитывание»): a
- * column the reader expanded with «Show more» is not collapsed back to its
- * first page. Pure; `previous` is the cached board, with every optimistic move
- * and delete already in it.
+ * already read — with every column the reader expanded with «Show more» read
+ * again to the same depth (§4.9, «Перечитывание»; release-reviewer, TAS-438):
+ * an expanded column is not collapsed back to its first page, and none of its
+ * cards is a copy older than the read — a summary, a priority, an assignee,
+ * labels and, above all, the `version` the next move sends as `If-Match` are
+ * the server's.
  *
- * Per column of `fresh` that still has more than its first page
- * (`hasMore: true`), the cards `previous` drew in that column past `fresh`'s
- * last card stay at the end, in the order they were drawn — unless `fresh`
- * draws them anywhere (they left the column; the server's word wins), or the
- * column's page is empty. What `fresh` draws is the server's and is never
- * touched. A column the server now sends complete takes `fresh` as it is: every
- * issue of it is there. `hasMore` follows the count, which is `fresh`'s.
+ * `previous` is the cached board **as it stands once `fresh` has answered** —
+ * every optimistic move and delete in it, and a page «Show more» drew while
+ * the board read was out. A column is read again when `previous` drew more of
+ * it than `fresh`'s first page holds and `fresh` still says `hasMore`: the
+ * column's pages after `fresh`'s last card, as deep as `previous` drew beyond
+ * that page, at most `pageLimit` a read, while the server says more follow.
+ * The pages land after the first page in one result — no card twice, none
+ * `fresh` already draws — and the column takes the last page's count and
+ * `hasMore`. Columns are read in parallel, each column's pages in turn.
  *
- * What it cannot know without another read is that a kept card left the
- * column since: it stays until the board is read under other filters or the
- * page is reloaded. No read is made to find out — one page per «Show more» is
- * the whole of the cost (§4.9).
+ * A read that fails puts that column back to its first page, foot and all, and
+ * says nothing (§4.9): the rest of the board stands. A column that was not
+ * expanded, or that the server now sends whole, costs no read.
  */
-export function keepExpandedColumns(previous: Board | undefined, fresh: Board): Board {
+export async function withColumnTails(
+  fresh: Board,
+  previous: Board | undefined,
+  readPage: ColumnPageReader,
+  pageLimit: number,
+): Promise<Board> {
   if (!previous) return fresh;
-  const freshIds = new Set(boardCards(fresh).map((issue) => issue.id));
-  let kept = false;
-  const columns = fresh.columns.map((column) => {
-    const before = previous.columns.find((item) => item.statusKey === column.statusKey);
-    const last = column.issues.at(-1);
-    if (!before || column.hasMore !== true || last === undefined || before.issues.length <= column.issues.length) {
-      return column;
-    }
-    const past = before.issues.filter((issue) => !freshIds.has(issue.id) && compareBoardIssues(issue, last) > 0);
-    if (past.length === 0) return column;
-    kept = true;
-    const issues = [...column.issues, ...past];
-    return { ...column, issues, hasMore: stillMore(column.totalCount, issues.length, column.hasMore) };
-  });
-  return kept ? { ...fresh, columns } : fresh;
+  const drawn = new Set(boardCards(fresh).map((issue) => issue.id));
+  const columns = await Promise.all(
+    fresh.columns.map(async (column): Promise<BoardColumn> => {
+      const before = previous.columns.find((item) => item.statusKey === column.statusKey);
+      const depth = before ? before.issues.length - column.issues.length : 0;
+      let cursor = columnCursor(column);
+      if (column.hasMore !== true || depth <= 0 || !cursor) return column;
+      const tail: BoardIssue[] = [];
+      const seen = new Set<string>();
+      let last: BoardColumnPage | null = null;
+      try {
+        for (let wanted = depth; wanted > 0 && cursor; ) {
+          last = await readPage(column.statusKey, cursor, Math.min(wanted, pageLimit));
+          for (const issue of last.issues) {
+            if (drawn.has(issue.id) || seen.has(issue.id)) continue;
+            seen.add(issue.id);
+            tail.push(issue);
+          }
+          wanted -= last.issues.length;
+          cursor = columnCursor(last);
+          if (last.hasMore !== true) break;
+        }
+      } catch {
+        return column;
+      }
+      if (!last) return column;
+      const issues = [...column.issues, ...tail];
+      const totalCount = last.totalCount ?? column.totalCount;
+      return { ...column, issues, totalCount, hasMore: last.hasMore ?? stillMore(totalCount, issues.length, column.hasMore) };
+    }),
+  );
+  return columns.every((column, index) => column === fresh.columns[index]) ? fresh : { ...fresh, columns };
 }
 
 /**

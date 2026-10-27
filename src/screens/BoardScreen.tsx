@@ -25,6 +25,7 @@ import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, 
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -53,7 +54,7 @@ import {
   IssueVersionConflictError,
 } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
-import { STATUS_NOT_IN_TARGET_WORKFLOW_REASON } from "../api/issueTypes";
+import { STATUS_NOT_IN_TARGET_WORKFLOW_REASON, STATUS_NOT_IN_WORKFLOW_REASON } from "../api/issueTypes";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches } from "../components/ColorSwatches";
@@ -726,8 +727,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
    * of the column's next page per press — the cursor of the last card drawn,
    * the filters the drawn board was read with, `includeDone`, 200 — appended
    * to that board read in the column's order without repeats
-   * (`withColumnPage`). A re-read of the board keeps what was appended
-   * (`keepExpandedColumns`). Per column and per combination of filters: in
+   * (`withColumnPage`). A re-read of the board reads what was appended again,
+   * to the same depth (`withColumnTails`, in the board query). Per column and
+   * per combination of filters: in
    * flight, a second press does nothing; a refusal stays in the column until
    * the next press of the same button.
    *
@@ -774,8 +776,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       columnMoreOut.current.delete(key);
     }
   };
-  // After the page has drawn: focus on the card, the scroll left where it is
-  // (§4.9), and drawn, since a pointer press would otherwise leave it invisible.
+  // After the page has drawn: focus on the first new card, drawn, since a
+  // pointer press would otherwise leave it invisible — and the list moved only
+  // as far as it takes to see it, without a jump or an animation (§4.9
+  // «Нажатие», art-director, TAS-438).
   useEffect(() => {
     const id = moreFocus.current;
     const root = boardRef.current;
@@ -788,6 +792,33 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     } catch {
       target.focus({ preventScroll: true });
     }
+    target.scrollIntoView({ block: "nearest" });
+  }, [board]);
+
+  /**
+   * The card focus is on, by its column — kept so that a re-read which takes
+   * it off the board (a column's tail that could not be read again, an issue
+   * gone from the column) hands focus to that column's «Show more» rather than
+   * to `<body>` (§4.9, «Перечитывание»). Focus anywhere but on a card forgets it.
+   */
+  const focusedCard = useRef<{ id: string; statusKey: string } | null>(null);
+  const rememberFocusedCard = (event: FocusEvent<HTMLElement>) => {
+    const card = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("button.issue-card") : null;
+    const id = card?.dataset.issueId;
+    const statusKey = card?.closest<HTMLElement>(".board-column")?.dataset.statusKey;
+    focusedCard.current = id && statusKey ? { id, statusKey } : null;
+  };
+  useLayoutEffect(() => {
+    const was = focusedCard.current;
+    const root = boardRef.current;
+    if (!was || !root || !focusLost()) return;
+    // Still on the board — moved to another column — is not a card that went away.
+    if (findDeleteFocusTarget(root, { card: was.id })) return;
+    focusedCard.current = null;
+    const column = [...root.querySelectorAll<HTMLElement>(".board-column")].find(
+      (section) => section.dataset.statusKey === was.statusKey,
+    );
+    column?.querySelector<HTMLButtonElement>("button.list-more-button")?.focus();
   }, [board]);
 
   /**
@@ -1067,7 +1098,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   }
 
   return (
-    <main className="board-shell" ref={boardRef}>
+    <main className="board-shell" onFocus={rememberFocusedCard} ref={boardRef}>
       <p className="visually-hidden" role="status">
         {boardStatus}
       </p>
@@ -1875,6 +1906,14 @@ function ColumnMore({
   onShowMore: () => void;
 }) {
   const countId = useId();
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  // A refusal puts its box above the row and pushes the focused button down,
+  // out of the list's visible part: brought back as far as it takes, the box
+  // over it in view too, without an animation (§4.9 «Отказ», art-director,
+  // TAS-438).
+  useLayoutEffect(() => {
+    if (error) buttonRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [error]);
   return (
     <>
       {error ? (
@@ -1895,6 +1934,7 @@ function ColumnMore({
           onClick={() => {
             if (!inFlight) onShowMore();
           }}
+          ref={buttonRef}
           type="button"
         >
           Show more
@@ -7133,7 +7173,19 @@ function CreateIssueModal({
     // so a date refusal must not caption the answer to a create, and a create
     // that is refused must not be silent behind one (TAS-231, art-director).
     onMutate: clearDateNotice,
-    onError: clearDateNotice,
+    onError: (error) => {
+      clearDateNotice();
+      // The column's status is not in the type's workflow (backend TAS-428):
+      // the options were switched off from the context's workflows and the
+      // column came from the board, so one of the two is stale — read both
+      // again (the panel's rule for `STATUS_NOT_IN_TARGET_WORKFLOW`). The slot
+      // prints the server's words; nothing branches on them.
+      const { code, details } = apiErrorFacts(error);
+      if (code === "FAILED_PRECONDITION" && details?.reason === STATUS_NOT_IN_WORKFLOW_REASON) {
+        void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+        void queryClient.invalidateQueries({ queryKey: boardKey(projectId) });
+      }
+    },
     onSuccess: async (issue) => {
       await invalidateBoard(queryClient, projectId);
       onCreated(issue);

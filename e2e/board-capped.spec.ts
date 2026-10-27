@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 // The board read is cut at 200 a column since backend TAS-392, and the four
 // filters go to the server, which applies them before the cut (DESIGN.md §4.9,
@@ -88,4 +88,100 @@ test("the type filter changes the columns to that type's workflow", async ({ pag
   await page.getByRole("combobox", { name: "Type" }).selectOption("EPIC");
   await expect(heads).toHaveText(["To Do", "In Progress", "In Review", "Done"]);
   await expect(column(page, "In Review").locator(".issue-card", { hasText: "WEB-15" })).toBeVisible();
+});
+
+/** Press, cross the activation distance, travel to the column, let go — board-drag.spec.ts's gesture. */
+async function dragCardTo(page: Page, card: Locator, target: Locator) {
+  await card.scrollIntoViewIfNeeded();
+  const from = await card.boundingBox();
+  const to = await target.boundingBox();
+  if (!from || !to) throw new Error("no box to drag between");
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(from.x + from.width / 2 + 20, from.y + from.height / 2, { steps: 5 });
+  await page.mouse.move(to.x + to.width / 2, from.y + from.height / 2, { steps: 15 });
+  await page.mouse.up();
+}
+
+// §4.9 «Перечитывание» (release-reviewer, TAS-438): a re-read reads an expanded
+// column's tail again, so a kept card carries the server's `version`. Another
+// member changes OPS-1202 — past the first 200 — before the next move (the
+// mock's «[changed meanwhile]» comment): the first drag meets the 409, the
+// board is read again, and the second drag goes out with the new version.
+test("a card read with Show more moves after a change made elsewhere, with the version the re-read brought", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "the drag below needs two columns on screen");
+  await openBoard(page, "Infra and Ops");
+  const done = column(page, "Done");
+  await done.getByRole("button", { name: "Show more Done issues" }).click();
+  await expect(done.locator(".issue-card")).toHaveCount(205);
+  const card = done.locator(".issue-card", { hasText: "OPS-1202" });
+
+  await card.click();
+  const panel = page.getByRole("dialog", { name: "OPS-1202 issue" });
+  const comments = panel.locator(".comments");
+  await comments.getByPlaceholder("Leave a comment").fill("Checking the restore [changed meanwhile]");
+  await comments.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(comments.locator(".comment-item")).toHaveCount(1);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(panel).toHaveCount(0);
+
+  const inProgress = column(page, "In Progress");
+  await dragCardTo(page, card, inProgress);
+  await expect(
+    page.getByText(
+      "OPS-1202 was not moved: it was changed elsewhere after this board was read. The board now shows the latest version.",
+    ),
+  ).toBeVisible();
+  await expect(done.locator(".issue-card", { hasText: "OPS-1202" })).toHaveCount(1);
+  // The re-read — the board and Done's tail — lands in two of the mock's beats.
+  await page.waitForTimeout(600);
+
+  await dragCardTo(page, done.locator(".issue-card", { hasText: "OPS-1202" }), inProgress);
+
+  await expect(inProgress.locator(".issue-card", { hasText: "OPS-1202" })).toBeVisible();
+  await expect(done.locator(".issue-card", { hasText: "OPS-1202" })).toHaveCount(0);
+  await expect(done.locator(".column-head .count-pill")).toHaveText("204");
+});
+
+// §4.9 «Отказ» (art-director, TAS-438): the box goes above the row and would
+// push the focused «Show more» out of the list's view; it is brought back, the
+// box over it in view too. The mock refuses every page of a project whose
+// description carries «[pages refused]». And §7 exception 1: in the column's
+// scroller the ring is drawn inside the button, or its right edge is cut.
+test("a refused Show more keeps the button and the box in the list's view, the ring inside the button", async ({ page }) => {
+  await openBoard(page, "Infra and Ops");
+  await page.getByRole("button", { name: "Edit project", exact: true }).click();
+  const edit = page.getByRole("dialog", { name: "Edit project" });
+  await edit.getByLabel("Description").fill("CI/CD [pages refused]");
+  await edit.getByRole("button", { name: "Save changes" }).click();
+  await expect(edit).toBeHidden();
+
+  const done = column(page, "Done");
+  const more = done.getByRole("button", { name: "Show more Done issues" });
+  await more.click();
+  await expect(done.getByText("More Done issues could not be loaded.")).toBeVisible();
+  await expect(more).toBeFocused();
+
+  const placed = await done.evaluate(async (section) => {
+    await document.fonts.ready;
+    const list = section.querySelector(".issue-list") as HTMLElement;
+    const frame = list.getBoundingClientRect();
+    const top = frame.top + list.clientTop;
+    const bottom = top + list.clientHeight;
+    const inside = (selector: string) => {
+      const box = (section.querySelector(selector) as HTMLElement).getBoundingClientRect();
+      return box.top >= top - 0.5 && box.bottom <= bottom + 0.5;
+    };
+    return { button: inside(".list-more-button"), box: inside(".issue-list > .error-note") };
+  });
+  expect(placed).toEqual({ button: true, box: true });
+
+  // From the keyboard, so the ring is drawn: inside the button.
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(more).toBeFocused();
+  await expect(more).toHaveCSS("outline-offset", "-2px");
 });

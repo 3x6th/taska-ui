@@ -1992,7 +1992,22 @@ describe("MockTaskaApi", () => {
         );
       });
 
-      it("refuses what the gateway's binding refuses, half a cursor in the service's words, and a project not the reader's", async () => {
+      // `MOCK_PROJECT_TRIGGERS.columnPagesRefused`: the failure of a page a
+      // reader alone cannot make, after the access check; the board still answers.
+      it("refuses every page of a project whose description carries the trigger, and answers its board", async () => {
+        const ops = await opsProject();
+        await api.updateProject(ops.id, { description: `CI/CD ${MOCK_PROJECT_TRIGGERS.columnPagesRefused}` });
+
+        await expect(api.getBoardColumnPage(ops.id, "DONE", { includeDone: true })).rejects.toMatchObject({
+          code: "UNAVAILABLE",
+          message: "issue-service is unavailable",
+        });
+        await expect(api.getBoard(ops.id, { includeDone: true })).resolves.toMatchObject({ projectId: ops.id });
+        await api.login({ email: "priya@example.com", password: "anything" });
+        await expect(api.getBoardColumnPage(ops.id, "DONE")).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      });
+
+      it("refuses what the gateway's binding refuses, half a cursor in the controller's words, and a project not the reader's", async () => {
         const ops = await opsProject();
         const binding = { code: "INVALID_ARGUMENT", message: "Invalid request parameters" };
         for (const params of [
@@ -2005,16 +2020,30 @@ describe("MockTaskaApi", () => {
         ]) {
           await expect(api.getBoardColumnPage(ops.id, "DONE", params)).rejects.toMatchObject(binding);
         }
-        const half = {
-          code: "INVALID_ARGUMENT",
-          message: "Invalid board cursor or pageSize (1..200); both cursor fields are required",
-        };
+        // The gateway's controller (`BoardController`): a `ResponseStatusException`,
+        // which `GatewayErrorHandler` names by its HTTP status — before access.
+        const half = { code: "BAD_REQUEST", message: "afterCreatedAt and afterId must be supplied together" };
         await expect(api.getBoardColumnPage(ops.id, "DONE", { afterCreatedAt: "2026-01-05T08:00:00Z" })).rejects.toMatchObject(
           half,
         );
         await expect(
           api.getBoardColumnPage(ops.id, "DONE", { afterId: "7a1b2c3d-0000-4000-8000-000000000101" }),
         ).rejects.toMatchObject(half);
+        await expect(
+          api.getBoardColumnPage("no-such-project", "DONE", { afterId: "7a1b2c3d-0000-4000-8000-000000000101" }),
+        ).rejects.toMatchObject(half);
+        // The service's own checks, also `BAD_REQUEST`, also before access.
+        const service = {
+          code: "BAD_REQUEST",
+          message: "Invalid board cursor or pageSize (1..200); both cursor fields are required",
+        };
+        await expect(api.getBoardColumnPage("no-such-project", " ")).rejects.toMatchObject(service);
+        await expect(
+          api.getBoardColumnPage(ops.id, "DONE", {
+            afterCreatedAt: "+010000-01-01T00:00:00Z",
+            afterId: "7a1b2c3d-0000-4000-8000-000000000101",
+          }),
+        ).rejects.toMatchObject(service);
         await expect(api.getBoardColumnPage("no-such-project", "DONE")).rejects.toMatchObject({ code: "NOT_FOUND" });
         await api.login({ email: "priya@example.com", password: "anything" });
         await expect(api.getBoardColumnPage(ops.id, "DONE")).rejects.toMatchObject({

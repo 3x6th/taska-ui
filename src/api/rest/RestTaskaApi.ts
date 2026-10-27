@@ -1580,7 +1580,11 @@ export class RestTaskaApi implements TaskaApi {
       // The column asked about, when the answer does not name one.
       statusKey: typeof response.statusKey === "string" && response.statusKey !== "" ? response.statusKey : statusKey,
       issues,
-      ...boardCounts(response.totalCount, response.hasMore, issues.length),
+      // The count as a column's. `hasMore` only as the server states it: the
+      // count is the whole column's, not this page's, so the page's length
+      // says nothing about what lies past it (api-contract-guard, TAS-438).
+      totalCount: boardCounts(response.totalCount, null, issues.length).totalCount,
+      hasMore: typeof response.hasMore === "boolean" ? response.hasMore : null,
     };
   }
 

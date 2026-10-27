@@ -177,6 +177,14 @@ input::-webkit-calendar-picker-indicator {
   outline-offset: -2px;
 }
 
+/* Exception 1 (§7), the same list: the column's «Show more» sits at its right
+   padding of 2, and the outward ring lost its right edge (art-director,
+   TAS-438). Scoped to `.issue-list` — the work log's foot is in no clipping
+   scroller and keeps the ordinary ring. */
+.issue-list .list-more-button:focus-visible {
+  outline-offset: -2px;
+}
+
 /* Exception 3 (§7): the chosen assignee filter already wears §4.4's selection
    ring at 1.5 while at rest, so focus at the ordinary offset changed nothing
    on screen. 4 moves it far enough to be seen and keeps a 5px gap to the next
@@ -7613,9 +7621,18 @@ button.attachment-open:hover:not(:disabled) {
   margin: 0;
 }
 
-/* §4.1 in flight: no dimming, the progress cursor. */
+/* §4.1 in flight: no dimming, the progress cursor — and no hover accent, so a
+   press already out does not look like one that can be made again
+   (art-director, TAS-438). Three classes' worth, over `.compact-button:hover`
+   and `.secondary-button:hover`. */
 .list-more-button[data-busy="true"] {
   cursor: progress;
+}
+
+.list-more-button[data-busy="true"]:hover {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--fg-2);
 }
 
 @media (max-width: 820px) {
@@ -8213,8 +8230,8 @@ button.attachment-open:hover:not(:disabled) {
   text-wrap: pretty;
 }
 
-/* The column "+" form when every type lacks the column's status (§5.5, P3′):
-   the line above the footer, and Create issue steadily unavailable (§4.1). */
+/* The column "+" form when every type lacks the column's status (§5.5): the
+   line above the footer, and Create issue steadily unavailable (§4.1). */
 .modal-unavailable-note {
   margin: 0;
   color: var(--fg-2);

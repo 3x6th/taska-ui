@@ -4,10 +4,10 @@ import {
   boardHasMore,
   boardIssueCount,
   columnCursor,
-  keepExpandedColumns,
   moveCardOnBoard,
   withCardVersion,
   withColumnPage,
+  withColumnTails,
   withoutCardOnBoard,
 } from "./boardCards";
 
@@ -193,35 +193,93 @@ describe("a column continued with Show more", () => {
     expect(withColumnPage(capped, page([b], { statusKey: "LATER" }))).toBe(capped);
   });
 
+  /**
+   * §4.9 «Перечитывание» (release-reviewer, TAS-438): an expanded column's
+   * tail is read again with the board, to the same depth, and every kept card
+   * is the server's copy — never the one drawn before.
+   */
   describe("across a re-read of the board", () => {
     const fresh = (issues: BoardIssue[], over: Partial<BoardColumn> = {}) =>
       board([column("TODO", issues, { totalCount: 5, hasMore: true, ...over }), column("DONE", [])]);
     const expanded = board([column("TODO", [a, b, c, d], { totalCount: 5, hasMore: true }), column("DONE", [])]);
+    /** A server holding `cards` in the column, read after a cursor; every read recorded. */
+    const server = (cards: BoardIssue[], fail = false) => {
+      const reads: { statusKey: string; afterId: string; pageSize: number }[] = [];
+      const read = async (statusKey: string, cursor: { afterCreatedAt: string; afterId: string }, pageSize: number) => {
+        reads.push({ statusKey, afterId: cursor.afterId, pageSize });
+        if (fail) throw new Error("issue-service is unavailable");
+        const index = cards.findIndex((issue) => issue.id === cursor.afterId);
+        const after = cards.slice(index + 1);
+        return page(after.slice(0, pageSize), { totalCount: cards.length, hasMore: after.length > pageSize });
+      };
+      return { read, reads };
+    };
 
-    it("keeps the cards read past the first page, after it, and counts by the new read", () => {
-      const kept = keepExpandedColumns(expanded, fresh([a, b]));
-      expect(ids(kept.columns[0].issues)).toEqual(["a", "b", "c", "d"]);
-      expect(kept.columns[0]).toMatchObject({ totalCount: 5, hasMore: true });
-      // A sixth issue counted: still more to read.
-      expect(keepExpandedColumns(expanded, fresh([a, b], { totalCount: 6 })).columns[0].hasMore).toBe(true);
-      // Every issue drawn now: no foot.
-      expect(keepExpandedColumns(expanded, fresh([a, b], { totalCount: 4 })).columns[0].hasMore).toBe(false);
+    it("reads the column again after the board's page, as deep as it was drawn, and draws the server's copies", async () => {
+      const edited = { ...c, summary: "edited elsewhere", version: 7 };
+      const { read, reads } = server([a, b, edited, d, e]);
+
+      const next = await withColumnTails(fresh([a, b]), expanded, read, 200);
+
+      expect(reads).toEqual([{ statusKey: "TODO", afterId: "b", pageSize: 2 }]);
+      expect(ids(next.columns[0].issues)).toEqual(["a", "b", "c", "d"]);
+      // The server's copy, not the one drawn before.
+      expect(next.columns[0].issues[2]).toBe(edited);
+      expect(next.columns[0]).toMatchObject({ totalCount: 5, hasMore: true });
+      // Done was not expanded: the board's own column, untouched.
+      expect(reads.every((item) => item.statusKey === "TODO")).toBe(true);
     });
 
-    it("drops a kept card the new read draws anywhere, or one that sorts inside its page", () => {
-      const movedToDone = board([column("TODO", [a, b], { totalCount: 4, hasMore: true }), column("DONE", [card("c", "2026-01-03", "DONE")])]);
-      expect(ids(keepExpandedColumns(expanded, movedToDone).columns[0].issues)).toEqual(["a", "b", "d"]);
-      // `b` left; the page now reaches to `c`: what it draws is the server's.
-      expect(ids(keepExpandedColumns(expanded, fresh([a, c])).columns[0].issues)).toEqual(["a", "c", "d"]);
+    it("drops a card that left the column, and fills its place from the server's order", async () => {
+      // `c` was deleted elsewhere: the tail is read to the same depth and finds `d` and `e`.
+      const { read } = server([a, b, d, e]);
+      const next = await withColumnTails(fresh([a, b], { totalCount: 4 }), expanded, read, 200);
+      expect(ids(next.columns[0].issues)).toEqual(["a", "b", "d", "e"]);
+      expect(next.columns[0]).toMatchObject({ totalCount: 4, hasMore: false });
     });
 
-    it("takes the new read as it is when the column is whole, was not expanded, or there was nothing before", () => {
+    it("reads at most the page limit at a time, in turn, while the server says more follow", async () => {
+      const { read, reads } = server([a, b, c, d, e]);
+      const deep = board([column("TODO", [a, b, c, d, e], { totalCount: 5, hasMore: false })]);
+      const next = await withColumnTails(board([column("TODO", [a], { totalCount: 5, hasMore: true })]), deep, read, 2);
+      expect(reads.map((item) => [item.afterId, item.pageSize])).toEqual([
+        ["a", 2],
+        ["c", 2],
+      ]);
+      expect(ids(next.columns[0].issues)).toEqual(["a", "b", "c", "d", "e"]);
+      expect(next.columns[0].hasMore).toBe(false);
+    });
+
+    it("draws no tail card twice, nor one the board's read already draws in another column", async () => {
+      const moved = card("c", "2026-01-03", "DONE");
+      const { read } = server([a, b, c, d, e]);
+      const next = await withColumnTails(
+        board([column("TODO", [a, b], { totalCount: 5, hasMore: true }), column("DONE", [moved])]),
+        expanded,
+        read,
+        200,
+      );
+      expect(ids(next.columns[0].issues)).toEqual(["a", "b", "d"]);
+    });
+
+    it("puts a column whose tail could not be read back to its first page, and leaves the rest of the board", async () => {
+      const { read } = server([a, b, c, d, e], true);
+      const answer = fresh([a, b]);
+      const next = await withColumnTails(answer, expanded, read, 200);
+      expect(next.columns[0]).toBe(answer.columns[0]);
+      expect(next.columns[0].hasMore).toBe(true);
+    });
+
+    it("reads nothing for a column that was not expanded, is whole now, or when nothing was drawn before", async () => {
+      const { read, reads } = server([a, b, c, d, e]);
       const whole = fresh([a, b, c], { totalCount: 3, hasMore: false });
-      expect(keepExpandedColumns(expanded, whole)).toBe(whole);
-      const firstPage = board([column("TODO", [a, b], { totalCount: 5, hasMore: true })]);
+      expect(await withColumnTails(whole, expanded, read, 200)).toBe(whole);
       const again = fresh([a, b]);
-      expect(keepExpandedColumns(firstPage, again)).toBe(again);
-      expect(keepExpandedColumns(undefined, again)).toBe(again);
+      expect(await withColumnTails(again, board([column("TODO", [a, b], { totalCount: 5, hasMore: true })]), read, 200)).toBe(
+        again,
+      );
+      expect(await withColumnTails(again, undefined, read, 200)).toBe(again);
+      expect(reads).toEqual([]);
     });
   });
 });

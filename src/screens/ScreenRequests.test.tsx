@@ -444,6 +444,27 @@ describe("the request budget of /projects and the board, and of coming back to t
     expect(screen.queryByRole("button", { name: "Show more Done issues" })).toBeNull();
   });
 
+  // §4.9 «Перечитывание»: a re-read of a board with one expanded column is the
+  // board read and one column page — its tail, after the board's last card,
+  // as deep as it was drawn — and nothing else.
+  it("re-reads a board with one expanded column for one board read and one column page", async () => {
+    server.doneCut = true;
+    const queryClient = renderAt(`/projects/${PROJECT}/board`);
+    fireEvent.click(await screen.findByRole("button", { name: "Show more Done issues" }));
+    expect(await screen.findByRole("button", { name: /TAS-106/ })).toBeVisible();
+    await settled(queryClient);
+    const mark = requested.length;
+
+    await act(() => queryClient.invalidateQueries({ queryKey: ["board"] }));
+    await settled(queryClient);
+
+    expect(since(mark)).toEqual([
+      `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
+      `GET /projects/${PROJECT}/board/columns/DONE/issues?afterCreatedAt=2026-10-20T09%3A00%3A00Z&afterId=7a1b2c3d-0000-4000-8000-000000000105&includeDone=true&pageSize=1`,
+    ]);
+    expect(screen.getByRole("button", { name: /TAS-106/ })).toBeVisible();
+  });
+
   it("opens Issue types from the board's context, asking nothing (TAS-417)", async () => {
     const queryClient = renderAt(`/projects/${PROJECT}/board`);
     await screen.findByRole("button", { name: /TAS-101/ });

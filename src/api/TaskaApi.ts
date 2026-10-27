@@ -249,14 +249,20 @@ export interface BoardParams {
  * an exclusive cursor and a page size.
  *
  * - `afterCreatedAt` and `afterId` are the last drawn card's `createdAt` and
- *   `id`, **both or neither**: one without the other is 400 `INVALID_ARGUMENT`
- *   from the service ("Invalid board cursor or pageSize (1..200); both cursor
- *   fields are required"). Neither is the column's first page. The cursor is
- *   exclusive, so the card it names is not repeated; an issue created before
- *   it since the board was read appears only when the board is read again.
- * - `pageSize` 1–200, 50 when not sent; the board screen always sends 200.
- *   Outside the range, a malformed cursor or an empty `query` is the gateway's
- *   bean validation (400 "Invalid request parameters").
+ *   `id`, **both or neither**: one without the other is refused by the
+ *   gateway's controller (`BoardController.listBoardColumnIssues`, a
+ *   `ResponseStatusException` the `GatewayErrorHandler` names by its HTTP
+ *   status) — 400 `BAD_REQUEST` "afterCreatedAt and afterId must be supplied
+ *   together". Neither is the column's first page. The cursor is exclusive, so
+ *   the card it names is not repeated; an issue created before it since the
+ *   board was read appears only when the board is read again.
+ * - `pageSize` 1–200, 50 when not sent; «Show more» sends 200, a re-read the
+ *   depth it reads again. Outside the range, a cursor that is not an instant
+ *   or an id that is not a UUID, or an empty `query` is the gateway's bean
+ *   validation (400 `INVALID_ARGUMENT` "Invalid request parameters").
+ * - What the binding lets through and the service refuses — a blank status
+ *   key, an instant outside years 1–9999 — is 400 `BAD_REQUEST` in the
+ *   service's words (`BOARD_CURSOR_REFUSAL_MESSAGE`), before the access check.
  * - `includeDone` as on the board: the board screen always sends `true`, and
  *   `false` and `undefined` are the same request.
  */
@@ -267,10 +273,19 @@ export interface BoardColumnPageParams extends Omit<BoardParams, "pageSizePerCol
 }
 
 /**
- * The column page's own refusal of a half cursor — or of a page size or a
- * cursor instant the gateway's binding let through — in the words
- * `BoardServiceImpl.listBoardColumnIssues` uses (400 `INVALID_ARGUMENT`,
- * backend `cbd3f0af`). The mock answers it in the same words.
+ * The gateway controller's refusal of half a cursor on the column page
+ * (`BoardController.listBoardColumnIssues` at backend `cbd3f0af`): 400, code
+ * `BAD_REQUEST` — a `ResponseStatusException`, which `GatewayErrorHandler`
+ * names by its HTTP status. Checked after sign-in, before anything else of the
+ * request. The mock answers it in the same words.
+ */
+export const BOARD_CURSOR_PAIR_MESSAGE = "afterCreatedAt and afterId must be supplied together";
+
+/**
+ * The column page service's own refusal (`BoardServiceImpl.listBoardColumnIssues`,
+ * backend `cbd3f0af`) of what the gateway's binding let through — a blank
+ * status key, a cursor instant outside years 1–9999 — in its words: 400,
+ * `BAD_REQUEST`, as above. The mock answers it in the same words.
  */
 export const BOARD_CURSOR_REFUSAL_MESSAGE =
   "Invalid board cursor or pageSize (1..200); both cursor fields are required";

@@ -44,6 +44,7 @@ import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
   ADMIN_WRITE_REASON_REQUIRED_MESSAGE,
   ADMIN_WRITE_REASON_TOO_LONG_MESSAGE,
+  BOARD_CURSOR_PAIR_MESSAGE,
   BOARD_CURSOR_REFUSAL_MESSAGE,
   DIRECTORY_QUERY_REFUSAL_MESSAGE,
   INVITE_DISPLAY_NAME_MAX_LENGTH,
@@ -676,7 +677,21 @@ export const MOCK_PROJECT_TRIGGERS = {
    * otherwise cannot produce for a reader alone. Once: the type it adds stays.
    */
   issueTypesChangedMeanwhile: "[types changed meanwhile]",
+  /**
+   * In a project description: every column page of the project refuses —
+   * issue-service unavailable, 503 — once the access check has passed. Both
+   * «Show more» and a re-read of an expanded column's tail meet it (DESIGN.md
+   * §4.9, «Отказ», «Перечитывание»); the board read itself still answers.
+   */
+  columnPagesRefused: "[pages refused]",
 } as const;
+
+/**
+ * The years `BoardServiceImpl.listBoardColumnIssues` takes a cursor instant
+ * from — 0001-01-01 to 9999-12-31 UTC, in its epoch seconds, as milliseconds.
+ */
+const CURSOR_EARLIEST_MS = -62135596800 * 1000;
+const CURSOR_LATEST_MS = 253402300799 * 1000;
 
 /**
  * The payload fields a history event names people by, as issue-service reads
@@ -3864,8 +3879,9 @@ export class MockTaskaStore {
     // project's context then answers 404 for every member when it has no
     // status or no visible transition (`GetWorkflowForProject`,
     // docs/ai/API-DIVERGENCE.md "A workflow with no status or no visible
-    // transition makes the project context 404"), and with no `TODO` new
-    // issues of its types land outside their workflow on the board; this store's context
+    // transition makes the project context 404"), and with no `TODO` the
+    // issues of its types created with no status land outside their workflow
+    // on the board; this store's context
     // reproduces neither. The dialog cannot send such a body — it sends a copy
     // of the shared default.
     const violations = workflowViolations(candidate);
@@ -4477,14 +4493,24 @@ export class MockTaskaStore {
 
   /**
    * `GET /projects/{projectId}/board/columns/{statusKey}/issues` (backend
-   * TAS-430, `BoardServiceImpl.listBoardColumnIssues` at `cbd3f0af`), in the
-   * server's order: the gateway's binding — a page size outside 1–200, an
-   * empty `query`, an `afterCreatedAt` that is not an instant or an `afterId`
-   * that is not a UUID (400 "Invalid request parameters"); the service's own
-   * check of half a cursor (400 `INVALID_ARGUMENT`,
-   * `BOARD_CURSOR_REFUSAL_MESSAGE`); then the board's access check. After it
-   * nothing is refused for being unknown: a type filter the registry does not
-   * hold, or a status no type's workflow has, is an empty page.
+   * TAS-430, `BoardController` and `BoardServiceImpl.listBoardColumnIssues` at
+   * `cbd3f0af`), in the server's order:
+   *
+   * 1. the gateway's binding — a page size outside 1–200, an empty `query`, an
+   *    `afterCreatedAt` that is not an instant or an `afterId` that is not a
+   *    UUID: 400 `INVALID_ARGUMENT` "Invalid request parameters";
+   * 2. the controller: half a cursor, 400 `BAD_REQUEST`
+   *    (`BOARD_CURSOR_PAIR_MESSAGE`); then a type filter it cannot parse is an
+   *    empty page once the access check has passed;
+   * 3. the service: a blank status key or a cursor instant outside years
+   *    1–9999, 400 `BAD_REQUEST` (`BOARD_CURSOR_REFUSAL_MESSAGE`);
+   * 4. the board's access check (404, 403). After it nothing is refused for
+   *    being unknown: a type the registry does not hold, or a status no type's
+   *    workflow has, is an empty page.
+   *
+   * `MOCK_PROJECT_TRIGGERS.columnPagesRefused` in the project's description
+   * makes every page of it refuse once the access check has passed — 503
+   * `UNAVAILABLE` — the failure a reader alone cannot otherwise make.
    *
    * The column is `buildMockBoard`'s, by the same rules — an issue counts only
    * when its **own** type's workflow holds the status, and `includeDone` off
@@ -4506,16 +4532,31 @@ export class MockTaskaStore {
     ) {
       throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
     }
-    if ((params.afterCreatedAt === undefined) !== (params.afterId === undefined) || statusKey.trim() === "") {
-      throw new MockApiError("INVALID_ARGUMENT", BOARD_CURSOR_REFUSAL_MESSAGE);
-    }
-    const project = this.projects.find((item) => item.id === projectId);
-    if (!project) throw new MockApiError("NOT_FOUND", "Project not found");
-    if (!this.membersByProject[projectId]?.some((member) => member.userId === this.currentUserId)) {
-      throw new MockApiError("PERMISSION_DENIED", "Access denied");
+    if ((params.afterCreatedAt === undefined) !== (params.afterId === undefined)) {
+      throw new MockApiError("BAD_REQUEST", BOARD_CURSOR_PAIR_MESSAGE);
     }
     const empty: BoardColumnPage = { statusKey, issues: [], totalCount: 0, hasMore: false };
-    if (params.issueType && (!isIssueTypeCode(params.issueType) || !this.inRegistry(projectId, params.issueType))) {
+    const access = () => {
+      const project = this.projects.find((item) => item.id === projectId);
+      if (!project) throw new MockApiError("NOT_FOUND", "Project not found");
+      if (!this.membersByProject[projectId]?.some((member) => member.userId === this.currentUserId)) {
+        throw new MockApiError("PERMISSION_DENIED", "Access denied");
+      }
+      return project;
+    };
+    if (params.issueType && !isIssueTypeCode(params.issueType)) {
+      access();
+      return empty;
+    }
+    const instant = params.afterCreatedAt === undefined ? null : Date.parse(params.afterCreatedAt);
+    if (statusKey.trim() === "" || (instant !== null && (instant < CURSOR_EARLIEST_MS || instant > CURSOR_LATEST_MS))) {
+      throw new MockApiError("BAD_REQUEST", BOARD_CURSOR_REFUSAL_MESSAGE);
+    }
+    const project = access();
+    if (project.description?.includes(MOCK_PROJECT_TRIGGERS.columnPagesRefused)) {
+      throw new MockApiError("UNAVAILABLE", "issue-service is unavailable");
+    }
+    if (params.issueType && !this.inRegistry(projectId, params.issueType)) {
       return empty;
     }
     const types = this.boardTypes(projectId, params.issueType);

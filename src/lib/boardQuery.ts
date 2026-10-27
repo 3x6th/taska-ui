@@ -3,7 +3,7 @@ import { taskaApi } from "../api/client";
 import { isMissingOrForbidden } from "../api/errors";
 import type { BoardColumnPageParams, BoardParams } from "../api/TaskaApi";
 import type { Board } from "../domain/types";
-import { keepExpandedColumns } from "./boardCards";
+import { withColumnTails, type ColumnCursor } from "./boardCards";
 
 /**
  * The board's four filters as they go to the server (TAS-392, DESIGN.md §5.4):
@@ -60,10 +60,12 @@ function filterParams(filters: BoardFilters): Omit<BoardParams, "pageSizePerColu
  * default would empty every done column of a board that is meant to be whole;
  * the page size at its ceiling, so a capped column is rare.
  *
- * The answer is laid over the board it replaces (`keepExpandedColumns`): a
- * column the reader expanded with «Show more» keeps the pages it read when the
- * board is read again after a write, and no page is read again for it
- * (DESIGN.md §4.9, «Перечитывание»).
+ * A column the reader expanded with «Show more» is read again with it, to the
+ * same depth, through the column page (`withColumnTails`; DESIGN.md §4.9,
+ * «Перечитывание»): one more read per expanded column (per 200 cards read
+ * past its first page), none for the rest. The cache is read **after** the
+ * board has answered, so a page «Show more» drew while the read was out is
+ * counted in that depth rather than overwritten.
  *
  * The unfiltered entry is shared by the board — its `Y` — and the panel's link
  * picker, which reads it rather than asking again.
@@ -75,22 +77,33 @@ export function boardQueryOptions(projectId: string, filters: BoardFilters = NO_
   const params: BoardParams = { ...filterParams(filters), pageSizePerColumn: BOARD_PAGE_SIZE_PER_COLUMN };
   return queryOptions({
     queryKey: boardReadKey(projectId, filters),
-    queryFn: async ({ client, queryKey }): Promise<Board> =>
-      keepExpandedColumns(client.getQueryData<Board>(queryKey), await taskaApi.getBoard(projectId, params)),
+    queryFn: async ({ client, queryKey }): Promise<Board> => {
+      const fresh = await taskaApi.getBoard(projectId, params);
+      return withColumnTails(
+        fresh,
+        client.getQueryData<Board>(queryKey),
+        (statusKey, cursor, pageSize) =>
+          taskaApi.getBoardColumnPage(projectId, statusKey, boardColumnPageParams(filters, cursor, pageSize)),
+        BOARD_PAGE_SIZE_PER_COLUMN,
+      );
+    },
     retry: (failureCount: number, error: Error) => !isMissingOrForbidden(error) && failureCount < 1,
   });
 }
 
 /**
- * The request of a column's «Show more» (DESIGN.md §4.9, backend TAS-430): the
- * board's own filters — the ones the drawn board was read with — and
- * `includeDone=true`, the cursor of the last card drawn, and a page of 200.
+ * The request of a column's page (DESIGN.md §4.9, backend TAS-430): the board's
+ * own filters — the ones the drawn board was read with — and
+ * `includeDone=true`, the cursor of the last card drawn, and the page size:
+ * 200 for «Show more», the depth already drawn when a re-read reads a column's
+ * tail again.
  */
 export function boardColumnPageParams(
   filters: BoardFilters,
-  cursor: { afterCreatedAt: string; afterId: string },
+  cursor: ColumnCursor,
+  pageSize: number = BOARD_PAGE_SIZE_PER_COLUMN,
 ): BoardColumnPageParams {
-  return { ...cursor, ...filterParams(filters), pageSize: BOARD_PAGE_SIZE_PER_COLUMN };
+  return { ...cursor, ...filterParams(filters), pageSize };
 }
 
 /**

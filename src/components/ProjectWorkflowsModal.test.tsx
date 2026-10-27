@@ -213,7 +213,11 @@ describe("the Workflows dialog's states", () => {
     expect(within(own).getByText("Unknown status")).toBeVisible();
     // In Progress and Review are reached by nothing visible; Done is reached by Ship.
     expect(within(own).getAllByText("No transition on the board leads here.")).toHaveLength(2);
-    expect(within(own).getByText(/New issues always start in TODO, which this workflow does not have, so new Story issues/)).toBeVisible();
+    expect(
+      within(own).getByText(
+        "Issues created with New start in TODO, which this workflow does not have, so they land outside their workflow on the board. Create Story issues with + on one of its columns.",
+      ),
+    ).toBeVisible();
     // A category this build cannot colour is the hollow ring, said in words beside it.
     expect(within(own).getByText("QA")).toBeVisible();
     expect(own.querySelector(".status-dot.is-unknown")).not.toBeNull();
