@@ -4222,6 +4222,7 @@ TAS-387 moved to `Done` on 2026-10-26 after the owner's smoke on the stand.
   not pin Settings → Access tokens' request count; ~~the vendored `openapi.yml` is at `562d84de`, develop
   at `92a00dbc` — refresh~~ — refreshed to `6ba4ed6` by TAS-416.
   **TAS-417 (2026-10-26):** `insufficient_scope`, the missing id, duplicate names, the cap and the «already gone» request id are done; `actionViaText` (TAS-411) and the unpinned request count stay.
+  **TAS-425 (2026-10-27):** `actionViaText` closed — `channel` is mapped, and an unknown channel draws nothing by DESIGN.md §4.15 (art-director's ruling on TAS-425); only the unpinned request count stays.
 - **Three notes from release-reviewer's last pass on `2cad7f2`** (non-blocking, left for speed):
   the `if (revoking) return;` guard that keeps the unseen line through a refused revoke has no test
   that can fail (`mockRejectedValueOnce` rejects before the optimistic removal renders — use a
@@ -4315,7 +4316,7 @@ Reviews on `32daa9c`: api-contract-guard, art-director and release-reviewer REQU
 - **Optional backend ask, not filed (api-contract-guard r2):** the board read to a requested depth per column (say `columnPageSize=DONE:405`, capped by the server), so one read restores an expanded board instead of a board read plus a column page per expanded column — a follow-up to TAS-430.
 - **Optional backend ask (api-contract-guard A1):** the gateway's own input checks answer `BAD_REQUEST` (half a cursor, a blank `statusKey`, a malformed type key) while bean validation answers `INVALID_ARGUMENT`; one code for every client input error. Not filed.
 - **The mock's CREATED history payload** does not carry the created status (the backend's does); no UI reads it.
-- **`channel` on history and comments** (UI / API_TOKEN / MCP) is in the contract now; the REST client still sets `via: null` — the TAS-412 entry.
+- ~~**`channel` on history and comments** (UI / API_TOKEN / MCP) is in the contract now; the REST client still sets `via: null` — the TAS-412 entry.~~ — **closed by [TAS-425](https://jira.ozero.dev/browse/TAS-425)** (2026-10-27): mapped in `getIssue` and `toComment`, no token name.
 
 ### Left by TAS-437 (Workflows and Issue types after backend TAS-436/TAS-433, develop `78019ece`, 2026-10-27)
 
@@ -4332,3 +4333,13 @@ Review round 1 (e969dbd): api-contract-guard, art-director and release-reviewer 
 - **Small visual notes (art-director).** `openForm` should clear the 2 s highlight (a form opened on a just-saved card sits on the accent tint); a donor shows the no-TODO «Create issues with + …» sentence though it has no columns; deleting a donor highlights the shared card though nothing moved; the locked type row keeps a pointer cursor (`.workflow-type-choice:has(input[aria-disabled="true"]) { cursor: not-allowed; }`); the type strip now scrolls into view on open — add `scroll-margin-block: 8px` to `.member-confirm.issue-type-confirm`.
 - **Mock parity** (api-contract-guard F6). Workflow replays answer `REQUEST_ID_REUSED` (backend: `WORKFLOW_OPERATION_REQUEST_REUSED`); the delete replay is keyed by request id (backend matches the one pending deletion by body); the mock never 409s the list or context while a command is pending, so that path has unit coverage only.
 - **A pending form can be blocked by a re-read under it** (release-reviewer 6): if the context re-reads during the pending window, New type's «already a type» reason can block the repeat; Cancel recovers.
+
+### Left by TAS-425 (display-name editing and the channel mark, develop `78019ece`, 2026-10-27)
+- **Focus beats the danger edge on the profile name field** (art-director N1): `.settings-name-input:focus:not(:read-only)` outweighs `[aria-invalid]`, so while typing only the reason line shows the problem and the red edge appears on blur; the work log does the opposite (`styles.css` ~7749, danger wins). Pick one rule for the product.
+- **The rename prints «Failed to fetch» as server words** through the shared Users failure note (`AdminUserActionModal`), as block and unblock did before TAS-425 (art-director ruling 2e). Fix for all of them: show server words only when there is a status or a code.
+- **In-flight frames (Save, Rename, Checking) are not in the evidence** (art-director N2); the preview skeleton was seen live and is right.
+- **Not on the mock:** the profile name after a reload (the store is rebuilt per page load — the e2e follows it across navigation), and a server refusal of either rename (unit tests only; the client check equals the server's rule, so the UI never sends a refused name). Stand check: rename yourself, rename as admin, activate an invitation with a changed name.
+- **Backend tails** filed as [TAS-443](https://jira.ozero.dev/browse/TAS-443): a name of only Cf characters passes `DisplayNames.normalize` and shows blank; preview `kind` through `KindEnum.fromValue` (a new kind is a 500); no channel dictionary in `/meta`, so an unknown channel draws as a UI change.
+- **A lost answer re-reads only `["me"]`** (art-director r2): if the PATCH landed, members, board and work log keep the old name until their next read. Call `invalidatePeopleNames(queryClient)` beside the `["me"]` invalidation in `ProfileName`'s no-answer branch.
+- **Focus falls to `<body>` when a Try again comes back dead or rejected** (art-director r2; rare: a 5xx, then 401/400): Try again leaves the DOM. Run `LoginScreen`'s focus-rescue effect on `retryRefusals` too and move focus to `.invite-preview-refusal` (`tabIndex=-1`), the §4.27 rule for the removed form.
+- **`contract:pins` is STALE** (release-reviewer): develop moved to `9fcf0253` (outbox retry and audit masking; `openapi.yml` unchanged). Refresh with the next contract pass.
