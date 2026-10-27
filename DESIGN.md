@@ -2734,7 +2734,9 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   ссылкой, поле токена остаётся на `/invite` после перезагрузки. `/invite`: всегда
   `Sign in | Accept invite`, что бы ни ответил `/auth/methods`, чтобы ссылка из письма в чистом
   браузере не перескакивала; для preview `kind = SIGNUP` второй таб подписан «Create account» тем
-  же коммитом, что заполняет Email и Name (ширина та же, `flex:1`). Роли — §4.27 «Табы».
+  же коммитом, что заполняет Email и Name (ширина та же, `flex:1`). Роли — §4.27 «Табы». У tablist нет своего имени: он
+  единственный на странице, а имя читалось бы при каждом входе; «or» разделителя читается —
+  говорит, что кнопки ниже — другой путь.
 - **Кнопки провайдеров** — на Sign in и на форме Create account; не на «Check your email», не на
   `/invite`. Порядок задаёт клиент: Google, GitHub, Apple; рисуются только перечисленные в ответе,
   незнакомый код не рисуется. Место — под формой и её подсказкой: отступ 18, разделитель — две
@@ -2743,8 +2745,14 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   Элемент — `<a href>` на адрес из `oauthStartUrl(provider, returnTo)`: настоящая навигация;
   `returnTo` — запомненный путь §5.1, иначе `/projects`. Во всю ширину, высота 39 (ни одна другая
   кнопка входа не крупнее — требование Apple и Google), radius 9, подпись 13.5/550 `--font-ui` по
-  центру всей кнопки: «Continue with Google», «Continue with GitHub», «Continue with Apple». Знак
-  18, видимый глиф в 12 от левого края; знак Apple — в ту же колонку. Цвета — только §2.8; знаки
+  центру всей кнопки: «Continue with Google», «Continue with GitHub», «Continue with Apple». Знаки
+  G и GitHub — 18, видимый край глифа в 12 от внешнего края кнопки (`.provider-mark { left: 11px }`
+  при обводке 1 внутри). Знак Apple — файл Apple «logo and text, medium» без обрезки на всю высоту
+  кнопки (`viewBox="7 0 17 44"`, высота 39, ширина 15.07; глиф 16.8), по вертикали по центру,
+  видимый край глифа в той же колонке 12 (файл начинается за 0.66 до глифа). Знак и подпись Apple —
+  оба `--provider-mono` (`.provider-button-apple { color: var(--provider-mono) }`): правило Apple —
+  чёрное или белое, и `--provider-fg` Google их не подменяет (TAS-426, решение art-director
+  2026-10-28). Цвета — только §2.8; знаки
   `aria-hidden`, имя — подпись. Hover: `background: color-mix(in oklab, var(--provider-fg) 6%,
   var(--provider-bg))` за `--dur-hover`. Фокус — общее кольцо §7. После нажатия — рецепт
   «в полёте» §4.1 на всех трёх: `aria-disabled`, `cursor:progress`, без затемнения, подпись та же,
@@ -2752,13 +2760,20 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   спиннера, загрузку показывает браузер. На `pageshow` с `persisted` (Back от провайдера из
   bfcache) состояние снимается. `sessionStorage` `taska.oauthAttempt` = {provider, tab} — для
   формулировок отказов и выбора их таба.
-- **Create account.** Name («Name», `autoComplete=name`, подсказка §4.27, проверка §5.9), Email
+- **Create account.** Name («Name», `autoComplete=name`, подсказка §4.27, проверка §5.9 — причина
+  показывается только после первой правки или нажатия: форма открывается пустой, и «Enter a name.»
+  до ввода была бы отказом без вопроса; Continue с причиной ничего не шлёт и ставит фокус в Name,
+  кнопка не бледнеет — поведение Activate §4.27, не §5.9), Email
   («Email», `type=email`, `autoComplete=email`, плейсхолдер «you@company.com», без подсказки),
   primary «Continue» (в полёте «Sending») — не «Create account»: нажатие аккаунта не создаёт.
   Подсказка: «Invited by your team? Use the link in your invitation email instead.» Отказы —
   `ErrorNote` под кнопкой, `live="alert"`, id; введённое остаётся. 400 — фраза сервера и
   `aria-invalid` на названном поле (`DISPLAY_NAME_INVALID` — Name). 403 `SIGNUP_DISABLED` —
-  «Taska isn’t open for new accounts right now. Ask a Taska admin to invite you.» 429 — «Too many
+  «Taska isn’t open for new accounts right now. Ask a Taska admin to invite you.»; перечитанные
+  способы уносят таб вместе с формой, поэтому, когда таб убрал именно этот отказ, та же фраза с id
+  переезжает в слот `.auth-notice` над табами — `ErrorNote`, не живая (alert уже прозвучал),
+  `tabIndex=-1`, фокус на ней, а не на табе Sign in; уходит при следующей отправке, нажатии
+  провайдера или смене таба, как отказы провайдера 429 — «Too many
   attempts. Try again in {wait}.» 5xx, 408, сеть — «The sign-up request could not be sent.», слова
   сервера (если ответил) и id.
 - **Check your email** (на 202) — заменяет форму на том же табе, без провайдеров.
@@ -2773,8 +2788,9 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   обоими значениями, фокус в Email, значение выделено. Resend: в полёте «Sending»; 202 — текст
   «If {email} can be used for a new Taska account, we’ve sent another link there. Open it to
   choose your password.», произносится постоянной скрытой `role="status"`, отсчёт 60 с заново;
-  429 — отсчёт заново от Retry-After, подсказка «Too many attempts. You can resend in 12:40.», в
-  статусе «Too many attempts. Try again in {wait}.»; прочий отказ — `ErrorNote` (alert) над
+  429 — отсчёт заново от `details.retryAfterSeconds` (без числа — 60 с), подсказка «Too many
+  attempts. You can resend in 12:40.», в статусе «Too many attempts. Try again in {wait}.» с тем же
+  ожиданием, что в подсказке («60 seconds», если числа не было); прочий отказ — `ErrorNote` (alert) над
   подсказкой: «Resending did not go through.», слова сервера и id. Состояние переживает смену
   табов, пока карточка смонтирована.
 - **`/invite` с `kind = SIGNUP`.** Пока preview в полёте и для `INVITATION` — всё как в §4.27;
@@ -2784,8 +2800,14 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   полёте «Creating account»; подсказка «Link expired? Create your account again to get a new one.»;
   401 accept — «This sign-up link no longer works — it expired, was used, or was replaced by a
   newer one. If you already set a password, sign in; otherwise create your account again.» Успех —
-  как у приглашения. Меняется только текст на месте: на 390 карточка не сдвигается (правило
-  окончательного вида, TAS-425); на 320 заметка может вырасти не больше чем на строку. Preview
+  как у приглашения. Строка чужой сессии для `SIGNUP` — «You’re signed in on this browser. Creating your
+  account signs you out first.» (та же высота, 37.19). Меняется только текст на месте: на 390
+  карточка не сдвигается (правило окончательного вида, TAS-425). Заголовок заметки
+  `.invite-note-title` — 12.5/650 `--fg`, −0.01em, line-height 17.4 (12 × 1.45 заметки), margin 0:
+  коробка той же высоты, что двухстрочная заметка приглашения. Подсказка `SIGNUP` в одну строку, а
+  приглашения — в две, поэтому под ней в той же клетке сетки лежит невидимая подсказка приглашения
+  (`.auth-hint-stack`: `visibility:hidden`, `aria-hidden`) — цена: ~16.7 пустых под однострочной
+  подсказкой на 390/360/320, на 1440 нет. Preview
   отказал (вид ссылки неизвестен): при `signupEnabled === true` — «This link no longer works — it
   expired, was used, or was replaced by a newer one. If you already set a password, sign in;
   otherwise ask for a new invitation or create your account again.»; иначе — фраза §4.27.
@@ -2800,8 +2822,8 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   раз на код, без повторов. `SIGNED_IN` — сессия, затем `navigate(returnTo, {replace:true})`;
   returnTo, не прошедший `inAppPath`, — `/projects`.
   `SIGNUP_REQUIRED` — шаг имени: `.invite-note` с `h1` «Finish creating your account» и «You’re
-  signing up with your {Provider} account.» (провайдер только словом, знак — только в кнопке
-  бренда); Email — read-only по рецепту §4.27, `autoComplete=email`; Name — `suggestedDisplayName`
+  signing up with your {Provider} account.» (без провайдера — «You’re signing up with the account
+  you chose.»; провайдер только словом, знак — только в кнопке бренда); Email — read-only по рецепту §4.27, `autoComplete=email`; Name — `suggestedDisplayName`
   или пусто, подсказка §4.27, проверка §5.9, фокус в Name; primary «Create account» («Creating
   account»); ghost «Back to sign in» (32) на `/login`. Успех — сессия и returnTo; новый аккаунт
   попадает в пустое состояние `/projects`. Отказы шага имени — `ErrorNote` под кнопкой, alert, Name
@@ -2809,7 +2831,9 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   причины и сеть — «Your account was not created.», слова сервера и id. Шаг истёк (15 минут, 401
   `STATE_INVALID`) — форма уходит, на её месте `ErrorNote` (alert, `tabIndex=-1`, фокус): «This
   sign-up step expired after 15 minutes, so your account was not created. Continue with {Provider}
-  again to start over.», под ним кнопка этого провайдера и «Back to sign in». Прочие отказы шага
+  again to start over.», под ним кнопка этого провайдера и «Back to sign in»; без провайдера —
+  «This sign-up step expired after 15 minutes, so your account was not created. Go back to sign in
+  to start over.» и только «Back to sign in». Прочие отказы шага
   имени (403, 503 с причиной — шаг израсходован), любой отказ обмена и `?error=` в адресе —
   `replace` на `/login` с отказом там.
 - **Отказы провайдера на `/login`** — `ErrorNote` над табами в слоте `.auth-notice` (`margin 0 0
@@ -2830,8 +2854,8 @@ Move up → Move down → Edit → Delete (недоступные остаютс
 | `PROVIDER_UNAVAILABLE` (503 с причиной или `?error=`) | «{Provider} sign-in isn’t available right now. Try again in a moment, or sign in another way.» Без провайдера: «This sign-in method isn’t available right now. Try again in a moment, or sign in another way.» |
 | Обмен: 401 `STATE_INVALID` (код истёк или использован) | «That sign-in could not be finished — it took too long or was already used. Try again from this page.» |
 | Обмен: 429 | «Too many attempts. Try again in {wait}.» |
-| Обмен: 5xx без причины, 408, сеть | «Sign-in with {Provider} could not be finished.», слова сервера и id |
-| Незнакомая причина в ответе обмена | «Sign-in with {Provider} did not finish. Try again from this page.», код — моно-строкой деталей |
+| Обмен: 5xx без причины, 408, сеть | «Sign-in with {Provider} could not be finished.» (без провайдера — «Sign-in could not be finished.»), слова сервера и id |
+| Незнакомая причина в ответе обмена | «Sign-in with {Provider} did not finish. Try again from this page.» (без провайдера — «Sign-in did not finish. Try again from this page.»), код — моно-строкой деталей |
 | Незнакомое значение `?error=` | та же фраза, значение не печатается: адрес мог набрать кто угодно |
 
 - **{wait}** — из `Retry-After` или `details.retryAfterSeconds`: меньше 90 с — «{n} seconds»
@@ -4602,7 +4626,7 @@ e2e). Другое значение останавливает dev-сервер,
   3. `outline-offset:4px` — выбранный фильтр исполнителя: в покое он уже носит кольцо выбора
      §4.4 на 1.5, и без сдвига фокус на нём невидим.
   4. Заголовки экранов (`h1`), получающие фокус программно (`.notfound-title`,
-     `.admin-section-title`), — `outline-offset:4px`; заголовки разделов (`h3`) — обычное
+     `.admin-section-title`, `.auth-title` — TAS-426), — `outline-offset:4px`; заголовки разделов (`h3`) — обычное
      кольцо 2px.
   5. `.label-chip-remove` — `1px` (внутри чипа 20).
   6. `.user-profile-logout` — кольцо `--danger`.
