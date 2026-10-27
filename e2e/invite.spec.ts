@@ -12,13 +12,19 @@ import { expect, test, type Page } from "@playwright/test";
 // checks the outcome in the same visit.
 //
 // Two servers (playwright.config.ts): the suite's own, path-routed at `/`, and
-// one routed by the hash under `/taska-ui/`, the way the Pages build routes —
-// the build the link was broken on, since its router never sees `?token=`.
+// one routed by the hash, the way the Pages build routes — the build the link
+// was broken on, since its router never sees `?token=`. At base `/` since
+// TAS-426, as the site is served.
+//
+// Sign-up is off and no provider is configured here, as on the stand
+// (`GET /auth/methods` answered `{signupEnabled: false, providers: []}` on
+// 2026-10-27): `/login` then keeps its Accept invite tab, which the first case
+// goes back to. e2e/signup.spec.ts covers the card with sign-up open.
 
 const LEO_TOKEN = "Lk3vQ9xW2mTz8RbN4cYp7HfJ1sDg6EaU5oKiVwXqZrM";
 const IVY_TOKEN = "Iv7yPq2Wd9Lm4Xs8Tb1Nc6Hf3Rg5Ja0Ku2Ze7Oy9Qvw";
 const PORT = Number(process.env.TASKA_E2E_PORT) || 5183;
-const HASH_ROOT = `http://localhost:${PORT + 1}/taska-ui/`;
+const HASH_ROOT = `http://localhost:${PORT + 1}/`;
 
 const STRONG = "Correct-horse-1";
 const DEAD_LINK = /^This invitation link no longer works — it expired, was used, or was replaced by a newer one\./;
@@ -54,9 +60,15 @@ taskaApi.previewInvitation = async (token) => {
 };
 `;
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() =>
+    window.localStorage.setItem("taska.mockAuthMethods", JSON.stringify({ signupEnabled: false, providers: [] })),
+  );
+});
+
 /** Leo's link, previewed (TAS-425): his address read-only, his invited name in Name, focus in New password. */
 async function expectLandedOnInvite(page: Page) {
-  await expect(page.getByRole("button", { name: "Accept invite" })).toHaveClass(/is-active/);
+  await expect(page.getByRole("tab", { name: "Accept invite" })).toHaveAttribute("aria-selected", "true");
   // A captured token is never shown and never typed.
   await expect(page.getByLabel("Invitation token")).toHaveCount(0);
   await expect(page.getByText(NOTE)).toBeVisible();
@@ -74,7 +86,7 @@ async function activate(page: Page, password = STRONG) {
 async function signInAs(page: Page, email: string, password = STRONG) {
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.locator("form button[type=submit]").click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/projects$/);
 }
 
@@ -107,7 +119,7 @@ test("the emailed link lands on the invite form with the token out of the addres
 
   // The link is single-use: pasted back whole into the form, its preview is
   // refused under Continue, and nothing else is asked for.
-  await page.getByRole("button", { name: "Accept invite" }).click();
+  await page.getByRole("tab", { name: "Accept invite" }).click();
   await page.getByLabel("Invitation token").fill(`https://taska.ozero.dev/?token=${LEO_TOKEN}`);
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("alert")).toHaveText(DEAD_LINK);
@@ -115,7 +127,7 @@ test("the emailed link lands on the invite form with the token out of the addres
   await expect(page.getByLabel("New password")).toHaveCount(0);
 
   // And the account it activated signs in like any other.
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("tab", { name: "Sign in" }).click();
   await signInAs(page, "leo@example.com");
 });
 
@@ -281,6 +293,6 @@ test.describe("on the hash-routed build", () => {
 
     await expect(page).toHaveURL(`${HASH_ROOT}#/invite`);
     await expect(page.getByLabel("Invitation token")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Accept invite" })).toHaveClass(/is-active/);
+    await expect(page.getByRole("tab", { name: "Accept invite" })).toHaveAttribute("aria-selected", "true");
   });
 });

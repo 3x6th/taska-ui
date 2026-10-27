@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MOCK_ATTACHMENT_TRIGGERS, MOCK_INVITE_TOKENS, MOCK_PROJECT_TRIGGERS, MockTaskaApi, buildMockBoard } from "./MockTaskaApi";
+import { MOCK_AUTH_METHODS_KEY, MOCK_AUTH_TRIGGERS, MOCK_OAUTH_IDENTITY_KEY } from "./mockAuthFixtures";
 import type { UpdateIssueInput } from "../TaskaApi";
 import { DIRECTORY_QUERY_REFUSAL_MESSAGE } from "../TaskaApi";
 import type { Board, BoardIssue, Issue, NotificationType, Project, ProjectIssueType } from "../../domain/types";
@@ -3170,11 +3171,11 @@ describe("MockTaskaApi", () => {
       });
 
       // As text, "5" >= "10" — so the row with 5 came back from a filter that
-      // asked for 10 and up. The list runs to 40 since TAS-186 seeded a sixth
-      // and seventh account, TAS-188 an eighth and TAS-297 a ninth
-      // (`failed_logins` is `index * 5`), which is what makes the two-digit
-      // half of this assertion several values rather than one.
-      expect(from.rows.map((row) => row.failed_logins)).toEqual([10, 15, 20, 25, 30, 35, 40]);
+      // asked for 10 and up. The list runs to 45 since TAS-186 seeded a sixth
+      // and seventh account, TAS-188 an eighth, TAS-297 a ninth and TAS-426 a
+      // tenth (`failed_logins` is `index * 5`), which is what makes the
+      // two-digit half of this assertion several values rather than one.
+      expect(from.rows.map((row) => row.failed_logins)).toEqual([10, 15, 20, 25, 30, 35, 40, 45]);
 
       const to = await api.listAdminRows({
         service: "auth",
@@ -3224,7 +3225,7 @@ describe("MockTaskaApi", () => {
 
       // `localeCompare` put 10 before 5 here, and did it differently depending
       // on the machine's locale.
-      expect(asc.rows.map((row) => row.failed_logins)).toEqual([0, 5, 10, 15, 20, 25, 30, 35, 40]);
+      expect(asc.rows.map((row) => row.failed_logins)).toEqual([0, 5, 10, 15, 20, 25, 30, 35, 40, 45]);
 
       const desc = await api.listAdminRows({
         service: "auth",
@@ -3234,7 +3235,7 @@ describe("MockTaskaApi", () => {
         order: "desc",
       });
 
-      expect(desc.rows.map((row) => row.failed_logins)).toEqual([40, 35, 30, 25, 20, 15, 10, 5, 0]);
+      expect(desc.rows.map((row) => row.failed_logins)).toEqual([45, 40, 35, 30, 25, 20, 15, 10, 5, 0]);
     });
 
     /**
@@ -7393,6 +7394,267 @@ describe("MockTaskaApi", () => {
       const bugs = await api.searchIssues({ query: "login", projectId: project.id });
       const bug = bugs.items.find((hit) => hit.issueType === "BUG");
       expect(bug).toMatchObject({ issueTypeName: "Bug", issueTypeColor: "red", issueTypeShape: "circle", issueTypeIcon: null });
+    });
+  });
+});
+
+/**
+ * Sign-up and provider sign-in in the mock (TAS-426, guard §6): the knobs the
+ * e2e suite sets, the fake provider's return, and the server's refusals in the
+ * server's order — every one a `MockApiError` with a code and, where the server
+ * sends one, a `details.reason`.
+ */
+describe("MockTaskaApi sign-up and provider sign-in", () => {
+  const knob = (key: string, value: unknown) => window.localStorage.setItem(key, JSON.stringify(value));
+  /** The code or the error the fake provider put on the callback address. */
+  const landing = (url: string) => {
+    const parsed = new URL(url);
+    return { path: parsed.pathname, code: parsed.searchParams.get("code"), error: parsed.searchParams.get("error") };
+  };
+  let api: MockTaskaApi;
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    api = new MockTaskaApi();
+  });
+
+  it("answers the methods knob, every path open when it is unset, narrowed like the server's", async () => {
+    await expect(api.getAuthMethods()).resolves.toEqual({ signupEnabled: true, providers: ["GOOGLE", "GITHUB", "APPLE"] });
+    knob(MOCK_AUTH_METHODS_KEY, { signupEnabled: false, providers: [] });
+    await expect(api.getAuthMethods()).resolves.toEqual({ signupEnabled: false, providers: [] });
+    knob(MOCK_AUTH_METHODS_KEY, { signupEnabled: "yes", providers: ["APPLE", "OKTA", "APPLE"] });
+    await expect(api.getAuthMethods()).resolves.toEqual({ signupEnabled: false, providers: ["APPLE"] });
+  });
+
+  describe("asking for an account", () => {
+    it("refuses in the server's order: binding, sign-up off, the address, the name, the IP budget, the address's minute", async () => {
+      await expect(api.requestSignup({ email: 42 as never, displayName: "R" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Invalid request parameters",
+      });
+      knob(MOCK_AUTH_METHODS_KEY, { signupEnabled: false, providers: [] });
+      // Off comes before the address is looked at.
+      await expect(api.requestSignup({ email: "nope", displayName: "\t" })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: "Signup is disabled",
+        details: { reason: "SIGNUP_DISABLED" },
+      });
+      window.localStorage.clear();
+      await expect(api.requestSignup({ email: "nope", displayName: "\t" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "A valid email address is required (maximum 320 characters)",
+      });
+      await expect(api.requestSignup({ email: "rosa@example.com", displayName: "\t" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        details: { reason: "DISPLAY_NAME_INVALID" },
+      });
+      await expect(
+        api.requestSignup({ email: `rosa${MOCK_AUTH_TRIGGERS.signupIpBudget}@example.com`, displayName: "Rosa" }),
+      ).rejects.toMatchObject({ code: "RESOURCE_EXHAUSTED", details: { retryAfterSeconds: "2400" } });
+
+      await expect(api.requestSignup({ email: " Rosa@Example.com ", displayName: "Rosa" })).resolves.toBeUndefined();
+      const again = await api.requestSignup({ email: "rosa@example.com", displayName: "Rosa" }).catch((error: unknown) => error);
+      expect(again).toMatchObject({ code: "RESOURCE_EXHAUSTED" });
+      expect(Number((again as { details: Record<string, string> }).details.retryAfterSeconds)).toBeGreaterThan(55);
+    });
+
+    it("answers every address alike, and makes a sign-up link only for a new or an invited one", async () => {
+      await api.login({ email: "mark@example.com", password: "x" });
+      const users = async () => (await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 })).rows;
+      const before = (await users()).length;
+
+      for (const email of ["anna@example.com", "nina@example.com", "omar@example.com", "new@example.com"]) {
+        await expect(api.requestSignup({ email, displayName: "Somebody" })).resolves.toBeUndefined();
+      }
+      const after = await users();
+      expect(after).toHaveLength(before + 1);
+      expect(after.find((row) => row.email === "new@example.com")).toMatchObject({ status: "INVITED" });
+      expect(after.find((row) => row.email === "anna@example.com")).toMatchObject({ status: "ACTIVE" });
+    });
+
+    it("previews a sign-up link as SIGNUP, and an invitation as INVITATION", async () => {
+      await expect(api.previewInvitation(MOCK_INVITE_TOKENS.signup)).resolves.toMatchObject({
+        email: "sam@example.com",
+        displayName: "Sam Ortiz",
+        kind: "SIGNUP",
+      });
+      await expect(api.previewInvitation(MOCK_INVITE_TOKENS.leo)).resolves.toMatchObject({ kind: "INVITATION" });
+    });
+  });
+
+  describe("the fake provider", () => {
+    it("lands at the origin root, never under the base, and never throws for odd input", () => {
+      for (const provider of ["GOOGLE", "GITHUB", "APPLE"] as const) {
+        for (const returnTo of ["", "/проекты", "/\uD800x", `/${"x".repeat(2048)}`]) {
+          let url = "";
+          expect(() => {
+            url = api.oauthStartUrl(provider, returnTo);
+          }).not.toThrow();
+          expect(url.startsWith(`${window.location.origin}/auth/callback?`)).toBe(true);
+        }
+      }
+      knob(MOCK_OAUTH_IDENTITY_KEY, "not json at all");
+      window.localStorage.setItem(MOCK_OAUTH_IDENTITY_KEY, "{");
+      expect(() => api.oauthStartUrl("GOOGLE", "/projects")).not.toThrow();
+    });
+
+    it("refuses at the callback with ?error= — the provider's own refusal, a blocked or locked account, no account while sign-up is off", () => {
+      knob(MOCK_OAUTH_IDENTITY_KEY, { error: "PROVIDER_CANCELLED" });
+      expect(landing(api.oauthStartUrl("GOOGLE", "/projects"))).toMatchObject({ path: "/auth/callback", error: "PROVIDER_CANCELLED", code: null });
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "nina@example.com" });
+      expect(landing(api.oauthStartUrl("GOOGLE", "/projects")).error).toBe("ACCOUNT_BLOCKED");
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "omar@example.com" });
+      expect(landing(api.oauthStartUrl("GOOGLE", "/projects")).error).toBe("ACCOUNT_LOCKED");
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "stranger@example.com" });
+      knob(MOCK_AUTH_METHODS_KEY, { signupEnabled: false, providers: ["GOOGLE"] });
+      expect(landing(api.oauthStartUrl("GOOGLE", "/projects")).error).toBe("SIGNUP_DISABLED");
+    });
+
+    it("signs a known account in, once per code, and echoes the returnTo the server would keep", async () => {
+      const first = landing(api.oauthStartUrl("GITHUB", "/projects/p-1/board?q=1"));
+      expect(first.code).toMatch(/^[A-Za-z0-9_-]+$/);
+
+      await expect(api.exchangeOAuthCode(first.code!)).resolves.toEqual({ status: "SIGNED_IN", returnTo: "/projects/p-1/board?q=1" });
+      expect(api.hasSession()).toBe(true);
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ email: "anna@example.com" });
+
+      // The same code again — a second request, or the same address opened again — is a reuse.
+      await expect(api.exchangeOAuthCode(first.code!)).rejects.toMatchObject({
+        code: "UNAUTHENTICATED",
+        details: { reason: "STATE_INVALID" },
+      });
+      // Across a page load too: the claim lives in sessionStorage.
+      await expect(new MockTaskaApi().exchangeOAuthCode(first.code!)).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+      // One page shows one address, render after render; the next page — and
+      // every return from a provider is one — makes another code.
+      expect(landing(api.oauthStartUrl("GITHUB", "/projects/p-1/board?q=1")).code).toBe(first.code);
+      expect(landing(new MockTaskaApi().oauthStartUrl("GITHUB", "/projects/p-1/board?q=1")).code).not.toBe(first.code);
+      // A returnTo the server would not keep comes back as /projects.
+      for (const odd of ["//evil.example", "https://evil.example", "/a\\b", "projects", `/${"x".repeat(1024)}`, "/%25"]) {
+        const { code } = landing(new MockTaskaApi().oauthStartUrl("GOOGLE", odd));
+        await expect(api.exchangeOAuthCode(code!)).resolves.toMatchObject({ returnTo: "/projects" });
+      }
+    });
+
+    it("refuses a code nobody made with the code's 401", async () => {
+      for (const code of ["", "AAAA", "x".repeat(43), "!!!"]) {
+        await expect(api.exchangeOAuthCode(code)).rejects.toMatchObject({
+          code: "UNAUTHENTICATED",
+          details: { reason: "STATE_INVALID" },
+        });
+      }
+    });
+
+    it("answers the budget's 429 without spending the code, and a provider gone since the callback with 503", async () => {
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: `anna${MOCK_AUTH_TRIGGERS.oauthBudget}@example.com` });
+      const { code } = landing(api.oauthStartUrl("GOOGLE", "/projects"));
+      await expect(api.exchangeOAuthCode(code!)).rejects.toMatchObject({
+        code: "RESOURCE_EXHAUSTED",
+        details: { retryAfterSeconds: "900" },
+      });
+      await expect(api.exchangeOAuthCode(code!)).rejects.toMatchObject({ code: "RESOURCE_EXHAUSTED" });
+
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "anna@example.com" });
+      const second = landing(api.oauthStartUrl("APPLE", "/projects")).code!;
+      knob(MOCK_AUTH_METHODS_KEY, { signupEnabled: true, providers: ["GOOGLE"] });
+      await expect(api.exchangeOAuthCode(second)).rejects.toMatchObject({
+        code: "UNAVAILABLE",
+        details: { reason: "PROVIDER_UNAVAILABLE" },
+      });
+      // Spent by that refusal.
+      await expect(api.exchangeOAuthCode(second)).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+    });
+
+    it("activates an invited account, revokes its links, and leaves it with no password", async () => {
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "leo@example.com" });
+      const { code } = landing(api.oauthStartUrl("GOOGLE", "/projects"));
+
+      await expect(api.exchangeOAuthCode(code!)).resolves.toMatchObject({ status: "SIGNED_IN" });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ email: "leo@example.com", status: "ACTIVE" });
+      await expect(api.previewInvitation(MOCK_INVITE_TOKENS.leo)).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+      await api.logout();
+      await expect(api.login({ email: "leo@example.com", password: "Correct-horse-1" })).rejects.toMatchObject({
+        code: "UNAUTHENTICATED",
+        message: "Invalid credentials",
+      });
+    });
+
+    it("opens the name step for a new address, and makes a passwordless account in no project from it", async () => {
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "new@example.com", name: "New Person" });
+      const { code } = landing(api.oauthStartUrl("APPLE", "/projects"));
+
+      const result = await api.exchangeOAuthCode(code!);
+      expect(result).toMatchObject({
+        status: "SIGNUP_REQUIRED",
+        returnTo: "/projects",
+        signup: { provider: "APPLE", email: "new@example.com", suggestedDisplayName: "New Person" },
+      });
+      expect(api.hasSession()).toBe(false);
+      const { signupToken } = (result as Extract<typeof result, { status: "SIGNUP_REQUIRED" }>).signup;
+
+      // The name is checked before the step is spent, and so is the budget.
+      await expect(api.completeOAuthSignup({ signupToken, displayName: "\t" })).rejects.toMatchObject({
+        details: { reason: "DISPLAY_NAME_INVALID" },
+      });
+      await expect(
+        api.completeOAuthSignup({ signupToken, displayName: `New ${MOCK_AUTH_TRIGGERS.oauthSignupBudget}` }),
+      ).rejects.toMatchObject({ code: "RESOURCE_EXHAUSTED" });
+
+      await expect(api.completeOAuthSignup({ signupToken, displayName: "  New Person " })).resolves.toMatchObject({
+        accessToken: expect.any(String),
+      });
+      expect(api.hasSession()).toBe(true);
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ email: "new@example.com", displayName: "New Person" });
+      await expect(api.listProjects()).resolves.toEqual([]);
+      // Single use.
+      await expect(api.completeOAuthSignup({ signupToken, displayName: "Again" })).rejects.toMatchObject({
+        code: "UNAUTHENTICATED",
+        details: { reason: "STATE_INVALID" },
+      });
+      // No password to sign in with.
+      await api.logout();
+      await expect(api.login({ email: "new@example.com", password: "x" })).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+    });
+
+    it("refuses the name step, spent, when sign-up was switched off meanwhile", async () => {
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "new@example.com" });
+      const result = await api.exchangeOAuthCode(landing(api.oauthStartUrl("GOOGLE", "/projects")).code!);
+      const { signupToken } = (result as Extract<typeof result, { status: "SIGNUP_REQUIRED" }>).signup;
+      knob(MOCK_AUTH_METHODS_KEY, { signupEnabled: false, providers: ["GOOGLE"] });
+
+      await expect(api.completeOAuthSignup({ signupToken, displayName: "New" })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        details: { reason: "SIGNUP_DISABLED" },
+      });
+      await expect(api.completeOAuthSignup({ signupToken, displayName: "New" })).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+    });
+  });
+
+  describe("the people directory once sign-up is open", () => {
+    it("refuses a non-admin in no project, before the query is measured, and nobody else", async () => {
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "new@example.com" });
+      const result = await api.exchangeOAuthCode(landing(api.oauthStartUrl("GOOGLE", "/projects")).code!);
+      await api.completeOAuthSignup({
+        signupToken: (result as Extract<typeof result, { status: "SIGNUP_REQUIRED" }>).signup.signupToken,
+        displayName: "New",
+      });
+
+      await expect(api.searchUsers({ query: " ab " })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: "Project membership is required",
+        details: null,
+      });
+      // The gateway's binding still comes first.
+      await expect(api.searchUsers({ query: "ab" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      // With sign-up off there is no such rule.
+      knob(MOCK_AUTH_METHODS_KEY, { signupEnabled: false, providers: [] });
+      await expect(api.searchUsers({ query: "anna" })).resolves.toMatchObject({ hasMore: false });
+
+      // A member is never refused.
+      window.localStorage.removeItem(MOCK_AUTH_METHODS_KEY);
+      await api.login({ email: "anna@example.com", password: "x" });
+      await expect(api.searchUsers({ query: "anna" })).resolves.toMatchObject({ items: [expect.objectContaining({ email: "anna@example.com" })] });
     });
   });
 });

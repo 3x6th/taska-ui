@@ -340,9 +340,11 @@ export function inviteFailure(error: unknown): InviteFailure {
 
 /**
  * The wait a 429 states, from `details.retryAfterSeconds` — a **string** on the
- * wire, and the only source: the gateway sets `Retry-After` as well, but CORS
- * exposes only `X-Request-Id` and `ETag`, so no browser can read it. A whole
- * positive number, or `null`.
+ * wire. The gateway sets `Retry-After` from the same value, and CORS exposes it
+ * (`X-Request-Id, ETag, Retry-After`, probed from https://taska.ozero.dev on
+ * 2026-10-27), but `ApiError` carries no response header beside the request
+ * id, so the details are what this reads. A whole positive number, or `null`.
+ * Shared by the invitation, access-token and sign-up refusals (TAS-426).
  */
 export function retryAfterSeconds(error: unknown): number | null {
   const { details } = apiErrorFacts(error);

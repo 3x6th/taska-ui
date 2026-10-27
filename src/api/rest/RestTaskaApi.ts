@@ -26,9 +26,11 @@ import type {
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
+  OAuthSignupInput,
   RetryableOutboxService,
   SearchIssuesParams,
   SearchUsersParams,
+  SignupInput,
   IssueWriteAnswer,
   TaskaApi,
   UpdateIssueWorklogInput,
@@ -101,6 +103,7 @@ import type {
   AuditEntries,
   AuditEntriesQuery,
   AuditEntry,
+  AuthMethods,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
   AvatarUploadTicket,
@@ -137,6 +140,9 @@ import type {
   NotificationPage,
   NotificationPreferences,
   NotificationPreferencesPatch,
+  OAuthExchangeResult,
+  OAuthProvider,
+  OAuthSignupState,
   OutboxRetryResult,
   Page,
   ProblematicOutboxCounts,
@@ -1064,6 +1070,66 @@ export class RestTaskaApi implements TaskaApi {
         skipAuth: true,
       }),
     );
+  }
+
+  /** `GET /auth/methods`, public: no session sent, so its failure never reads as one dying (§5.1). */
+  async getAuthMethods(): Promise<AuthMethods> {
+    return toAuthMethods(await this.request<unknown>("/auth/methods", { skipAuth: true }));
+  }
+
+  /** `POST /auth/signup` — 202 with no body for every address; see `TaskaApi.requestSignup`. */
+  async requestSignup(input: SignupInput): Promise<void> {
+    await this.request<void>("/auth/signup", {
+      method: "POST",
+      body: { email: input.email, displayName: input.displayName },
+      skipAuth: true,
+    });
+  }
+
+  /**
+   * The provider's start, as an address for the browser to navigate to: never
+   * a request from here, never a throw. `URLSearchParams` encodes `returnTo`
+   * whatever it holds — a lone surrogate becomes U+FFFD rather than the
+   * `URIError` `encodeURIComponent` would raise — and the provider's segment
+   * comes from `OAUTH_PROVIDER_SEGMENTS`, never from changing the case of the
+   * code: an upper-case segment is a 503 even for a configured provider.
+   */
+  oauthStartUrl(provider: OAuthProvider, returnTo: string): string {
+    const query = new URLSearchParams({ returnTo: typeof returnTo === "string" ? returnTo : "" });
+    return `${this.baseUrl}/auth/oauth/${oauthProviderSegment(provider)}/start?${query.toString()}`;
+  }
+
+  /**
+   * `POST /auth/oauth/exchange`. A new session the way `login` takes one: the
+   * version moves before the request, so an answer for an older session cannot
+   * write over it, and the tokens are stored only when the answer is still the
+   * current one. Public (`skipAuth`): its 401 is the code's, never the
+   * session's, and must not start a refresh.
+   */
+  async exchangeOAuthCode(code: string): Promise<OAuthExchangeResult> {
+    const authVersion = ++this.authVersion;
+    const answer = toOAuthExchange(
+      await this.request<unknown>("/auth/oauth/exchange", { method: "POST", body: { code }, skipAuth: true }),
+    );
+    if (answer.status === "SIGNED_IN") {
+      if (authVersion === this.authVersion) this.setTokens(answer.session);
+      return { status: "SIGNED_IN", returnTo: answer.returnTo };
+    }
+    return answer;
+  }
+
+  /** `POST /auth/oauth/signup`: the new account's session, taken as `login` takes one. */
+  async completeOAuthSignup(input: OAuthSignupInput): Promise<AuthTokens> {
+    const authVersion = ++this.authVersion;
+    const answer = await this.request<unknown>("/auth/oauth/signup", {
+      method: "POST",
+      body: { signupToken: input.signupToken, displayName: input.displayName },
+      skipAuth: true,
+    });
+    const tokens = toSessionTokens(answer);
+    if (tokens === null) throw new Error("The sign-up answer carried no session.");
+    if (authVersion === this.authVersion) this.setTokens(tokens);
+    return tokens;
   }
 
   async refresh(refreshToken = this.refreshTokenValue ?? ""): Promise<AuthTokens> {
@@ -3985,6 +4051,110 @@ function boardCounts(total: unknown, more: unknown, drawn: number): { totalCount
  */
 function toActionVia(channel: unknown): ActionVia | null {
   return channel === "MCP" || channel === "API_TOKEN" ? { channel } : null;
+}
+
+/**
+ * The `{provider}` path segment of `/auth/oauth/{provider}/…` — the contract's
+ * lower-case enum — for each provider code `/auth/methods` lists in upper
+ * case. A table, not `toLowerCase()`: the two spellings are two enums of the
+ * contract, and the server answers an upper-case segment with 503
+ * `PROVIDER_UNAVAILABLE` even for a provider it has configured
+ * (`OAuthFlowService`, develop `9fcf0253`).
+ */
+export const OAUTH_PROVIDER_SEGMENTS: Readonly<Record<OAuthProvider, string>> = {
+  GOOGLE: "google",
+  GITHUB: "github",
+  APPLE: "apple",
+};
+
+/** The providers this build knows, in the order the server lists them. */
+const KNOWN_PROVIDERS: readonly OAuthProvider[] = ["GOOGLE", "GITHUB", "APPLE"];
+
+const isOAuthProvider = (value: unknown): value is OAuthProvider =>
+  typeof value === "string" && (KNOWN_PROVIDERS as readonly string[]).includes(value);
+
+/**
+ * The segment for a provider. The type allows only the three; a caller passing
+ * anything else at run time still gets an address rather than a throw —
+ * `oauthStartUrl` is total — and the gateway refuses it as a provider it does
+ * not have.
+ */
+function oauthProviderSegment(provider: OAuthProvider): string {
+  return isOAuthProvider(provider) ? OAUTH_PROVIDER_SEGMENTS[provider] : "unknown";
+}
+
+/**
+ * `AuthMethodsResponseDto` → `AuthMethods` (TAS-173's narrowing): the known
+ * providers only, in the server's order, each once — a code this build has no
+ * segment and no mark for has no button to draw. `signupEnabled` is open only
+ * when the server says `true`; a missing or odd answer reads as closed, which
+ * is the stand's answer and today's screen.
+ */
+export function toAuthMethods(wire: unknown): AuthMethods {
+  const record = typeof wire === "object" && wire !== null ? (wire as Record<string, unknown>) : {};
+  const listed = Array.isArray(record.providers) ? record.providers : [];
+  const providers: OAuthProvider[] = [];
+  for (const item of listed) if (isOAuthProvider(item) && !providers.includes(item)) providers.push(item);
+  return { signupEnabled: record.signupEnabled === true, providers };
+}
+
+/**
+ * `LoginResponseDto` as a session, or `null` when either token is missing or
+ * not a non-empty string. `expiresIn` is the contract's `int64`; nothing in
+ * this build reads it, and a missing one reads as 0.
+ */
+function toSessionTokens(wire: unknown): AuthTokens | null {
+  if (typeof wire !== "object" || wire === null) return null;
+  const { accessToken, refreshToken, expiresIn } = wire as Record<string, unknown>;
+  if (typeof accessToken !== "string" || !accessToken || typeof refreshToken !== "string" || !refreshToken) return null;
+  return { accessToken, refreshToken, expiresIn: typeof expiresIn === "number" ? expiresIn : 0 };
+}
+
+/** What `toOAuthExchange` hands the class: the result, with the session a `SIGNED_IN` brought still on it. */
+type WireOAuthExchange =
+  | { status: "SIGNED_IN"; returnTo: string; session: AuthTokens }
+  | Extract<OAuthExchangeResult, { status: "SIGNUP_REQUIRED" }>;
+
+/**
+ * `OAuthExchangeResponseDto` → the exchange's result. The gateway is built
+ * with `openApiNullable=false` and Jackson's defaults, so a part that does not
+ * apply arrives as `null`; a missing key reads the same.
+ *
+ * **An answer that does not hold what its status promises throws**: `SIGNED_IN`
+ * without both tokens, `SIGNUP_REQUIRED` without the token or the address, any
+ * other status. The code has been spent by then, so a blank screen or a
+ * half-made session would be worse than the refusal the caller draws for it.
+ * `returnTo` is required by the schema and read as `""` when it is not a
+ * string; the caller checks it with `inAppPath` anyway.
+ */
+export function toOAuthExchange(wire: unknown): WireOAuthExchange {
+  if (typeof wire !== "object" || wire === null) throw new Error("The sign-in answer could not be read.");
+  const record = wire as Record<string, unknown>;
+  const returnTo = typeof record.returnTo === "string" ? record.returnTo : "";
+  if (record.status === "SIGNED_IN") {
+    const session = toSessionTokens(record.session);
+    if (session === null) throw new Error("The sign-in answer carried no session.");
+    return { status: "SIGNED_IN", returnTo, session };
+  }
+  if (record.status === "SIGNUP_REQUIRED") {
+    const signup = toOAuthSignupState(record.signup);
+    if (signup === null) throw new Error("The sign-in answer carried no sign-up step.");
+    return { status: "SIGNUP_REQUIRED", returnTo, signup };
+  }
+  throw new Error(`The sign-in answer had an unexpected status: ${String(record.status)}`);
+}
+
+/** `OAuthSignupStateDto`, or `null` without a token and an address — the two the step cannot do without. */
+function toOAuthSignupState(wire: unknown): OAuthSignupState | null {
+  if (typeof wire !== "object" || wire === null) return null;
+  const { signupToken, provider, email, suggestedDisplayName } = wire as Record<string, unknown>;
+  if (typeof signupToken !== "string" || !signupToken || typeof email !== "string" || !email) return null;
+  return {
+    signupToken,
+    provider: typeof provider === "string" ? provider : "",
+    email,
+    suggestedDisplayName: typeof suggestedDisplayName === "string" ? suggestedDisplayName : null,
+  };
 }
 
 /** `InvitationPreviewResponseDto` → `InvitationPreview`: `kind` kept as any string it came as, `""` when it was not one. */

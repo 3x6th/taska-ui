@@ -9,7 +9,9 @@ test("signs in and reaches the project list", async ({ page }) => {
 
   await page.getByLabel("Email").fill("anna@example.com");
   await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
-  await page.locator("form button[type=submit]").click();
+  // By role and name since TAS-426: the tab of the same name is a `tab`, so
+  // "Sign in" names one button — the CSS locator this used to need is gone.
+  await page.getByRole("button", { name: "Sign in" }).click();
 
   await expect(page).toHaveURL(/\/projects$/);
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();

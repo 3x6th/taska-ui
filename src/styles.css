@@ -23,6 +23,15 @@
   --shadow-panel: -12px 0 40px rgba(10, 10, 30, 0.16);
   --scrim: rgba(12, 12, 22, 0.32);
 
+  /* DESIGN.md §2.8 (TAS-426): the sign-in providers' button, and the one place
+     a colour comes from somebody else's guideline rather than our scale (§1) —
+     Google's light button, Apple's black-on-white mark. Only `.provider-button`
+     reads these; nothing else may, even where the bytes match a token of ours. */
+  --provider-bg: #ffffff;
+  --provider-border: #747775;
+  --provider-fg: #1f1f1f;
+  --provider-mono: #000000;
+
   /* DESIGN.md §2.3, declared there and until now never here: the stack was
      pasted verbatim at six call sites, and the seventh copy is what made this
      a token instead. Not theme-dependent, so it is declared once. */
@@ -54,6 +63,11 @@
   --shadow-modal: 0 24px 70px rgba(0, 0, 0, 0.65);
   --shadow-panel: -12px 0 40px rgba(0, 0, 0, 0.6);
   --scrim: rgba(4, 4, 8, 0.55);
+  /* §2.8, dark: Google's dark button, Apple's white mark. */
+  --provider-bg: #131314;
+  --provider-border: #8e918f;
+  --provider-fg: #e3e3e3;
+  --provider-mono: #ffffff;
 }
 
 html,
@@ -1200,6 +1214,211 @@ h1 {
   width: 100%;
   height: 39px;
   font-size: 13.5px;
+}
+
+/* Resend link while the minute runs (§4.31): §4.1's "unavailable" recipe, by
+   hand on an `aria-disabled` button — faded, `not-allowed`. Below the in-flight
+   rule above, which it overrides at the same weight: in flight ("Sending") is
+   never faded. */
+.auth-retry.is-waiting {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+/* A provider's refusal the reader arrives with (§4.31), in the notice slot
+   over the tabs: `ErrorNote`'s box, focusable (`tabIndex=-1`) so focus can
+   bring it, with §7's ring drawn on the box's own arc. */
+.auth-refusal {
+  margin: 0 0 16px;
+  border-radius: 9px;
+}
+
+.auth-refusal > .error-note {
+  margin: 0;
+}
+
+/* The tabpanel holds the form and the provider buttons under it. */
+.auth-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+/* «or» between two 1px rules (§4.31): meta, so `--fg-3`; 13 to the first
+   button — the column's 8 and 5 of its own. */
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 5px;
+  color: var(--fg-3);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+  content: "";
+}
+
+/* A provider's button (§2.8, §4.31): the full width, 39 like the card's
+   primary — no sign-in button is larger, Apple's and Google's requirement —
+   radius 9, the words centred across the whole button and the mark in a
+   column 12 from the left edge. Colours from §2.8 only. The link's own
+   underline and colour are taken off; the ring is §7's. */
+.provider-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 39px;
+  border: 1px solid var(--provider-border);
+  border-radius: 9px;
+  padding: 0 40px;
+  background: var(--provider-bg);
+  color: var(--provider-fg);
+  font-size: 13.5px;
+  font-weight: 550;
+  text-decoration: none;
+  transition: background-color var(--dur-hover) var(--ease);
+}
+
+.provider-button:hover {
+  background: color-mix(in oklab, var(--provider-fg) 6%, var(--provider-bg));
+}
+
+/* In flight once any of them was pressed (§4.1): the cursor says so, nothing
+   fades, and the page is about to go. */
+.provider-button[aria-disabled="true"] {
+  cursor: progress;
+}
+
+.provider-mark {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  width: 18px;
+  height: 18px;
+  transform: translateY(-50%);
+}
+
+.provider-mark-mono {
+  fill: var(--provider-mono);
+}
+
+/* «Check your email» (§4.31): the card's form gap between its parts. */
+.signup-sent {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+/* 14/650 `--fg`, −0.015em: a section title in §2.3's ramp. Focused on arrival
+   (`tabIndex=-1`), so §7's exception 4 for a programmatically focused `h1`. */
+.auth-title {
+  margin: 0;
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.auth-title:focus-visible {
+  outline-offset: 4px;
+}
+
+/* The sentence under it: 13/400 `--fg`, lh 1.55, the address unmarked and free
+   to break anywhere — an address is one long word. Pulled to 6 under the
+   title, a heading's distance rather than the stack's 13. */
+.auth-text {
+  margin: -7px 0 0;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+/* The countdown's figures do not jitter as they tick. */
+.auth-countdown {
+  font-variant-numeric: tabular-nums;
+}
+
+/* «Use a different email», «Back to sign in» (§4.31): §4.1's ghost at 32,
+   centred under the card's other controls. */
+.auth-ghost {
+  align-self: center;
+  height: 32px;
+  border-radius: 8px;
+  padding: 0 11px;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 550;
+}
+
+.auth-ghost:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+/* A `SIGNUP` link's note and the name step's (§4.31): a heading of its own
+   line over §4.27's sentence. The heading's line is the sentence's line
+   height, so the box is the height the invitation's two-line note was and the
+   card does not move when the words swap. */
+.invite-note-title {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: calc(12px * 1.45);
+}
+
+.invite-note p {
+  margin: 0;
+}
+
+/* A sign-up link's hint, over the invitation's hidden one in the same cell:
+   the box is as tall as the taller of the two, so the card keeps the height it
+   had while the preview was out (§4.31) — the swap moves nothing. */
+.auth-hint-stack {
+  display: grid;
+}
+
+.auth-hint-stack > span {
+  grid-area: 1 / 1;
+}
+
+.auth-hint-reserve {
+  visibility: hidden;
+}
+
+/* The exchange in flight (§4.31): one line, centred, and nothing else. */
+.auth-exchanging {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* The name step that expired: the refusal, the provider's button, the way back. */
+.auth-step-expired {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.auth-step-expired > .auth-refusal {
+  margin: 0;
+}
+
+.auth-step-expired > .auth-providers {
+  margin-top: 0;
 }
 
 .icon-button {

@@ -231,6 +231,38 @@ export function isDisplayNameInvalid(error: unknown): boolean {
 }
 
 /**
+ * The `details.reason`s of the sign-up and provider sign-in refusals (backend
+ * TAS-423, TAS-424, develop `9fcf0253`). The same seven strings are what the
+ * gateway's callback puts on `/auth/callback?error=` (`OAuthErrors.REASONS`);
+ * on an answer each is read only beside its code (`hasRefusalReason`):
+ *
+ * - `STATE_INVALID` — 401 `UNAUTHENTICATED`: a code or a sign-up step that is
+ *   unknown, used or expired (on `?error=`: the browser's state cookie);
+ * - `ACCOUNT_BLOCKED`, `ACCOUNT_LOCKED`, `SIGNUP_DISABLED` — 403
+ *   `PERMISSION_DENIED`. A provider's `ACCOUNT_LOCKED` carries no
+ *   `lockedUntil`; `SIGNUP_DISABLED` is also `POST /auth/signup`'s first
+ *   refusal;
+ * - `PROVIDER_UNAVAILABLE` — 503 `UNAVAILABLE`. A 5xx **without** a reason is
+ *   auth-service or its database, not the provider, and is never read as this;
+ * - `PROVIDER_CANCELLED`, `EMAIL_NOT_VERIFIED` — `?error=` only.
+ *
+ * Never `isAccountLocked` for any of them: that predicate is sound on
+ * `POST /auth/login` alone, by exhausting that route's other refusals.
+ */
+export const STATE_INVALID_REASON = "STATE_INVALID";
+export const ACCOUNT_BLOCKED_REASON = "ACCOUNT_BLOCKED";
+export const ACCOUNT_LOCKED_REASON = "ACCOUNT_LOCKED";
+export const SIGNUP_DISABLED_REASON = "SIGNUP_DISABLED";
+export const PROVIDER_UNAVAILABLE_REASON = "PROVIDER_UNAVAILABLE";
+export const PROVIDER_CANCELLED_REASON = "PROVIDER_CANCELLED";
+export const EMAIL_NOT_VERIFIED_REASON = "EMAIL_NOT_VERIFIED";
+
+/** 403 `PERMISSION_DENIED` `SIGNUP_DISABLED` — from `POST /auth/signup`, the exchange or the name step. */
+export function isSignupDisabled(error: unknown): boolean {
+  return hasRefusalReason(error, "PERMISSION_DENIED", SIGNUP_DISABLED_REASON);
+}
+
+/**
  * Whether this failure means "the gateway does not have this route yet" rather
  * than "the thing you asked for is not there".
  *

@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { metaQueryOptions } from "../hooks/useMeta";
+import type { ProviderRefusal } from "../screens/authText";
 
 /** What the login screen is told about the navigation that sent the user there. */
 export interface LoginRedirectState {
@@ -16,6 +17,12 @@ export interface LoginRedirectState {
    * for the email.
    */
   activated?: boolean;
+  /**
+   * A provider sign-in that did not finish (DESIGN.md §4.31): the refusal the
+   * callback met, with its request id, carried to the form that draws it —
+   * read once, then taken out of the history entry like `activated`.
+   */
+  providerRefusal?: ProviderRefusal;
 }
 
 /** Where a signed-in user goes when nothing more specific was requested. */

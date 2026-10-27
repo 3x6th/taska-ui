@@ -1,15 +1,16 @@
 import { useMutation, useQueries, useQueryClient, type UseQueryOptions, type UseQueryResult } from "@tanstack/react-query";
 import { Eye, EyeOff } from "lucide-react";
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts, isAccountLocked, isDisplayNameInvalid } from "../api/errors";
+import { ACCOUNT_LOCKED_REASON, apiErrorFacts, isAccountLocked, isDisplayNameInvalid } from "../api/errors";
 import type { InvitationPreview } from "../domain/types";
 import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
+import { AuthShell } from "../components/AuthShell";
 import { ErrorNote } from "../components/ErrorNote";
-import { TaskaLogo } from "../components/TaskaLogo";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { ProviderChoices } from "../components/ProviderChoices";
+import { useAuthMethods } from "../hooks/useAuthMethods";
 import { formatLockDeadline, lockedUntilOf } from "../lib/accountLock";
 import { displayNameProblem, trimDisplayName } from "../lib/displayName";
 import {
@@ -19,12 +20,29 @@ import {
   inviteTokenFromInput,
   subscribeInviteToken,
 } from "../lib/inviteLink";
+import {
+  NAME_HINT,
+  inAppPath,
+  oauthReturnTo,
+  providerRefusalFromState,
+  providerRefusalText,
+  refusalLockDeadline,
+  type ProviderRefusal,
+} from "./authText";
+import { SignupPanel } from "./SignupPanel";
+import { useSignup } from "./useSignup";
 import type { ScreenProps } from "./App";
 
-type AuthMode = "signin" | "invite";
+/**
+ * The card's tabs: Sign in, Accept invite — the invite form, which a `SIGNUP`
+ * link labels «Create account» — and Create account, the sign-up form (§4.31).
+ * Never more than two at once.
+ */
+type AuthMode = "signin" | "invite" | "signup";
 
 interface LoginScreenProps extends ScreenProps {
-  initialMode: AuthMode;
+  /** Which route the card is on: `/login` starts on Sign in, `/invite` on Accept invite. */
+  initialMode: "signin" | "invite";
 }
 
 /**
@@ -44,11 +62,24 @@ const PASSWORD_HINT = "At least 8 characters, with an uppercase letter, a digit 
 const INVITE_LINK_DEAD =
   "This invitation link no longer works — it expired, was used, or was replaced by a newer one. If you already set a password, sign in; otherwise ask the person who invited you to send a new invitation.";
 
+/** The same 401 for a link of kind `SIGNUP` (§4.31): its way out is to sign up again, not to ask anybody. */
+const SIGNUP_LINK_DEAD =
+  "This sign-up link no longer works — it expired, was used, or was replaced by a newer one. If you already set a password, sign in; otherwise create your account again.";
+
+/**
+ * The same 401 for a link whose kind nobody knows — the preview refused it —
+ * while sign-up is open, so it may be either (§4.31). With sign-up off every
+ * link is an invitation, and §4.27's sentence stands.
+ */
+const ANY_LINK_DEAD =
+  "This link no longer works — it expired, was used, or was replaced by a newer one. If you already set a password, sign in; otherwise ask for a new invitation or create your account again.";
+
 /** The invite tab's note, with a link caught and without one (§4.27, TAS-425). */
 const INVITE_NOTE = "Confirm your name and choose a password to activate your Taska account.";
 
-/** Under Name, while the name has no reason to refuse it (§4.27). */
-const NAME_HINT = "Shown to the people you work with. You can change it later in Settings.";
+/** Under the invite form's button (§4.27), and for a `SIGNUP` link (§4.31). */
+const INVITE_LINK_HINT = "Link expired? Ask the person who invited you to send a new one.";
+const SIGNUP_LINK_HINT = "Link expired? Create your account again to get a new one.";
 
 /**
  * The preview's answers, by token (TAS-425). The token is in the key, so this
@@ -60,7 +91,7 @@ const NAME_HINT = "Shown to the people you work with. You can change it later in
 const INVITATION_PREVIEW_KEY = "invitation-preview";
 
 /**
- * The login card, both tabs (DESIGN.md §4.27, TAS-208).
+ * The login card, all its tabs (DESIGN.md §4.27, §4.31; TAS-208, TAS-426).
  *
  * Accepting an invitation **opens no session**: `POST /auth/invitations/accept`
  * answers 204 with no tokens, and since backend #204 the contract says the
@@ -80,6 +111,13 @@ const INVITATION_PREVIEW_KEY = "invitation-preview";
  * fills Email, read-only, so a password manager files the new password under
  * the right account, and Name, which the reader may change and which is sent
  * with the password. A link the preview refuses never shows the form at all.
+ *
+ * Since TAS-426 the card reads `GET /auth/methods` on every mount: with sign-up
+ * open, `/login`'s second tab is Create account rather than Accept invite, and
+ * the provider buttons stand under Sign in and Create account. With sign-up off
+ * and no providers — the stand today — the card is the one it was, but for the
+ * tabs' roles. A provider sign-in that did not finish comes back here with its
+ * refusal in router state, drawn above the tabs.
  */
 export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProps) {
   const navigate = useNavigate();
@@ -87,8 +125,18 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const queryClient = useQueryClient();
   const redirect = (location.state ?? null) as LoginRedirectState | null;
   const from = inAppPath(redirect?.from);
+  const methods = useAuthMethods();
+  const signup = useSignup();
   const capturedToken = useSyncExternalStore(subscribeInviteToken, heldInviteToken);
-  const [mode, setMode] = useState<AuthMode>(initialMode);
+  // The refusal a provider sign-in came back with (§4.31): read once from the
+  // router state it travelled in, then this screen's own, and gone with the
+  // next submit, provider press or tab change.
+  const [providerRefusal, setProviderRefusal] = useState<ProviderRefusal | null>(() =>
+    providerRefusalFromState(redirect?.providerRefusal),
+  );
+  const [mode, setMode] = useState<AuthMode>(() =>
+    providerRefusalFromState(redirect?.providerRefusal)?.tab === "signup" ? "signup" : initialMode,
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [typedToken, setTypedToken] = useState("");
@@ -109,11 +157,15 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // not a re-read that might race the sign-out.
   const [signedInElsewhere, setSignedInElsewhere] = useState(() => taskaApi.hasSession());
   const [activated, setActivated] = useState(Boolean(redirect?.activated));
+  /** Bumped when the methods' answer takes the open tab away, so focus can follow it to Sign in (§4.31). */
+  const [tabTaken, setTabTaken] = useState(0);
   const noticeRef = useRef<HTMLParagraphElement>(null);
+  const refusalRef = useRef<HTMLDivElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
   const newPasswordRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const previewRefusalRef = useRef<HTMLDivElement>(null);
+  const signinTabRef = useRef<HTMLButtonElement>(null);
   const noticeId = useId();
   const tokenHintId = useId();
   const passwordHintId = useId();
@@ -123,6 +175,24 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const inviteEmailId = useId();
   const nameId = useId();
   const nameHintId = useId();
+  const tabsId = useId();
+  const panelId = `${tabsId}-panel`;
+  const tabId = (tab: AuthMode) => `${tabsId}-${tab}`;
+
+  // Which tabs, by route and by the server's methods (§4.31): never three.
+  // `/invite` keeps Accept invite whatever the methods say, so a link opened in
+  // a clean browser does not jump; `/login` trades it for Create account while
+  // sign-up is open — an invitation then arrives only as a link.
+  const tabs: readonly AuthMode[] =
+    initialMode !== "invite" && methods.signupEnabled ? ["signin", "signup"] : ["signin", "invite"];
+  // The answer took the open tab away: Sign in is open instead, what was typed
+  // stays in memory, and focus that was in the panel goes to the Sign in tab.
+  // Adjusted during render, which commits once.
+  if (!tabs.includes(mode)) {
+    setMode("signin");
+    setTabTaken((count) => count + 1);
+  }
+  const active: AuthMode = tabs.includes(mode) ? mode : "signin";
 
   // A link that arrives while the card is already up — a hash change on the
   // Pages build, handed over by `App` — lands on the tab it is for. Adjusted
@@ -169,6 +239,12 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const previewRefused = capturedToken !== null && previewError !== null;
   const nameValue = nameDraft ?? previewed?.displayName ?? "";
   const nameProblem = previewed ? displayNameProblem(nameValue) : null;
+  // A sign-up link's words (§4.31), swapped in place in the same commit that
+  // fills Email and Name; any other kind — an unknown one too — keeps the
+  // invitation's.
+  const signupLink = previewed?.kind === "SIGNUP";
+  // The dead-link sentence for a link whose kind is not known.
+  const unknownLinkDead = methods.signupEnabled ? ANY_LINK_DEAD : INVITE_LINK_DEAD;
 
   // A typed token is previewed on Continue (§4.27), and the answer makes it a
   // caught one: the field goes, the caught layout is drawn — from the answer
@@ -188,28 +264,34 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // is one more thing to read on a screen that already asks for two. And the
   // explanation only belongs over the sign-in form: "Your session expired. Sign
   // in to continue." above a form headed "Activate account" describes neither.
-  const expiredNotice = mode === "signin" && redirect?.expired ? "Your session expired. Sign in to continue." : null;
-  const activatedNotice = mode === "signin" && activated ? "Password set. Sign in with your email and new password." : null;
+  const expiredNotice = active === "signin" && redirect?.expired ? "Your session expired. Sign in to continue." : null;
+  const activatedNotice = active === "signin" && activated ? "Password set. Sign in with your email and new password." : null;
   // It is about activating, and there is nothing to activate once the preview
   // has refused the link (§4.27): it goes with the form.
   const foreignSessionNotice =
-    mode === "invite" && signedInElsewhere && !previewRefused
+    active === "invite" && signedInElsewhere && !previewRefused
       ? "You’re signed in on this browser. Activating this invitation signs you out first."
       : null;
+  // A cancelled sign-in says nothing (§4.31): the screen is as it was.
+  const refusalShown = providerRefusal !== null && providerRefusalText(providerRefusal) !== null ? providerRefusal : null;
 
   // Where the reader starts, decided from what brought them here: on mount,
   // and again on an arrival that did not remount this screen — `/invite` to
   // `/login` after an activation is one, wherever the two routes render the
   // same component in the same place. A fresh object per request, so asking
   // for the same field twice still moves focus.
-  const [focusRequest, setFocusRequest] = useState<{ target: "notice" | "email" | "newPassword" } | null>(() => {
-    const target = expiredNotice
-      ? "notice"
-      : activatedNotice
-        ? "email"
-        : initialMode === "invite" && heldInviteToken()
-          ? "newPassword"
-          : null;
+  const [focusRequest, setFocusRequest] = useState<{
+    target: "notice" | "refusal" | "email" | "newPassword";
+  } | null>(() => {
+    const target = refusalShown
+      ? "refusal"
+      : expiredNotice
+        ? "notice"
+        : activatedNotice
+          ? "email"
+          : initialMode === "invite" && heldInviteToken()
+            ? "newPassword"
+            : null;
     return target ? { target } : null;
   });
   const [arrival, setArrival] = useState(location.key);
@@ -221,15 +303,31 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
       setNewPassword("");
       setFocusRequest({ target: "email" });
     }
+    const arrived = providerRefusalFromState(redirect?.providerRefusal);
+    if (arrived) {
+      setProviderRefusal(arrived);
+      setMode(arrived.tab === "signup" ? "signup" : "signin");
+      if (providerRefusalText(arrived) !== null) setFocusRequest({ target: "refusal" });
+    }
   }
+
+  // Before the arrival's own focus below, which wins when both apply.
+  useEffect(() => {
+    if (tabTaken === 0) return;
+    const focused = document.activeElement;
+    if (focused === null || focused === document.body) signinTabRef.current?.focus();
+  }, [tabTaken]);
+
   useEffect(() => {
     // The expiry redirect happened without the user asking, and focus would
     // otherwise stay on <body> with nothing announced (§7). A live region
     // would not help: that node mounts with its text already in it, so there
     // is no change to announce — moving focus is what reads the sentence out.
-    // After an activation the sentence is tied to Email instead, and focus
-    // there reads both (§4.27). A captured link needs only the password.
+    // A provider's refusal is the same kind of arrival (§4.31). After an
+    // activation the sentence is tied to Email instead, and focus there reads
+    // both (§4.27). A captured link needs only the password.
     if (focusRequest?.target === "notice") noticeRef.current?.focus();
+    else if (focusRequest?.target === "refusal") refusalRef.current?.focus();
     else if (focusRequest?.target === "email") emailRef.current?.focus();
     else if (focusRequest?.target === "newPassword") newPasswordRef.current?.focus();
   }, [focusRequest]);
@@ -237,36 +335,60 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // A preview that refused the link takes the form away, and focus with it if
   // it was there — New password, where a caught link starts. It goes to the
   // refusal rather than to <body>, as the expired session's notice takes it
-  // (§4.27); focus anywhere else is left where the reader put it.
+  // (§4.27); focus anywhere else is left where the reader put it. Again after
+  // each Try again that ends refused (TAS-426): a dead link or a rejected
+  // request takes Try again away too, with the focus it had.
   useEffect(() => {
     if (!previewRefused) return;
     const active = document.activeElement;
     if (active === null || active === document.body) previewRefusalRef.current?.focus();
-  }, [previewRefused]);
+  }, [previewRefused, retryRefusals]);
 
   // Read once, then taken out of the history entry: router state outlives a
-  // reload, and a reload of `/login` would otherwise say "Password set" again
-  // and take focus to Email a second time, for an activation long past. The
-  // notice itself is this screen's state from here on, and goes the way §4.27
-  // says it goes.
-  const activatedArrival = Boolean(redirect?.activated);
+  // reload, and a reload of `/login` would otherwise say "Password set" — or
+  // the provider's refusal — again, and take focus a second time, for an
+  // arrival long past. The notice itself is this screen's state from here on,
+  // and goes the way §4.27 and §4.31 say it goes.
+  const stateToDrop = Boolean(redirect?.activated || redirect?.providerRefusal);
   useEffect(() => {
-    if (activatedArrival) navigate(location.pathname, { replace: true, state: null });
-  }, [activatedArrival, location.pathname, navigate]);
+    if (stateToDrop) navigate(location.pathname, { replace: true, state: null });
+  }, [stateToDrop, location.pathname, navigate]);
 
   const switchTo = (next: AuthMode) => {
     setMode(next);
     setActivated(false);
+    setProviderRefusal(null);
     // A shown password does not follow the reader to the other tab (§4.27).
     setShowPassword(false);
     setShowNewPassword(false);
     submit.reset();
     continueWith.reset();
+    signup.dropRefusals();
+  };
+
+  // Roving tabindex (§4.27 «Табы»): only the open tab is in the Tab order, and
+  // the arrows, Home and End move focus and the choice together.
+  const onTabsKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const at = tabs.indexOf(active);
+    const next =
+      event.key === "ArrowRight"
+        ? tabs[(at + 1) % tabs.length]
+        : event.key === "ArrowLeft"
+          ? tabs[(at - 1 + tabs.length) % tabs.length]
+          : event.key === "Home"
+            ? tabs[0]
+            : event.key === "End"
+              ? tabs[tabs.length - 1]
+              : null;
+    if (next === null) return;
+    event.preventDefault();
+    if (next !== active) switchTo(next);
+    document.getElementById(tabId(next))?.focus();
   };
 
   const submit = useMutation({
     mutationFn: async (): Promise<"signedIn" | "activated"> => {
-      if (mode === "signin") {
+      if (active === "signin") {
         await taskaApi.login({ email, password });
         queryClient.setQueryData(["me"], await taskaApi.getCurrentUser());
         return "signedIn";
@@ -293,7 +415,10 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
       });
       return "activated";
     },
-    onMutate: () => setActivated(false),
+    onMutate: () => {
+      setActivated(false);
+      setProviderRefusal(null);
+    },
     onSuccess: async (outcome) => {
       if (outcome === "activated") {
         // The link is spent, and nobody is signed in: the sign-in form, with
@@ -311,9 +436,13 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     },
   });
 
-  const passwordRefused = mode === "invite" && submit.isError && isPasswordRefusal(submit.error);
-  const nameRefused = mode === "invite" && submit.isError && isDisplayNameInvalid(submit.error);
+  const passwordRefused = active === "invite" && submit.isError && isPasswordRefusal(submit.error);
+  const nameRefused = active === "invite" && submit.isError && isDisplayNameInvalid(submit.error);
   const notice = expiredNotice ?? activatedNotice ?? foreignSessionNotice;
+  // Where a provider flow comes back to (guard §4): the path the guard
+  // remembered, or `/projects` — said explicitly.
+  const returnTo = oauthReturnTo(redirect?.from);
+  const onProviderStart = () => setProviderRefusal(null);
 
   /**
    * Enter or a press on the invite tab's one button. Without a caught link that
@@ -336,50 +465,65 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     submit.mutate();
   };
 
-  return (
-    <main className="auth-screen">
-      <div className="auth-glow" />
-      <div className="auth-card-wrap">
-        <TaskaLogo />
-        <section className="auth-card">
-          {notice ? (
-            <p
-              className="auth-notice"
-              id={noticeId}
-              ref={noticeRef}
-              // Focusable only as the expiry's own announcement; the other two
-              // are read through the control they describe, or simply read.
-              tabIndex={expiredNotice ? -1 : undefined}
-            >
-              {notice}
-            </p>
-          ) : null}
-          {/* `aria-pressed`, as on the link-type control: which segment is the
-              current one is otherwise said only by its fill (§7, TAS-299). */}
-          <div className="segmented">
-            <button
-              aria-pressed={mode === "signin"}
-              className={mode === "signin" ? "is-active" : ""}
-              onClick={() => switchTo("signin")}
-              type="button"
-            >
-              Sign in
-            </button>
-            <button
-              aria-pressed={mode === "invite"}
-              className={mode === "invite" ? "is-active" : ""}
-              onClick={() => switchTo("invite")}
-              type="button"
-            >
-              Accept invite
-            </button>
-          </div>
+  const tabLabel = (tab: AuthMode) =>
+    tab === "signin" ? "Sign in" : tab === "signup" || signupLink ? "Create account" : "Accept invite";
 
+  return (
+    <AuthShell theme={theme} toggleTheme={toggleTheme}>
+      {refusalShown ? (
+        // A refusal the reader arrives with (§4.31): a state on arrival, so
+        // focus brings it to them and it is not a live region.
+        <div className="auth-refusal" ref={refusalRef} tabIndex={-1}>
+          <ProviderRefusalNote refusal={refusalShown} />
+        </div>
+      ) : notice ? (
+        <p
+          className="auth-notice"
+          id={noticeId}
+          ref={noticeRef}
+          // Focusable only as the expiry's own announcement; the other two
+          // are read through the control they describe, or simply read.
+          tabIndex={expiredNotice ? -1 : undefined}
+        >
+          {notice}
+        </p>
+      ) : null}
+      {/* Tabs (§4.27 «Табы», TAS-426): a tab and a button with the same words
+          — «Sign in», «Create account» — are told apart by their role. The
+          look is §4.2's, `is-active` included. */}
+      <div className="segmented" onKeyDown={onTabsKeyDown} role="tablist">
+        {tabs.map((tab) => (
+          <button
+            aria-controls={panelId}
+            aria-selected={active === tab}
+            className={active === tab ? "is-active" : ""}
+            id={tabId(tab)}
+            key={tab}
+            onClick={() => switchTo(tab)}
+            ref={tab === "signin" ? signinTabRef : undefined}
+            role="tab"
+            tabIndex={active === tab ? 0 : -1}
+            type="button"
+          >
+            {tabLabel(tab)}
+          </button>
+        ))}
+      </div>
+
+      <div aria-labelledby={tabId(active)} id={panelId} role="tabpanel">
+        {active === "signup" ? (
+          <SignupPanel
+            onProviderStart={onProviderStart}
+            providers={methods.providers}
+            returnTo={returnTo}
+            signup={signup}
+          />
+        ) : (
           <form
             className="form-stack"
             onSubmit={(event) => {
               event.preventDefault();
-              if (mode === "invite") {
+              if (active === "invite") {
                 submitInvite();
                 return;
               }
@@ -389,7 +533,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
               submit.mutate();
             }}
           >
-            {mode === "signin" ? (
+            {active === "signin" ? (
               <>
                 <label className="field">
                   <span>Email</span>
@@ -436,7 +580,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                 <button aria-disabled={submit.isPending || undefined} className="primary-button auth-submit" type="submit">
                   {submit.isPending ? "Signing in" : "Sign in"}
                 </button>
-                {submit.isError ? <LoginFailure error={submit.error} mode={mode} /> : null}
+                {submit.isError ? <LoginFailure error={submit.error} key={submit.submittedAt} /> : null}
                 <p className="auth-hint">Forgot your password? Taska has no password reset yet.</p>
               </>
             ) : capturedToken === null ? (
@@ -468,9 +612,11 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                 >
                   {continueWith.isPending ? "Checking" : "Continue"}
                 </button>
-                {continueWith.isError ? <PreviewFailureNote error={continueWith.error} live /> : null}
+                {continueWith.isError ? (
+                  <PreviewFailureNote deadSentence={unknownLinkDead} error={continueWith.error} live />
+                ) : null}
                 {continueWith.isError && previewFailure(continueWith.error) === "dead" ? null : (
-                  <p className="auth-hint">Link expired? Ask the person who invited you to send a new one.</p>
+                  <p className="auth-hint">{INVITE_LINK_HINT}</p>
                 )}
               </>
             ) : previewRefused ? (
@@ -480,7 +626,12 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
               // not an answer to anything done, so not announced — focus
               // brings it to a reader who was in the form (§4.27).
               <div className="invite-preview-refusal" ref={previewRefusalRef} tabIndex={-1}>
-                <PreviewFailureNote error={previewError} key={retryRefusals} live={retryRefusals > 0} />
+                <PreviewFailureNote
+                  deadSentence={unknownLinkDead}
+                  error={previewError}
+                  key={retryRefusals}
+                  live={retryRefusals > 0}
+                />
                 {previewFailure(previewError) === "unavailable" ? (
                   <button
                     aria-disabled={retrying ? true : undefined}
@@ -502,7 +653,16 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
               </div>
             ) : (
               <>
-                <p className="invite-note">{INVITE_NOTE}</p>
+                {signupLink ? (
+                  // The same box, its words swapped in place (§4.31): a
+                  // heading of its own line and one sentence under it.
+                  <div className="invite-note">
+                    <h1 className="invite-note-title">Finish creating your account</h1>
+                    <p>Confirm your name and choose a password.</p>
+                  </div>
+                ) : (
+                  <p className="invite-note">{INVITE_NOTE}</p>
+                )}
                 {/* Read-only, and an input rather than text: a password manager
                     files the new password under this address (§4.27). In the
                     tab order, with §7's ring and no accent frame. */}
@@ -579,25 +739,44 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                   className="primary-button auth-submit"
                   type="submit"
                 >
-                  {submit.isPending ? "Activating" : "Activate account"}
+                  {signupLink
+                    ? submit.isPending
+                      ? "Creating account"
+                      : "Create account"
+                    : submit.isPending
+                      ? "Activating"
+                      : "Activate account"}
                 </button>
-                {submit.isError ? <InviteFailure error={submit.error} /> : null}
-                {/* Not under the dead-link alert, which already says to ask
-                    for a new invitation — twice in a row would be the same
-                    advice in two voices. */}
-                {submit.isError && isDeadLink(submit.error) ? null : (
-                  <p className="auth-hint">Link expired? Ask the person who invited you to send a new one.</p>
+                {submit.isError ? (
+                  <InviteFailure deadSentence={signupLink ? SIGNUP_LINK_DEAD : INVITE_LINK_DEAD} error={submit.error} />
+                ) : null}
+                {/* Not under the dead-link alert, which already says what to
+                    do next — twice in a row would be the same advice in two
+                    voices. */}
+                {submit.isError && isDeadLink(submit.error) ? null : signupLink ? (
+                  // The sign-up hint is shorter than the invitation's, which
+                  // the form showed while the preview was out: at 390 one line
+                  // against two, and the card would move by it (§4.31). The
+                  // invitation's words stay under it, unseen and unread, to
+                  // hold the height — at every width, not one.
+                  <p className="auth-hint auth-hint-stack">
+                    <span>{SIGNUP_LINK_HINT}</span>
+                    <span aria-hidden="true" className="auth-hint-reserve">
+                      {INVITE_LINK_HINT}
+                    </span>
+                  </p>
+                ) : (
+                  <p className="auth-hint">{INVITE_LINK_HINT}</p>
                 )}
               </>
             )}
           </form>
-        </section>
-        <div className="auth-footnote">Taska — issue tracking, minus the clutter.</div>
+        )}
+        {active === "signin" ? (
+          <ProviderChoices onStart={onProviderStart} providers={methods.providers} returnTo={returnTo} tab="signin" />
+        ) : null}
       </div>
-      <div className="auth-theme">
-        <ThemeToggle theme={theme} onToggle={toggleTheme} />
-      </div>
-    </main>
+    </AuthShell>
   );
 }
 
@@ -628,16 +807,17 @@ function isPasswordRefusal(error: unknown): boolean {
 }
 
 /**
- * What a refused activation says (§4.27): the 401 in this screen's own words,
- * every other refusal in the server's, and the request id under either. An
- * alert, because the reader is looking at a button that just stopped saying
- * "Activating" and the answer is not where focus is.
+ * What a refused activation says (§4.27): the 401 in this screen's own words —
+ * an invitation's or, for a `SIGNUP` link, a sign-up's (§4.31) — every other
+ * refusal in the server's, and the request id under either. An alert, because
+ * the reader is looking at a button that just stopped saying "Activating" and
+ * the answer is not where focus is.
  */
-function InviteFailure({ error }: { error: unknown }) {
+function InviteFailure({ error, deadSentence }: { error: unknown; deadSentence: string }) {
   const { message, requestId } = apiErrorFacts(error);
   return (
     <ErrorNote live="alert" requestId={requestId}>
-      {isDeadLink(error) ? INVITE_LINK_DEAD : (message ?? "The invitation could not be activated.")}
+      {isDeadLink(error) ? deadSentence : (message ?? "The invitation could not be activated.")}
     </ErrorNote>
   );
 }
@@ -676,12 +856,14 @@ function previewFailure(error: unknown): "dead" | "rejected" | "unavailable" {
 
 /**
  * What a refused preview says (§4.27): the dead link in the same words as a
- * refused activation, a rejected request in the server's own, and anything
- * else as a link that could not be checked, with the server's words beside
- * it. The request id under each. `live` for an answer to a press — Continue's,
- * and Try again's — and not for the refusal found on arrival.
+ * refused activation — or, since a refused preview tells nobody the link's
+ * kind, in words for either kind while sign-up is open (§4.31) — a rejected
+ * request in the server's own, and anything else as a link that could not be
+ * checked, with the server's words beside it. The request id under each.
+ * `live` for an answer to a press — Continue's, and Try again's — and not for
+ * the refusal found on arrival.
  */
-function PreviewFailureNote({ error, live = false }: { error: unknown; live?: boolean }) {
+function PreviewFailureNote({ error, deadSentence, live = false }: { error: unknown; deadSentence: string; live?: boolean }) {
   const { message, requestId, status, code } = apiErrorFacts(error);
   // Words only from something that answered: a request that never reached the
   // server has the browser's ("Failed to fetch"), and those are not the server's.
@@ -691,7 +873,7 @@ function PreviewFailureNote({ error, live = false }: { error: unknown; live?: bo
   if (failure === "dead") {
     return (
       <ErrorNote live={role} requestId={requestId}>
-        {INVITE_LINK_DEAD}
+        {deadSentence}
       </ErrorNote>
     );
   }
@@ -705,6 +887,31 @@ function PreviewFailureNote({ error, live = false }: { error: unknown; live?: bo
   return (
     <ErrorNote live={role} requestId={requestId} serverWords={serverWords}>
       This invitation could not be checked.
+    </ErrorNote>
+  );
+}
+
+/**
+ * A provider sign-in's refusal, as the reader arrives with it (§4.31's table).
+ * Not a live region — focus brings it. The locked account is `.auth-lock`'s two
+ * lines; a provider's lock carries no deadline (TAS-444), so the first line
+ * says none rather than make one up.
+ */
+function ProviderRefusalNote({ refusal }: { refusal: ProviderRefusal }) {
+  if (refusal.reason === ACCOUNT_LOCKED_REASON) {
+    const until = refusalLockDeadline(refusal);
+    return (
+      <ErrorNote requestId={refusal.requestId}>
+        <span className="auth-lock">
+          {until ? <LockDeadline until={until} /> : <span>Account is locked after too many failed sign-ins.</span>}
+          <span>Try again later.</span>
+        </span>
+      </ErrorNote>
+    );
+  }
+  return (
+    <ErrorNote requestId={refusal.requestId} serverWords={refusal.message}>
+      {providerRefusalText(refusal)}
     </ErrorNote>
   );
 }
@@ -726,17 +933,21 @@ function PreviewFailureNote({ error, live = false }: { error: unknown; live?: bo
  * is locked" would throw away information the server did send, and would make a
  * parser that quietly stopped matching indistinguishable from one that works.
  * Unreadable and traceable beats prettier and wrong.
+ *
+ * An alert since TAS-426 (§4.27): it answers the press of Sign in, and the
+ * caller mounts it afresh for every attempt, so the same refusal twice is said
+ * twice.
  */
-function LoginFailure({ error, mode }: { error: unknown; mode: AuthMode }) {
+function LoginFailure({ error }: { error: unknown }) {
   const { message, requestId } = apiErrorFacts(error);
-  // `mode === "signin"` because this slot answers for more than sign-in, and
-  // the argument behind `isAccountLocked` covers one route only. It is sound
-  // on `POST /auth/login` by exhausting that method's other refusals
-  // (src/api/errors.ts); the invite tab submits `POST /auth/invitations/accept`,
-  // which the argument says nothing about, so the conjunct takes the branch
-  // away from the tab it was never made for.
+  // Only the Sign in tab draws this slot, and the argument behind
+  // `isAccountLocked` covers that one route only — `POST /auth/login`, sound by
+  // exhausting that method's other refusals (src/api/errors.ts). The invite
+  // tab's `POST /auth/invitations/accept` and every provider route have
+  // refusals of their own (`InviteFailure`, `ProviderRefusalNote`), keyed on
+  // their own pairs, and never come here.
   //
-  // What the conjunct does not reach is the `getCurrentUser()` that follows a
+  // What the argument does not reach is the `getCurrentUser()` that follows a
   // successful login in the same mutation: `validateAccessToken` runs
   // `validateUserStatus` for every authenticated call, and that raises
   // `PERMISSION_DENIED "User is blocked"` (AuthServiceImpl.java:205-213, read
@@ -751,14 +962,14 @@ function LoginFailure({ error, mode }: { error: unknown; mode: AuthMode }) {
   // instead of going on promising a moment that has gone. No timer wakes it —
   // the reader retrying is what re-renders this, and that is the moment it
   // matters.
-  const lockedUntil = mode === "signin" && isAccountLocked(error) ? lockedUntilOf(error) : null;
+  const lockedUntil = isAccountLocked(error) ? lockedUntilOf(error) : null;
 
   // The request id is owed on both branches and was missing from this screen
   // until TAS-237: a refusal here is as likely to need looking up in the
   // gateway log as one from any dialog, and `EditProjectModal` has paired the
   // id with the sentence since §5.6 asked for it. Mock mode never carries one.
   return (
-    <ErrorNote requestId={requestId}>
+    <ErrorNote live="alert" requestId={requestId}>
       {lockedUntil ? (
         // Two lines, the second centred under the first, per the story. The
         // centring is `.auth-lock`'s own — `ErrorNote` is shared with the issue
@@ -794,20 +1005,4 @@ function LockDeadline({ until }: { until: Date }) {
       </time>
     </span>
   );
-}
-
-/**
- * The redirect target comes from our own router state, but an unchecked one is
- * not a habit worth forming: only a path on this origin is accepted. Comparing
- * resolved origins rather than pattern-matching the string catches the
- * protocol-relative forms — "//host" and "/\host", which browsers normalise to
- * the same thing — without a list of prefixes to keep complete.
- */
-function inAppPath(value: unknown): string | undefined {
-  if (typeof value !== "string" || !value.startsWith("/")) return undefined;
-  try {
-    return new URL(value, window.location.origin).origin === window.location.origin ? value : undefined;
-  } catch {
-    return undefined;
-  }
 }

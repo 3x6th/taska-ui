@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, HashRouter } from "react-router-dom";
 import { ROUTER_MODE } from "./lib/appLinks";
 import { captureInviteLink } from "./lib/inviteLink";
+import { captureOAuthCallback } from "./lib/oauthCallback";
 import { createQueryClient } from "./lib/queryClient";
 import { App } from "./screens/App";
 import "./styles.css";
@@ -15,6 +16,12 @@ const queryClient = createQueryClient();
 // One value for the router and for the links the app hands out (`appUrl`), so
 // a copied link is always in the scheme this build routes by.
 const Router = ROUTER_MODE === "hash" ? HashRouter : BrowserRouter;
+
+// Before the router reads the address and before any request (TAS-426, DESIGN.md
+// §4.31): a provider sign-in comes back to `/auth/callback` at the origin root
+// with a one-time code, which is taken out here, held in memory, and the
+// address becomes the app's own callback route. Only on that path.
+captureOAuthCallback(window, import.meta.env.BASE_URL, ROUTER_MODE);
 
 // Before the router reads the address (TAS-208, DESIGN.md §4.27): the invitation
 // email's `?token=` is a query the hash build's router never sees, so it is
