@@ -312,9 +312,16 @@ test("renames an account from its row: the row takes the server's name, says so,
   await expect(field).toHaveValue("Sofia Reyes");
 
   // A reason against the name holds Rename, dimmed.
-  await field.fill("   ");
-  await expect(dialog.getByText("Enter a name.")).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Rename" })).toHaveAttribute("aria-disabled", "true");
+  for (const value of ["   ", String.fromCodePoint(0x200b, 0xfeff)]) {
+    await field.fill(value);
+    await expect(field).toHaveAccessibleDescription("Enter a name.");
+    const rename = dialog.getByRole("button", { name: "Rename" });
+    await expect(rename).toHaveAttribute("aria-disabled", "true");
+    await rename.click({ force: true });
+    await field.press("Enter");
+    await expect(dialog).toBeVisible();
+    await expect(row.getByText("Sofia Reyes", { exact: true })).toBeVisible();
+  }
 
   await field.fill("  Sofia Reyes-Park  ");
   await field.press("Enter");

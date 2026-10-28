@@ -2039,6 +2039,25 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** [TAS-444](https://jira.ozero.dev/browse/TAS-444) (A4: `details.reason`
   `PROJECT_MEMBERSHIP_REQUIRED`, and the rule in the yml).
 
+### TAS-458: shared display-name FORMAT-only acceptance aligned with backend TAS-443
+
+- **Endpoints:** `PATCH /api/v1/users/me`, `PATCH /api/v1/admin/users/{userId}`,
+  `POST /api/v1/auth/invitations/accept`, `POST /api/v1/auth/signup`,
+  `POST /api/v1/auth/oauth/signup`.
+- **Intended/source truth:** contract and common-lib `DisplayNames.normalize` at backend
+  `d886b031` require 1–128 code points after server-space trimming and at least one code point
+  outside server-space and Unicode FORMAT (`Cf`). Raw controls, U+2028/U+2029 and unpaired
+  surrogates remain invalid. Accepted FORMAT characters are preserved, not stripped.
+- **Frontend omission removed by [TAS-458](https://jira.ozero.dev/browse/TAS-458):** the shared
+  validator and mock normalizer previously accepted FORMAT-only names. They now use the same
+  predicate and canonical server refusal sentence; existing forms show their existing missing-name
+  hint. No new request or field synthesis. Tests cover unchanged state and reusable invitation/
+  OAuth tokens after invalid names. This is source parity, not a live mutation measurement.
+- **Compensation: none.** No name write was performed against the stand for this task.
+- **Separate pre-existing gap:** admin invitation creation (`POST /auth/invitations`, not
+  acceptance) has an older separate mock validator. It is outside the shared five-form helper;
+  recorded in BACKLOG.md for separate frontend alignment. This entry does not claim parity there.
+
 ### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log
 
 - **Endpoints:** `GET /api/v1/users/me` (`ValidateAccessTokenResponseDto`);

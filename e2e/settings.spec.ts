@@ -265,14 +265,17 @@ test.describe("the name in My profile", () => {
     await expect(page.locator(".settings-profile-name")).toHaveText("Anna Ivanova");
 
     await page.getByRole("button", { name: "Edit name" }).click();
-    await field.fill("   ");
-    await expect(page.getByText("Enter a name.")).toBeVisible();
-    await expect(field).toHaveAttribute("aria-invalid", "true");
     const save = page.getByRole("button", { name: "Save" });
-    await expect(save).toHaveAttribute("aria-disabled", "true");
-    // Pressed anyway — `aria-disabled` keeps it pressable, and the handler refuses.
-    await save.click({ force: true });
-    await field.press("Enter");
+    for (const value of ["   ", String.fromCodePoint(0x200b, 0xa0, 0xfeff, 0x2060)]) {
+      await field.fill(value);
+      await expect(field).toHaveAccessibleDescription("Enter a name.");
+      await expect(field).toHaveAttribute("aria-invalid", "true");
+      await expect(save).toHaveAttribute("aria-disabled", "true");
+      // Pressed anyway — `aria-disabled` keeps it pressable, and the handler refuses.
+      await save.click({ force: true });
+      await field.press("Enter");
+      await expect(field).toBeVisible();
+    }
     await field.fill("x".repeat(129));
     await expect(page.getByText("Use at most 128 characters. This name has 129.")).toBeVisible();
     // Still the form: nothing was sent, and nothing announced.

@@ -23,6 +23,23 @@ async function openCreateAccount(page: Page) {
   await expect(page.getByRole("tab", { name: "Create account" })).toHaveAttribute("aria-selected", "true");
 }
 
+test("an invisible-only signup name stays in Name, and a corrected name with FORMAT can continue", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openCreateAccount(page);
+  const name = page.getByLabel("Name", { exact: true });
+  await name.fill(String.fromCodePoint(0x200b, 0xfeff, 0x2060));
+  await page.getByLabel("Email").fill("format.name@example.com");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(name).toHaveAccessibleDescription("Enter a name.");
+  await expect(name).toHaveAttribute("aria-invalid", "true");
+  await expect(name).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Check your email" })).toHaveCount(0);
+
+  await name.fill(`Rosa${String.fromCodePoint(0x200c)} Diaz`);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Check your email" })).toBeFocused();
+});
+
 test("Create account sends the request, says «Check your email», and Resend opens after the minute", async ({ page }) => {
   await page.clock.install();
   await openCreateAccount(page);

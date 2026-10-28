@@ -3953,7 +3953,7 @@ describe("MockTaskaApi", () => {
   describe("display names and the invitation preview", () => {
     const NAME_REFUSAL = {
       code: "INVALID_ARGUMENT",
-      message: "Display name must contain 1 to 128 characters and no control characters or line breaks",
+      message: "Display name must contain 1 to 128 characters, a visible character, and no control characters or line breaks",
       details: { reason: "DISPLAY_NAME_INVALID" },
     };
     const DEAD = { code: "UNAUTHENTICATED", message: "Invalid or expired token" };
@@ -4037,6 +4037,24 @@ describe("MockTaskaApi", () => {
         await expect(api.updateMyDisplayName(name)).rejects.toMatchObject(NAME_REFUSAL);
       }
       await expect(api.updateMyDisplayName("a".repeat(128))).resolves.toMatchObject({ displayName: "a".repeat(128) });
+    });
+
+    it("refuses invisible-only names without renaming an account or spending an invitation, then keeps a corrected name intact", async () => {
+      await api.login({ email: "mark@example.com", password: "x" });
+      const sofia = await idOf("sofia@example.com");
+      const invisible = String.fromCodePoint(0x200b, 0xa0, 0xfeff, 0x2060);
+      await expect(api.updateMyDisplayName(invisible)).rejects.toMatchObject(NAME_REFUSAL);
+      await expect(api.updateUserDisplayName(sofia, invisible)).rejects.toMatchObject(NAME_REFUSAL);
+      await expect(api.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "Correct-horse-1", displayName: invisible })).rejects.toMatchObject(NAME_REFUSAL);
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ displayName: "Mark Lee" });
+      expect((await rowOf("sofia@example.com"))?.display_name).toBe("Sofia Reyes");
+      await expect(api.previewInvitation(MOCK_INVITE_TOKENS.leo)).resolves.toMatchObject({ displayName: "Leo Fischer" });
+
+      const corrected = `Leo${String.fromCodePoint(0x200c)} Fischer`;
+      await api.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "Correct-horse-1", displayName: `  ${corrected}  ` });
+      await api.logout();
+      await api.login({ email: "leo@example.com", password: "x" });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ displayName: corrected });
     });
 
     it("lets a global admin rename any account in any status, and writes the audit row", async () => {
@@ -7434,6 +7452,20 @@ describe("MockTaskaApi sign-up and provider sign-in", () => {
   });
 
   describe("asking for an account", () => {
+    it("refuses an invisible-only signup name before spending the cooldown, then preserves FORMAT in the corrected name", async () => {
+      const invisible = String.fromCodePoint(0x200b, 0xfeff, 0x2060);
+      await expect(api.requestSignup({ email: "format.name@example.com", displayName: invisible })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Display name must contain 1 to 128 characters, a visible character, and no control characters or line breaks",
+        details: { reason: "DISPLAY_NAME_INVALID" },
+      });
+      const corrected = `Rosa${String.fromCodePoint(0x200c)} Diaz`;
+      await expect(api.requestSignup({ email: "format.name@example.com", displayName: corrected })).resolves.toBeUndefined();
+      await api.login({ email: "mark@example.com", password: "x" });
+      const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
+      expect(rows.find((row) => row.email === "format.name@example.com")?.display_name).toBe(corrected);
+    });
+
     it("refuses in the server's order: binding, sign-up off, the address, the name, the IP budget, the address's minute", async () => {
       await expect(api.requestSignup({ email: 42 as never, displayName: "R" })).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
@@ -7671,6 +7703,11 @@ describe("MockTaskaApi sign-up and provider sign-in", () => {
         api.completeOAuthSignup({ signupToken, displayName: `${MOCK_AUTH_TRIGGERS.oauthSignupBudget}\u0007` }),
       ).rejects.toMatchObject({ code: "RESOURCE_EXHAUSTED" });
       await expect(api.completeOAuthSignup({ signupToken, displayName: "\t" })).rejects.toMatchObject({
+        details: { reason: "DISPLAY_NAME_INVALID" },
+      });
+      await expect(api.completeOAuthSignup({ signupToken, displayName: String.fromCodePoint(0x200b, 0xfeff) })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Display name must contain 1 to 128 characters, a visible character, and no control characters or line breaks",
         details: { reason: "DISPLAY_NAME_INVALID" },
       });
       await expect(

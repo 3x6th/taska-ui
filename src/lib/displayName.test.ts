@@ -15,6 +15,9 @@ const NARROW_NBSP = String.fromCodePoint(0x202f);
 const IDEOGRAPHIC_SPACE = String.fromCodePoint(0x3000);
 const BOM = String.fromCodePoint(0xfeff);
 const GRINNING = String.fromCodePoint(0x1f600);
+const ZWSP = String.fromCodePoint(0x200b);
+const ZWNJ = String.fromCodePoint(0x200c);
+const ZWJ = String.fromCodePoint(0x200d);
 
 describe("the display-name check (TAS-425, DESIGN.md §5.9)", () => {
   it("says nothing for an ordinary name", () => {
@@ -49,12 +52,54 @@ describe("the display-name check (TAS-425, DESIGN.md §5.9)", () => {
     expect(displayNameProblem(`${longest}b`)).toBe("Use at most 128 characters. This name has 129.");
     // 128 emoji are 256 UTF-16 units and still 128 characters to the server.
     expect(displayNameProblem(GRINNING.repeat(128))).toBeNull();
+    expect(displayNameProblem(GRINNING.repeat(129))).toBe("Use at most 128 characters. This name has 129.");
     expect(displayNameProblem(GRINNING.repeat(130))).toBe("Use at most 128 characters. This name has 130.");
   });
 
   it("gives one reason at a time, in §5.9's order", () => {
     // Too long and carrying a tab: the tab first.
     expect(displayNameProblem(`${"a".repeat(200)}\tb`)).toBe("Remove the tab or line break from the name.");
+    expect(displayNameProblem(ZWSP.repeat(129))).toBe("Enter a name.");
+    for (const refused of ["\t", LINE_SEPARATOR, PARAGRAPH_SEPARATOR, "\ud83d"]) {
+      expect(displayNameProblem(`${ZWSP}${refused}`)).toBe("Remove the tab or line break from the name.");
+      expect(normalizeDisplayName(`${ZWSP}${refused}`)).toBeNull();
+    }
+  });
+
+  it.each([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff, 0x200e, 0x202e, 0x2067, 0xe0001])(
+    "rejects FORMAT U+%s alone or with server spaces, without trimming FORMAT away",
+    (point) => {
+      const format = String.fromCodePoint(point);
+      expect(trimDisplayName(format)).toBe(format);
+      for (const name of [format, `${NBSP}${format} ${format}${IDEOGRAPHIC_SPACE}`]) {
+        expect(displayNameProblem(name)).toBe("Enter a name.");
+        expect(normalizeDisplayName(name)).toBeNull();
+      }
+    },
+  );
+
+  it("preserves FORMAT in valid names, including Persian ZWNJ, ZWJ emoji and supplementary FORMAT", () => {
+    for (const name of [`${BOM}Anna${ZWSP}`, `علی${ZWNJ}رضا`, `👩${ZWJ}💻`, `${String.fromCodePoint(0xe0001)}A`]) {
+      expect(displayNameProblem(name)).toBeNull();
+      expect(normalizeDisplayName(`${NBSP}${name}${NBSP}`)).toBe(name);
+    }
+    // The server's category predicate also accepts combining marks, variation
+    // selectors and a braille blank. It does not test whether a font draws ink.
+    for (const point of [0x0301, 0x20dd, 0x0903, 0x034f, 0xfe0f, 0x2800, 0x1160, 0xe000, 0x0378]) {
+      const name = String.fromCodePoint(point);
+      expect(displayNameProblem(name)).toBeNull();
+      expect(normalizeDisplayName(name)).toBe(name);
+    }
+  });
+
+  it("counts accepted FORMAT toward the same 128 code-point bound", () => {
+    for (const format of [ZWSP, String.fromCodePoint(0xe0001)]) {
+      const longest = `A${format.repeat(127)}`;
+      expect(displayNameProblem(longest)).toBeNull();
+      expect(normalizeDisplayName(longest)).toBe(longest);
+      expect(displayNameProblem(`${longest}${format}`)).toBe("Use at most 128 characters. This name has 129.");
+      expect(normalizeDisplayName(`${longest}${format}`)).toBeNull();
+    }
   });
 
   it("trims the edges the server trims — the no-break spaces too — and not U+FEFF, which JS's own trim takes", () => {
