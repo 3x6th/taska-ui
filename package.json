@@ -13,8 +13,11 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-  "contract:pins": "node scripts/check-contract-pins.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run test:e2e"
+    "contract:pins": "node scripts/check-contract-pins.mjs",
+    "check": "npm run harness:check && npm run typecheck && npm run lint && npm run test && npm run test:e2e",
+    "harness:sync": "python3 -B scripts/codex-harness.py sync",
+    "harness:check": "python3 -B scripts/codex-harness.py check && python3 -B -m unittest discover -s scripts -p test_codex_harness.py",
+    "harness:probe": "python3 -B scripts/codex-harness.py probe"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

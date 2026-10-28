@@ -98,18 +98,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The split above holds only while `check` is exactly these four
-      # scripts. A fifth added to it would pass every local gate and never run
+      # The split above holds only while `check` is exactly these five
+      # scripts. A sixth added to it would pass every local gate and never run
       # here; this fails instead. The fix is a step for the new script, then
       # the string below.
       - name: Assert CI still runs every part of npm run check
         run: |
-          expected='npm run typecheck && npm run lint && npm run test && npm run test:e2e'
+          expected='npm run harness:check && npm run typecheck && npm run lint && npm run test && npm run test:e2e'
           actual=$(node -p 'require("./package.json").scripts.check')
           if [ "$actual" != "$expected" ]; then
-            echo "::error::package.json's check script is now: $actual. CI runs its parts as separate steps (typecheck, lint and test in this job, test:e2e in the e2e matrix), so a new part needs a step in .github/workflows/frontend.yml before this expected string changes."
+            echo "::error::package.json's check script is now: $actual. CI runs its parts as separate steps (harness:check, typecheck, lint and test in this job, test:e2e in the e2e matrix), so a new part needs a step in .github/workflows/frontend.yml before this expected string changes."
             exit 1
           fi
+
+      - name: Setup Python for harness checks
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Verify Codex role parity and reviewer launch policy
+        run: npm run harness:check
 
       - name: Typecheck
         run: npm run typecheck
