@@ -193,12 +193,14 @@ test("an invited person sees their address and invited name, changes the name, a
   // The shared check stands where the hint stood, and Activate takes the
   // reader to Name rather than sending.
   const name = page.getByLabel("Name", { exact: true });
-  await name.fill("   ");
-  await expect(name).toHaveAccessibleDescription("Enter a name.");
   await page.getByLabel("New password").fill(STRONG);
-  await page.getByRole("button", { name: "Activate account" }).click();
-  await expect(name).toBeFocused();
-  await expect(page).toHaveURL(/\/invite$/);
+  for (const value of ["   ", String.fromCodePoint(0x200b, 0xfeff, 0x2060)]) {
+    await name.fill(value);
+    await expect(name).toHaveAccessibleDescription("Enter a name.");
+    await page.getByRole("button", { name: "Activate account" }).click();
+    await expect(name).toBeFocused();
+    await expect(page).toHaveURL(/\/invite$/);
+  }
 
   await name.fill("  Leo Fischer-Ng  ");
   await activate(page);

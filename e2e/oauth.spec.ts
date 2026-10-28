@@ -83,6 +83,13 @@ for (const routing of ROUTINGS) {
       await expect(name).toHaveValue("New Person");
       await expect(page.getByRole("tab")).toHaveCount(0);
 
+      await name.fill(String.fromCodePoint(0x200b, 0xfeff, 0x2060));
+      await page.getByRole("button", { name: "Create account" }).click();
+      await expect(name).toHaveAccessibleDescription("Enter a name.");
+      await expect(name).toHaveAttribute("aria-invalid", "true");
+      await expect(name).toBeFocused();
+      await expect(page).toHaveURL(routing.at("/auth/callback"));
+
       await name.fill("Nova Person");
       await page.getByRole("button", { name: "Create account" }).click();
 
