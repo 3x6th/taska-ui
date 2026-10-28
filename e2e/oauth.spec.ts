@@ -103,6 +103,46 @@ for (const routing of ROUTINGS) {
       await expect(page.getByRole("alert")).toHaveCount(0);
       expect(page.url()).not.toContain("error=");
     });
+
+    for (const path of ["/auth/callback", "/auth/callback/"]) {
+      test(`carries rate-limit metadata from ${path} to the existing refusal once, with no query or storage left`, async ({ page }) => {
+        await page.goto(routing.route("/login"));
+        const query = new URLSearchParams({ error: "RATE_LIMITED", requestId: "trace&private=x", retryAfter: "45", code: "must-not-exchange" });
+        await page.goto(`${routing.root || `http://localhost:${PORT}/`}${path.slice(1)}?${query}`);
+
+        await expect(page).toHaveURL(routing.at("/login"));
+        const refusal = page.locator(".auth-refusal");
+        await expect(refusal.locator(".error-note-sentence")).toHaveText("Too many attempts. Try again in 45 seconds.");
+        await expect(refusal.getByRole("button", { name: "Copy request id trace&private=x", exact: true })).toBeVisible();
+        await expect(refusal).toBeFocused();
+        await expect(page.getByRole("alert")).toHaveCount(0);
+        expect(await page.evaluate(() => JSON.stringify(window.history.state))).not.toContain("trace&private=x");
+        expect(await page.evaluate(() => JSON.stringify([window.localStorage, window.sessionStorage]))).not.toContain("trace&private=x");
+
+        await page.reload();
+        await expect(page.locator(".auth-refusal")).toHaveCount(0);
+        await page.goBack();
+        await expect(page).toHaveURL(routing.at("/login"));
+        await expect(page.locator(".auth-refusal")).toHaveCount(0);
+      });
+    }
+
+    test("a malformed callback wait uses the fallback, with its id rendered as text", async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      const query = new URLSearchParams({ error: "RATE_LIMITED", requestId: "<b>trace</b>", retryAfter: "1e2" });
+      await page.goto(`${routing.root || `http://localhost:${PORT}/`}auth/callback?${query}`);
+      const refusal = page.locator(".auth-refusal");
+      await expect(refusal.locator(".error-note-sentence")).toHaveText("Too many attempts. Try again in a few minutes.");
+      await expect(refusal.getByRole("button", { name: "Copy request id <b>trace</b>", exact: true })).toHaveText("<b>trace</b>");
+      await expect(refusal.locator("b")).toHaveCount(0);
+    });
+
+    test("a callback cancellation stays silent even with metadata", async ({ page }) => {
+      await page.goto(`${routing.root || `http://localhost:${PORT}/`}auth/callback?error=PROVIDER_CANCELLED&requestId=cancel-trace&retryAfter=45`);
+      await expect(page).toHaveURL(routing.at("/login"));
+      await expect(page.locator(".auth-refusal, .error-note")).toHaveCount(0);
+      await expect(page.getByText("cancel-trace")).toHaveCount(0);
+    });
   });
 }
 

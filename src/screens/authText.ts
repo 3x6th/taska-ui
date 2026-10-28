@@ -11,6 +11,7 @@ import {
 } from "../api/errors";
 import type { OAuthProvider } from "../domain/types";
 import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
+import type { OAuthCallbackError } from "../lib/oauthCallback";
 import { retryAfterSeconds } from "./admin/users";
 
 /**
@@ -101,16 +102,17 @@ export function oauthReturnTo(from: unknown): string {
 
 /**
  * Which row of §4.31's refusal table a provider sign-in's failure is. The
- * seven `?error=` reasons are their own rows; an exchange's refusal is one of
+ * seven original `?error=` reasons are their own rows; `RATE_LIMITED` uses
+ * `TOO_MANY`. An exchange's refusal is one of
  * them when its (code, `details.reason`) pair says so, and otherwise:
  *
  * - `CODE_INVALID` — the exchange's 401 `STATE_INVALID`: the code expired or
  *   was used. Not `?error=STATE_INVALID`, which is the browser's state cookie
  *   and has its own sentence;
- * - `TOO_MANY` — a 429;
+ * - `TOO_MANY` — a 429 or callback `RATE_LIMITED`;
  * - `FAILED` — no reason: a 5xx, a 408, an unreadable answer, no answer;
  * - `UNKNOWN` — a reason this build has no row for, or an `?error=` value
- *   that is not one of the seven.
+ *   that this build does not recognise.
  */
 export type ProviderRefusalReason =
   | typeof PROVIDER_CANCELLED_REASON
@@ -168,13 +170,21 @@ const emptyRefusal = (reason: ProviderRefusalReason, provider: string | null, ta
   lockedUntil: null,
 });
 
-/** `?error=` → a row: one of the seven, or `UNKNOWN` — whose value is never kept, so never printed. */
-export function refusalFromCallbackError(value: string, provider: string | null, tab: string | null): ProviderRefusal {
-  return emptyRefusal(
-    CALLBACK_REASONS.includes(value) ? (value as ProviderRefusalReason) : "UNKNOWN",
-    provider,
-    tab,
-  );
+/** `?error=` → a row and validated display metadata; unknown raw reasons are never kept or printed. */
+export function refusalFromCallbackError(
+  value: string,
+  provider: string | null,
+  tab: string | null,
+  metadata?: Pick<OAuthCallbackError, "requestId" | "retryAfterSeconds">,
+): ProviderRefusal {
+  const reason = value === "RATE_LIMITED"
+    ? "TOO_MANY"
+    : CALLBACK_REASONS.includes(value) ? (value as ProviderRefusalReason) : "UNKNOWN";
+  return {
+    ...emptyRefusal(reason, provider, tab),
+    requestId: metadata?.requestId ?? null,
+    retryAfterSeconds: reason === "TOO_MANY" ? metadata?.retryAfterSeconds ?? null : null,
+  };
 }
 
 /**

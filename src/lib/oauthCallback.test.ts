@@ -48,9 +48,57 @@ describe("captureOAuthCallback", () => {
   });
 
   it("takes the error, which wins over a code an edited address also carries", () => {
-    const page = landing("/auth/callback", "?code=abc&error=ACCOUNT_BLOCKED");
+    const page = landing("/auth/callback", "?code=abc&error=ACCOUNT_BLOCKED&requestId=trace%26private%3Dx&retryAfter=45");
     captureOAuthCallback(page, "/", "hash");
-    expect(heldOAuthCallback()).toEqual({ error: "ACCOUNT_BLOCKED" });
+    expect(heldOAuthCallback()).toEqual({ error: "ACCOUNT_BLOCKED", requestId: "trace&private=x", retryAfterSeconds: 45 });
+    expect(page.replaced).toEqual(["/#/auth/callback"]);
+  });
+
+  it.each([
+    ["/auth/callback", "browser", "/auth/callback"],
+    ["/auth/callback/", "browser", "/auth/callback"],
+    ["/auth/callback", "hash", "/#/auth/callback"],
+    ["/auth/callback/", "hash", "/#/auth/callback"],
+  ] as const)("preserves error metadata before replacing %s with its %s route", (path, mode, route) => {
+    const page = landing(path, "?error=RATE_LIMITED&requestId=trace%26private%3Dx&retryAfter=9999999999");
+    page.history.replaceState = (_data, _unused, url) => {
+      expect(heldOAuthCallback()).toEqual({
+        error: "RATE_LIMITED", requestId: "trace&private=x", retryAfterSeconds: 9_999_999_999,
+      });
+      page.replaced.push(String(url));
+    };
+    captureOAuthCallback(page, "/", mode);
+    expect(page.replaced).toEqual([route]);
+    forgetOAuthCallback();
+    expect(heldOAuthCallback()).toBeNull();
+  });
+
+  it.each([null, "", "0", "00", "01", "-1", "+1", "1.5", "1e2", " 45", "45 ", "Infinity", "NaN", "Wed, 21 Oct 2026 07:28:00 GMT", "9007199254740992"])(
+    "ignores an absent or malformed callback wait (%s)",
+    (wait) => {
+      const query = new URLSearchParams({ error: "RATE_LIMITED" });
+      if (wait !== null) query.set("retryAfter", wait);
+      captureOAuthCallback(landing("/auth/callback", `?${query}`), "/", "browser");
+      expect(heldOAuthCallback()).toEqual({ error: "RATE_LIMITED", requestId: null, retryAfterSeconds: null });
+    },
+  );
+
+  it.each([1, 45, 90, 9_999_999_999, Number.MAX_SAFE_INTEGER])("keeps a whole positive safe wait (%i)", (seconds) => {
+    captureOAuthCallback(landing("/auth/callback", `?error=RATE_LIMITED&retryAfter=${seconds}`), "/", "browser");
+    expect(heldOAuthCallback()).toMatchObject({ retryAfterSeconds: seconds });
+  });
+
+  it.each(["", "trace&private=x", "  trace  ", "<b>trace</b>", "%26"])("preserves decoded request ids exactly, with empty as null (%s)", (requestId) => {
+    const query = new URLSearchParams({ error: "ACCOUNT_BLOCKED", requestId });
+    captureOAuthCallback(landing("/auth/callback", `?${query}`), "/", "browser");
+    expect(heldOAuthCallback()).toMatchObject({ requestId: requestId || null });
+  });
+
+  it("never attaches error metadata to a code, or holds it without an error", () => {
+    captureOAuthCallback(landing("/auth/callback", "?code=abc&requestId=r&retryAfter=45"), "/", "browser");
+    expect(heldOAuthCallback()).toEqual({ code: "abc" });
+    captureOAuthCallback(landing("/auth/callback", "?requestId=r&retryAfter=45"), "/", "browser");
+    expect(heldOAuthCallback()).toBeNull();
   });
 
   it("holds nothing for a landing with neither, and still leaves the address for the in-app route", () => {
