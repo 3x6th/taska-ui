@@ -2867,6 +2867,34 @@ Move up → Move down → Edit → Delete (недоступные остаютс
 - **Движение.** Ни спиннеров, ни новых анимаций на этом проходе; ничего не зависит от входа
   карточки за 500 мс, чтобы быть читаемым.
 
+### 4.32 Страницы сервера авторизации (TAS-414)
+
+Вход и согласие MCP-подключения (claude.ai, ChatGPT, Claude Code, Cursor; ADR TAS-400) рисует не
+это приложение, а `oauth-server` на своём origin: статический HTML, один CSS и маленький JS на
+страницу под CSP `default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'` —
+без React,
+inline-скриптов, `style=` и внешних шрифтов (Hanken Grotesk и IBM Plex Mono лежат файлами рядом, с
+OFL). Исходник отдан бэку вложением в TAS-445 и ляжет в `oauth-server/src/main/resources/static/`;
+до влития бэком единственная копия — вложение `taska-oauth-pages.zip` в TAS-445;
+формально этот файл им не управляет, но говорят они языком карточки логина §4.27 — свечение (§1,
+п. 5, та же оболочка, что `/auth/callback` §4.31), логотип, карточка 392, поля §4.3, кнопки §4.1,
+`ErrorNote` §5.6 — а токены §2.1–§2.3, §2.5, `--shadow` §2.6 и §3 переписаны в их CSS custom
+properties один к одному; тема — только `prefers-color-scheme` (выбор читателя живёт в localStorage
+другого origin). Отличия даёт поверхность безопасности (решения art-director 2026-10-28): без входа
+карточки за 500 мс, без сноски и переключателя темы; хост, куда уходит доступ, — моно ASCII `--fg`;
+у непроверенного (DCR) клиента имя — «An app named “…”» и заметка в рамке `--border`; Deny —
+secondary той же ширины, что Allow, и стоит первым; Allow никогда не в фокусе по умолчанию.
+
+После сборки (два круга art-director): формулировка «куда уходит доступ» — по `redirect_kind` из
+ответа сервера (`web` — «the app at HOST», `loopback` — «an app on this device, at HOST:PORT»;
+любое другое значение — карточка T3: страница и сервер выходят одним jar; свои схемы вроде
+`cursor://` сервер сейчас не регистрирует); без JavaScript — карточка «Turn on JavaScript to connect
+an app» на согласии и заметка вместо формы на входе (`@media (scripting: none)`); `error/4xx.html`
+— широкая формулировка «This connection request isn’t valid … or came from an app Taska doesn’t
+recognize»; `?logout` — своя карточка «You’re signed out of Taska»; первый фокус на входе ставится
+только после того, как `/login/context` подтвердил ожидающий запрос. Меняется §2 — CSS этих
+страниц переписывается тем же изменением, иначе они молча разойдутся с приложением.
+
 ## 5. Patterns
 
 ### 5.1 App shell и маршруты
