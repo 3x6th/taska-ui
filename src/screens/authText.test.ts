@@ -91,6 +91,23 @@ describe("the refusal a provider sign-in met (§4.31's table)", () => {
     expect(JSON.stringify(typed)).not.toContain("script");
   });
 
+  it("maps callback RATE_LIMITED to the existing wait message with its request id", () => {
+    const refusal = refusalFromCallbackError("RATE_LIMITED", "GOOGLE", "signup", { requestId: "trace&private=x", retryAfterSeconds: 45 });
+    expect(refusal).toMatchObject({ reason: "TOO_MANY", provider: "GOOGLE", tab: "signup", requestId: "trace&private=x", retryAfterSeconds: 45 });
+    expect(providerRefusalText(refusal)).toBe("Too many attempts. Try again in 45 seconds.");
+    expect(providerRefusalText(refusalFromCallbackError("RATE_LIMITED", null, null))).toBe("Too many attempts. Try again in a few minutes.");
+  });
+
+  it("keeps other callback reasons unchanged, ignores their wait, and leaves cancellation silent", () => {
+    const metadata = { requestId: "trace", retryAfterSeconds: 45 };
+    const blocked = refusalFromCallbackError("ACCOUNT_BLOCKED", null, null, metadata);
+    expect(blocked).toMatchObject({ reason: "ACCOUNT_BLOCKED", requestId: "trace", retryAfterSeconds: null });
+    const unknown = refusalFromCallbackError("<b>untrusted</b>", null, null, metadata);
+    expect(unknown).toMatchObject({ reason: "UNKNOWN", message: null, requestId: "trace", retryAfterSeconds: null });
+    expect(JSON.stringify(unknown)).not.toContain("untrusted");
+    expect(providerRefusalText(refusalFromCallbackError("PROVIDER_CANCELLED", null, null, metadata))).toBeNull();
+  });
+
   it("keys an exchange's refusal on the (code, reason) pair, never on the status class", () => {
     const pairs: [Error, string][] = [
       [new ApiError("x", "UNAUTHENTICATED", 401, "r", undefined, { reason: "STATE_INVALID" }), "CODE_INVALID"],

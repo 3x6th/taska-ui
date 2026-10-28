@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import { ApiError } from "../api/rest/RestTaskaApi";
 import type { OAuthExchangeResult } from "../domain/types";
-import { forgetOAuthCallback, holdOAuthCallback, rememberOAuthAttempt } from "../lib/oauthCallback";
+import { forgetOAuthCallback, heldOAuthCallback, holdOAuthCallback, rememberOAuthAttempt } from "../lib/oauthCallback";
 import { AuthCallbackScreen } from "./AuthCallbackScreen";
 
 /**
@@ -154,7 +154,7 @@ describe("AuthCallbackScreen, the exchange", () => {
   });
 
   it("takes ?error= to /login without a request, keeping only a known reason", async () => {
-    holdOAuthCallback({ error: "EMAIL_NOT_VERIFIED" });
+    holdOAuthCallback({ error: "EMAIL_NOT_VERIFIED", requestId: null, retryAfterSeconds: null });
     renderCallback();
     await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
     expect(JSON.parse(screen.getByTestId("where-state").textContent!).providerRefusal.reason).toBe("EMAIL_NOT_VERIFIED");
@@ -163,7 +163,7 @@ describe("AuthCallbackScreen, the exchange", () => {
 
   it("carries the attempt's returnTo to /login as from with an ?error= refusal, and nothing that is not an in-app path", async () => {
     rememberOAuthAttempt({ provider: "APPLE", tab: "signin", returnTo: "/projects/p-2/board" });
-    holdOAuthCallback({ error: "ACCOUNT_BLOCKED" });
+    holdOAuthCallback({ error: "ACCOUNT_BLOCKED", requestId: null, retryAfterSeconds: null });
     renderCallback();
     await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
     expect(JSON.parse(screen.getByTestId("where-state").textContent!)).toMatchObject({
@@ -174,7 +174,7 @@ describe("AuthCallbackScreen, the exchange", () => {
 
   it("drops a returnTo that is not an in-app path rather than carry it to /login", async () => {
     rememberOAuthAttempt({ provider: "APPLE", tab: "signin", returnTo: "https://evil.example/x" });
-    holdOAuthCallback({ error: "ACCOUNT_BLOCKED" });
+    holdOAuthCallback({ error: "ACCOUNT_BLOCKED", requestId: null, retryAfterSeconds: null });
     renderCallback();
     await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
     expect(JSON.parse(screen.getByTestId("where-state").textContent!)).not.toHaveProperty("from");
@@ -184,6 +184,18 @@ describe("AuthCallbackScreen, the exchange", () => {
     renderCallback();
     await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
     expect(screen.getByTestId("where-state")).toHaveTextContent("null");
+  });
+
+  it("hands callback metadata to login once under StrictMode, with no exchange or held metadata left", async () => {
+    holdOAuthCallback({ error: "RATE_LIMITED", requestId: "trace&private=x", retryAfterSeconds: 45 });
+    renderCallback({ strict: true });
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/login"));
+    expect(JSON.parse(screen.getByTestId("where-state").textContent!).providerRefusal).toMatchObject({
+      reason: "TOO_MANY", requestId: "trace&private=x", retryAfterSeconds: 45,
+    });
+    expect(exchangeState.calls).toEqual([]);
+    expect(heldOAuthCallback()).toBeNull();
+    expect(window.sessionStorage.getItem("taska.oauthAttempt")).toBeNull();
   });
 });
 

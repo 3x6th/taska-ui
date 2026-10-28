@@ -128,8 +128,8 @@ export function AuthCallbackScreen({ theme, toggleTheme }: Pick<ScreenProps, "th
   }, [attempt, code, mutateAsync, navigate, queryClient]);
 
   // The callback refused before there was a code (§4.31): straight on to
-  // `/login` with the refusal — whose value is not kept unless it is one of
-  // the seven, since anybody can type it into the address.
+  // `/login` with validated display metadata and a known refusal row, never
+  // printing an unknown reason somebody typed into the address.
   useEffect(() => {
     if (landing === null || !("error" in landing)) return;
     forgetOAuthCallback();
@@ -142,6 +142,7 @@ export function AuthCallbackScreen({ theme, toggleTheme }: Pick<ScreenProps, "th
       landing.error,
       attempt?.provider ?? null,
       attempt?.tab ?? null,
+      landing,
     );
     return <Navigate replace state={backToLogin(providerRefusal, attempt?.returnTo)} to="/login" />;
   }

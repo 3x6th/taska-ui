@@ -2815,8 +2815,9 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   сноска, переключатель темы), без табов. Бэк возвращает браузер на `/auth/callback` от корня
   origin (базовый путь отбрасывается); на Pages путь отдаёт копия `index.html` в
   `dist/auth/callback/index.html` (Pages отвечает 301 на `/auth/callback/` с тем же query, затем
-  200). `code` или `error` клиент забирает из адреса до роутера, только на этом пути, держит в
-  памяти и стирает `replaceState` (§5.1). Пока идёт обмен — одна строка 13/400 `--fg-2` по
+  200). `code` или `error` клиент забирает из адреса до роутера, только на этом пути; при ошибке
+  забирает также `requestId` и `retryAfter`. `error` важнее `code`. Данные живут только в памяти,
+  query стирается `replaceState` (§5.1). Пока идёт обмен — одна строка 13/400 `--fg-2` по
   центру, `role="status"`: «Signing you in with {Provider}» или «Signing you in»; без спиннера и
   скелетона (исход неизвестен, скелетон формы мигал бы у каждого вернувшегося). Обмен — ровно один
   раз на код, без повторов. `SIGNED_IN` — сессия, затем `navigate(returnTo, {replace:true})`;
@@ -2839,8 +2840,9 @@ Move up → Move down → Edit → Delete (недоступные остаютс
 - **Отказы провайдера на `/login`** — `ErrorNote` над табами в слоте `.auth-notice` (`margin 0 0
   16`), `tabIndex=-1`, фокус при приходе; не живая область — это состояние на входе (§5.1, §5.6).
   Таб — тот, с которого начинали (`taska.oauthAttempt`), иначе Sign in. Уходит при следующей
-  отправке, нажатии провайдера или смене таба. Request id отказа обмена доезжает до экрана (state
-  маршрута, читается один раз); у `?error=` id нет (TAS-444). Отказ узнаётся по паре (code,
+  отправке, нажатии провайдера или смене таба. Request id отказа обмена и query-отказа доезжает
+  до `/login` во временном state маршрута: читается один раз и стирается из записи истории.
+  Видимое сообщение остаётся до следующего действия; перезагрузка и Back его не повторяют. Отказ узнаётся по паре (code,
   `details.reason`), не по классу статуса; 5xx без причины — не `PROVIDER_UNAVAILABLE`.
 
 | Причина | Текст |
@@ -2853,17 +2855,18 @@ Move up → Move down → Edit → Delete (недоступные остаютс
 | `SIGNUP_DISABLED` | «No Taska account uses this email, and new accounts need an invitation. Ask a Taska admin to invite you.» |
 | `PROVIDER_UNAVAILABLE` (503 с причиной или `?error=`) | «{Provider} sign-in isn’t available right now. Try again in a moment, or sign in another way.» Без провайдера: «This sign-in method isn’t available right now. Try again in a moment, or sign in another way.» |
 | Обмен: 401 `STATE_INVALID` (код истёк или использован) | «That sign-in could not be finished — it took too long or was already used. Try again from this page.» |
-| Обмен: 429 | «Too many attempts. Try again in {wait}.» |
+| Обмен: 429; callback: `RATE_LIMITED` | «Too many attempts. Try again in {wait}.» |
 | Обмен: 5xx без причины, 408, сеть | «Sign-in with {Provider} could not be finished.» (без провайдера — «Sign-in could not be finished.»), слова сервера и id |
 | Незнакомая причина в ответе обмена | «Sign-in with {Provider} did not finish. Try again from this page.» (без провайдера — «Sign-in did not finish. Try again from this page.»), код — моно-строкой деталей |
 | Незнакомое значение `?error=` | та же фраза, значение не печатается: адрес мог набрать кто угодно |
 
-- **{wait}** — из `Retry-After` или `details.retryAfterSeconds`: меньше 90 с — «{n} seconds»
-  («1 second»), иначе «{⌈n/60⌉} minutes»; без значения — «a few minutes». Фраза статичная, не
-  тикает.
-- **Чего экран показать не может:** 429 и 503 от `start` и от обратного вызова провайдера — они
-  приходят JSON-ом на навигацию всей страницы на api-домене (замер 2026-10-27: `start` у google и
-  github — 503). Это заявка TAS-444, не дело экрана.
+- **{wait}** — при обмене из `Retry-After` или `details.retryAfterSeconds`; при callback
+  `RATE_LIMITED` — из query `retryAfter`, только конечного положительного целого числа секунд.
+  Меньше 90 с — «{n} seconds» («1 second»), иначе «{⌈n/60⌉} minutes»; без корректного значения —
+  «a few minutes». Фраза статичная, не тикает.
+- **Отказы start/callback:** текущий контракт задаёт редирект для UI на origin-root
+  `/auth/callback?error=…&requestId=…`; `RATE_LIMITED` добавляет `retryAfter` (TAS-444, TAS-457).
+  Прежний замер JSON на api-домене — история, а не свидетельство текущего поведения стенда.
 - **Движение.** Ни спиннеров, ни новых анимаций на этом проходе; ничего не зависит от входа
   карточки за 500 мс, чтобы быть читаемым.
 

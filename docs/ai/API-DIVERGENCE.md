@@ -1910,19 +1910,21 @@ Everything below is the entry as it stood, in the past tense.
   against the absolute path `/auth/callback` (`OAuthFlowService.redirect`,
   `OAuthController.errorRedirect`; auth-service and the gateway each read the variable), so any
   base path in it is dropped. It carries `?code=` (43 base64url characters, single use, 60 s) or
-  `?error=<reason>`, never both; the yml says only «UI callback with a 60-second one-time code or
-  a stable error code». **What the UI does:** the Pages build ships `dist/auth/callback/index.html`,
+  `?error=<reason>`, never both. **Updated by TAS-457:** the snapshot at `d886b031` explicitly
+  documents origin-root landing, `requestId` on error redirects and `retryAfter` for `RATE_LIMITED`
+  (backend TAS-444). **What the UI does:** the Pages build ships `dist/auth/callback/index.html`,
   a byte copy of the built `index.html` checked at build time (`scripts/callbackLanding.ts`); Pages
   answers `/auth/callback?…` with a 301 to `/auth/callback/?…` keeping the query (measured on
   another Pages site, 2026-10-27). `captureOAuthCallback` (`src/lib/oauthCallback.ts`) takes the
-  code or reason into memory before the router mounts and replaces the address with the in-app
+  code or reason and error metadata into memory before the router mounts and replaces the address with the in-app
   `/auth/callback`. Works only with `VITE_BASE_PATH=/` — the repository variable is `/`, and
   `deploy-pages.yml` falls back to `/`. Not a compensation: the landing path is the backend's design.
-- **`?error=` values** are exactly `OAuthErrors.REASONS`: `PROVIDER_CANCELLED`, `STATE_INVALID`
-  (the browser's state cookie: expired, replaced or another browser), `EMAIL_NOT_VERIFIED`,
-  `ACCOUNT_BLOCKED`, `ACCOUNT_LOCKED`, `SIGNUP_DISABLED`, `PROVIDER_UNAVAILABLE`; any other
-  failure becomes `PROVIDER_UNAVAILABLE`. The yml names none. The UI keeps the seven, gives any
-  other value a generic sentence and never prints it.
+- **`?error=` values (updated by TAS-457):** contract `d886b031` names eight `OAuthErrorReason`
+  values: `PROVIDER_CANCELLED`, `STATE_INVALID` (the browser state cookie: expired, replaced or
+  another browser), `EMAIL_NOT_VERIFIED`, `ACCOUNT_BLOCKED`, `ACCOUNT_LOCKED`, `SIGNUP_DISABLED`,
+  `PROVIDER_UNAVAILABLE`, `RATE_LIMITED`. The UI maps the last to its existing rate-limit refusal
+  and static wait text. Other unknown values receive a generic sentence and are never printed.
+  Unrelated provider/infrastructure failures may still share `PROVIDER_UNAVAILABLE`.
 - **Provider spellings.** `/auth/methods` lists the configured providers upper-case, always in the
   order GOOGLE, GITHUB, APPLE (`EmailSignupService.providers`); `signup.provider` is upper-case.
   The `{provider}` path segment is the yml's lower-case enum; an upper-case segment is 503
@@ -1969,16 +1971,22 @@ Everything below is the entry as it stood, in the past tense.
   table and `details.retryAfterSeconds` ([TAS-444](https://jira.ozero.dev/browse/TAS-444), A1).
   The enum 500 closes with the comment on [TAS-443](https://jira.ozero.dev/browse/TAS-443).
 
-### TAS-426: /start failures and the callback's 429 reach the browser as JSON on the API host
+### TAS-426: historical raw-JSON start/callback failures — resolved in backend source/contract by TAS-444
 
 - **Endpoints:** `GET /api/v1/auth/oauth/{provider}/start`, `GET|POST /api/v1/auth/oauth/{provider}/callback`.
+- **Update (TAS-457, 2026-10-28):** current source/contract at `d886b031` redirects UI-target
+  start/callback failures to origin-root `/auth/callback?error=…&requestId=…`, with `retryAfter`
+  for `RATE_LIMITED`. The client consumes that envelope. The observation below is retained as
+  dated history. Stand probe 2026-10-28: `/auth/oauth/invalid/start` returned 302 to
+  `https://taska.ozero.dev/auth/callback`, `error=PROVIDER_UNAVAILABLE` and a nonempty `requestId`.
+  This verifies one start refusal; callback/429 and every other failure were not live-probed.
 - **Observed (Java, `9fcf0253`):** `/start` has no error redirect — a spent IP budget (429), a
   provider unknown, upper-case or not configured (503) and auth-service down (5xx) all answer
   `RestErrorResponse` JSON to a top-level navigation on `api.taska.ozero.dev`. The callback turns
   every failure into `?error=` except `RESOURCE_EXHAUSTED`, which it re-throws
   (`OAuthController.callback`). The stand answered `/start` 503 for google and github on 2026-10-27
   (providers not configured). The yml lists the 429s, not where they are drawn.
-- **What the UI does:** nothing — it cannot. The press is a page navigation (`oauthStartUrl`
+- **Historical UI limitation (before TAS-457):** nothing — it could not. The press is a page navigation (`oauthStartUrl`
   returns a plain address) and the app is not loaded when the answer arrives; the reader sees raw
   JSON and has Back. No pre-flight `fetch` of `/start`: it would spend the budget and set the
   state cookie a second time.
@@ -1986,15 +1994,22 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** [TAS-444](https://jira.ozero.dev/browse/TAS-444) (A2: every start and callback
   failure redirects to `/auth/callback?error=…`, a rate limit with its wait).
 
-### TAS-426: ?error= carries no request id, and PROVIDER_UNAVAILABLE is the catch-all
+### TAS-426: missing callback request id — resolved in source by TAS-444, consumed by TAS-457
 
 - **Endpoint:** the callback's redirect to `/auth/callback?error=<reason>`.
+- **Update (TAS-457, 2026-10-28):** `d886b031` carries the request ID in the error query;
+  the frontend preserves it before URL cleanup and passes it through transient router state to
+  the existing login notice and copy control. `RATE_LIMITED` also supplies a validated wait.
+  Unknown reasons remain unprinted; cancellation remains silent. No new request or storage.
+  This closes the missing-ID source claim, not the remaining `PROVIDER_UNAVAILABLE` catch-all
+  observation. The start probe above confirmed an ID in one deployed refusal; no broader
+  runtime result is inferred.
 - **Observed:** the redirect carries only the reason; the gateway's `X-Request-Id` is on the 302,
   which the browser follows and no script reads. A reason outside the seven, a provider error that
   is not a cancel, and any non-429 failure of the callback rpc (auth-service down, the 25 s
   deadline) all arrive as `PROVIDER_UNAVAILABLE` (`OAuthErrors.reason`,
   `OAuthController.errorRedirect`), indistinguishable from an unconfigured provider.
-- **What the UI does:** draws the reason's sentence on `/login`, focused, with no request id; an
+- **Historical UI behaviour (before TAS-457):** drew the reason's sentence on `/login`, focused, with no request id; an
   unknown value gets a generic sentence and is never printed (`refusalFromCallbackError`,
   `src/screens/authText.ts`). An exchange refusal, by contrast, carries its id to `/login` in
   router state.

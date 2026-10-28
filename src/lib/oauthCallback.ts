@@ -25,8 +25,15 @@ import type { RouterMode } from "./appLinks";
  * keep is theirs; the code is in none of them, as it is made after them.
  */
 
-/** What the address brought: a code to exchange, a reason the callback refused, or nothing usable. */
-export type HeldOAuthCallback = { code: string } | { error: string } | null;
+/** A callback refusal and its display metadata, held only until the login handoff (TAS-457). */
+export interface OAuthCallbackError {
+  error: string;
+  requestId: string | null;
+  retryAfterSeconds: number | null;
+}
+
+/** What the address brought: a code to exchange, a refusal, or nothing usable. */
+export type HeldOAuthCallback = { code: string } | OAuthCallbackError | null;
 
 let held: HeldOAuthCallback = null;
 
@@ -63,6 +70,13 @@ export interface CallbackLandingWindow {
   history: Pick<History, "replaceState">;
 }
 
+/** Query waits are whole positive seconds, never a partial parse or a rounded unsafe integer. */
+function callbackRetryAfter(value: string | null): number | null {
+  if (value === null || !/^[1-9][0-9]*$/.test(value)) return null;
+  const seconds = Number(value);
+  return Number.isSafeInteger(seconds) && seconds > 0 ? seconds : null;
+}
+
 /**
  * Called once, before the router mounts. Answers whether the page landed on
  * the callback path. On it, whatever the query holds, the address becomes the
@@ -74,7 +88,15 @@ export function captureOAuthCallback(page: CallbackLandingWindow, base: string, 
   const query = new URLSearchParams(page.location.search);
   const error = query.get("error");
   const code = query.get("code");
-  holdOAuthCallback(error !== null ? { error } : code ? { code } : null);
+  holdOAuthCallback(
+    error !== null
+      ? {
+          error,
+          requestId: query.get("requestId") || null,
+          retryAfterSeconds: callbackRetryAfter(query.get("retryAfter")),
+        }
+      : code ? { code } : null,
+  );
   page.history.replaceState(null, "", oauthCallbackRouteUrl(base, mode));
   return true;
 }
