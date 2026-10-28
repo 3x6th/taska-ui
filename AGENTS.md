@@ -175,12 +175,22 @@ inheriting the list's standing.
 
 A reviewer that can edit cannot be trusted to report what it would rather
 quietly fix; a builder that can approve cannot be trusted to sign off on its own
-work. Read-only is expressed as a restricted `tools` list in each agent's
-frontmatter — that restriction is the mechanism, not a request.
+work. In Claude Code, restricted `tools` lists in the role frontmatter are
+the declared mechanism. In Codex, a reviewer runs as a **separate top-level
+CLI process** with read-only permissions, approval `never`, and external
+integrations disabled. Its launcher probes an actual denied write before
+every review. An instruction to avoid edits is not that mechanism.
 
-Subagents live in `.claude/agents/`. All work here runs in Claude Code; if a
-second agent runtime is ever added, define the same roles for it with
-identical role bodies and keep the two definitions in sync.
+The role bodies in `.claude/agents/` are canonical for both runtimes.
+`npm run harness:sync` generates `.codex/agents/*.toml` with identical role
+bodies and a labelled runtime binding; `npm run harness:check` rejects drift.
+See [the Codex adapter](docs/ai/CODEX.md) for invocation and evidence.
+Codex app subagents inherit the parent's permissions: native consultations
+are useful research, but **do not satisfy a reviewer gate**. Use the isolated
+launcher for gated verdicts. A missing compatible CLI or a failed isolation
+probe invokes *When the harness cannot run a role*; never fall back to a
+writable reviewer or self-review. Either runtime may orchestrate; the role
+ownership and delivery flow are the same.
 
 ## Tooling the harness expects you to use
 
@@ -196,13 +206,16 @@ clone and every new worktree start with none of them; run
 `npx skills experimental_install` (README) instead of opening with a report
 about it.
 
-- **Subagents** (`.claude/agents/`) — the roles above. Not optional.
+- **Subagents** (`.claude/agents/`, generated `.codex/agents/`) — the roles above.
+  Not optional. Codex uses the isolated launcher for reviewer verdicts; its
+  native builder may be briefed with the canonical builder body when custom
+  role selection is unavailable. Never run two builders at once.
 - **Workflows** — deterministic fan-out across many agents. Worth it when a
   pass is genuinely parallel and its shape is known in advance: reading one
   diff from several angles at once *on a draft that has already passed
   `release-reviewer`*, verifying each finding independently before acting on
   it, sweeping a change across many files. One review by one role is an
-  `Agent` call, not a workflow, and a workflow does not license the volley
+  role invocation, not a workflow, and a workflow does not license the volley
   *Stage the reviews* forbids — it is a way to *run* a role, never a way to
   skip one, and the verdict table below is unaffected by how a role was
   launched.
@@ -406,8 +419,12 @@ ended up anyway.
 
 ### Match the model to the pass, not to the agent
 
-Each agent's frontmatter names a default model; the `Agent` tool's `model`
-parameter overrides it per call, and the orchestrator is expected to use that.
+Claude role frontmatter names a default model; its `Agent` tool can override
+it per call. Codex native roles inherit the parent's model rather than interpreting
+Claude's `opus` name; the isolated launcher explicitly selects `gpt-6.1-sol`
+at high reasoning effort (overridable with `TASKA_CODEX_MODEL`). An explicit
+model override must be supported by the active runtime. The orchestrator is
+expected to match the model to the pass.
 Design, a first implementation, and any review keep the strong model. A pass
 that applies a list the orchestrator has already decided — "make these four
 edits, run the gate" — does not, and a fifteen-line mechanical change on the
@@ -512,7 +529,7 @@ you file:
 
 ## Verification evidence
 
-`npm run check` is typecheck, lint at zero warnings, unit tests, and the
+`npm run check` is harness parity/launch-policy checks, typecheck, lint at zero warnings, unit tests, and the
 mock-backed Playwright end-to-end suite. `npm run build` is the production
 build. Neither proves visual, content, or deployment correctness — say so
 rather than implying a green build is a verdict.

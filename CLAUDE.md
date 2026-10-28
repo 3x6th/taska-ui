@@ -1,7 +1,9 @@
 # Taska UI
 
 The frontend of Taska, an issue tracker. It is built by an orchestrating agent
-directing four subagents defined in `.claude/agents/`.
+directing four roles. Canonical bodies live in `.claude/agents/`; Codex's
+generated definitions and isolated reviewer launcher are described in
+`docs/ai/CODEX.md`. Both runtimes follow the same `AGENTS.md` delivery flow.
 
 [AGENTS.md](AGENTS.md) is the full authority on roles, delivery flow, frontend
 constraints, evidence and safety. This file carries only what has to be true
@@ -132,6 +134,6 @@ is therefore reportable under the rule above, every time, not once.
 
 ## Verification
 
-`npm run check` (typecheck, lint at zero warnings, unit tests, mock-backed
+`npm run check` (harness parity, typecheck, lint at zero warnings, unit tests, mock-backed
 Playwright e2e), then `npm run build`. A green build does not prove visual,
 content, or deployment correctness — say so rather than implying it does.

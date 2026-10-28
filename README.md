@@ -43,9 +43,22 @@ This repository is built with an explicit agent harness. [AGENTS.md](AGENTS.md) 
 the single authority for roles, source ranking, frontend constraints, evidence, and
 safety; [CLAUDE.md](CLAUDE.md) only points at it.
 
-Four subagents live in `.claude/agents/`. `frontend-builder` is the only one that may
-edit production code; `art-director`, `api-contract-guard`, and `release-reviewer` are
-read-only, enforced through their tool lists.
+Four role bodies live in `.claude/agents/`, with generated Codex definitions in
+`.codex/agents/`. `frontend-builder` is the only production-code writer.
+`art-director`, `api-contract-guard`, and `release-reviewer` use Claude's tool
+lists or Codex's separate read-only CLI processes. Codex app subagents alone
+do not enforce that boundary. [Codex setup and commands](docs/ai/CODEX.md)
+include the isolation probe, tool mapping and model policy.
+
+After editing a canonical role, regenerate and verify the Codex definitions:
+
+```bash
+npm run harness:sync
+npm run harness:check
+```
+
+These commands need Python 3.11 or newer. The check runs in the local and CI gate;
+it does not contact OpenAI. Running a role uses the installed, authenticated Codex CLI.
 
 Supporting records are in [docs/ai/](docs/ai/) — notably
 [API-DIVERGENCE.md](docs/ai/API-DIVERGENCE.md), which tracks every place the UI
