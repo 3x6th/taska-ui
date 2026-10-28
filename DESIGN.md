@@ -2871,9 +2871,11 @@ Move up → Move down → Edit → Delete (недоступные остаютс
 
 Вход и согласие MCP-подключения (claude.ai, ChatGPT, Claude Code, Cursor; ADR TAS-400) рисует не
 это приложение, а `oauth-server` на своём origin: статический HTML, один CSS и маленький JS на
-страницу под CSP `default-src 'self'; frame-ancestors 'none'; form-action 'self'` — без React,
+страницу под CSP `default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'` —
+без React,
 inline-скриптов, `style=` и внешних шрифтов (Hanken Grotesk и IBM Plex Mono лежат файлами рядом, с
-OFL). Исходник отдан бэку вложением в TAS-445 и живёт в `oauth-server/src/main/resources/static/`;
+OFL). Исходник отдан бэку вложением в TAS-445 и ляжет в `oauth-server/src/main/resources/static/`;
+до влития бэком единственная копия — вложение `taska-oauth-pages.zip` в TAS-445;
 формально этот файл им не управляет, но говорят они языком карточки логина §4.27 — свечение (§1,
 п. 5, та же оболочка, что `/auth/callback` §4.31), логотип, карточка 392, поля §4.3, кнопки §4.1,
 `ErrorNote` §5.6 — а токены §2.1–§2.3, §2.5, `--shadow` §2.6 и §3 переписаны в их CSS custom
