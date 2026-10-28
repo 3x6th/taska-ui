@@ -12,6 +12,14 @@ spec.loader.exec_module(harness)
 
 
 class HarnessTest(unittest.TestCase):
+    def test_child_path_keeps_compatible_python_without_inheriting_path(self):
+        with patch.object(harness.sys, "executable", "/compatible-python/bin/python3"), \
+             patch.dict(harness.os.environ, {"PATH": "/caller-controlled-path"}):
+            entries = harness.child_path().split(harness.os.pathsep)
+            self.assertEqual(entries[0], "/compatible-python/bin")
+            self.assertNotIn("/caller-controlled-path", entries)
+            self.assertLess(entries.index("/opt/homebrew/bin"), entries.index("/usr/bin"))
+
     def test_only_builder_gets_write_access(self):
         for role in harness.ROLES:
             with self.subTest(role=role):

@@ -125,6 +125,15 @@ sys.exit(0 if all(results.values()) else 1)
             listener.close()
 
 
+def child_path():
+    # Keep the already compatible interpreter ahead of macOS's Python 3.9.
+    # Do not reintroduce the caller's environment or arbitrary PATH entries.
+    return os.pathsep.join(dict.fromkeys([
+        str(Path(sys.executable).parent), "/opt/homebrew/bin", "/usr/local/bin",
+        "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+    ]))
+
+
 def command(executable, role, output):
     # A fresh top-level process is essential: custom subagent settings cannot
     # override an app parent's permissions. No inherited MCP or writable apps.
@@ -140,7 +149,7 @@ def command(executable, role, output):
             "-c", "agents.enabled=false", "-c", "web_search=\"disabled\"",
             "-c", "skills.bundled.enabled=false", "-c", "skills.include_instructions=false",
             "-c", "shell_environment_policy.inherit=\"none\"",
-            "-c", 'shell_environment_policy.set={PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"}',
+            "-c", f"shell_environment_policy.set={{PATH={json.dumps(child_path())}}}",
             "-c", "allow_login_shell=false",
             "-C", str(ROOT), "--output-last-message", str(output), "-"]
 

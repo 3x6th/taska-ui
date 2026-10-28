@@ -44,7 +44,9 @@ than a child agent of the writable app session. For all three reviewers it uses:
 - apps, plugins, memories, image generation, browser/computer control, hooks,
   permission requests and nested agents disabled;
 - web search disabled, login shells disabled, and shell environment inheritance
-  disabled (only a fixed executable PATH is supplied). No Jira,
+  disabled (only an executable PATH is supplied: the launcher's compatible
+  Python directory, then Homebrew/local and system binary directories;
+  the caller's PATH is not inherited). No Jira,
   GitHub or browser connector is supplied to this isolated process.
 
 Before each review, a real Codex sandbox probe reads a disposable fixture,
