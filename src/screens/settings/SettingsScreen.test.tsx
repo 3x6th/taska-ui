@@ -43,6 +43,7 @@ const { fakeApi, state } = vi.hoisted(() => {
       };
     },
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0, unreadCount: 0 }),
+    listConnectedApps: async () => ({ available: true, items: [] }),
     listAccessTokens: async () => ({ tokens: [], policy: { maxLifetimeDays: 90, maxActiveTokens: 10 } }),
   };
   return { fakeApi: api as unknown as TaskaApi, state };
@@ -94,6 +95,7 @@ describe("the Settings area", () => {
     expect(within(rail).getAllByRole("link").map((link) => link.textContent)).toEqual([
       "My profile",
       "Access tokens",
+      "Connected apps",
       "Appearance",
       "Back to projects",
     ]);
@@ -111,6 +113,12 @@ describe("the Settings area", () => {
     // Tom is a plain USER here; the section is his own, as My profile is.
     expect(await screen.findByText("No tokens yet.")).toBeVisible();
     expect(screen.getByRole("heading", { level: 2, name: "Connect an AI agent" })).toBeVisible();
+  });
+
+  it("opens Connected apps for the signed-in user", async () => {
+    renderAt("/settings/connected-apps");
+    expect(await screen.findByRole("heading", { level: 1, name: /Settings.*Connected apps/ })).toBeVisible();
+    expect(await screen.findByText("No connected apps.")).toBeVisible();
   });
 
   it("answers an address inside /settings that is no section with the not-found screen", async () => {

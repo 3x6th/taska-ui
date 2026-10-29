@@ -2137,3 +2137,20 @@ export interface IssuedAccessToken {
   token: AccessToken;
   secret: string;
 }
+
+/** An OAuth client with active grants, as returned by TAS-446. */
+export interface ConnectedApp {
+  appId: string;
+  name: string;
+  host: string;
+  metadataUrl: string | null;
+  scopes: string[];
+  connectedAt: string;
+  lastUsedAt: string;
+  expiresAt: string;
+}
+
+export interface ConnectedApps {
+  available: boolean;
+  items: ConnectedApp[];
+}

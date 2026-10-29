@@ -358,6 +358,13 @@ Before a PR:
    PR lands. If part of the story did not ship, the honest status plus a
    comment naming what is left beats `Done`.
 
+Keep the story's code and supporting documentation in one PR. When the final
+merge record can only be written after that PR merges, push the documentation-
+only closure directly to `main` rather than opening a second PR for the same
+story, provided repository permissions allow it. Obtain the required narrow
+documentation review before the push; the already-green checks on the code PR
+remain the code evidence. Do not wait for a new build solely for that closure.
+
 Do not fake a same-account GitHub approval. The written reviewer verdict is
 the independent evidence.
 

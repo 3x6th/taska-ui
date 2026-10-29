@@ -28,6 +28,7 @@ import { ProjectsScreen } from "./ProjectsScreen";
 import { SettingsAppearanceSection } from "./settings/SettingsAppearanceSection";
 import { SettingsProfileSection } from "./settings/SettingsProfileSection";
 import { SettingsScreen } from "./settings/SettingsScreen";
+import { SettingsConnectedAppsSection } from "./settings/SettingsConnectedAppsSection";
 import { SettingsTokensSection } from "./settings/SettingsTokensSection";
 
 export interface ScreenProps {
@@ -227,6 +228,7 @@ export function App() {
           <Route index element={<Navigate to="/settings/profile" replace />} />
           <Route path="/settings/profile" element={<SettingsProfileSection />} />
           <Route path="/settings/tokens" element={<SettingsTokensSection />} />
+          <Route path="/settings/connected-apps" element={<SettingsConnectedAppsSection />} />
           <Route path="/settings/appearance" element={<SettingsAppearanceSection />} />
         </Route>
         {/* An unknown URL is an answer, not a redirect: bouncing to /projects
