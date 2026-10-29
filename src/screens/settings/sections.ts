@@ -1,4 +1,4 @@
-import { KeyRound, Palette, UserRound } from "lucide-react";
+import { KeyRound, Link2, Palette, UserRound } from "lucide-react";
 import type { AreaSection } from "../../components/SectionArea";
 import type { Theme } from "../../hooks/useTheme";
 
@@ -10,6 +10,7 @@ import type { Theme } from "../../hooks/useTheme";
 export const settingsSections: readonly AreaSection[] = [
   { id: "profile", label: "My profile", path: "/settings/profile", icon: UserRound },
   { id: "tokens", label: "Access tokens", path: "/settings/tokens", icon: KeyRound },
+  { id: "connected-apps", label: "Connected apps", path: "/settings/connected-apps", icon: Link2 },
   { id: "appearance", label: "Appearance", path: "/settings/appearance", icon: Palette },
 ];
 

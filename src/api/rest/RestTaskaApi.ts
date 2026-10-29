@@ -89,6 +89,7 @@ import { SessionExpiredSignal } from "../session";
 import type {
   AccessToken,
   AccessTokenList,
+  ConnectedApps,
   AccessTokenPolicy,
   ActionVia,
   AdminCatalog,
@@ -1236,6 +1237,14 @@ export class RestTaskaApi implements TaskaApi {
    * row's key for every such row. The list is drawn in the server's order —
    * `createdAt`, then `id`, newest first — and never re-sorted here.
    */
+  async listConnectedApps(): Promise<ConnectedApps> {
+    return this.request<ConnectedApps>("/users/me/connected-apps");
+  }
+
+  async revokeConnectedApp(appId: string): Promise<void> {
+    await this.request<void>(`/users/me/connected-apps/${this.segment(appId)}`, { method: "DELETE" });
+  }
+
   async listAccessTokens(): Promise<AccessTokenList> {
     const response = await this.request<{ items?: unknown; policy?: unknown }>("/users/me/access-tokens");
     const tokens = Array.isArray(response?.items)

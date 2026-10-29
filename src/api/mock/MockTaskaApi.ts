@@ -133,6 +133,7 @@ import type { PlanningFields, PlanningFieldsInput } from "../planningFields";
 import { emptyPlanningFields, planningFieldRefusal, resolvePlanningFields } from "../planningFields";
 import type {
   AccessTokenList,
+  ConnectedApps,
   ActionVia,
   AdminCatalog,
   AdminFilterOperator,
@@ -2076,6 +2077,12 @@ export class MockTaskaStore {
   // Anna has two tokens; Mark holds as many as the policy allows, so his
   // create meets the cap (TAS-402).
   readonly accessTokens = new MockAccessTokens(ANNA_ID, MARK_ID);
+  readonly connectedApps = new Map<string, ConnectedApps>([[ANNA_ID, { available: true, items: [{
+    appId: "4c7dd987-4192-4b58-a16c-55bb07c01a28", name: "Claude", host: "claude.ai",
+    metadataUrl: "https://claude.ai/.well-known/oauth-client", scopes: ["offline_access", "read", "write"],
+    connectedAt: new Date(Date.now() - 8 * 86400000).toISOString(),
+    lastUsedAt: new Date(Date.now() - 86400000).toISOString(), expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(),
+  }] }]]);
   private users: StoredUser[];
   private projects: Project[];
   private membersByProject: Record<string, ProjectMember[]>;
@@ -9230,6 +9237,23 @@ export class MockTaskaApi implements TaskaApi {
 
   async disconnectTelegram(): Promise<NotificationPreferences> {
     return wait(this.store.notificationPreferences.disconnect(this.store.currentUser()));
+  }
+
+  async listConnectedApps(): Promise<ConnectedApps> {
+    const value = this.store.connectedApps.get(this.store.currentUser().id) ?? { available: true, items: [] };
+    return wait(structuredClone(value));
+  }
+
+  async revokeConnectedApp(appId: string): Promise<void> {
+    const userId = this.store.currentUser().id;
+    await wait(null);
+    // UUID path binding is done by the gateway before the request reaches auth.
+    if (!/^[0-9a-f]{1,8}-[0-9a-f]{1,4}-[0-9a-f]{1,4}-[0-9a-f]{1,4}-[0-9a-f]{1,12}$/i.test(appId)) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    }
+    const canonicalId = appId.split("-").map((part, index) => part.padStart([8, 4, 4, 4, 12][index], "0")).join("-").toLowerCase();
+    const value = this.store.connectedApps.get(userId);
+    if (value) value.items = value.items.filter((item) => item.appId.toLowerCase() !== canonicalId);
   }
 
   async listAccessTokens(): Promise<AccessTokenList> {

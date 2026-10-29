@@ -1,6 +1,7 @@
 import type { AccessTokenScopes } from "./accessTokens";
 import type {
   AccessTokenList,
+  ConnectedApps,
   AdminCatalog,
   AdminRow,
   AdminRowQuery,
@@ -1185,6 +1186,8 @@ export interface TaskaApi {
    * `FAILED_PRECONDITION`, `ACTIVE_TOKEN_LIMIT`). `revokeAccessToken` is 204
    * for any id — unknown, another account's, already revoked.
    */
+  listConnectedApps(): Promise<ConnectedApps>;
+  revokeConnectedApp(appId: string): Promise<void>;
   listAccessTokens(): Promise<AccessTokenList>;
   createAccessToken(input: CreateAccessTokenInput): Promise<IssuedAccessToken>;
   revokeAccessToken(tokenId: string): Promise<void>;
