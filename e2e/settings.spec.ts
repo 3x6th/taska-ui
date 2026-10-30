@@ -64,6 +64,21 @@ test("applies each Appearance choice as it is pressed, and keeps it across a rel
   await expect(option(page, "Theme", "Dark")).toHaveAttribute("aria-pressed", "true");
 });
 
+test("does not programmatically move touch navigation to the newly opened heading", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "the iOS-style touch regression at 390");
+  await signIn(page);
+  await page.getByRole("button", { name: /Open profile/ }).tap();
+  await page.getByRole("link", { name: "Settings" }).tap();
+  await expect(page).toHaveURL(/\/settings\/profile$/);
+
+  const connectedApps = page.getByRole("link", { name: "Connected apps" });
+  await connectedApps.tap();
+
+  const heading = page.getByRole("heading", { level: 1, name: /Settings.*Connected apps/ });
+  await expect(heading).toBeVisible();
+  await expect(heading).not.toBeFocused();
+});
+
 test("sets every choice on <html> before the app's own script runs", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem("taska.theme", "dark");

@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
 import { App } from "../App";
@@ -56,12 +56,18 @@ function Whereabouts() {
   return <p data-testid="whereabouts">{location.pathname}</p>;
 }
 
-const renderAt = (path: string) =>
+function RouteChangeProbe() {
+  const navigate = useNavigate();
+  return <button onClick={() => navigate("/settings/appearance")} type="button">Open Appearance outside the Settings rail</button>;
+}
+
+const renderAt = (path: string, withRouteChangeProbe = false) =>
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <MemoryRouter initialEntries={[path]}>
         <App />
         <Whereabouts />
+        {withRouteChangeProbe ? <RouteChangeProbe /> : null}
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -135,20 +141,49 @@ describe("the Settings area", () => {
     expect(await screen.findByRole("group", { name: "Issue details" })).toBeVisible();
   });
 
-  it("moves focus to the heading when the section changes, and not on arrival", async () => {
+  it("does not programmatically transfer pointer focus to the heading, but moves keyboard and assistive activation there", async () => {
     renderAt("/settings/profile");
     const heading = await screen.findByRole("heading", { level: 1 });
     expect(heading).not.toHaveFocus();
 
-    fireEvent.click(screen.getByRole("link", { name: "Appearance" }));
+    const appearance = screen.getByRole("link", { name: "Appearance" });
+    appearance.focus();
+    fireEvent.click(appearance, { detail: 1 });
 
-    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Appearance/ })).toHaveFocus());
+    const appearanceHeading = await screen.findByRole("heading", { level: 1, name: /Settings.*Appearance/ });
+    expect(appearanceHeading).not.toHaveFocus();
+
+    const tokens = screen.getByRole("link", { name: "Access tokens" });
+    tokens.focus();
+    fireEvent.keyDown(tokens, { key: "Enter" });
+    fireEvent.click(tokens, { detail: 0 });
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Access tokens/ })).toHaveFocus());
+
+    // Screen-reader activation reports a click with no click count too, but it
+    // does not have to dispatch an Enter keydown first.
+    fireEvent.click(screen.getByRole("link", { name: "Connected apps" }), { detail: 0 });
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Connected apps/ })).toHaveFocus());
+  });
+
+  it("does not carry a current rail activation into a later history-like section change", async () => {
+    renderAt("/settings/profile", true);
+    await screen.findByRole("heading", { level: 1, name: /Settings.*My profile/ });
+
+    // A screen reader can activate the current link with a click that has no
+    // count. It must clear, not leave behind, a pending heading focus.
+    fireEvent.click(screen.getByRole("link", { name: "My profile" }), { detail: 0 });
+    fireEvent.click(screen.getByRole("button", { name: "Open Appearance outside the Settings rail" }));
+
+    const heading = await screen.findByRole("heading", { level: 1, name: /Settings.*Appearance/ });
+    expect(heading).not.toHaveFocus();
   });
 
   it("brings the current link into the rail's strip on arrival and on each move, at once and without taking focus (§5.8)", async () => {
     // jsdom lays nothing out, so where the strip ends up is measured in the
-    // browser; here, which element is asked to scroll, how, and that focus
-    // still lands on the heading.
+    // browser; here, which element is asked to scroll, how, and that a pointer
+    // activation does not programmatically move focus to the heading.
     const scrolls = vi.spyOn(Element.prototype, "scrollIntoView");
     try {
       renderAt("/settings/appearance");
@@ -158,10 +193,13 @@ describe("the Settings area", () => {
       expect(screen.getByRole("heading", { level: 1 })).not.toHaveFocus();
 
       scrolls.mockClear();
-      fireEvent.click(within(rail).getByRole("link", { name: "Access tokens" }));
+      const accessTokens = within(rail).getByRole("link", { name: "Access tokens" });
+      accessTokens.focus();
+      fireEvent.click(accessTokens, { detail: 1 });
 
       const tokens = within(rail).getByRole("link", { name: "Access tokens" });
-      await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Access tokens/ })).toHaveFocus());
+      await screen.findByRole("heading", { level: 1, name: /Settings.*Access tokens/ });
+      expect(screen.getByRole("heading", { level: 1, name: /Settings.*Access tokens/ })).not.toHaveFocus();
       const railCalls = scrolls.mock.calls.filter((_, index) => rail.contains(scrolls.mock.contexts[index] as Node));
       expect(railCalls).toEqual([[{ inline: "nearest", block: "nearest" }]]);
       expect(scrolls.mock.contexts).toContain(tokens);
