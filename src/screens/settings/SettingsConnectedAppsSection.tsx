@@ -7,6 +7,7 @@ import { ErrorNote } from "../../components/ErrorNote";
 import type { ConnectedApp, ConnectedApps } from "../../domain/types";
 import { formatDayWithYearIfOther } from "../../lib/format";
 import { ME_QUERY_KEY } from "../../lib/ownAvatarLink";
+import { ConnectAiApp } from "./McpConnect";
 
 const keyFor = (userId: string) => ["connected-apps", userId] as const;
 const displayDate = (value: string) => Number.isNaN(Date.parse(value)) ? null : formatDayWithYearIfOther(value);
@@ -86,7 +87,7 @@ function ConnectedAppsList({ userId }: { userId: string }) {
       {query.isPending ? <Loading /> : null}
       {query.isError ? <div className="token-read-failure"><ApiNotice error={query.error} live="off">{query.data ? "Connected apps could not be refreshed. The last loaded list is shown." : "Connected apps could not be loaded."}</ApiNotice><button className="secondary-button compact-button" onClick={() => void query.refetch()} type="button">Try again</button></div> : null}
       {query.data && !query.data.available ? <p className="tokens-unavailable">Connected apps are not available because OAuth is turned off.</p> : null}
-      {query.data?.available && apps.length === 0 ? <p className="tokens-empty">No connected apps.</p> : null}
+      {query.data?.available && apps.length === 0 ? <p className="tokens-empty">No apps are connected yet.</p> : null}
       {query.data?.available && apps.length > 0 ? <ul aria-label="Your connected apps" className="token-list">{apps.map((app, index) => {
         const id = `${prefix}-${app.appId}`;
         const connected = displayDate(app.connectedAt);
@@ -99,6 +100,9 @@ function ConnectedAppsList({ userId }: { userId: string }) {
           {refusal?.id === app.appId ? <ErrorNote requestId={apiErrorFacts(refusal.error).requestId} serverWords={apiErrorFacts(refusal.error).message}>The server could not confirm that {app.name} was disconnected. Refresh the list to check.</ErrorNote> : null}
         </li>;
       })}</ul> : null}
+      {/* How an app gets into this list — only where the list says OAuth is
+          on, whether or not anything is connected yet (TAS-414). */}
+      {query.data?.available ? <><hr className="settings-divider" /><ConnectAiApp /></> : null}
     </>
   );
 }

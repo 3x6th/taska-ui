@@ -8,8 +8,20 @@ test("opens connected apps and disconnects an app", async ({ page }) => {
   await expect(page).toHaveURL(/\/projects$/);
   await page.goto("/settings/connected-apps");
   await expect(page.getByText("claude.ai")).toBeVisible();
+  // How to connect one (TAS-414), under the list with the build's MCP address.
+  const guide = page.getByRole("region", { name: "Connect an AI app" });
+  await expect(guide.getByText("http://localhost:8087/mcp", { exact: true })).toBeVisible();
+  await guide.getByRole("button", { name: "ChatGPT" }).click();
+  await expect(guide.getByText("Name it Taska, choose Public endpoint and paste this server address:")).toBeVisible();
+  await expect(guide.getByText("http://localhost:8087/mcp", { exact: true })).toBeVisible();
+  await guide.getByRole("button", { name: "Cursor" }).click();
+  await expect(guide.locator(".mcp-snippet-code")).toHaveText(/"url": "http:\/\/localhost:8087\/mcp"/);
+  await expect(guide.locator(".mcp-snippet-code")).not.toContainText("Bearer");
   await page.getByRole("button", { name: "Disconnect Claude" }).click();
   await expect(page.getByRole("button", { name: "Cancel" })).toBeFocused();
   await page.getByRole("button", { name: "Disconnect app" }).click();
-  await expect(page.getByText("No connected apps.")).toBeVisible();
+  await expect(page.getByText("No apps are connected yet.")).toBeVisible();
+  await expect(guide).toBeVisible();
+  await guide.getByRole("link", { name: "create an access token" }).click();
+  await expect(page).toHaveURL(/\/settings\/tokens$/);
 });

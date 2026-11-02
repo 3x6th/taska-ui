@@ -4369,6 +4369,13 @@ Round 1 on `e08eb4a`: release-reviewer REQUEST CHANGES (docs only), api-contract
 
 - **TAS-414 Connected apps refusal:** offer a direct “Refresh list” action beside the uncertainty message; art-director noted that the current text asks for a refresh without providing a control.
 
+### Left by TAS-414 Connect an AI app (PR #126, 2026-11-02)
+
+- **The lead promises more choice than consent gives** (release-reviewer, low): «You sign in to Taska and choose what to allow» (`McpConnect.tsx:118`, DESIGN.md Connect an AI app) — the consent page (§4.32) is Allow / Deny, no scope choice. Reword to «You sign in to Taska and allow access, and the app then appears in this list.» in both places with the next Settings pass.
+- **No test for the guide under a failed refresh with an earlier list** (release-reviewer, low): `SettingsConnectedAppsSection.tsx:88/105` draw both the «could not be refreshed» notice and the guide; one `it()` that seeds the list, rejects the refetch and asserts both.
+- **The steps fail on the stand until the backend accepts real clients** — not a frontend defect, the intended flow per «No compensations»: Claude's automatic registration and ChatGPT's CIMD are refused ([TAS-466](https://jira.ozero.dev/browse/TAS-466) and its comment); Cursor's DCR with its two documented redirects answers 201 (probe, client «Cursor») but no real Cursor run yet; `cursor://` would be refused. Today claude.ai is connected through a manually registered public client. Re-run all three from the guide once TAS-466 lands.
+- **«via MCP» on the stand** (was under *Left by TAS-412*): `VITE_TASKA_MCP_URL` is set (2026-11-02) and claude.ai's MCP `whoami` answers with `token_kind: OAUTH`; the claude.ai grant is `read`, so no MCP write has been made yet — the mark still needs one write through a write-scoped client.
+
 ### Left by TAS-464 (the frontend for backend TAS-440, TAS-443 and TAS-444, develop `af7ab57e`, 2026-11-02)
 
 - **Two reasons are still only in the Java** (yml at `af7ab57e`): `ISSUE_TYPE_TARGET_INVALID` (400, `IssueTypeDeletionTransactions`) and `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT` (400, `WorkflowBindingTransactions`). The client branches on both — `isIssueTypeTargetInvalid` re-reads the registry and restarts the step, `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT_REASON` in Workflows — so it depends on reasons the contract does not state (API-DIVERGENCE «contract silent»); in the backend ask [TAS-465](https://jira.ozero.dev/browse/TAS-465), with the `/users` 503 and the create's binding reasons.

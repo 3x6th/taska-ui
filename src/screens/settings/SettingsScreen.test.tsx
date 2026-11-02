@@ -118,7 +118,7 @@ describe("the Settings area", () => {
   it("opens Connected apps for the signed-in user", async () => {
     renderAt("/settings/connected-apps");
     expect(await screen.findByRole("heading", { level: 1, name: /Settings.*Connected apps/ })).toBeVisible();
-    expect(await screen.findByText("No connected apps.")).toBeVisible();
+    expect(await screen.findByText("No apps are connected yet.")).toBeVisible();
   });
 
   it("answers an address inside /settings that is no section with the not-found screen", async () => {

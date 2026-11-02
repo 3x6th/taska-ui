@@ -3207,6 +3207,53 @@ h1 {
   margin-top: 9px;
 }
 
+/* Connect an AI app (TAS-414): the chosen app's numbered steps under the
+   picker. The numbers hang in the first 18 of the column, `--fg-2` like the
+   page's other quiet text; the steps are `--fg`, because they are what the
+   reader does. An item stays `display: list-item` — a flex one loses its
+   number — so a step with a box stacks its line, box and answer inside a
+   `.mcp-snippet-wrap`. */
+.mcp-steps {
+  margin: 14px 0 0;
+  padding: 0 0 0 18px;
+  font-size: 12.5px;
+}
+
+.mcp-steps > li + li {
+  margin-top: 12px;
+}
+
+.mcp-steps > li::marker {
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.mcp-step-text {
+  margin: 0;
+  color: var(--fg);
+  text-wrap: pretty;
+}
+
+.mcp-steps .mcp-snippet-wrap {
+  margin-top: 0;
+}
+
+/* The app maker's guide, on its own line in the first step: the 28 floor of
+   the actor filter's link (44 below 820, with the page's other targets), and
+   `fit-content`, so the ring circles the words and the icon, not the column. */
+.mcp-help-link {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  margin-top: 6px;
+}
+
+.mcp-steps + .mcp-note {
+  margin-top: 14px;
+}
+
 /* Below 560 Copy goes under the snippet, so the text has the box's whole
    width: beside it, the Cursor JSON broke inside its address at 390. */
 @media (max-width: 559px) {
@@ -3217,6 +3264,10 @@ h1 {
   .mcp-snippet .compact-button {
     justify-self: start;
   }
+
+  .mcp-steps .mcp-snippet {
+    margin-inline-start: -18px;
+  }
 }
 
 @media (max-width: 820px) {
@@ -3225,7 +3276,8 @@ h1 {
   .token-read-failure .secondary-button,
   .token-confirm .compact-button,
   .token-secret-row .compact-button,
-  .mcp-snippet .compact-button {
+  .mcp-snippet .compact-button,
+  .mcp-help-link {
     min-height: 44px;
   }
 }
@@ -5111,11 +5163,10 @@ h1 {
   text-wrap: pretty;
 }
 
-/* A story key inside a sentence, in the two places this area names one: the
-   placeholder for a section with no endpoints, and the Events note for the one
-   endpoint the gateway has not deployed yet. One affordance, two names — each
-   says where it is, and neither pretends to be a general link style for an area
-   whose other links are all navigation. */
+/* The shared quiet-link recipe: `--fg-2` underlined text that turns accent on
+   hover, with a rounded accent focus ring. Used by the admin notes, the Members
+   modal (`ProjectMembersModal.tsx`), and the Settings Connected apps guide (the
+   help links and the access-token link). */
 .admin-placeholder-link,
 .admin-note-link,
 .admin-audit-actor-filter {

@@ -4385,7 +4385,47 @@ Cancel первым и с начальным фокусом; Cancel/Escape во�
 абзацу. Успех согласует кэш; отказ возвращает строку, сообщает, что отключение не подтверждено,
 показывает слова сервера и request ID через §5.6 и перечитывает список. Постоянный скрытый status
 объявляет результат. Загрузка — две строки скелета; пустой список, выключенный OAuth и ошибка чтения
-различаются. Нет входной анимации и новых визуальных токенов.
+различаются. Нет входной анимации и новых визуальных токенов. Пустой список — «No apps are connected
+yet.»
+
+**Connect an AI app (TAS-414).** Под списком — как приложение в него попадает. Блок есть, когда ответ
+списка говорит `available: true`, — и при пустом списке, и при строках; его нет при загрузке, при
+отказе чтения без данных и при выключенном OAuth (тогда единственная строка — «Connected apps are not
+available because OAuth is turned off.»). Рецепт Connect an AI agent: разделитель (22 сверху и снизу),
+`section` с `h2` 14/650 «Connect an AI app», `.settings-lead` «Claude, ChatGPT and Cursor can work in
+Taska as you through Taska’s MCP server. You sign in to Taska and choose what to allow, and the app then
+appears in this list.» Через 14 — выбор `.segmented.fit` Claude | ChatGPT | Cursor с `aria-pressed`
+(`role="group"`, «App»; по умолчанию Claude, нажатие выбранного ничего не делает), под ним через 14 —
+шаги выбранного приложения; шаги ключуются приложением, и «copied» одного не остаётся под другим.
+Шаги — `ol`: порядок и есть инструкция, поэтому номера видны — родные маркеры `--fg-2` с tabular-nums
+в поле 18 слева, между шагами 12; текст шага `.mcp-step-text` 12.5 `--fg`, цвет на самом тексте. Уже
+560 бокс в шаге выходит под номер (`margin-inline-start:-18`), чтобы запись Cursor не переносила строку адреса.
+Внешняя ссылка на руководство производителя — своей строкой внутри шага: новая вкладка,
+`rel="noopener noreferrer"`, `ExternalLink` 13 после слов (как «Open Telegram bot»), рецепт
+`.admin-note-link`, `display:flex; width:fit-content; min-height:28; margin-top:6` (кольцо §7 выходит
+за коробку на 4: без отступа ложилось на выносные строки шага и на нижнюю рамку бокса Cursor), ниже
+820 — 44. Бокс с Copy — рецепт сниппета Connect an AI agent; ответ в постоянной `role="status"`, при
+отказе буфера текст выделяется, слова отказа — как у сниппетов (с вариантом для coarse pointer).
+
+- Claude: «In Claude, open Customize → Connectors, choose Add, then Add custom connector.» + «How to add
+  a custom connector» (статья Anthropic); «Name it Taska and paste this server address:» + адрес, Copy
+  «Copy the server address» → «Address copied.»; «Choose Connect, sign in to Taska and allow access.»
+- ChatGPT: «In ChatGPT, open Plugins, choose Add, then Add custom MCP server.» + «How to add a custom
+  MCP server» (документация OpenAI); «Name it Taska, choose Public endpoint and paste this server
+  address:» + адрес, тот же Copy; «Set authentication to OAuth and create the plugin, then sign in to
+  Taska and allow access.»
+- Cursor: «Add this to ~/.cursor/mcp.json:» + запись только с `url` (без токена: Cursor регистрируется
+  сам и входит по OAuth), печать — как у сниппета Cursor на Access tokens; Copy «Copy the Cursor
+  configuration» → «Configuration copied.»; под боксом «Cursor’s MCP guide» (cursor.com/docs/mcp); «In
+  Cursor’s MCP settings, choose to connect Taska, then sign in to Taska and allow access.»
+
+После шагов через 14 — заметка 11.5 `--fg-2` «For Claude Code or a script, create an access token
+instead.», где «create an access token» — ссылка роутера на `/settings/tokens` (`.admin-note-link`, та
+же вкладка). Пустой адрес сборки — под лидом одна строка «The MCP server is not available yet.», без
+выбора, шагов, ссылок и Copy. Называются только эти три приложения, и только для них на стенде
+разрешены адреса возврата; шаги описывают задуманный путь (вход в Taska и согласие), без client ID и
+обходов (AGENTS.md, «No compensations for the backend»). Фолбэк фокуса после последнего Disconnect
+остаётся на вводном абзаце раздела, не в блоке. Входной анимации и новых токенов нет.
 
 **Appearance.** Без кнопки Save, без тоста и без «Saved»: выбор применяется сразу и пишется в
 `localStorage`. Под шапкой — вводная 12.5/400 `--fg-2` «These choices are saved in this browser.»;
@@ -4760,7 +4800,9 @@ e2e). Другое значение останавливает dev-сервер,
   лечится тем же псевдоэлементом, что правило пары.
 - **Открыто в TAS-412** (решение art-director 2026-10-25, 390): сегменты выбора агента (Claude Code |
   Cursor) и Expires — 30 в высоту, как Appearance; остальные контролы раздела Access tokens ниже 820 —
-  44. Лечится тем же псевдоэлементом по правилу пары, а не 44 здесь одном.
+  44. Лечится тем же псевдоэлементом по правилу пары, а не 44 здесь одном. Тот же случай — выбор
+  приложения Connect an AI app (Claude | ChatGPT | Cursor) на Connected apps, 30 при 390 (замер
+  art-director 2026-11-02, TAS-414).
 - **TAS-414 — унаследованный контраст hover у ghost-destructive.** Connected apps использует общий
   рецепт Disconnect/Revoke (§4.1, §5.9): `--danger` на `--surface-2` — 3.24:1 светлая / 5.19:1 тёмная;
   светлая ниже порога 4.5:1. Art-director явно принимает этот унаследованный недостаток в TAS-414.
