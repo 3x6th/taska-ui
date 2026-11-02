@@ -80,8 +80,15 @@ export const ISSUE_TYPE_INVALID_FIELDS_MESSAGE = "Invalid issue type name, color
 export const LAST_ISSUE_TYPE_MESSAGE = "Cannot delete the last issue type";
 /** `details.reason` of the refused delete of the only type left (backend TAS-418). */
 export const LAST_ISSUE_TYPE_REASON = "LAST_ISSUE_TYPE";
-/** A create whose code the project already holds (409 `ALREADY_EXISTS`). */
-export const issueTypeExistsMessage = (code: string) => `Issue type ${code} already exists in this project`;
+/**
+ * A create whose code the project already holds (409 `ALREADY_EXISTS`, no
+ * `details.reason`, and no code in the sentence since the create moved to
+ * `IssueTypeCreationTransactions.begin` in backend TAS-436). Not the only
+ * `ALREADY_EXISTS` a create can meet: a replay under another command's
+ * `X-Request-Id` is one too, with `REQUEST_ID_REUSED` (develop `d886b031`), so
+ * «code taken» is read off the code **and** the missing reason.
+ */
+export const ISSUE_TYPE_EXISTS_MESSAGE = "Issue type already exists";
 /**
  * DELETE of a type live issues still carry — deleted ones no longer count
  * since backend TAS-418 (400 `FAILED_PRECONDITION`, `details.reason`
@@ -105,18 +112,42 @@ export const ISSUE_TYPE_ORDER_REPEATS_MESSAGE = "codes must be a complete permut
  * same code as a malformed body.
  */
 export const ISSUE_TYPES_CHANGED_MESSAGE = "Issue type registry changed; reload the current types before reordering";
-/** `details.reason` of the stale reorder above — what the dialog branches on, with the `ABORTED` code. */
+/**
+ * `details.reason` of a registry that changed under a write — read with the
+ * code, 409 `ABORTED`. At develop `d886b031` (backend TAS-440) the server
+ * answers it that way on the reorder above, a type's create
+ * (`IssueTypeCreationCoordinator.REJECTED` holds `ABORTED`) and a workflow's
+ * binding change (create, or a PATCH with `issueTypes`).
+ *
+ * **Not on a delete with a move**, although the yml names a 409 there too:
+ * `IssueTypeDeletionCoordinator.REJECTED` (line 32) has no `ABORTED`, so the
+ * reservation's `ISSUE_TYPES_CHANGED` — and issue-service's `ISSUE_TYPE_CHANGED`
+ * from `IssueTypeMoveService.validateRegistry` — come back as 503
+ * `UNAVAILABLE` `ISSUE_TYPE_DELETION_PENDING`, a pending delete that
+ * `recover()` never settles: the type gate stays, and `/context`,
+ * `/workflows` and every type write answer 409 `ISSUE_TYPE_OPERATION_PENDING`
+ * meanwhile. Backend TAS-465. The client says that 503 as any pending delete
+ * and offers the repeat.
+ */
 export const ISSUE_TYPES_CHANGED_REASON = "ISSUE_TYPES_CHANGED";
 /*
- * The reasons of backend TAS-433 and TAS-437 (develop `78019ece`) that the
- * Issue types dialog and New issue branch on — always with `details.reason`,
- * never the prose. Read in `IssueTypeDeletionTransactions`,
- * `IssueTypeCreationCoordinator` (project-service) and `IssueTypeMoveService`,
- * `IssueTypeWriteGuard` (issue-service).
+ * The reasons of backend TAS-433, TAS-437 and TAS-440 (develop `d886b031`)
+ * that the Issue types dialog and New issue branch on — always with
+ * `details.reason`, never the prose. Read in `IssueTypeDeletionTransactions`,
+ * `IssueTypeDeletionCoordinator`, `IssueTypeCreationTransactions`,
+ * `IssueTypeCreationCoordinator` (project-service),
+ * `WorkflowCreatedTypeBindingService` (workflow-service) and
+ * `IssueTypeMoveService`, `IssueTypeWriteGuard` (issue-service).
  */
 /** A delete with a move whose target is the type itself, malformed or not registered (400 `INVALID_ARGUMENT`). */
 export const ISSUE_TYPE_TARGET_INVALID_REASON = "ISSUE_TYPE_TARGET_INVALID";
-/** A delete with a move whose `expectedGeneration` is not the entry's (409 `ABORTED`, `details.generation`). */
+/**
+ * A delete with a move whose `expectedGeneration` is not the entry's (409
+ * `ABORTED`, `details.generation`), refused before the move starts
+ * (`IssueTypeDeletionTransactions.beginNew`). The same reason from the move
+ * itself (`IssueTypeMoveService.validateRegistry`) is the non-settling 503 of
+ * `ISSUE_TYPES_CHANGED_REASON` above at `d886b031` (backend TAS-465).
+ */
 export const ISSUE_TYPE_CHANGED_REASON = "ISSUE_TYPE_CHANGED";
 /** A delete with a move and no `expectedGeneration` for a code created again (409 `ABORTED`). */
 export const ISSUE_TYPE_GENERATION_REQUIRED_REASON = "ISSUE_TYPE_GENERATION_REQUIRED";
@@ -126,17 +157,38 @@ export const ISSUE_STATUSES_UNMAPPED_REASON = "ISSUE_STATUSES_UNMAPPED";
 export const ISSUE_TYPE_STATUS_MAPPING_INVALID_REASON = "ISSUE_TYPE_STATUS_MAPPING_INVALID";
 /**
  * A type's delete the server has not finished: 503 `UNAVAILABLE` with
- * `operationId` on the delete — repeat the same command — and, on an issue
- * create naming the type while it is pending, 400 `FAILED_PRECONDITION`.
+ * `operationId` on the delete (`IssueTypeDeletionTransactions.pendingError`,
+ * raised by `IssueTypeDeletionCoordinator`) — repeat the same command — and,
+ * on an issue create naming the type while it is pending, 400
+ * `FAILED_PRECONDITION`. At `d886b031` it is also what a move refused
+ * `ABORTED` mid-way answers, and that one does not settle (backend TAS-465,
+ * see `ISSUE_TYPES_CHANGED_REASON`).
  */
 export const ISSUE_TYPE_DELETION_PENDING_REASON = "ISSUE_TYPE_DELETION_PENDING";
-/** A type's create the server has not finished (503 `UNAVAILABLE`, `operationId`): repeat it with the same `X-Request-Id`. */
+/**
+ * A type's create the server has not finished (503 `UNAVAILABLE`,
+ * `operationId`, raised by `IssueTypeCreationCoordinator`): repeat it with the
+ * same `X-Request-Id`.
+ */
 export const ISSUE_TYPE_CREATION_PENDING_REASON = "ISSUE_TYPE_CREATION_PENDING";
 /** A create whose `workflowId` is neither an own workflow of the project nor the shared default (400 `INVALID_ARGUMENT`). */
 export const WORKFLOW_NOT_IN_PROJECT_REASON = "WORKFLOW_NOT_IN_PROJECT";
-/** A type write while another type operation of the project is pending (409 `ABORTED`, project-service). */
-export const PROJECT_TYPE_OPERATION_PENDING_REASON = "PROJECT_TYPE_OPERATION_PENDING";
-/** A pending command's `X-Request-Id` sent again with another body (409 `ALREADY_EXISTS`). */
+/**
+ * A create without `workflowId` on a project whose registry is empty — there
+ * is no first type whose workflow it could take (400 `FAILED_PRECONDITION`,
+ * "Choose a workflow for the first project issue type", backend TAS-440,
+ * `IssueTypeCreationTransactions.begin` at `d886b031`). Checked after the code
+ * is found free, before anything is reserved.
+ */
+export const ISSUE_TYPE_WORKFLOW_REQUIRED_REASON = "ISSUE_TYPE_WORKFLOW_REQUIRED";
+/** The message of the refusal above, as project-service words it. */
+export const ISSUE_TYPE_WORKFLOW_REQUIRED_MESSAGE = "Choose a workflow for the first project issue type";
+/**
+ * A recoverable command's `X-Request-Id` sent again with another body (409
+ * `ALREADY_EXISTS`): a type's create (`IssueTypeCreationTransactions`) and a
+ * workflow's binding change (`WorkflowBindingTransactions`), the one replay
+ * reason of both since backend TAS-440 (develop `d886b031`).
+ */
 export const REQUEST_ID_REUSED_REASON = "REQUEST_ID_REUSED";
 
 /** An issue write naming a well-formed key the registry does not hold (400 `INVALID_ARGUMENT`). */
@@ -204,10 +256,11 @@ const GENERATION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 
 /**
  * One `ProjectIssueTypeDto`, or `null` when it carries no usable code. See
- * `toProjectIssueTypes`. `generation` (backend TAS-433) is nullable and read
- * defensively: kept only when it is a UUID, and left out otherwise — a delete
- * with a move then goes without `expectedGeneration` rather than with a value
- * the gateway's `format: uuid` would refuse.
+ * `toProjectIssueTypes`. `generation` (backend TAS-433) is required and
+ * non-null since backend TAS-440 and still read defensively: kept only when it
+ * is a UUID, and left out otherwise — a delete with a move then goes without
+ * `expectedGeneration` rather than with a value the gateway's `format: uuid`
+ * would refuse.
  */
 export function toProjectIssueType(value: unknown): ProjectIssueType | null {
   if (typeof value !== "object" || value === null) return null;

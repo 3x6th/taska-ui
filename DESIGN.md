@@ -1055,14 +1055,16 @@ height 32, width 220, radius 9, `border:1px var(--border-strong)`, фон `--sur
   значение остаётся законным ответом, который клиент обязан пережить. См.
   `docs/ai/API-DIVERGENCE.md`. Тело 12.5px `--fg`, `white-space:pre-wrap`,
   `overflow-wrap:anywhere`.
-- **Канал** (TAS-412, TAS-411; с TAS-425 — и на стенде): комментарий, последняя запись которого
-  пришла через MCP или API-токен (`channel` `MCP` / `API_TOKEN` в `CommentResponseDto`), помечен в
-  шапке после имени автора — мета 11 `--fg-3` «via MCP» / «via API token»; `span.via-mark`, перенос
-  где угодно; 3.14:1 светлая / 3.05:1 тёмная на `--surface`. Имени токена в пометке нет: контракт
-  объявляет имя и id токена приватными и не отдаёт их. `UI`, `null` и незнакомый канал — шапка как
-  была. Незнакомый канал, в отличие от незнакомого статуса (TAS-173), не печатается как пришёл:
-  пометка — примечание к строке, и её отсутствие — обычное состояние. Шапка и есть строка меты,
-  поэтому пометка здесь, а не после времени, как в ленте (§4.26).
+- **Канал** (TAS-412, TAS-411; с TAS-425 — и на стенде; имя — TAS-464): комментарий, последняя
+  запись которого пришла не из UI (`channel` в `CommentResponseDto` — открытая строка), помечен в
+  шапке после имени автора — мета 11 `--fg-3` «via {name}»; `span.via-mark`, перенос где угодно;
+  3.14:1 светлая / 3.05:1 тёмная на `--surface`. {name} — по правилу подписи §6: известный сборке
+  код — её слово (`MCP` — «MCP», `API_TOKEN` — «API»; это и имена `/meta` `actionChannels`, backend
+  TAS-443); незнакомый — `name` из `/meta`, если в нём нет кириллицы. Имени токена нет: контракт
+  объявляет имя и id токена приватными. `UI`, `null`, пустая строка и код без такого имени — шапка
+  как была: код как пришёл не печатается (в отличие от статуса, TAS-173) — пометка лишь примечание
+  к строке, и её отсутствие — обычное состояние. Шапка и есть строка меты, поэтому пометка здесь, а
+  не после времени, как в ленте (§4.26).
 - **Действия** («Edit», «Delete») — `.link-button` 11.5px `--fg-3`, только автору.
 - **Delete спрашивает** полосой §4.22 (TAS-259) — под строкой «Edit · Delete», в колонке
   текста комментария (левый край — край текста, без отступа аватара; 8 сверху, 2 снизу);
@@ -1793,14 +1795,12 @@ navigates the tab.
 
 **Автор события** (TAS-398) — `actor` события по цепочке §4.21 (`personFor`: сводка события → карта участников → «Unknown»), как у автора комментария. Бывший участник проекта рисуется как любой человек: имя из сводки, фото из её `avatarUrl` поверх цвета по id (§4.4; строки участника нет — палитра по id, §2.2). Пометки «former member» нет: лента говорит, кто сделал, а не кто сейчас в проекте, — это говорит Members (§4.22). `actor: null`, когда и карта id не знает, — «Unknown» и пунктирный аватар §4.4 с `label` «Unknown» (без `label` `Avatar` называет пустой круг «Unassigned»). «Someone» снято: у неназванного человека в одной панели одно слово (§4.21, §4.24). Предложение события и порядок ленты не меняются.
 
-**Канал** (TAS-412, TAS-411; с TAS-425 — и на стенде). Событие, сделанное через MCP или
-API-токен (`channel` `MCP` / `API_TOKEN` в `IssueHistoryResponseDto`),
-помечено не в предложении, а в строке меты после времени: `{time}` + обычный
-пробел + `<span aria-hidden="true"> · </span>` + `span.via-mark` (пробел перед
-скрытой точкой — то, что слышит читалка; без него «12:14via MCP» звучит одним
-словом) «via MCP» / «via API token» — имени токена нет, контракт его не отдаёт; `UI`,
-`null` и незнакомый канал — без пометки (§4.15), рецепт
-времени — 11 `--fg-3`, `margin-top:1`, перенос где угодно. Предложение события
+**Канал** (TAS-412, TAS-411; с TAS-425 — и на стенде; имя — TAS-464). Событие, сделанное не из
+UI (`channel` в `IssueHistoryResponseDto` — открытая строка), помечено не в предложении, а в
+строке меты после времени: `{time}` + обычный пробел + `<span aria-hidden="true"> · </span>` +
+`span.via-mark` (пробел перед скрытой точкой — то, что слышит читалка; без него «12:14via MCP»
+звучит одним словом) «via {name}» — {name} и случаи без пометки по §4.15; рецепт времени — 11
+`--fg-3`, `margin-top:1`, перенос где угодно. Предложение события
 остаётся целым: пометка после имени актора меняла кегль посреди фразы, а на 390
 рвала её на «…moved To Do / to In Progress». Без пометки — строка как была.
 Решение `art-director` на TAS-412; без имени токена — на TAS-425.
@@ -1942,7 +1942,8 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
 **Тело, сверху вниз.**
 - ADMIN: secondary compact «New workflow» (`Plus` 13) — всегда, когда у проекта есть типы: с
   TAS-437 тип со своим workflow переносится, а не отказывается. Строки «Every issue type in this
-  project already has its own workflow.» больше нет, на её месте ничего не встаёт.
+  project already has its own workflow.» больше нет, на её месте ничего не встаёт. Пустой реестр —
+  ниже, «Пусто».
 - MEMBER/VIEWER: строка 11.5 `--fg-2` «Only a project admin can change workflows.» Роль
   неизвестна (§5.7) — «Your role on this project is unknown, so workflows cannot be changed
   here.» Пока роль читается — ничего.
@@ -2129,8 +2130,8 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
   отмечен заранее. Отмеченный тип переезжает сюда с общего default или со своего workflow
   (backend TAS-436); 409 за занятый тип больше нет. Ни один не отмечен — «Create workflow»
   `aria-disabled` без фразы.
-- Копия — общий default, как прежде; нет его в списке — основной workflow проекта (в чьих
-  `issueTypes` первый тип реестра). Под группой 11.5 `--fg-2`, `aria-describedby` группы: «Starts
+- Копия — общий default, как прежде (с TAS-440 список несёт его всегда); нет его в списке —
+  workflow, который список называет `mainWorkflowId`. Под группой 11.5 `--fg-2`, `aria-describedby` группы: «Starts
   as a copy of {source}, so issues coming from it keep their status.» Задачам типов из других
   workflow — «Шаг сопоставления (типы)».
 - Кнопка — «Create workflow», на шаге — «Move and create». Отказы — как у правки ниже, с «was not
@@ -2367,8 +2368,12 @@ at most {limit} at once, so {subject} cannot be deleted.» ({limit} — `toLocal
   «Workflows are not on this gateway yet, so they cannot be shown here.» Без id, без
   `--danger`, не живая, кнопок записи нет. Данные контекста не подставляются (без
   компенсаций).
-- **Пусто** (`items: []` — у проекта нет типов задач). 12.5 `--fg-2` «This project has no
-  issue types, so it runs on no workflow.» «New workflow» нет. Это ответ, а не отказ.
+- **Пустой реестр** (в реестре контекста нет типов). С TAS-440 список всё равно несёт общий
+  default — он рисуется карточкой, «Used by» — «No issue type uses it.» «New workflow» нет; у
+  ADMIN на его месте 11.5 `--fg-2`: «This project has no issue types yet, so no workflow can be
+  created for it.»
+- **Пусто** (`items: []`) — прежняя строка 12.5 `--fg-2` «This project has no issue types, so it
+  runs on no workflow.» «New workflow» нет. Это ответ, а не отказ.
 - **В полёте.** Рецепт §4.1: отправка `aria-disabled`, подпись прежняя, без затемнения,
   `cursor:progress`. Cancel формы и `Esc` инертны, остальные триггеры не открываются; Close
   и скрим диалог закрывают (см. «Успех»). Текстовые поля в полёте `readOnly`, изменения
@@ -2605,25 +2610,57 @@ TAS-418): сервер атомарно пишет `sortOrder` 10, 20, 30… и 
 - **«Workflow»** (только создание, TAS-437). Нативный select 32 во всю ширину, после «Icon», перед
   действиями: облик держится у живого чипа, поведение — у отправки.
   - Варианты: свои workflow в порядке диалога Workflows, доноры включительно, «{name}»; затем
-    общий, если он в списке, — «{name} (shared)».
-  - Основной (workflow первого типа реестра) подписан «{name} (same as {First})», у общего —
-    «(shared, same as {First})». Он выбран, пока select не трогали, и следует за перестановкой.
-    Шлётся `workflowId` выбранного.
+    общий — «{name} (shared)»; с TAS-440 список несёт его всегда.
+  - Основной — workflow, который список называет `mainWorkflowId` (backend TAS-440); клиент его из
+    `issueTypes` не выводит. Подписан «{name} (same as {First})», у общего — «(shared, same as
+    {First})». Он выбран, пока select не трогали, и следует за перестановкой. Шлётся `workflowId`
+    выбранного.
   - Список читается открытием формы (ключ `["project-workflows", projectId]`, общий с §4.28).
-  - Пока список читается или не прочитан — один вариант «Same as {First}» без `workflowId`: сервер
-    возьмёт тот же основной, форма не ждёт. Отказ чтения — под select'ом 11.5 `--fg-2`: «Other
-    workflows could not be loaded, so only this one is offered.»
-  - Пустой реестр — поля нет. В правке поля нет: workflow типа меняет «Used by» в Workflows.
+  - Непустой реестр: пока список читается, не прочитан или в нём нет workflow с `mainWorkflowId` —
+    один вариант «Same as {First}» без `workflowId`: сервер возьмёт тот же основной, форма не ждёт.
+    Отказ чтения — под select'ом 11.5 `--fg-2`: «Other workflows could not be loaded, so only this
+    one is offered.» Заметка — только при непустом реестре.
+  - Пустой реестр (в реестре контекста нет типов): «Same as …» нет — сравнивать не с чем, а без
+    `workflowId` сервер создание отказывает (backend TAS-440). Выбран общий default, пока select не
+    трогали; `workflowId` шлётся всегда.
+    - Пока список не ответил — единственный вариант «Loading workflows»; отправка `aria-disabled` по
+      рецепту «стойко недоступен» §4.1 без фразы, как пустое обязательное поле (§4.28 «Формы —
+      общее»): фраза мигала бы на каждом открытии (замер art-director, TAS-464: ≈150 мс, ряд
+      действий сдвигается на 27 px на 1440).
+    - Отказ чтения — вариант «No workflow loaded», отправка стойко недоступна, причина
+      `.admin-write-hint`: «This project's workflows could not be loaded, so the type cannot be
+      added. Cancel, then press Add type to try again.» Без слов сервера и id, как у заметки
+      непустого реестра.
+    - Список ответил, но workflow в нём нет (с TAS-440 не бывает: общий в списке всегда) — вариант
+      «No workflow loaded», отправка `aria-disabled` без фразы: «could not be loaded» было бы
+      неправдой.
+    - Общего в списке нет — первым `disabled` «Choose a workflow», отправка `aria-disabled` без фразы
+      до выбора (рецепт шага переноса).
+  - В правке поля нет: workflow типа меняет «Used by» в Workflows.
 - **Ответ 201** (`CreatedProjectIssueTypeDto`) — в кэш контекста, как прежде. Polite: «Type {Name}
   added. It uses {workflow}.» Имя — по `workflowId` из списка; нет его там — «the shared workflow».
 - **503 `ISSUE_TYPE_CREATION_PENDING`** — «Ещё применяется» §4.28, подпись «Add type».
 - Кнопки: «Cancel» и «Add type» / «Save changes». Создание шлёт `sortOrder` = наибольший + 10 —
   новый тип всегда последний; правка шлёт только изменённые поля.
 - Отказы: «The type was not added.» / «The type was not saved.» + слова сервера +
-  `X-Request-Id`. 409 `ALREADY_EXISTS` при создании — причина у кода «{CODE} is already a type
-  in this project.»; 404 правки — «{Name} is no longer one of this project's issue types.» и
+  `X-Request-Id`. 404 правки — «{Name} is no longer one of this project's issue types.» и
   перечитывание контекста. 404 правки и 403 на записи формы говорятся в слоте уведомлений
   диалога: форма с ними уходит.
+  - 409 `ALREADY_EXISTS` при создании — причина у кода «{CODE} is already a type in this
+    project.», только без `details.reason = REQUEST_ID_REUSED`; с ним — общий отказ: повтор под
+    чужим `X-Request-Id` о коде ничего не говорит.
+  - 400 `ISSUE_TYPE_WORKFLOW_REQUIRED` (реестр опустел в другом месте, пока форма предлагала «Same
+    as …») — `ErrorNote` «Issue types changed elsewhere and none are left, so the type was not
+    added. Check its workflow and add it again.» без слов сервера, с `X-Request-Id`; форма остаётся;
+    контекст и список перечитываются, и select становится select'ом пустого реестра; фокус — на
+    select.
+  - 400 `WORKFLOW_NOT_IN_PROJECT` (выбранный workflow удалён в другом месте) — `ErrorNote`
+    «{Workflow} is no longer one of this project's workflows, so the type was not added. Check its
+    workflow and add it again.» без слов сервера, с `X-Request-Id`; {Workflow} — имя отправленного
+    по списку на момент отправки, нет его — «The chosen workflow». Список перечитывается, select
+    возвращается к основному (на пустом реестре — к общему); фокус — на select, не на отправку:
+    читатель видит, к чему вернулся выбор, прежде чем жать Add type; успех называет workflow
+    («It uses …»).
 - Клавиатура: Name → Code → цвета → формы → иконки → Workflow (только создание) → Cancel → отправка. Enter в поле отправляет; `Esc`
   закрывает форму, фокус — на её триггер (§4.11; имя и код — значения, `Esc` не держат).
 

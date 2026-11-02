@@ -6202,8 +6202,10 @@ function CommentItem({
   };
   const when = formatDateTime(comment.createdAt);
   const asking = canManage && confirming && !editing;
-  // "via MCP" or "via API token" — nothing for a comment written in the UI (TAS-412).
-  const via = actionViaText(comment.via);
+  // "via MCP" or "via API" — the build's word for a channel it knows, else the
+  // name `/meta` gives it — and nothing for a comment written in the UI (TAS-412).
+  const channels = useMeta()?.actionChannels;
+  const via = actionViaText(comment.via, channels);
 
   return (
     <article className="comment-item">
@@ -6472,7 +6474,8 @@ function ActivityItem({
   // "Aug 1, 12:00 · via MCP" — and the sentence stays whole
   // (§4.26). The plain space before the hidden dot is what a screen reader
   // keeps between the two. An event without one draws exactly as before.
-  const via = actionViaText(event.via);
+  const channels = useMeta()?.actionChannels;
+  const via = actionViaText(event.via, channels);
   const time = <time>{formatDateTime(event.occurredAt)}</time>;
   return (
     <div className="activity-item">

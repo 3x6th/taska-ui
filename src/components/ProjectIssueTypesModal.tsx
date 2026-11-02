@@ -20,7 +20,7 @@ import type {
   ProjectContext,
   ProjectIssueType,
   ProjectRole,
-  ProjectWorkflowEntry,
+  ProjectWorkflowList,
 } from "../domain/types";
 import { boardKey } from "../lib/boardQuery";
 import { issueTypeColorValue, issueTypeFallbackLabel, issueTypeLabel, keyBadgeStyle, statusLabel } from "../lib/format";
@@ -28,9 +28,12 @@ import {
   defaultIssueTypeColor,
   inUseCountOf,
   isIssueStatusesUnmapped,
+  isIssueTypeCodeTaken,
   isIssueTypeInUse,
   isIssueTypeReplaced,
   isIssueTypeTargetInvalid,
+  isIssueTypeWorkflowRequired,
+  isWorkflowNotInProject,
   issueTypeCodeOf,
   issueTypeDeleteRefusalText,
   issueTypeMoveSentence,
@@ -43,6 +46,7 @@ import {
 import { refusalWords } from "../lib/projectArchive";
 import { projectContextKey } from "../lib/projectContext";
 import {
+  isIssueTypesChanged,
   isMigrationLimitRefusal,
   migrationLimitSentence,
   namedStatusKeys,
@@ -119,10 +123,12 @@ type OpenForm = { kind: "create" } | { kind: "edit"; code: string };
  * A write as it is sent. A create and a delete carry `requestId` only when
  * they repeat a command the server answered «still being applied»
  * (`CommandRetry`); a delete with a move carries the command and the target's
- * label, which its success names.
+ * label, which its success names. A create with a `workflowId` carries that
+ * workflow's name as the list named it when the form sent it, which a
+ * `WORKFLOW_NOT_IN_PROJECT` refusal says (the re-read it causes drops it).
  */
 type TypeWrite =
-  | { kind: "create"; input: CreateProjectIssueTypeInput; name: string; requestId?: string }
+  | { kind: "create"; input: CreateProjectIssueTypeInput; name: string; workflowName?: string; requestId?: string }
   | { kind: "edit"; code: string; input: UpdateProjectIssueTypeInput; name: string }
   | {
       kind: "delete";
@@ -374,8 +380,8 @@ export function ProjectIssueTypesModal({
         // Sent with the largest `sortOrder` + 10, so it is the last (§4.30).
         setRegistry((current) => [...current.filter((item) => item.code !== entry.code), entry]);
         // Named from the list as it was when the form sent it, before it is read again.
-        const listed = queryClient.getQueryData<ProjectWorkflowEntry[]>(projectWorkflowsKey(projectId));
-        const workflow = listed?.find((item) => "workflowId" in answer && item.workflow.id === answer.workflowId);
+        const listed = queryClient.getQueryData<ProjectWorkflowList>(projectWorkflowsKey(projectId));
+        const workflow = listed?.items.find((item) => "workflowId" in answer && item.workflow.id === answer.workflowId);
         void queryClient.invalidateQueries({ queryKey: contextKey });
         invalidateDependents();
         setAnnouncement(
@@ -446,6 +452,14 @@ export function ProjectIssueTypesModal({
           pendingFocus.current = ["step"];
           return;
         }
+        if (isIssueTypesChanged(error)) {
+          // The yml's 409 `ABORTED` for a registry changed under the move. At
+          // `d886b031` it arrives as a 503 instead (backend TAS-465, see
+          // `ISSUE_TYPES_CHANGED_REASON`); for the day it is the 409, the
+          // registry and the list are read again. Said as any other refusal.
+          void queryClient.invalidateQueries({ queryKey: contextKey });
+          void queryClient.invalidateQueries({ queryKey: projectWorkflowsKey(projectId) });
+        }
         // Anything else is said in the strip, which stays (§4.30 «Отказы шага»).
         pendingFocus.current = ["submit"];
         return;
@@ -462,11 +476,43 @@ export function ProjectIssueTypesModal({
         pendingFocus.current = [`delete:${sent.code}`, "notice"];
         return;
       }
-      if (sent.kind === "create" && refusedWith(error, "ALREADY_EXISTS")) {
+      if (sent.kind === "create" && isIssueTypeCodeTaken(error)) {
         // The reason belongs to the Code field, not to a box over the actions.
+        // Not a replay's `ALREADY_EXISTS` (`REQUEST_ID_REUSED`), which says
+        // nothing about the code and is said as any refusal is.
         setTakenCode(sent.input.code);
         write.reset();
         pendingFocus.current = ["code", "submit"];
+        return;
+      }
+      if (sent.kind === "create" && isIssueTypeWorkflowRequired(error)) {
+        // A race (backend TAS-440): the registry was emptied elsewhere while
+        // the form offered «Same as …», which has no workflow to send. The
+        // form stays with its sentence; the registry and the list are read
+        // again, so the select turns into the empty registry's — the shared
+        // default chosen — and the next press sends a `workflowId`.
+        void queryClient.invalidateQueries({ queryKey: contextKey });
+        void queryClient.invalidateQueries({ queryKey: projectWorkflowsKey(projectId) });
+        pendingFocus.current = ["workflow", "submit"];
+        return;
+      }
+      if (sent.kind === "create" && isWorkflowNotInProject(error)) {
+        // The chosen workflow is gone (deleted elsewhere): the form says which
+        // one, the list is read again, and the select drops it for the main
+        // workflow — or, on an empty registry, the shared default. Focus goes
+        // to the select, so a second Enter does not add the type on a
+        // workflow the reader never chose.
+        void queryClient.invalidateQueries({ queryKey: projectWorkflowsKey(projectId) });
+        pendingFocus.current = ["workflow", "submit"];
+        return;
+      }
+      if (sent.kind === "create" && isIssueTypesChanged(error)) {
+        // 409 `ABORTED` `ISSUE_TYPES_CHANGED`: the registry changed under the
+        // create. The form stays and says it as any refusal; the registry and
+        // the list are read again, as the yml asks.
+        void queryClient.invalidateQueries({ queryKey: contextKey });
+        void queryClient.invalidateQueries({ queryKey: projectWorkflowsKey(projectId) });
+        pendingFocus.current = ["submit"];
         return;
       }
       if (sent.kind === "edit" && refusedWith(error, "NOT_FOUND")) {
@@ -679,10 +725,20 @@ export function ProjectIssueTypesModal({
                   repeatPending(pendingCreate);
                   return;
                 }
+                // The chosen workflow's name as the list names it now, for a
+                // refusal that comes after the list has been read again.
+                const workflowName = workflowId
+                  ? queryClient
+                      .getQueryData<ProjectWorkflowList>(projectWorkflowsKey(projectId))
+                      ?.items.find((item) => item.workflow.id === workflowId)
+                      ?.workflow.name.trim()
+                  : undefined;
                 write.mutate({
                   kind: "create",
+                  ...(workflowName ? { workflowName } : {}),
                   // `shape` always, `icon` only when one was chosen (§4.30, backend
-                  // TAS-432); `workflowId` only when the list named one (TAS-437).
+                  // TAS-432); `workflowId` whenever one is chosen (TAS-437) —
+                  // on an empty registry always, the submit waits for one (TAS-440).
                   input: {
                     code,
                     name,
@@ -698,6 +754,7 @@ export function ProjectIssueTypesModal({
               projectId={projectId}
               register={register}
               registry={types}
+              sentWorkflowName={write.variables?.kind === "create" ? write.variables.workflowName : undefined}
               takenCode={takenCode}
             />
           ) : (
@@ -1161,22 +1218,63 @@ function DeleteTypeStrip({
 type FormMode = { kind: "create" } | { kind: "edit"; entry: ProjectIssueType };
 
 /**
+ * Why New type's submit is off on an empty registry when the list could not be
+ * read (TAS-440): there is no workflow to send. While the list is still being
+ * read the submit is off with no sentence — one that flashed on every open
+ * moved the actions row (art-director, TAS-464).
+ */
+const WORKFLOWS_UNREAD_REASON =
+  "This project's workflows could not be loaded, so the type cannot be added. Cancel, then press Add type to try again.";
+/** A create refused `ISSUE_TYPE_WORKFLOW_REQUIRED`: the registry was emptied elsewhere (TAS-440). */
+const WORKFLOW_REQUIRED_SENTENCE =
+  "Issue types changed elsewhere and none are left, so the type was not added. Check its workflow and add it again.";
+/** A create refused `WORKFLOW_NOT_IN_PROJECT`: the workflow it named went elsewhere meanwhile. */
+const workflowGoneSentence = (name: string | undefined) =>
+  `${name || "The chosen workflow"} is no longer one of this project's workflows, so the type was not added. Check its workflow and add it again.`;
+
+/**
  * What New type's «Workflow» select offers (§4.30, TAS-437), from the list
  * Workflows reads (`["project-workflows", projectId]`, read on opening the
  * form when it is not in the cache): the project's own workflows in that
- * dialog's order, donors included, then the shared default when the list
- * carries it — and `main`, the one the registry's first type runs on, named
- * «(same as {First})» and chosen until the reader picks another. Until the
- * list has answered — or when it could not be read (`failed`) — there is no
- * option but `sameAsFirst`, sent without a `workflowId`: the server takes the
- * same main workflow, and the form does not wait.
+ * dialog's order, donors included, then the shared default, which the list
+ * always carries since backend TAS-440.
+ *
+ * `main` is the list's `mainWorkflowId` — the workflow the server says the
+ * registry's first type runs on, never worked out here — named «(same as
+ * {First})» and chosen until the reader picks another. Until the list has
+ * answered — or when it could not be read (`failed`), or names no main
+ * workflow among its items — there is no option but `sameAsFirst`, sent
+ * without a `workflowId`: the server takes the same main workflow, and the
+ * form does not wait.
+ *
+ * **An empty registry** (`empty`: the registry on screen holds no type) has no
+ * first type to be the same as, and the server refuses a create there without
+ * a `workflowId` (backend TAS-440). So there is no «Same as …»: the shared
+ * default is chosen until the reader picks another, and while the list has not
+ * answered there is nothing to send. Emptiness is the registry's to say, not a
+ * `mainWorkflowId` of `null`: that is also what a list without the field reads
+ * as, and taking it for an empty registry would bind a new type to the shared
+ * default where the server would have taken the main workflow. A registry
+ * emptied elsewhere meanwhile is the server's refusal to tell
+ * (`ISSUE_TYPE_WORKFLOW_REQUIRED`), and the re-read it causes turns the select.
  */
 function useWorkflowChoice(projectId: string, registry: readonly ProjectIssueType[], creating: boolean) {
   const query = useQuery({ ...projectWorkflowsOptions(projectId), enabled: creating });
+  const list = query.data ?? null;
   const first = registry[0]?.code;
   const firstLabel = first ? issueTypeLabel(first, registry) : "";
-  const entries = query.data ? orderWorkflowEntries(query.data, registry.map((entry) => entry.code)) : null;
-  const main = entries?.find((entry) => first !== undefined && entry.issueTypes.includes(first)) ?? null;
+  const empty = first === undefined;
+  const entries = list ? orderWorkflowEntries(list.items, registry.map((entry) => entry.code)) : null;
+  const mainId = list?.mainWorkflowId ?? null;
+  // The server's main workflow, for as long as it still holds the first type
+  // on screen: a reorder here moves the first type before the list is read
+  // again, and then «Same as {First}» goes without a `workflowId` for the
+  // server to resolve.
+  const main =
+    !empty && mainId !== null
+      ? (entries?.find((entry) => entry.workflow.id === mainId && entry.issueTypes.includes(first)) ?? null)
+      : null;
+  const shared = entries?.find((entry) => entry.shared) ?? null;
   const options = entries
     ? [...entries.filter((entry) => !entry.shared), ...entries.filter((entry) => entry.shared)].map((entry) => {
         const name = entry.workflow.name.trim() || "Unnamed workflow";
@@ -1189,9 +1287,12 @@ function useWorkflowChoice(projectId: string, registry: readonly ProjectIssueTyp
     : [];
   return {
     options,
-    main: main?.workflow.id ?? null,
+    /** What is chosen while the select is untouched: the main workflow, or on an empty registry the shared default. */
+    initial: (empty ? shared : main)?.workflow.id ?? null,
+    empty,
     sameAsFirst: `Same as ${firstLabel}`,
-    failed: !query.data && query.isError,
+    loading: !list && !query.isError,
+    failed: !list && query.isError,
   };
 }
 
@@ -1211,6 +1312,7 @@ function IssueTypeForm({
   projectId,
   registry,
   takenCode,
+  sentWorkflowName,
   inFlight,
   frozen,
   error,
@@ -1223,6 +1325,8 @@ function IssueTypeForm({
   registry: readonly ProjectIssueType[];
   /** A code the server refused as taken (409), said as the Code field's reason while it is typed. */
   takenCode: string | null;
+  /** The name of the workflow the last create named, as the list named it then — what `WORKFLOW_NOT_IN_PROJECT` is about. */
+  sentWorkflowName?: string;
   inFlight: boolean;
   /** In flight, or a create held for its repeat (§4.28 «Ещё применяется»): every field keeps what it shows. */
   frozen: boolean;
@@ -1231,7 +1335,8 @@ function IssueTypeForm({
   onCancel: () => void;
   /**
    * The whole form (`icon: null` — «No icon»; `workflowId` the chosen
-   * workflow, or none while only the main one is offered), and — for an edit
+   * workflow, or none while only «Same as …» is offered, which an empty
+   * registry never is), and — for an edit
    * — only what differs from the saved entry, which is all a PATCH sends:
    * «No icon» on a type that has one is `icon: null` (backend TAS-432).
    */
@@ -1252,11 +1357,14 @@ function IssueTypeForm({
   const workflowChoice = useWorkflowChoice(projectId, registry, mode.kind === "create");
   const [pickedWorkflow, setPickedWorkflow] = useState<string | null>(null);
   // The main workflow while the select is untouched — and it follows a
-  // reorder; the reader's pick for as long as the list still offers it.
+  // reorder — or on an empty registry the shared default; the reader's pick
+  // for as long as the list still offers it.
   const workflowId =
     pickedWorkflow !== null && workflowChoice.options.some((option) => option.id === pickedWorkflow)
       ? pickedWorkflow
-      : workflowChoice.main;
+      : workflowChoice.initial;
+  // On an empty registry nothing is sent without a `workflowId` (TAS-440).
+  const needsWorkflow = mode.kind === "create" && workflowChoice.empty;
   const [name, setName] = useState(editing?.name ?? "");
   const [typedCode, setTypedCode] = useState<string | null>(null);
   const [color, setColor] = useState<IssueTypeColor | null>(editing ? editing.color : defaultIssueTypeColor(registry));
@@ -1279,7 +1387,9 @@ function IssueTypeForm({
       ? `${code} is already a type in this project.`
       : code !== "" && !ISSUE_TYPE_CODE_PATTERN.test(code)
         ? "A code starts with a letter and has 2–32 capital letters, digits or underscores."
-        : null;
+        : needsWorkflow && workflowChoice.failed
+          ? WORKFLOWS_UNREAD_REASON
+          : null;
   const changes: UpdateProjectIssueTypeInput = editing
     ? {
         ...(trimmed !== editing.name ? { name: trimmed } : {}),
@@ -1293,6 +1403,7 @@ function IssueTypeForm({
     code === "" ||
     reason !== null ||
     color === null ||
+    (needsWorkflow && workflowId === null) ||
     (editing !== null && Object.keys(changes).length === 0);
   const reasonId = `${ids}-reason`;
   const shapeNoteId = `${ids}-shape-note`;
@@ -1439,27 +1550,40 @@ function IssueTypeForm({
           ))}
         </div>
       </div>
-      {mode.kind === "create" && registry.length > 0 ? (
+      {mode.kind === "create" ? (
         // «Workflow» (§4.30, TAS-437): after the look, before the actions —
         // the chip carries how the type looks, the submit what it does.
         <div className="workflow-field">
           <label htmlFor={`${ids}-workflow`}>Workflow</label>
           <select
-            aria-describedby={workflowChoice.failed ? `${ids}-workflow-note` : undefined}
+            aria-describedby={workflowChoice.failed && !workflowChoice.empty ? `${ids}-workflow-note` : undefined}
             id={`${ids}-workflow`}
             onChange={(event) => {
               if (!frozen) setPickedWorkflow(event.target.value);
             }}
+            ref={register("workflow")}
             value={workflowId ?? ""}
           >
-            {workflowChoice.main === null ? <option value="">{workflowChoice.sameAsFirst}</option> : null}
+            {workflowId !== null ? null : !workflowChoice.empty ? (
+              <option value="">{workflowChoice.sameAsFirst}</option>
+            ) : (
+              // An empty registry with nothing to send yet: the option says
+              // why, and the submit's reason says what it means.
+              <option disabled={workflowChoice.options.length > 0} value="">
+                {workflowChoice.options.length > 0
+                  ? "Choose a workflow"
+                  : workflowChoice.loading
+                    ? "Loading workflows"
+                    : "No workflow loaded"}
+              </option>
+            )}
             {workflowChoice.options.map((option) => (
               <option key={option.id} value={option.id}>
                 {option.label}
               </option>
             ))}
           </select>
-          {workflowChoice.failed ? (
+          {workflowChoice.failed && !workflowChoice.empty ? (
             <p className="workflow-field-note" id={`${ids}-workflow-note`}>
               Other workflows could not be loaded, so only this one is offered.
             </p>
@@ -1474,6 +1598,11 @@ function IssueTypeForm({
       {error ? (
         isCommandPending(error) ? (
           <PendingNote error={error} label="Add type" />
+        ) : isIssueTypeWorkflowRequired(error) || isWorkflowNotInProject(error) ? (
+          // The server's words would only repeat the sentence; the id stays.
+          <ErrorNote live="alert" requestId={apiErrorFacts(error).requestId}>
+            {isWorkflowNotInProject(error) ? workflowGoneSentence(sentWorkflowName) : WORKFLOW_REQUIRED_SENTENCE}
+          </ErrorNote>
         ) : (
           <ErrorNote live="alert" requestId={apiErrorFacts(error).requestId} serverWords={refusalWords(error)}>
             {refused}

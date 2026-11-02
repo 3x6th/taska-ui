@@ -949,8 +949,9 @@ function PreviewFailureNote({ error, deadSentence, live = false }: { error: unkn
 /**
  * A provider sign-in's refusal, as the reader arrives with it (§4.31's table).
  * Not a live region — focus brings it. The locked account is `.auth-lock`'s two
- * lines; a provider's lock carries no deadline (TAS-444), so the first line
- * says none rather than make one up.
+ * lines: the deadline when the refusal carried one — an exchange's or a name
+ * step's 403 does since backend TAS-444 — and otherwise, as from the callback's
+ * `?error=`, a first line that says none rather than make one up.
  */
 function ProviderRefusalNote({ refusal }: { refusal: ProviderRefusal }) {
   if (refusal.reason === ACCOUNT_LOCKED_REASON) {

@@ -461,6 +461,12 @@ describe("RestTaskaApi dictionaries", () => {
       linkTypes: [{ code: "BLOCKS", name: "Blocks", selectable: true }],
       notificationTypes: [{ code: "ISSUE_CREATED", name: "Issue created", selectable: true }],
       userStatuses: [{ code: "ACTIVE", name: "Active", selectable: true }],
+      actionChannels: [
+        { code: "UI", name: "UI", selectable: true },
+        { code: "API_TOKEN", name: "API", selectable: true },
+        { code: "MCP", name: "MCP", selectable: true },
+        { code: "WEBHOOK", name: "Webhook", selectable: true },
+      ],
     });
 
     await expect(result).resolves.toEqual({
@@ -473,6 +479,13 @@ describe("RestTaskaApi dictionaries", () => {
       linkViewTypes: null,
       notificationTypes: [{ code: "ISSUE_CREATED", name: "Issue created", selectable: true }],
       userStatuses: [{ code: "ACTIVE", name: "Active", selectable: true }],
+      // Backend TAS-443: every channel, `API_TOKEN` named "API", a new one kept.
+      actionChannels: [
+        { code: "UI", name: "UI", selectable: true },
+        { code: "API_TOKEN", name: "API", selectable: true },
+        { code: "MCP", name: "MCP", selectable: true },
+        { code: "WEBHOOK", name: "Webhook", selectable: true },
+      ],
     });
     expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/meta");
   });
@@ -538,6 +551,7 @@ describe("RestTaskaApi dictionaries", () => {
         { code: "TRIVIAL", name: 7 },
       ],
       linkTypes: null,
+      actionChannels: "MCP",
     });
 
     await expect(result).resolves.toEqual({
@@ -551,6 +565,8 @@ describe("RestTaskaApi dictionaries", () => {
       linkViewTypes: null,
       notificationTypes: null,
       userStatuses: null,
+      // Optional in the contract (backend TAS-443): not a list reads as none.
+      actionChannels: [],
     });
   });
 
@@ -563,6 +579,7 @@ describe("RestTaskaApi dictionaries", () => {
       linkViewTypes: null,
       notificationTypes: null,
       userStatuses: null,
+      actionChannels: [],
     });
   });
 
@@ -5515,6 +5532,7 @@ describe("RestTaskaApi error envelope", () => {
 describe("RestTaskaApi project workflows", () => {
   const PROJECT = "b4e2d3c5-0000-4000-8000-000000000382";
   const WORKFLOW = "c5f3e4d6-0000-4000-8000-000000000382";
+  const OTHER_WORKFLOW = "c5f3e4d6-0000-4000-8000-000000000464";
   const base = `/api/v1/projects/${PROJECT}/workflows`;
 
   const answer = (status: number, body: unknown) =>
@@ -5560,7 +5578,7 @@ describe("RestTaskaApi project workflows", () => {
   it("reads the list field by field: hidden only when it says true, the timestamps of a row left behind", async () => {
     const fetchStub = stubFetch({ items: [{ workflow: wireWorkflow, issueTypes: ["TASK", "EPIC"], shared: true }] });
 
-    const [entry] = await new RestTaskaApi().listProjectWorkflows(PROJECT);
+    const [entry] = (await new RestTaskaApi().listProjectWorkflows(PROJECT)).items;
 
     expect(fetchStub.mock.calls[0][0]).toBe(base);
     expect(entry.workflow.statuses).toEqual([{ id: "s1", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 }]);
@@ -5587,7 +5605,7 @@ describe("RestTaskaApi project workflows", () => {
       ],
     });
 
-    const entries = await new RestTaskaApi().listProjectWorkflows(PROJECT);
+    const entries = (await new RestTaskaApi().listProjectWorkflows(PROJECT)).items;
 
     expect(entries.map((entry) => [entry.workflow.id, entry.shared, entry.issueTypes])).toEqual([
       [WORKFLOW, false, ["TASK"]],
@@ -5596,9 +5614,27 @@ describe("RestTaskaApi project workflows", () => {
     ]);
   });
 
-  it("reads an answer with no items as no workflows", async () => {
+  it("reads an answer with no items as no workflows, and no main one", async () => {
     stubFetch({});
-    await expect(new RestTaskaApi().listProjectWorkflows(PROJECT)).resolves.toEqual([]);
+    await expect(new RestTaskaApi().listProjectWorkflows(PROJECT)).resolves.toEqual({ mainWorkflowId: null, items: [] });
+  });
+
+  it("states mainWorkflowId as the server sent it, and a missing, null or non-UUID one as null (backend TAS-440)", async () => {
+    const items = [
+      { workflow: wireWorkflow, issueTypes: [], shared: true },
+      { workflow: { ...wireWorkflow, id: OTHER_WORKFLOW }, issueTypes: ["TASK"], shared: false },
+    ];
+    // The server's word, even when it is not the entry whose types hold the
+    // registry's first type: nothing is worked out from `items`.
+    stubFetch({ mainWorkflowId: WORKFLOW, items });
+    await expect(new RestTaskaApi().listProjectWorkflows(PROJECT)).resolves.toMatchObject({ mainWorkflowId: WORKFLOW });
+    for (const wire of [null, undefined, "", "wf-1", 7]) {
+      vi.unstubAllGlobals();
+      stubFetch({ mainWorkflowId: wire, items });
+      const list = await new RestTaskaApi().listProjectWorkflows(PROJECT);
+      expect(list.mainWorkflowId).toBeNull();
+      expect(list.items).toHaveLength(2);
+    }
   });
 
   it("creates with exactly the four parts, every transition stating hidden", async () => {

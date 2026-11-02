@@ -58,6 +58,7 @@ import type {
   ProjectRole,
   ProjectStats,
   ProjectWorkflowEntry,
+  ProjectWorkflowList,
   TelegramLink,
   UnwatchIssueResult,
   User,
@@ -1088,8 +1089,12 @@ export interface TaskaApi {
    *
    * What it cannot report: a failure at `/start` itself — the shared 240-an-hour
    * attempt budget (429) or a provider that is not configured or an
-   * auth-service that is down (503) — is drawn by the browser as the gateway's
-   * JSON on the API host, a full-page navigation this app never sees (TAS-444).
+   * auth-service that is down (503). That never comes back here either: since
+   * backend TAS-444 (develop `d886b031`, `OAuthController.errorResponse`, and
+   * the yml's 302) the gateway sends the browser to the UI origin's
+   * `/auth/callback?error={reason}&requestId=…` — `RATE_LIMITED` with
+   * `retryAfter` — which the callback screen reads as it reads a provider's
+   * refusal.
    *
    * `returnTo` is the router path to come back to, as `RequireSession`
    * remembers it (pathname and search), never an absolute URL and never a
@@ -1209,7 +1214,8 @@ export interface TaskaApi {
    * session through `useMeta`. A dictionary the answer did not carry as a list
    * is `null`; a row without a usable `code` is dropped; nothing is checked
    * against this build's unions — the point of the route is the values this
-   * build does not know yet.
+   * build does not know yet. `actionChannels` (backend TAS-443) is the one
+   * read as `[]` when missing: the contract added it as optional.
    */
   getMeta(): Promise<EnumDictionaries>;
 
@@ -1494,11 +1500,12 @@ export interface TaskaApi {
    * **Not for anybody signed in once signup is open** (backend TAS-423,
    * `DirectoryMembershipAccess`, develop `9fcf0253`): with signup enabled, a
    * caller who is not a `GLOBAL_ADMIN` and belongs to no project is refused
-   * 403 `PERMISSION_DENIED` "Project membership is required" with no
-   * `details.reason`, or 503 "Project membership service is unavailable" when
-   * the check cannot be made. The contract does not say so. Nothing in the UI
-   * reaches it today: the one caller is the members dialog's add form, which
-   * only a project admin sees, and a project admin is a member.
+   * 403 `PERMISSION_DENIED` "Project membership is required" with
+   * `details.reason` `PROJECT_MEMBERSHIP_REQUIRED` — in the yml since backend
+   * TAS-444 (develop `d886b031`) — or 503 "Project membership service is
+   * unavailable" when the check cannot be made, which the yml does not list.
+   * Nothing in the UI reaches it today: the one caller is the members dialog's
+   * add form, which only a project admin sees, and a project admin is a member.
    *
    * Case-insensitive substring over display name **or** email, `%`, `_` and
    * `!` matched literally; `ACTIVE`, `INVITED` and `LOCKED` accounts, never a
@@ -2135,13 +2142,17 @@ export interface TaskaApi {
    *   issue-type registry in its order (backend #226), resolves each type to
    *   the project's own workflow or the shared default, and answers each
    *   workflow once, at the position of the first type on it. Statuses and transitions by `sortOrder`, hidden
-   *   transitions included. Since backend TAS-436 (develop `78019ece`,
-   *   `ProjectWorkflowListService`) the project's own workflows that no type
-   *   runs on any more — donors, kept with their graph — follow, with
-   *   `issueTypes: []`, in id order; and the shared default is listed only
-   *   while a type runs on it. While a type operation of the project is
-   *   pending the read is 409 `ABORTED`, `details.reason`
-   *   `ISSUE_TYPE_OPERATION_PENDING` (`WorkflowWriteFence.requireReadable`).
+   *   transitions included. Since backend TAS-440 (develop `d886b031`,
+   *   `ProjectWorkflowListService`) the shared default is **always** listed —
+   *   after the types' workflows when no type runs on it, with
+   *   `issueTypes: []` — and the project's own workflows that no type runs on
+   *   any more (donors, kept with their graph, backend TAS-436) follow with
+   *   `issueTypes: []`, in id order. `mainWorkflowId` names the workflow the
+   *   registry's first type runs on — the one a new type without a
+   *   `workflowId` is bound to — and is `null` for an empty registry. While a
+   *   type operation of the project is pending the read is 409 `ABORTED`,
+   *   `details.reason` `ISSUE_TYPE_OPERATION_PENDING`
+   *   (`WorkflowWriteFence.requireReadable`).
    * - The three writes are ADMIN-only, refused by workflow-service: 404
    *   "Project not found", 403 "Access denied" for a non-member, 403 "Not
    *   allowed role" for anybody else.
@@ -2158,7 +2169,7 @@ export interface TaskaApi {
    * the shared default, which their answer does not describe, so the list is
    * read again after those.
    */
-  listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]>;
+  listProjectWorkflows(projectId: string): Promise<ProjectWorkflowList>;
   /**
    * The issue-type registry's writes (backend #212, TAS-385; DESIGN.md §4.30).
    * There is no read here on purpose: the registry rides the project context
@@ -2204,13 +2215,33 @@ export interface TaskaApi {
    *   A move the server has not finished is 503 `UNAVAILABLE`
    *   `ISSUE_TYPE_DELETION_PENDING` — repeat the same command
    *   (`CommandRetry`); while it is pending, another type write of the project
-   *   is 409 `ABORTED` `PROJECT_TYPE_OPERATION_PENDING`.
+   *   is 409 `ABORTED` `ISSUE_TYPE_OPERATION_PENDING` — the one «another type
+   *   operation» reason since backend TAS-440 (develop `d886b031`), also on
+   *   `GET /workflows` and the project context. A registry that changed under
+   *   the move is 409 `ABORTED` `ISSUE_TYPES_CHANGED` in the yml; the Java at
+   *   `d886b031` answers it — and the move's own `ISSUE_TYPE_CHANGED` from
+   *   `IssueTypeMoveService.validateRegistry` — as 503 `UNAVAILABLE`
+   *   `ISSUE_TYPE_DELETION_PENDING` that never settles, because
+   *   `IssueTypeDeletionCoordinator.REJECTED` has no `ABORTED`: the type gate
+   *   stays and the reads and writes above answer
+   *   `ISSUE_TYPE_OPERATION_PENDING` (backend TAS-465).
    * - create since backend TAS-437: the type and its binding in one recoverable
-   *   operation. A `workflowId` that is neither an own workflow of this project
-   *   nor the shared default is 400 `INVALID_ARGUMENT` `WORKFLOW_NOT_IN_PROJECT`;
-   *   an unfinished create is 503 `UNAVAILABLE` `ISSUE_TYPE_CREATION_PENDING`
-   *   — repeat it with the same `X-Request-Id` (`CommandRetry`); the same id
-   *   with another body is 409 `ALREADY_EXISTS` `REQUEST_ID_REUSED`. The 201 is
+   *   operation, refused in `IssueTypeCreationTransactions.begin`'s order at
+   *   `d886b031` after the body: the role and the archive; a replay — the same
+   *   `X-Request-Id` with another body — 409 `ALREADY_EXISTS`
+   *   `REQUEST_ID_REUSED`; another type operation of the project 409 `ABORTED`
+   *   `ISSUE_TYPE_OPERATION_PENDING`; a code the project holds 409
+   *   `ALREADY_EXISTS` with no reason — so «code taken» is the code with no
+   *   `REQUEST_ID_REUSED`; and, on an **empty registry, no `workflowId`** 400
+   *   `FAILED_PRECONDITION` `ISSUE_TYPE_WORKFLOW_REQUIRED` (backend TAS-440:
+   *   without one a create takes the first type's workflow, and an empty
+   *   registry has none). Then the binding: a `workflowId` that is neither an
+   *   own workflow of this project nor the shared default is 400
+   *   `INVALID_ARGUMENT` `WORKFLOW_NOT_IN_PROJECT`, a registry that changed
+   *   meanwhile 409 `ABORTED` `ISSUE_TYPES_CHANGED` (`ABORTED` is among
+   *   `IssueTypeCreationCoordinator.REJECTED`); an unfinished create is 503
+   *   `UNAVAILABLE` `ISSUE_TYPE_CREATION_PENDING` (`IssueTypeCreationCoordinator`)
+   *   — repeat it with the same `X-Request-Id` (`CommandRetry`). The 201 is
    *   `CreatedProjectIssueTypeDto`: the entry and the `workflowId` it runs on.
    * - reorder (`PUT …/issue-types/order`, backend TAS-418): an empty or
    *   malformed `codes` (400 "Invalid request parameters"); a code named twice
@@ -2266,7 +2297,8 @@ export interface TaskaApi {
    * - 503 `UNAVAILABLE` `WORKFLOW_BINDING_CHANGE_PENDING`: accepted and not
    *   finished — repeat the same command with its `X-Request-Id`
    *   (`CommandRetry`); the same id with another command is 409
-   *   `ALREADY_EXISTS`.
+   *   `ALREADY_EXISTS` `REQUEST_ID_REUSED` (`WorkflowBindingTransactions`,
+   *   develop `d886b031`), the same replay reason a type's create has.
    */
   createProjectWorkflow(
     projectId: string,

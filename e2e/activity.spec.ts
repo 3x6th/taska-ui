@@ -120,3 +120,16 @@ test("marks an event that came through MCP on its meta line, without a token nam
   await expect(marks).toHaveText("via MCP");
   await expect(panel.locator(".activity-item p .via-mark")).toHaveCount(0);
 });
+
+// TAS-464: an API token's change reads «via API» — the server's name for
+// `API_TOKEN` (backend TAS-443), which is this build's word for it too; a
+// token's own name is private. Mark set TAS-101's priority with one.
+test("marks an event made with an API token «via API», the server's name for the channel", async ({ page }) => {
+  await signIn(page);
+  await openBoard(page);
+  const panel = await openIssue(page, "TAS-101");
+
+  const marks = panel.locator(".activity-item .activity-meta .via-mark");
+  await expect(marks).toHaveCount(1);
+  await expect(marks).toHaveText("via API");
+});

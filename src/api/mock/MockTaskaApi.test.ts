@@ -6,6 +6,7 @@ import {
   MOCK_OAUTH_IDENTITY_KEY,
   claimMockOAuthCode,
   decodeMockOAuthCode,
+  encodeMockOAuthCode,
 } from "./mockAuthFixtures";
 import type { UpdateIssueInput } from "../TaskaApi";
 import { DIRECTORY_QUERY_REFUSAL_MESSAGE } from "../TaskaApi";
@@ -841,7 +842,7 @@ describe("MockTaskaApi", () => {
         await expect(api.listIssueWatchers(project.id, issue.id)).resolves.toBeDefined();
         await expect(api.listAttachments(project.id, issue.id)).resolves.toBeDefined();
         await expect(api.listMembers(project.id)).resolves.not.toHaveLength(0);
-        await expect(api.listProjectWorkflows(project.id)).resolves.not.toHaveLength(0);
+        expect((await api.listProjectWorkflows(project.id)).items).not.toHaveLength(0);
         // Scoped to it, the search still answers.
         await expect(api.searchIssues({ projectId: project.id, query: issue.issueKey })).resolves.toMatchObject({
           totalCount: 1,
@@ -855,7 +856,7 @@ describe("MockTaskaApi", () => {
       const [label] = await api.listProjectLabels(project.id);
       const [worklog] = (await api.listIssueWorklogs(project.id, issue.id)).items;
       const [comment] = (await api.listComments(project.id, issue.id)).items;
-      const workflows = await api.listProjectWorkflows(project.id);
+      const workflows = (await api.listProjectWorkflows(project.id)).items;
       await api.archiveProject(project.id);
       const version = (await api.getIssue(project.id, issue.id)).issue.version;
       const writes: [string, () => Promise<unknown>][] = [
@@ -6047,7 +6048,7 @@ describe("MockTaskaApi", () => {
     const projectByKey = async (key: string) => (await api.listProjects()).find((item) => item.projectKey === key)!;
     /** The shared default as the list sends it, with its last transition made hidden for the copy. */
     const copyWithHidden = async (projectId: string, name: string, issueTypes: string[]) => {
-      const [shared] = await api.listProjectWorkflows(projectId);
+      const [shared] = (await api.listProjectWorkflows(projectId)).items;
       const input = workflowCopyInput(shared.workflow, name, issueTypes);
       return { ...input, transitions: input.transitions.map((item, index, all) => ({ ...item, hidden: index === all.length - 1 })) };
     };
@@ -6055,7 +6056,7 @@ describe("MockTaskaApi", () => {
     const UNKNOWN_WORKFLOW = "0f0f0f0f-0000-4000-8000-000000000382";
 
     it("lists the shared default once, with every type and the six transitions of migration 0001", async () => {
-      const entries = await api.listProjectWorkflows(project.id);
+      const entries = (await api.listProjectWorkflows(project.id)).items;
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toMatchObject({ shared: true, issueTypes: ["TASK", "BUG", "STORY"] });
@@ -6085,8 +6086,8 @@ describe("MockTaskaApi", () => {
       const ops = await projectByKey("OPS");
       const web = await projectByKey("WEB");
 
-      expect((await api.listProjectWorkflows(ops.id)).map((entry) => entry.issueTypes)).toEqual([["TASK", "BUG"]]);
-      const webEntries = await api.listProjectWorkflows(web.id);
+      expect((await api.listProjectWorkflows(ops.id)).items.map((entry) => entry.issueTypes)).toEqual([["TASK", "BUG"]]);
+      const webEntries = (await api.listProjectWorkflows(web.id)).items;
       expect(webEntries.map((entry) => [entry.workflow.name, entry.issueTypes])).toEqual([
         ["Default workflow", ["TASK", "BUG", "STORY"]],
         ["Epic workflow", ["EPIC"]],
@@ -6123,7 +6124,7 @@ describe("MockTaskaApi", () => {
         [60, true],
       ]);
 
-      const entries = await api.listProjectWorkflows(project.id);
+      const entries = (await api.listProjectWorkflows(project.id)).items;
       expect(entries.map((entry) => [entry.workflow.id === created.id, entry.shared, entry.issueTypes])).toEqual([
         [false, true, ["TASK", "STORY"]],
         [true, false, ["BUG"]],
@@ -6192,7 +6193,7 @@ describe("MockTaskaApi", () => {
       // one version on.
       const second = await api.createProjectWorkflow(project.id, { ...input, name: "Second", issueTypes: ["BUG", "TASK"] });
       expect(second.issueTypes).toEqual(["TASK", "BUG"]);
-      const listed = await api.listProjectWorkflows(project.id);
+      const listed = (await api.listProjectWorkflows(project.id)).items;
       expect(listed.map((entry) => [entry.workflow.name, entry.issueTypes, entry.workflow.version])).toEqual([
         ["Second", ["TASK", "BUG"], 1],
         ["Default workflow", ["STORY"], 1],
@@ -6214,7 +6215,7 @@ describe("MockTaskaApi", () => {
           targetStatusKeys: "DONE,IN_PROGRESS,TODO",
         },
       });
-      expect((await api.listProjectWorkflows(web.id)).map((entry) => entry.workflow.name)).toEqual([
+      expect((await api.listProjectWorkflows(web.id)).items.map((entry) => entry.workflow.name)).toEqual([
         "Default workflow",
         "Epic workflow",
       ]);
@@ -6279,7 +6280,7 @@ describe("MockTaskaApi", () => {
 
     it("refuses an add in the server's order: the path, the role, an unknown workflow, the shared one, another project's", async () => {
       const web = await projectByKey("WEB");
-      const [shared] = await api.listProjectWorkflows(project.id);
+      const [shared] = (await api.listProjectWorkflows(project.id)).items;
       const { workflow: elsewhere } = await api.createProjectWorkflow(web.id, await copyWithHidden(web.id, "Web flow", ["BUG"]));
 
       await expect(api.addWorkflowStatus(project.id, "not-a-uuid", status)).rejects.toMatchObject({
@@ -6367,7 +6368,7 @@ describe("MockTaskaApi", () => {
         message: `${prefix}Transition references unknown status key: NOPE`,
       });
       // Nothing refused moved the version.
-      const own = (await api.listProjectWorkflows(project.id)).find((entry) => !entry.shared);
+      const own = (await api.listProjectWorkflows(project.id)).items.find((entry) => !entry.shared);
       expect(own?.workflow.version).toBe(1);
     });
 
@@ -6466,7 +6467,7 @@ describe("MockTaskaApi", () => {
         await expect(
           api.deleteWorkflowStatus(project.id, created.id, statusOf(created, "DONE").id, { version: 1 }),
         ).rejects.toMatchObject({ code: "ABORTED" });
-        expect((await api.listProjectWorkflows(project.id)).find((entry) => !entry.shared)?.workflow).toMatchObject({
+        expect((await api.listProjectWorkflows(project.id)).items.find((entry) => !entry.shared)?.workflow).toMatchObject({
           name: "Second",
           version: 2,
         });
@@ -6478,7 +6479,7 @@ describe("MockTaskaApi", () => {
 
       it("refuses what the gateway would and what has nothing to change, and a row or workflow not this one's", async () => {
         const created = await ownWorkflow();
-        const [shared] = (await api.listProjectWorkflows(project.id)).filter((entry) => entry.shared);
+        const [shared] = (await api.listProjectWorkflows(project.id)).items.filter((entry) => entry.shared);
         const doing = statusOf(created, "IN_PROGRESS").id;
         const invalid = { code: "INVALID_ARGUMENT", message: "Invalid request parameters" };
 
@@ -6600,7 +6601,7 @@ describe("MockTaskaApi", () => {
           requires,
         );
         await expect(api.deleteWorkflowTransition(project.id, created.id, last.id, { version })).rejects.toMatchObject(requires);
-        expect((await api.listProjectWorkflows(project.id)).find((entry) => !entry.shared)?.workflow.version).toBe(version);
+        expect((await api.listProjectWorkflows(project.id)).items.find((entry) => !entry.shared)?.workflow.version).toBe(version);
       });
 
       it("deletes a status with its transitions; one with issues is refused with the count until a target takes them", async () => {
@@ -6689,7 +6690,7 @@ describe("MockTaskaApi", () => {
       it("keeps a donor with its graph, edits it, and deletes it with nothing to move", async () => {
         const first = (await api.createProjectWorkflow(project.id, await copyWithHidden(project.id, "First", ["BUG"]))).workflow;
         await api.createProjectWorkflow(project.id, await copyWithHidden(project.id, "Second", ["BUG"]));
-        const donor = (await api.listProjectWorkflows(project.id)).find((entry) => entry.workflow.id === first.id)!;
+        const donor = (await api.listProjectWorkflows(project.id)).items.find((entry) => entry.workflow.id === first.id)!;
         expect(donor).toMatchObject({ issueTypes: [], shared: false, workflow: { version: 2 } });
         expect(donor.workflow.statuses.map((item) => item.statusKey)).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
 
@@ -6698,7 +6699,7 @@ describe("MockTaskaApi", () => {
 
         const answer = await api.deleteProjectWorkflow(project.id, first.id, { version: 3 });
         expect(answer).toMatchObject({ shared: true, issueTypes: [] });
-        expect((await api.listProjectWorkflows(project.id)).some((entry) => entry.workflow.id === first.id)).toBe(false);
+        expect((await api.listProjectWorkflows(project.id)).items.some((entry) => entry.workflow.id === first.id)).toBe(false);
       });
 
       it("deletes a transition, which the board then no longer offers", async () => {
@@ -6713,7 +6714,7 @@ describe("MockTaskaApi", () => {
 
       it("deletes an own workflow: its types back on the shared default, the statuses it lacks mapped first", async () => {
         const created = await ownWorkflow();
-        const [shared] = (await api.listProjectWorkflows(project.id)).filter((entry) => entry.shared);
+        const [shared] = (await api.listProjectWorkflows(project.id)).items.filter((entry) => entry.shared);
         const added = await api.addWorkflowStatus(project.id, created.id, status);
         const withMove = await api.addWorkflowTransition(project.id, created.id, {
           fromStatusKey: "IN_PROGRESS",
@@ -6766,7 +6767,7 @@ describe("MockTaskaApi", () => {
         // The shared default, with the deleted workflow's types only.
         expect(answer).toMatchObject({ shared: true, issueTypes: ["TASK"], workflow: { id: shared.workflow.id } });
         expect(answer.workflow.transitions).toHaveLength(6);
-        expect((await api.listProjectWorkflows(project.id)).map((entry) => [entry.shared, entry.issueTypes])).toEqual([
+        expect((await api.listProjectWorkflows(project.id)).items.map((entry) => [entry.shared, entry.issueTypes])).toEqual([
           [true, ["TASK", "BUG", "STORY"]],
         ]);
         expect((await taskWorkflow()).id).toBe(shared.workflow.id);
@@ -6796,7 +6797,7 @@ describe("MockTaskaApi", () => {
       const incident = async () => {
         await signIn("mark@example.com");
         const mob = await projectByKey("MOB");
-        const entry = (await api.listProjectWorkflows(mob.id)).find((item) => item.workflow.name === "Incident workflow")!;
+        const entry = (await api.listProjectWorkflows(mob.id)).items.find((item) => item.workflow.name === "Incident workflow")!;
         return { mob, entry };
       };
 
@@ -6820,7 +6821,7 @@ describe("MockTaskaApi", () => {
         expect((await api.getProjectContext(mob.id)).workflows.BUG?.name).toBe("Incident workflow");
         const bug = (await api.listIssues(mob.id)).items.find((item) => item.issueKey === "MOB-6")!;
         expect(bug.status).toBe("TRIAGE");
-        expect((await api.listProjectWorkflows(mob.id)).map((item) => [item.workflow.name, item.issueTypes])).toEqual([
+        expect((await api.listProjectWorkflows(mob.id)).items.map((item) => [item.workflow.name, item.issueTypes])).toEqual([
           ["Default workflow", ["TASK", "STORY"]],
           ["Incident workflow", ["BUG", "INCIDENT"]],
         ]);
@@ -6905,7 +6906,7 @@ describe("MockTaskaApi", () => {
         expect(facts).toMatchObject({ code: "UNAVAILABLE", details: { reason: "WORKFLOW_BINDING_CHANGE_PENDING" } });
         expect(facts.requestId).toEqual(expect.any(String));
         // Applied all the same, as the server finishes it by itself.
-        const listed = (await api.listProjectWorkflows(project.id)).filter((entry) => !entry.shared);
+        const listed = (await api.listProjectWorkflows(project.id)).items.filter((entry) => !entry.shared);
         expect(listed.map((entry) => entry.issueTypes)).toEqual([["BUG"]]);
 
         const retry = { requestId: facts.requestId! };
@@ -6913,7 +6914,7 @@ describe("MockTaskaApi", () => {
         expect(answer.workflow.id).toBe(listed[0].workflow.id);
         await expect(api.createProjectWorkflow(project.id, input, retry)).resolves.toMatchObject({ workflow: { id: answer.workflow.id } });
         // Applied once: no second workflow.
-        expect((await api.listProjectWorkflows(project.id)).filter((entry) => !entry.shared)).toHaveLength(1);
+        expect((await api.listProjectWorkflows(project.id)).items.filter((entry) => !entry.shared)).toHaveLength(1);
         await expect(api.createProjectWorkflow(project.id, { ...input, issueTypes: ["STORY"] }, retry)).rejects.toMatchObject({
           code: "ALREADY_EXISTS",
           details: { reason: "REQUEST_ID_REUSED" },
@@ -7005,13 +7006,13 @@ describe("MockTaskaApi", () => {
       await signIn("anna@example.com");
       await expect(api.createProjectIssueType(project.id, { ...epic, code: "TASK" })).rejects.toMatchObject({
         code: "ALREADY_EXISTS",
-        message: "Issue type TASK already exists in this project",
+        message: "Issue type already exists",
       });
       const created = await api.createProjectIssueType(project.id, epic);
       // Stored stripped; `sortOrder` the server's 100 when none is sent; a new
       // generation; bound to the main workflow — the shared default here
       // (backend TAS-437).
-      const [shared] = await api.listProjectWorkflows(project.id);
+      const [shared] = (await api.listProjectWorkflows(project.id)).items;
       expect(created).toEqual({
         code: "EPIC",
         name: "Epic",
@@ -7220,7 +7221,7 @@ describe("MockTaskaApi", () => {
       await api.deleteProjectIssueType(web.id, "EPIC");
 
       // The workflow stays as a donor with no type (backend TAS-436).
-      expect((await api.listProjectWorkflows(web.id)).map((entry) => [entry.workflow.name, entry.issueTypes])).toEqual([
+      expect((await api.listProjectWorkflows(web.id)).items.map((entry) => [entry.workflow.name, entry.issueTypes])).toEqual([
         ["Default workflow", ["TASK", "BUG", "STORY"]],
         ["Epic workflow", []],
       ]);
@@ -7237,7 +7238,7 @@ describe("MockTaskaApi", () => {
         return projectByKey("MOB");
       };
       const { id } = await mob();
-      const [shared, incident] = await api.listProjectWorkflows(id);
+      const [shared, incident] = (await api.listProjectWorkflows(id)).items;
       // TASK, the registry's first, runs on the shared default here.
       const spike = await api.createProjectIssueType(id, { code: "SPIKE", name: "Spike", color: "teal" });
       expect(spike.workflowId).toBe(shared.workflow.id);
@@ -7245,7 +7246,7 @@ describe("MockTaskaApi", () => {
 
       const named = await api.createProjectIssueType(id, { code: "OUTAGE", name: "Outage", color: "red", workflowId: incident.workflow.id });
       expect(named.workflowId).toBe(incident.workflow.id);
-      const after = (await api.listProjectWorkflows(id)).find((entry) => entry.workflow.id === incident.workflow.id)!;
+      const after = (await api.listProjectWorkflows(id)).items.find((entry) => entry.workflow.id === incident.workflow.id)!;
       // The own workflow it was bound to moves one version on.
       expect(after).toMatchObject({ issueTypes: ["INCIDENT", "OUTAGE"], workflow: { version: incident.workflow.version + 1 } });
 
@@ -7257,9 +7258,75 @@ describe("MockTaskaApi", () => {
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Invalid request parameters" });
     });
 
+    /** Backend TAS-440: the shared default always listed, and the main workflow named rather than left to be worked out. */
+    it("lists the shared default when no type runs on it, and names the main workflow (mainWorkflowId)", async () => {
+      await signIn("anna@example.com");
+      const before = await api.listProjectWorkflows(project.id);
+      const [shared] = before.items;
+      expect(before.mainWorkflowId).toBe(shared.workflow.id);
+
+      const own = await api.createProjectWorkflow(project.id, {
+        ...workflowCopyInput(shared.workflow, "Development", ["TASK", "BUG", "STORY"]),
+      });
+      const after = await api.listProjectWorkflows(project.id);
+      // After the types' workflows, with no type, before any donor.
+      expect(after.items.map((entry) => [entry.workflow.id, entry.shared, entry.issueTypes])).toEqual([
+        [own.workflow.id, false, ["TASK", "BUG", "STORY"]],
+        [shared.workflow.id, true, []],
+      ]);
+      expect(after.mainWorkflowId).toBe(own.workflow.id);
+    });
+
+    it("answers an empty registry with mainWorkflowId null, and its first type only with a workflowId", async () => {
+      await signIn("anna@example.com");
+      const empty = await api.createProject({
+        projectKey: "EMPTY",
+        name: "Empty",
+        description: `Nothing yet ${MOCK_PROJECT_TRIGGERS.noIssueTypes}`,
+      });
+      expect((await api.getProjectContext(empty.id)).issueTypes).toEqual([]);
+      const list = await api.listProjectWorkflows(empty.id);
+      expect(list.mainWorkflowId).toBeNull();
+      expect(list.items.map((entry) => [entry.shared, entry.issueTypes])).toEqual([[true, []]]);
+
+      const refusal = await api
+        .createProjectIssueType(empty.id, { code: "TASK", name: "Task", color: "blue" })
+        .catch((error: unknown) => error);
+      expect(apiErrorFacts(refusal)).toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: "Choose a workflow for the first project issue type",
+        details: { reason: "ISSUE_TYPE_WORKFLOW_REQUIRED" },
+      });
+      // Refused, the type is not in the registry.
+      expect((await api.getProjectContext(empty.id)).issueTypes).toEqual([]);
+
+      const created = await api.createProjectIssueType(empty.id, {
+        code: "TASK",
+        name: "Task",
+        color: "blue",
+        workflowId: list.items[0].workflow.id,
+      });
+      expect(created).toMatchObject({ code: "TASK", workflowId: list.items[0].workflow.id });
+      expect(created.generation).toMatch(/^[0-9a-f-]{36}$/);
+      expect((await api.listProjectWorkflows(empty.id)).mainWorkflowId).toBe(list.items[0].workflow.id);
+      // With a first type, a create without workflowId takes its workflow again.
+      await expect(api.createProjectIssueType(empty.id, { code: "BUG", name: "Bug", color: "red" })).resolves.toMatchObject({
+        workflowId: list.items[0].workflow.id,
+      });
+    });
+
+    it("gives the type another admin adds meanwhile a generation, as every registry entry has one", async () => {
+      await signIn("anna@example.com");
+      await api.updateProjectIssueType(project.id, "TASK", { name: `Task ${MOCK_PROJECT_TRIGGERS.issueTypesChangedMeanwhile}` });
+      await api.reorderProjectIssueTypes(project.id, ["BUG", "TASK", "STORY"]).catch(() => undefined);
+      const registry = (await api.getProjectContext(project.id)).issueTypes;
+      expect(registry.map((entry) => entry.code)).toContain("ADDED_ELSEWHERE");
+      for (const entry of registry) expect(entry.generation).toMatch(/^[0-9a-f-]{36}$/);
+    });
+
     it("binds a new type to an own main workflow when the registry's first type runs on one", async () => {
       await signIn("anna@example.com");
-      const [shared] = await api.listProjectWorkflows(project.id);
+      const [shared] = (await api.listProjectWorkflows(project.id)).items;
       const own = await api.createProjectWorkflow(project.id, {
         ...workflowCopyInput(shared.workflow, "Development", ["TASK"]),
       });
@@ -7609,6 +7676,30 @@ describe("MockTaskaApi sign-up and provider sign-in", () => {
       knob(MOCK_OAUTH_IDENTITY_KEY, { email: "stranger@example.com" });
       knob(MOCK_AUTH_METHODS_KEY, { signupEnabled: false, providers: ["GOOGLE"] });
       expect(landing(api.oauthStartUrl("GOOGLE", "/projects")).error).toBe("SIGNUP_DISABLED");
+      // A provider that is not configured fails at /start, and the gateway
+      // sends that to the UI as well (backend TAS-444) — before the provider
+      // is ever asked who the reader is.
+      knob(MOCK_OAUTH_IDENTITY_KEY, { email: "anna@example.com" });
+      expect(landing(api.oauthStartUrl("GITHUB", "/projects"))).toMatchObject({ error: "PROVIDER_UNAVAILABLE", code: null });
+    });
+
+    it("refuses a locked account at the exchange with its deadline as details.lockedUntil (backend TAS-444)", async () => {
+      // Locked after the callback let it through: a code the callback could
+      // not have refused, for Omar, the seeded LOCKED row.
+      const code = encodeMockOAuthCode({
+        nonce: "tas-464:GOOGLE:omar@example.com",
+        provider: "GOOGLE",
+        email: "omar@example.com",
+        name: "Omar",
+        returnTo: "/projects",
+      });
+      const before = Date.now();
+      const refusal = await api.exchangeOAuthCode(code).catch((error: unknown) => error);
+      const facts = apiErrorFacts(refusal);
+      expect(facts).toMatchObject({ code: "PERMISSION_DENIED", details: { reason: "ACCOUNT_LOCKED" } });
+      const until = Date.parse(facts.details?.lockedUntil ?? "");
+      expect(until).toBeGreaterThan(before);
+      expect(new Date(until).toISOString()).toBe(facts.details?.lockedUntil);
     });
 
     it("signs a known account in, once per code, and echoes the returnTo the server would keep", async () => {
@@ -7787,10 +7878,11 @@ describe("MockTaskaApi sign-up and provider sign-in", () => {
         displayName: "New",
       });
 
+      // `details.reason` since backend TAS-444 (`DirectoryMembershipAccess`, develop `d886b031`).
       await expect(api.searchUsers({ query: " ab " })).rejects.toMatchObject({
         code: "PERMISSION_DENIED",
         message: "Project membership is required",
-        details: null,
+        details: { reason: "PROJECT_MEMBERSHIP_REQUIRED" },
       });
       // The gateway's binding still comes first.
       await expect(api.searchUsers({ query: "ab" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });

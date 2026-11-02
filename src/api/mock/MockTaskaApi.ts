@@ -100,6 +100,7 @@ import {
   ISSUE_TYPE_CODE_PATTERN,
   ISSUE_TYPE_DEFAULT_SORT_ORDER,
   ISSUE_TYPE_EMPTY_PATCH_MESSAGE,
+  ISSUE_TYPE_EXISTS_MESSAGE,
   ISSUE_TYPE_INVALID_FIELDS_MESSAGE,
   ISSUE_TYPE_NAME_MAX_LENGTH,
   ISSUE_TYPE_IN_USE_REASON,
@@ -108,17 +109,19 @@ import {
   ISSUE_TYPE_ORDER_REPEATS_MESSAGE,
   ISSUE_TYPES_CHANGED_MESSAGE,
   ISSUE_TYPES_CHANGED_REASON,
+  ISSUE_TYPE_WORKFLOW_REQUIRED_MESSAGE,
+  ISSUE_TYPE_WORKFLOW_REQUIRED_REASON,
   LAST_ISSUE_TYPE_MESSAGE,
   LAST_ISSUE_TYPE_REASON,
   STATUS_KEY_PATTERN,
   STATUS_NOT_IN_TARGET_TYPE_MESSAGE,
   STATUS_NOT_IN_TARGET_WORKFLOW_REASON,
   STATUS_NOT_IN_WORKFLOW_REASON,
+  WORKFLOW_NOT_IN_PROJECT_REASON,
   isIssueTypeCode,
   isIssueTypeColor,
   isIssueTypeIcon,
   isIssueTypeShape,
-  issueTypeExistsMessage,
   issueTypeInUseMessage,
   issueTypeNotDefinedMessage,
 } from "../issueTypes";
@@ -199,6 +202,7 @@ import type {
   ProjectRole,
   ProjectStats,
   ProjectWorkflowEntry,
+  ProjectWorkflowList,
   TelegramLink,
   UnwatchIssueResult,
   User,
@@ -479,6 +483,9 @@ const META: EnumDictionaries = {
     pair("LOCKED", "Locked"),
     pair("UNSPECIFIED", "Unspecified", false),
   ],
+  // `MetaServiceImpl` at `d886b031` (backend TAS-443): every `ActionChannel`,
+  // and `API_TOKEN` named "API" — a personal token's name is private.
+  actionChannels: [pair("UI", "UI"), pair("API_TOKEN", "API"), pair("MCP", "MCP")],
 };
 
 /**
@@ -738,6 +745,15 @@ export const MOCK_PROJECT_TRIGGERS = {
    * otherwise cannot produce for a reader alone. Once: the type it adds stays.
    */
   issueTypesChangedMeanwhile: "[types changed meanwhile]",
+  /**
+   * In a new project's description: the project is created with an **empty**
+   * issue-type registry. The server answers for one — `mainWorkflowId: null`,
+   * and New type's first type needs a `workflowId` (backend TAS-440) — but a
+   * reader cannot make one with the product: every project is created with
+   * the seed, and the last type cannot be deleted. This is the way to reach
+   * the empty state of Issue types (DESIGN.md §4.30) and that first New type.
+   */
+  noIssueTypes: "[no types]",
   /**
    * In a project description: every column page of the project refuses —
    * issue-service unavailable, 503 — once the access check has passed. Both
@@ -1061,7 +1077,8 @@ const memberWriteId = (userId: string): string => {
  * seed (backend #212), which the migration also backfilled into every project
  * that existed before it — in the plain look backend TAS-432 gives it (PR
  * #256, migration 0003): TASK and STORY squares, BUG a circle, none with an
- * icon. A project created at runtime here gets exactly this.
+ * icon. A project created at runtime here gets exactly this, unless its
+ * description holds `MOCK_PROJECT_TRIGGERS.noIssueTypes`.
  */
 const SEED_ISSUE_TYPES: readonly ProjectIssueType[] = [
   { code: "TASK", name: "Task", color: "blue", shape: "square", icon: null, sortOrder: 10 },
@@ -2149,7 +2166,8 @@ export class MockTaskaStore {
    * Each project's issue-type registry (backend #212, TAS-385) — project-
    * service's `project_issue_types`. Held in no particular order; every reader
    * goes through `registryOf`, which orders it as the server does. A project
-   * created at runtime gets `SEED_ISSUE_TYPES`. **OPS holds only TASK and BUG**,
+   * created at runtime gets `SEED_ISSUE_TYPES` (none with
+   * `MOCK_PROJECT_TRIGGERS.noIssueTypes`). **OPS holds only TASK and BUG**,
    * so one board offers fewer types than the seed; **WEB adds EPIC** (purple,
    * the `layers` icon, with a workflow of its own in `workflowOverrides`), so a
    * type that is not one of the seeds — and one drawn by its icon rather than
@@ -3338,13 +3356,14 @@ export class MockTaskaStore {
    * characters, one nobody holds, one used or revoked by a newer invitation,
    * one past its deadline, an account that is no longer `INVITED`.
    *
-   * The kind (TAS-426) is **the account's origin, not the link's**:
+   * The kind (TAS-426) is **the account's origin (`createdVia`), not the
+   * link's** — the yml says so since backend TAS-443 (develop `d886b031`):
    * `AuthServiceImpl.previewInvitation` answers `SIGNUP` when the account was
-   * made by `POST /auth/signup` and `INVITATION` otherwise (develop `9fcf0253`,
-   * `AuthServiceImpl.java:214-215`). So an admin's resend to Sam previews as
-   * `SIGNUP`, and a sign-up request for Leo — which sends him a fresh link —
-   * still previews as `INVITATION`. An `OAUTH` account is `ACTIVE` from the
-   * start and has no live link to preview.
+   * made by `POST /auth/signup` and `INVITATION` otherwise, and an invited
+   * account keeps `INVITATION` when it activates through email sign-up. So an
+   * admin's resend to Sam previews as `SIGNUP`, and a sign-up request for Leo
+   * — which sends him a fresh link — still previews as `INVITATION`. An
+   * `OAUTH` account is `ACTIVE` from the start and has no live link to preview.
    */
   previewInvitation(token: string): InvitationPreview {
     const found = token.trim() === "" || token.length > 256 ? undefined : this.inviteTokens.find((item) => item.token === token);
@@ -3450,12 +3469,12 @@ export class MockTaskaStore {
    * `pageSize + 1` rows, so `hasMore` is whether the extra one came back.
    * `%`, `_` and `!` are escaped there and literal here by construction.
    *
-   * Between the two, since backend TAS-423 (`DirectoryMembershipAccess`,
-   * develop `9fcf0253`): **with signup open**, a caller who is not a
-   * `GLOBAL_ADMIN` and belongs to no project is refused 403
-   * `PERMISSION_DENIED` "Project membership is required", with no
-   * `details.reason`. It is auth-service's check, not the gateway's
-   * (`UserDirectoryService.search`, `UserDirectoryService.java:28`): the caller
+   * Between the two, since backend TAS-423 (`DirectoryMembershipAccess`):
+   * **with signup open**, a caller who is not a `GLOBAL_ADMIN` and belongs to
+   * no project is refused 403 `PERMISSION_DENIED` "Project membership is
+   * required", with `details.reason` `PROJECT_MEMBERSHIP_REQUIRED` since
+   * backend TAS-444 (develop `d886b031`). It is auth-service's check, not the
+   * gateway's (`UserDirectoryService.search`, `UserDirectoryService.java:28`): the caller
    * is required first (`requireActor`), then `DirectoryMembershipAccess.check`
    * asks project-service whether they belong anywhere, and only then is the
    * query measured — so it follows the gateway's binding and precedes the
@@ -3482,7 +3501,7 @@ export class MockTaskaStore {
       actor.globalRole !== "GLOBAL_ADMIN" &&
       !Object.values(this.membersByProject).some((rows) => rows.some((member) => member.userId === actor.id))
     ) {
-      throw new MockApiError("PERMISSION_DENIED", "Project membership is required");
+      throw new MockApiError("PERMISSION_DENIED", "Project membership is required", { reason: "PROJECT_MEMBERSHIP_REQUIRED" });
     }
     const needle = query.trim().toLowerCase();
     const length = [...needle].length;
@@ -3715,14 +3734,18 @@ export class MockTaskaStore {
    * other identity gets a one-time code that carries the grant
    * (`encodeMockOAuthCode`), `returnTo` already reduced by the server's rule.
    *
-   * A provider the methods knob does not list would be `/start`'s 503 on the
-   * API host, which no app can draw; here it lands with a code like any other,
-   * and the exchange then refuses it 503 `PROVIDER_UNAVAILABLE` — the server's
-   * "unconfigured since the callback" answer.
+   * First of all, a provider the methods knob does not list: `/start` itself
+   * fails, and since backend TAS-444 (develop `d886b031`,
+   * `OAuthController.errorResponse`) the gateway sends that failure to the UI
+   * too, as `?error=PROVIDER_UNAVAILABLE` — with a `requestId` this mock does
+   * not have. One that goes from the knob after the callback is the exchange's
+   * 503 `PROVIDER_UNAVAILABLE`, the server's "unconfigured since the callback"
+   * answer.
    */
   oauthCallbackUrl(provider: OAuthProvider, returnTo: string, origin: string): string {
     const landing = `${origin}/auth/callback`;
     try {
+      if (!readMockAuthMethods().providers.includes(provider)) return `${landing}?error=${PROVIDER_UNAVAILABLE_REASON}`;
       const identity = readMockOAuthIdentity();
       if (identity.error !== null) return `${landing}?${new URLSearchParams({ error: identity.error }).toString()}`;
       const email = identity.email.trim().toLowerCase();
@@ -3759,7 +3782,8 @@ export class MockTaskaStore {
    * one already exchanged, one older than 60 seconds, 401 `STATE_INVALID`; a
    * live one is spent there. Then, under the claim: the provider no longer
    * configured, 503 `PROVIDER_UNAVAILABLE`; a `BLOCKED` or `LOCKED` account,
-   * 403 (no `lockedUntil`, as on the server); no account while signup is off,
+   * 403 (a lock with `details.lockedUntil`, as on the server since backend
+   * TAS-444); no account while signup is off,
    * 403 `SIGNUP_DISABLED`. A known account signs in; an `INVITED` one is
    * activated first, with no password, and its unused links are revoked. An
    * unknown address with signup open gets the name step.
@@ -3868,13 +3892,23 @@ export class MockTaskaStore {
     return { accessToken: "mock-access-token", refreshToken: "mock-refresh-token", expiresIn: 3600 };
   }
 
-  /** The re-check a provider sign-in meets on a known account: 403 for `BLOCKED` and for `LOCKED`, with no deadline. */
+  /**
+   * The re-check a provider sign-in meets on a known account: 403 for
+   * `BLOCKED`, and for `LOCKED` with the deadline as `details.lockedUntil`, a
+   * UTC instant — `OAuthErrors.locked` since backend TAS-444 (develop
+   * `d886b031`). The deadline is this store's credential lock window from now,
+   * as `login` gives it; the store keeps no lock instant of its own.
+   */
   private refuseProviderSignIn(user: StoredUser): void {
     if (user.status === "BLOCKED") {
       throw new MockApiError("PERMISSION_DENIED", "Account is blocked", { reason: ACCOUNT_BLOCKED_REASON });
     }
     if (user.status === "LOCKED") {
-      throw new MockApiError("PERMISSION_DENIED", "Account is locked", { reason: ACCOUNT_LOCKED_REASON });
+      const until = new Date(Date.now() + CREDENTIAL_LOCK_DURATION_MS);
+      throw new MockApiError("PERMISSION_DENIED", "Account is temporarily locked", {
+        reason: ACCOUNT_LOCKED_REASON,
+        lockedUntil: until.toISOString(),
+      });
     }
   }
 
@@ -3976,8 +4010,11 @@ export class MockTaskaStore {
     );
     // Last, as the server lists it: the newest `created_at` (TAS-394).
     this.projects.push(project);
-    // `ProjectServiceImpl.createProject` seeds the registry in the same write.
-    this.issueTypesByProject[project.id] = SEED_ISSUE_TYPES.map((type) => ({ ...type, generation: makeId("generation") }));
+    // `ProjectServiceImpl.createProject` seeds the registry in the same write
+    // — unless `MOCK_PROJECT_TRIGGERS.noIssueTypes` asks for none.
+    this.issueTypesByProject[project.id] = description.includes(MOCK_PROJECT_TRIGGERS.noIssueTypes)
+      ? []
+      : SEED_ISSUE_TYPES.map((type) => ({ ...type, generation: makeId("generation") }));
     this.membersByProject[project.id] = [
       {
         userId: this.currentUserId,
@@ -4387,6 +4424,7 @@ export class MockTaskaStore {
           .filter((entry) => entry.code !== "") ?? null,
       notificationTypes: copy(META.notificationTypes),
       userStatuses: copy(META.userStatuses),
+      actionChannels: META.actionChannels.map((entry) => ({ ...entry })),
     };
   }
 
@@ -4449,27 +4487,34 @@ export class MockTaskaStore {
    * order (backend #226), each resolved to the project's own workflow or the
    * shared default, one entry per workflow at the position of its first type.
    * Statuses and every transition, hidden ones included, by `sortOrder`. Since
-   * backend TAS-436 (develop `78019ece`) the project's own workflows no type
-   * runs on — donors — follow with `issueTypes: []`, in id order, and the
-   * shared default is listed only while a type runs on it.
+   * backend TAS-440 (develop `d886b031`) the shared default is always listed —
+   * after those, with `issueTypes: []`, when no type runs on it — and then the
+   * project's own workflows no type runs on (donors, backend TAS-436), with
+   * `issueTypes: []`, in id order. `mainWorkflowId` is the workflow of the
+   * registry's first type, `null` for an empty registry.
    */
-  listProjectWorkflows(projectId: string): ProjectWorkflowEntry[] {
+  listProjectWorkflows(projectId: string): ProjectWorkflowList {
     this.getProject(projectId);
     if (!this.membersByProject[projectId]?.some((member) => member.userId === this.currentUserId)) {
       throw new MockApiError("PERMISSION_DENIED", "You don't have access to this project");
     }
+    const registry = this.registryOf(projectId);
     const entries: ProjectWorkflowEntry[] = [];
-    for (const { code: issueType } of this.registryOf(projectId)) {
+    for (const { code: issueType } of registry) {
       const workflow = this.workflowFor(projectId, issueType);
       const entry = entries.find((item) => item.workflow.id === workflow.id);
       if (entry) entry.issueTypes.push(issueType);
       else entries.push({ workflow: this.workflowView(workflow), issueTypes: [issueType], shared: workflow === this.workflow });
     }
+    if (!entries.some((entry) => entry.shared)) {
+      entries.push({ workflow: this.workflowView(this.workflow), issueTypes: [], shared: true });
+    }
     const donors = (this.ownedWorkflows[projectId] ?? [])
       .filter((workflow) => !entries.some((entry) => entry.workflow.id === workflow.id))
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     for (const workflow of donors) entries.push({ workflow: this.workflowView(workflow), issueTypes: [], shared: false });
-    return entries;
+    const first = registry[0];
+    return { mainWorkflowId: first ? this.workflowFor(projectId, first.code).id : null, items: entries };
   }
 
   /**
@@ -6100,15 +6145,18 @@ export class MockTaskaStore {
    * is stored stripped, `shape` defaults to `square`, `icon` to none and
    * `sortOrder` to 100 (backend TAS-432).
    *
-   * Since backend TAS-437 (develop `78019ece`, `IssueTypeCreationTransactions`
-   * and `WorkflowCreatedTypeBindingService`) the type is bound in the same
+   * Since backend TAS-437 (`IssueTypeCreationTransactions` and
+   * `WorkflowCreatedTypeBindingService`) the type is bound in the same
    * operation: to `workflowId` — the shared default or an own workflow of the
    * project, a donor included, else 400 `INVALID_ARGUMENT`
    * `WORKFLOW_NOT_IN_PROJECT` — or, with none, to the workflow the registry's
-   * first type runs on. A project with no type has no such first one and is
-   * refused (400 `FAILED_PRECONDITION`). An own workflow it is bound to moves
-   * one version on. The 201 is `CreatedProjectIssueTypeDto`: the entry, with a
-   * new `generation`, and the `workflowId`.
+   * first type runs on. An empty registry has no such first one, so since
+   * backend TAS-440 (develop `d886b031`) a create there needs `workflowId`:
+   * without it, 400 `FAILED_PRECONDITION` `ISSUE_TYPE_WORKFLOW_REQUIRED`, after
+   * the code is found free; with it, the first type is made like any other.
+   * An own workflow it is bound to moves one version on. The 201 is
+   * `CreatedProjectIssueTypeDto`: the entry, with a new `generation`, and the
+   * `workflowId`.
    */
   createProjectIssueType(projectId: string, input: CreateProjectIssueTypeInput, requestId?: string): CreatedProjectIssueType {
     if (!isIssueTypeCreateBody(input)) throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
@@ -6116,17 +6164,22 @@ export class MockTaskaStore {
     if (replayed.done) return replayed.answer as CreatedProjectIssueType;
     this.requireIssueTypeAdmin(projectId);
     if (this.inRegistry(projectId, input.code)) {
-      throw new MockApiError("ALREADY_EXISTS", issueTypeExistsMessage(input.code));
+      throw new MockApiError("ALREADY_EXISTS", ISSUE_TYPE_EXISTS_MESSAGE);
     }
-    const first = this.registryOf(projectId)[0];
-    if (!first) throw new MockApiError("FAILED_PRECONDITION", "Project has no default issue type");
+    const first = this.registryOf(projectId)[0] as ProjectIssueType | undefined;
     let target: WorkflowDefinition;
-    if (input.workflowId === undefined) target = this.workflowFor(projectId, first.code);
-    else if (input.workflowId === this.workflow.id) target = this.workflow;
+    if (input.workflowId === undefined) {
+      if (!first) {
+        throw new MockApiError("FAILED_PRECONDITION", ISSUE_TYPE_WORKFLOW_REQUIRED_MESSAGE, {
+          reason: ISSUE_TYPE_WORKFLOW_REQUIRED_REASON,
+        });
+      }
+      target = this.workflowFor(projectId, first.code);
+    } else if (input.workflowId === this.workflow.id) target = this.workflow;
     else {
       const owned = (this.ownedWorkflows[projectId] ?? []).find((workflow) => workflow.id === input.workflowId);
       if (!owned) {
-        throw new MockApiError("INVALID_ARGUMENT", "Workflow is not owned by this project", { reason: "WORKFLOW_NOT_IN_PROJECT" });
+        throw new MockApiError("INVALID_ARGUMENT", "Workflow is not owned by this project", { reason: WORKFLOW_NOT_IN_PROJECT_REASON });
       }
       target = owned;
     }
@@ -6368,6 +6421,7 @@ export class MockTaskaStore {
       shape: "square",
       icon: null,
       sortOrder: registry.reduce((largest, type) => Math.max(largest, type.sortOrder), 0) + 10,
+      generation: makeId("generation"),
     });
   }
 
@@ -9591,7 +9645,7 @@ export class MockTaskaApi implements TaskaApi {
     await wait(null);
   }
 
-  async listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]> {
+  async listProjectWorkflows(projectId: string): Promise<ProjectWorkflowList> {
     return wait(this.store.listProjectWorkflows(projectId));
   }
 

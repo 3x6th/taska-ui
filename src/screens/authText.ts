@@ -146,7 +146,12 @@ export interface ProviderRefusal {
   message: string | null;
   requestId: string | null;
   retryAfterSeconds: number | null;
-  /** `ACCOUNT_LOCKED` with a deadline — none today (TAS-444); taken if one ever comes. */
+  /**
+   * `ACCOUNT_LOCKED`'s deadline: `details.lockedUntil`, a UTC instant, on an
+   * exchange's or a name step's 403 since backend TAS-444 (develop
+   * `d886b031`). The callback's `?error=ACCOUNT_LOCKED` carries none, so a
+   * refusal that arrives that way has `null`.
+   */
   lockedUntil: string | null;
 }
 
@@ -276,9 +281,10 @@ export function providerRefusalFromState(value: unknown): ProviderRefusal | null
 }
 
 /**
- * The deadline of a provider's `ACCOUNT_LOCKED`, when one ever comes and is
- * still ahead — none does today (TAS-444), and the screen then says the
- * deadline-free two lines rather than make a time up.
+ * The deadline of a provider's `ACCOUNT_LOCKED`, when the refusal carried one
+ * and it is still ahead — an exchange's or a name step's 403 does since
+ * backend TAS-444; the callback's `?error=` never does, and the screen then
+ * says the deadline-free two lines rather than make a time up.
  */
 export function refusalLockDeadline(refusal: Pick<ProviderRefusal, "reason" | "lockedUntil">, now = Date.now()): Date | null {
   if (refusal.reason !== ACCOUNT_LOCKED_REASON || refusal.lockedUntil === null) return null;

@@ -156,6 +156,7 @@ import type {
   ProjectMember,
   ProjectWorkflow,
   ProjectWorkflowEntry,
+  ProjectWorkflowList,
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
@@ -324,8 +325,12 @@ interface RestProjectWorkflowItem {
   shared?: unknown;
 }
 
-/** `ProjectWorkflowsResponseDto` (backend PR #208). */
+/**
+ * `ProjectWorkflowsResponseDto` (backend PR #208). `mainWorkflowId` since
+ * backend TAS-440 (develop `d886b031`): a nullable UUID, read as `unknown`.
+ */
 interface RestProjectWorkflows {
+  mainWorkflowId?: unknown;
   items?: RestProjectWorkflowItem[] | null;
 }
 
@@ -1308,6 +1313,9 @@ export class RestTaskaApi implements TaskaApi {
       linkViewTypes: toDictionary(body.linkViewTypes, toViewLinkType),
       notificationTypes: toDictionary(body.notificationTypes),
       userStatuses: toDictionary(body.userStatuses),
+      // Optional in the contract (backend TAS-443): an answer without it is
+      // an empty list; the mark then has only the build's own words.
+      actionChannels: toDictionary(body.actionChannels) ?? [],
     };
   }
 
@@ -2344,10 +2352,16 @@ export class RestTaskaApi implements TaskaApi {
    * type is kept as sent, a code this build has no name for included
    * (TAS-173). `shared` is `true` unless the server said `false` in so many
    * words: a flag nobody stated must not open the writes on the shared default.
+   * `mainWorkflowId` (backend TAS-440) as sent when it is a UUID, else `null` —
+   * never worked out from the items.
    */
-  async listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]> {
+  async listProjectWorkflows(projectId: string): Promise<ProjectWorkflowList> {
     const response = await this.request<RestProjectWorkflows>(this.workflowsPath(projectId));
-    return (response.items ?? []).flatMap((item) => (item.workflow ? [toProjectWorkflowEntry(item)] : []));
+    const { mainWorkflowId } = response;
+    return {
+      mainWorkflowId: typeof mainWorkflowId === "string" && UUID_TEXT.test(mainWorkflowId) ? mainWorkflowId : null,
+      items: (response.items ?? []).flatMap((item) => (item.workflow ? [toProjectWorkflowEntry(item)] : [])),
+    };
   }
 
   /**
@@ -3362,8 +3376,10 @@ export class RestTaskaApi implements TaskaApi {
         // `actor`; one that names nobody is left out, as the server leaves out
         // an id it found no profile for.
         participants: toParticipants(participants),
-        // Backend TAS-411: how the change arrived. A mark only for MCP and an
-        // API token; `UI`, `null`, absent and unknown draw nothing.
+        // Backend TAS-411: how the change arrived. Any code but `UI` is kept
+        // as it came (`toActionVia`); `UI`, `null`, absent and blank are no
+        // mark. What a kept code says is `actionViaText`'s — and one neither
+        // this build nor `/meta` names draws nothing.
         via: toActionVia(channel),
       })),
     };
@@ -4051,15 +4067,17 @@ function boardCounts(total: unknown, more: unknown, drawn: number): { totalCount
 }
 
 /**
- * `channel` on a history event or a comment (TAS-411) as the domain's mark:
- * `MCP` and `API_TOKEN` are the two channels that are not the UI and the only
- * two that become one. `UI`, `null`, an absent field, anything that is not a
- * string and any channel this build has no word for are `null` — no mark,
- * drawn exactly as a change made in the UI (DESIGN.md §4.15, §4.26). The
+ * `channel` on a history event or a comment (TAS-411) as the domain's mark.
+ * The contract's `channel` is an open string ("UI, API_TOKEN or MCP; an open
+ * string for future channels"), so every code that is not the UI is kept as
+ * it came — `MCP`, `API_TOKEN`, and one this build has not heard of, which
+ * `/meta`'s `actionChannels` may name (`actionViaText`). `UI`, `null`, an
+ * absent field, anything that is not a string and a blank one are `null` — no
+ * mark, drawn exactly as a change made in the UI (DESIGN.md §4.15, §4.26). The
  * token's name and id are never on the wire, so the mark carries neither.
  */
 function toActionVia(channel: unknown): ActionVia | null {
-  return channel === "MCP" || channel === "API_TOKEN" ? { channel } : null;
+  return typeof channel === "string" && channel.trim() !== "" && channel !== "UI" ? { channel } : null;
 }
 
 /**

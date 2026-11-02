@@ -20,8 +20,12 @@ const PROJECT = "p-382";
 
 const { fakeApi, state } = vi.hoisted(() => {
   const state = {
-    /** Each list read takes the next answer; the last one repeats. */
-    lists: [] as (unknown[] | Error)[],
+    /**
+     * Each list read takes the next answer; the last one repeats. An array is
+     * the items, with the main workflow named as the server would; an object
+     * is the whole `ProjectWorkflowsResponseDto`, for a case that names it.
+     */
+    lists: [] as (unknown[] | { mainWorkflowId: string | null; items: unknown[] } | Error)[],
     listCalls: 0,
     /** A write held open until `release` is called, so a case can look at the in-flight form. */
     held: false,
@@ -51,7 +55,12 @@ const { fakeApi, state } = vi.hoisted(() => {
       const next = listAnswer();
       if (next instanceof Error) throw next;
       if (next === undefined) return new Promise(() => {});
-      return next;
+      if (!Array.isArray(next)) return next;
+      // `ProjectWorkflowsResponseDto` (backend TAS-440): the items, and the
+      // main workflow as the server would name it for the dialog's registry,
+      // whose first type is TASK.
+      const items = next as { workflow: { id: string }; issueTypes: string[] }[];
+      return { mainWorkflowId: items.find((entry) => entry.issueTypes.includes("TASK"))?.workflow.id ?? null, items };
     },
     createProjectWorkflow: write("create"),
     addWorkflowStatus: write("status"),
@@ -103,13 +112,17 @@ const SEEDED_TYPES: ProjectIssueType[] = [
   { code: "STORY", name: "Story", color: "green", shape: "square", icon: null, sortOrder: 30 },
 ];
 
-function renderDialog(readerRole: ProjectRole | null | undefined = "ADMIN", archived = false) {
+function renderDialog(
+  readerRole: ProjectRole | null | undefined = "ADMIN",
+  archived = false,
+  issueTypes: ProjectIssueType[] = SEEDED_TYPES,
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const onClose = vi.fn();
   render(
     <QueryClientProvider client={queryClient}>
       <ProjectWorkflowsModal
-        issueTypes={SEEDED_TYPES}
+        issueTypes={issueTypes}
         onClose={onClose}
         projectId={PROJECT}
         projectKey="TAS"
@@ -176,10 +189,30 @@ describe("the Workflows dialog's states", () => {
 
   it("answers an empty list as a project with no issue types, and offers no new workflow", async () => {
     state.lists = [[]];
-    renderDialog("ADMIN");
+    renderDialog("ADMIN", false, []);
 
     expect(await screen.findByText("This project has no issue types, so it runs on no workflow.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "New workflow" })).toBeNull();
+    // One sentence for it: the empty registry's line is the listed shared default's.
+    expect(screen.queryByText("This project has no issue types yet, so no workflow can be created for it.")).toBeNull();
+  });
+
+  it("tells an ADMIN of an empty registry why there is no New workflow, the shared default listed (TAS-464)", async () => {
+    state.lists = [{ mainWorkflowId: null, items: [{ ...sharedEntry, issueTypes: [] }] }];
+    renderDialog("ADMIN", false, []);
+
+    const line = await screen.findByText("This project has no issue types yet, so no workflow can be created for it.");
+    expect(line).toHaveClass("workflows-note");
+    expect(screen.queryByRole("button", { name: "New workflow" })).toBeNull();
+    expect(within(card("Default workflow")).getByText("No issue type uses it.")).toBeVisible();
+  });
+
+  it.each(["MEMBER", "VIEWER"] as const)("says nothing of New workflow to a %s of an empty registry", async (role) => {
+    state.lists = [{ mainWorkflowId: null, items: [{ ...sharedEntry, issueTypes: [] }] }];
+    renderDialog(role, false, []);
+
+    await screen.findByRole("heading", { level: 3, name: "Default workflow" });
+    expect(screen.queryByText("This project has no issue types yet, so no workflow can be created for it.")).toBeNull();
   });
 
   it("lists the project's own workflow before the shared one, each with its types, statuses and every transition", async () => {
@@ -299,6 +332,36 @@ describe("what each role is offered", () => {
       ["Bug", "On Development"],
       ["Story", "On Development"],
     ]);
+  });
+
+  it("copies the main workflow the server names when the list carries no shared default (TAS-464)", async () => {
+    // `mainWorkflowId` names Delivery though Development's types are listed
+    // first: the copy is the server's word, never worked out from `items`.
+    const delivery: ProjectWorkflowEntry = {
+      workflow: { ...ownWorkflow, id: "wf-delivery", name: "Delivery" },
+      issueTypes: ["BUG"],
+      shared: false,
+    };
+    state.lists = [{ mainWorkflowId: "wf-delivery", items: [{ ...ownEntry, issueTypes: ["TASK", "STORY"] }, delivery] }];
+    renderDialog("ADMIN");
+
+    fireEvent.click(await screen.findByRole("button", { name: "New workflow" }));
+    const form = screen.getByRole("form", { name: "New workflow" });
+    expect(within(form).getByRole("group", { name: "Issue types" })).toHaveAccessibleDescription(
+      "Starts as a copy of Delivery, so issues coming from it keep their status.",
+    );
+  });
+
+  it("copies the shared default whenever the list carries it, a type on it or none (TAS-440)", async () => {
+    state.lists = [{ mainWorkflowId: "wf-own", items: [{ ...ownEntry, issueTypes: ["TASK", "BUG", "STORY"] }, { ...sharedEntry, issueTypes: [] }] }];
+    renderDialog("ADMIN");
+
+    fireEvent.click(await screen.findByRole("button", { name: "New workflow" }));
+    const form = screen.getByRole("form", { name: "New workflow" });
+    expect(within(form).getByRole("group", { name: "Issue types" })).toHaveAccessibleDescription(
+      "Starts as a copy of Default workflow, so issues coming from it keep their status.",
+    );
+    expect(within(card("Default workflow")).getByText("No issue type uses it.")).toBeVisible();
   });
 
   it("says a donor has no type, and tells an ADMIN what to do with it", async () => {

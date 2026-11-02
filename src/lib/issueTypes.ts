@@ -7,8 +7,11 @@ import {
   ISSUE_TYPE_GENERATION_REQUIRED_REASON,
   ISSUE_TYPE_IN_USE_REASON,
   ISSUE_TYPE_TARGET_INVALID_REASON,
+  ISSUE_TYPE_WORKFLOW_REQUIRED_REASON,
   ISSUE_TYPES_CHANGED_REASON,
   LAST_ISSUE_TYPE_REASON,
+  REQUEST_ID_REUSED_REASON,
+  WORKFLOW_NOT_IN_PROJECT_REASON,
 } from "../api/issueTypes";
 import type { IssueTypeColor, ProjectIssueType } from "../domain/types";
 
@@ -115,6 +118,28 @@ export const isIssueTypeReplaced = (error: unknown) =>
 /** Whether a delete with a move named a target that is no longer a type of the project (400 `INVALID_ARGUMENT`). */
 export const isIssueTypeTargetInvalid = (error: unknown) =>
   hasRefusalReason(error, "INVALID_ARGUMENT", ISSUE_TYPE_TARGET_INVALID_REASON);
+
+/**
+ * Whether a create was refused because the code is taken — 409
+ * `ALREADY_EXISTS` **without** `REQUEST_ID_REUSED`. A replay under another
+ * command's `X-Request-Id` is `ALREADY_EXISTS` too (backend TAS-440,
+ * `IssueTypeCreationTransactions.begin`), and it says nothing about the code.
+ */
+export const isIssueTypeCodeTaken = (error: unknown) =>
+  apiErrorFacts(error).code === "ALREADY_EXISTS" &&
+  !hasRefusalReason(error, "ALREADY_EXISTS", REQUEST_ID_REUSED_REASON);
+
+/**
+ * Whether a create without `workflowId` met an empty registry — 400
+ * `FAILED_PRECONDITION` `ISSUE_TYPE_WORKFLOW_REQUIRED` (backend TAS-440): the
+ * registry was emptied elsewhere while the form offered «Same as …».
+ */
+export const isIssueTypeWorkflowRequired = (error: unknown) =>
+  hasRefusalReason(error, "FAILED_PRECONDITION", ISSUE_TYPE_WORKFLOW_REQUIRED_REASON);
+
+/** Whether a create named a workflow that is neither the project's own nor the shared default — 400 `INVALID_ARGUMENT`. */
+export const isWorkflowNotInProject = (error: unknown) =>
+  hasRefusalReason(error, "INVALID_ARGUMENT", WORKFLOW_NOT_IN_PROJECT_REASON);
 
 /** `details.issueCount` of an in-use refusal as a whole number, else `null`. */
 export function inUseCountOf(error: unknown): number | null {
