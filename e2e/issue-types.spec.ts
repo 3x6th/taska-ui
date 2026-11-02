@@ -663,6 +663,15 @@ test("an empty registry's first type goes on the shared workflow, chosen, with n
   await page.locator(".project-card", { hasText: "No types yet" }).click();
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
+  // Workflows lists the shared default all the same (backend TAS-440), and
+  // tells the ADMIN why there is no New workflow.
+  await page.getByRole("button", { name: "Workflows" }).click();
+  const workflows = page.getByRole("dialog", { name: "Workflows" });
+  await expect(workflows.getByRole("heading", { level: 3, name: "Default workflow" })).toBeVisible();
+  await expect(workflows.getByText("This project has no issue types yet, so no workflow can be created for it.")).toBeVisible();
+  await expect(workflows.getByRole("button", { name: "New workflow" })).toHaveCount(0);
+  await workflows.getByRole("button", { name: "Close", exact: true }).click();
+
   const dialog = await openIssueTypes(page);
   await expect(dialog.getByText("This project has no issue types yet, so no issue can be created in it.")).toBeVisible();
   await dialog.getByRole("button", { name: "Add type" }).click();

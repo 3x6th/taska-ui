@@ -2218,7 +2218,13 @@ export interface TaskaApi {
    *   is 409 `ABORTED` `ISSUE_TYPE_OPERATION_PENDING` — the one «another type
    *   operation» reason since backend TAS-440 (develop `d886b031`), also on
    *   `GET /workflows` and the project context. A registry that changed under
-   *   the move is 409 `ABORTED` `ISSUE_TYPES_CHANGED`.
+   *   the move is 409 `ABORTED` `ISSUE_TYPES_CHANGED` in the yml; the Java at
+   *   `d886b031` answers it — and the move's own `ISSUE_TYPE_CHANGED` from
+   *   `IssueTypeMoveService.validateRegistry` — as 503 `UNAVAILABLE`
+   *   `ISSUE_TYPE_DELETION_PENDING` that never settles, because
+   *   `IssueTypeDeletionCoordinator.REJECTED` has no `ABORTED`: the type gate
+   *   stays and the reads and writes above answer
+   *   `ISSUE_TYPE_OPERATION_PENDING` (backend TAS-465).
    * - create since backend TAS-437: the type and its binding in one recoverable
    *   operation, refused in `IssueTypeCreationTransactions.begin`'s order at
    *   `d886b031` after the body: the role and the archive; a replay — the same
@@ -2232,10 +2238,11 @@ export interface TaskaApi {
    *   registry has none). Then the binding: a `workflowId` that is neither an
    *   own workflow of this project nor the shared default is 400
    *   `INVALID_ARGUMENT` `WORKFLOW_NOT_IN_PROJECT`, a registry that changed
-   *   meanwhile 409 `ABORTED` `ISSUE_TYPES_CHANGED`; an unfinished create is
-   *   503 `UNAVAILABLE` `ISSUE_TYPE_CREATION_PENDING` — repeat it with the same
-   *   `X-Request-Id` (`CommandRetry`). The 201 is `CreatedProjectIssueTypeDto`:
-   *   the entry and the `workflowId` it runs on.
+   *   meanwhile 409 `ABORTED` `ISSUE_TYPES_CHANGED` (`ABORTED` is among
+   *   `IssueTypeCreationCoordinator.REJECTED`); an unfinished create is 503
+   *   `UNAVAILABLE` `ISSUE_TYPE_CREATION_PENDING` (`IssueTypeCreationCoordinator`)
+   *   — repeat it with the same `X-Request-Id` (`CommandRetry`). The 201 is
+   *   `CreatedProjectIssueTypeDto`: the entry and the `workflowId` it runs on.
    * - reorder (`PUT …/issue-types/order`, backend TAS-418): an empty or
    *   malformed `codes` (400 "Invalid request parameters"); a code named twice
    *   (400 `INVALID_ARGUMENT`, before the role); project, role, archive; a set

@@ -8281,8 +8281,8 @@ button.attachment-open:hover:not(:disabled) {
   font-style: normal;
 }
 
-/* The channel mark (TAS-412, TAS-411): "via MCP" or "via API" — the names
-   `/meta` gives the channels (TAS-464). §2.3's
+/* The channel mark (TAS-412, TAS-411): "via MCP" or "via API" — the server's
+   names for the channels (TAS-464). §2.3's
    meta — 11 `--fg-3`, the comment head's time and "edited" — after the
    author's name in a comment's head, and after the time in an Activity event's
    meta line (never inside the event's sentence, §4.26); on the panel's

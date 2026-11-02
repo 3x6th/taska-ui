@@ -112,13 +112,17 @@ const SEEDED_TYPES: ProjectIssueType[] = [
   { code: "STORY", name: "Story", color: "green", shape: "square", icon: null, sortOrder: 30 },
 ];
 
-function renderDialog(readerRole: ProjectRole | null | undefined = "ADMIN", archived = false) {
+function renderDialog(
+  readerRole: ProjectRole | null | undefined = "ADMIN",
+  archived = false,
+  issueTypes: ProjectIssueType[] = SEEDED_TYPES,
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const onClose = vi.fn();
   render(
     <QueryClientProvider client={queryClient}>
       <ProjectWorkflowsModal
-        issueTypes={SEEDED_TYPES}
+        issueTypes={issueTypes}
         onClose={onClose}
         projectId={PROJECT}
         projectKey="TAS"
@@ -185,10 +189,30 @@ describe("the Workflows dialog's states", () => {
 
   it("answers an empty list as a project with no issue types, and offers no new workflow", async () => {
     state.lists = [[]];
-    renderDialog("ADMIN");
+    renderDialog("ADMIN", false, []);
 
     expect(await screen.findByText("This project has no issue types, so it runs on no workflow.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "New workflow" })).toBeNull();
+    // One sentence for it: the empty registry's line is the listed shared default's.
+    expect(screen.queryByText("This project has no issue types yet, so no workflow can be created for it.")).toBeNull();
+  });
+
+  it("tells an ADMIN of an empty registry why there is no New workflow, the shared default listed (TAS-464)", async () => {
+    state.lists = [{ mainWorkflowId: null, items: [{ ...sharedEntry, issueTypes: [] }] }];
+    renderDialog("ADMIN", false, []);
+
+    const line = await screen.findByText("This project has no issue types yet, so no workflow can be created for it.");
+    expect(line).toHaveClass("workflows-note");
+    expect(screen.queryByRole("button", { name: "New workflow" })).toBeNull();
+    expect(within(card("Default workflow")).getByText("No issue type uses it.")).toBeVisible();
+  });
+
+  it.each(["MEMBER", "VIEWER"] as const)("says nothing of New workflow to a %s of an empty registry", async (role) => {
+    state.lists = [{ mainWorkflowId: null, items: [{ ...sharedEntry, issueTypes: [] }] }];
+    renderDialog(role, false, []);
+
+    await screen.findByRole("heading", { level: 3, name: "Default workflow" });
+    expect(screen.queryByText("This project has no issue types yet, so no workflow can be created for it.")).toBeNull();
   });
 
   it("lists the project's own workflow before the shared one, each with its types, statuses and every transition", async () => {

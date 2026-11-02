@@ -543,19 +543,22 @@ describe("New type's workflow (TAS-437)", () => {
     expect(await within(dialog).findByText("Type Spike added. It uses Default workflow.")).toBeInTheDocument();
   });
 
-  it("takes the main workflow from mainWorkflowId, never from whose types hold the first type (TAS-464)", async () => {
-    // The shared default holds TASK in `items`, and the server names the own one main.
+  it("takes no main workflow the list names that does not hold the first type, and leaves it to the server", async () => {
+    // The server names the own one main while the first type on screen, Task,
+    // is the shared default's in `items` — a list read before a reorder.
+    // Neither is taken for main: «Same as Task», with no workflowId.
     api.listProjectWorkflows.mockResolvedValue(workflowList(OWN_ID));
     const { form } = openNew();
     const select = within(form).getByRole("combobox", { name: "Workflow" });
     await waitFor(() =>
       expect(options(select)).toEqual([
-        ["Stories (same as Task)", OWN_ID],
+        ["Same as Task", ""],
+        ["Stories", OWN_ID],
         ["Old flow", DONOR_ID],
         ["Default workflow (shared)", SHARED_ID],
       ]),
     );
-    expect(select).toHaveValue(OWN_ID);
+    expect(select).toHaveValue("");
   });
 
   it("offers «Same as {First}» first when the list names no main workflow, and sends no workflowId with it", async () => {
@@ -609,7 +612,7 @@ describe("New type's workflow (TAS-437)", () => {
     expect(within(form).getByRole("button", { name: "Add type" })).toHaveAttribute("aria-disabled", "true");
   });
 
-  it("reads the list again on WORKFLOW_NOT_IN_PROJECT, so the select drops the workflow that went", async () => {
+  it("says which workflow went on WORKFLOW_NOT_IN_PROJECT, reads the list again, and puts focus on the select", async () => {
     api.listProjectWorkflows.mockResolvedValueOnce(workflowList()).mockResolvedValue({
       mainWorkflowId: SHARED_ID,
       items: workflowList().items.filter((entry) => entry.workflow.id !== DONOR_ID),
@@ -624,7 +627,12 @@ describe("New type's workflow (TAS-437)", () => {
     fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Spike" } });
     fireEvent.click(within(form).getByRole("button", { name: "Add type" }));
 
-    expect(await within(form).findByRole("alert")).toHaveTextContent("The type was not added.");
+    // Named as the list named it when the form sent it, before the re-read dropped it.
+    expect(await within(form).findByRole("alert")).toHaveTextContent(
+      "Old flow is no longer one of this project's workflows, so the type was not added. Check its workflow and add it again.",
+    );
+    expect(within(form).queryByText("Workflow is not owned by this project")).toBeNull();
+    expect(within(form).getByText("rid-1")).toBeInTheDocument();
     await waitFor(() => expect(api.listProjectWorkflows).toHaveBeenCalledTimes(2));
     await waitFor(() =>
       expect(options(select)).toEqual([
@@ -632,8 +640,74 @@ describe("New type's workflow (TAS-437)", () => {
         ["Default workflow (shared, same as Task)", SHARED_ID],
       ]),
     );
-    // The pick is gone with its workflow; the main one is chosen again.
+    // The pick is gone with its workflow; the main one is chosen again, and
+    // focus is on the select — not on Add type, where a second Enter would
+    // add the type on a workflow the reader never chose.
     expect(select).toHaveValue(SHARED_ID);
+    await waitFor(() => expect(select).toHaveFocus());
+  });
+
+  it("says «The chosen workflow» on WORKFLOW_NOT_IN_PROJECT when the list gave it no name", async () => {
+    api.listProjectWorkflows.mockResolvedValue({
+      mainWorkflowId: SHARED_ID,
+      items: [...workflowList().items, { workflow: flow("44444444-4444-4444-4444-444444444444", "  "), issueTypes: [], shared: false }],
+    });
+    api.createProjectIssueType.mockRejectedValueOnce(
+      refusal("INVALID_ARGUMENT", "Workflow is not owned by this project", { reason: "WORKFLOW_NOT_IN_PROJECT" }),
+    );
+    const { form } = openNew();
+    const select = within(form).getByRole("combobox", { name: "Workflow" });
+    await waitFor(() => expect(select).toHaveValue(SHARED_ID));
+    fireEvent.change(select, { target: { value: "44444444-4444-4444-4444-444444444444" } });
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Spike" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Add type" }));
+
+    expect(await within(form).findByRole("alert")).toHaveTextContent(
+      "The chosen workflow is no longer one of this project's workflows, so the type was not added. Check its workflow and add it again.",
+    );
+  });
+
+  it("reads the registry and the list again on ISSUE_TYPES_CHANGED, and says it as any refusal", async () => {
+    api.listProjectWorkflows.mockResolvedValue(workflowList());
+    api.createProjectIssueType.mockRejectedValueOnce(
+      Object.assign(refusal("ABORTED", "The default registry type changed", { reason: "ISSUE_TYPES_CHANGED" }), { status: 409 }),
+    );
+    const { form } = openNew();
+    await waitFor(() => expect(within(form).getByRole("combobox", { name: "Workflow" })).toHaveValue(SHARED_ID));
+    const contextReads = api.getProjectContext.mock.calls.length;
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Spike" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Add type" }));
+
+    expect(await within(form).findByRole("alert")).toHaveTextContent("The type was not added.");
+    expect(within(form).getByText("The default registry type changed")).toBeInTheDocument();
+    await waitFor(() => expect(api.getProjectContext.mock.calls.length).toBeGreaterThan(contextReads));
+    await waitFor(() => expect(api.listProjectWorkflows).toHaveBeenCalledTimes(2));
+  });
+
+  it("sends no workflowId once a reorder moved the first type off the main workflow, before the list is read again", async () => {
+    // Main is the shared default, which holds Task and Bug; Story runs on its own.
+    api.listProjectWorkflows.mockResolvedValue(workflowList());
+    const order = held<ProjectIssueType[]>();
+    api.reorderProjectIssueTypes.mockReturnValue(order.promise);
+    api.createProjectIssueType.mockImplementation(async (_project: string, input: ProjectIssueType) => ({ ...input, workflowId: OWN_ID }));
+    const { dialog, form } = openNew();
+    const select = within(form).getByRole("combobox", { name: "Workflow" });
+    await waitFor(() => expect(select).toHaveValue(SHARED_ID));
+
+    // Story goes first while the PUT is out: the list still names the shared
+    // default main, and the shared default no longer holds the first type.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move Story up" }));
+    await waitFor(() => expect(names(dialog)).toEqual(["Task", "Story", "Bug"]));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move Story up" }));
+    await waitFor(() => expect(names(dialog)).toEqual(["Story", "Task", "Bug"]));
+    expect(api.listProjectWorkflows).toHaveBeenCalledTimes(1);
+    expect(options(select)[0]).toEqual(["Same as Story", ""]);
+    expect(select).toHaveValue("");
+
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Spike" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Add type" }));
+    await waitFor(() => expect(api.createProjectIssueType).toHaveBeenCalledTimes(1));
+    expect(api.createProjectIssueType.mock.calls[0][1]).not.toHaveProperty("workflowId");
   });
 });
 
@@ -660,7 +734,7 @@ describe("New type on an empty registry (TAS-464)", () => {
     ],
   });
 
-  it("holds the submit with a reason while the list is read, and sends nothing", async () => {
+  it("holds the submit, with no sentence, while the list is read, and sends nothing", async () => {
     const list = held<ReturnType<typeof emptyList>>();
     api.listProjectWorkflows.mockReturnValue(list.promise);
     api.createProjectIssueType.mockImplementation(async (_project: string, input: ProjectIssueType) => ({ ...input, workflowId: SHARED_ID }));
@@ -669,8 +743,10 @@ describe("New type on an empty registry (TAS-464)", () => {
     expect(options(select)).toEqual([["Loading workflows", ""]]);
     fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Task" } });
     const submit = within(form).getByRole("button", { name: "Add type" });
+    // Off, and with no sentence: one that flashed on every open moved the row (TAS-464).
     expect(submit).toHaveAttribute("aria-disabled", "true");
-    expect(submit).toHaveAccessibleDescription("Workflows are still loading.");
+    expect(submit).not.toHaveAttribute("aria-describedby");
+    expect(form.querySelector(".admin-write-hint")).toBeNull();
     fireEvent.click(submit);
     fireEvent.submit(form);
     expect(api.createProjectIssueType).not.toHaveBeenCalled();
@@ -685,7 +761,6 @@ describe("New type on an empty registry (TAS-464)", () => {
     );
     expect(select).toHaveValue(SHARED_ID);
     expect(submit).not.toHaveAttribute("aria-disabled");
-    expect(within(form).queryByText("Workflows are still loading.")).toBeNull();
     fireEvent.click(submit);
     await waitFor(() => expect(api.createProjectIssueType).toHaveBeenCalledTimes(1));
     expect(api.createProjectIssueType.mock.calls[0][1]).toMatchObject({ code: "TASK", workflowId: SHARED_ID, sortOrder: 10 });
@@ -714,7 +789,7 @@ describe("New type on an empty registry (TAS-464)", () => {
     await waitFor(
       () =>
         expect(submit).toHaveAccessibleDescription(
-          "No workflow could be loaded for this type. Cancel and open the form again to retry.",
+          "This project's workflows could not be loaded, so the type cannot be added. Cancel, then press Add type to try again.",
         ),
       { timeout: 4000 },
     );
@@ -763,7 +838,7 @@ describe("New type on an empty registry (TAS-464)", () => {
 
     const alert = await within(form).findByRole("alert");
     expect(alert).toHaveTextContent(
-      "The type was not added: this project has no issue types any more, so choose a workflow for it.",
+      "Issue types changed elsewhere and none are left, so the type was not added. Check its workflow and add it again.",
     );
     // The server's words would only repeat it; the request id stays.
     expect(within(form).queryByText("Choose a workflow for the first project issue type")).toBeNull();
@@ -820,6 +895,24 @@ describe("deleting a type with issues (TAS-433, TAS-437)", () => {
     const answer = within(dialog).getByRole("button", { name: "Move and delete" });
     expect(answer).toHaveAttribute("aria-disabled", "true");
     expect(api.deleteProjectIssueType).toHaveBeenCalledWith(PROJECT, "BUG");
+  });
+
+  it("reads the registry and the list again on a move refused ISSUE_TYPES_CHANGED, keeping the strip (backend TAS-465)", async () => {
+    const { dialog, select } = await openStep();
+    api.deleteProjectIssueType.mockRejectedValueOnce(
+      Object.assign(refusal("ABORTED", "Issue type lifecycle changed", { reason: "ISSUE_TYPES_CHANGED" }), { status: 409 }),
+    );
+    const invalidated = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    fireEvent.change(select, { target: { value: "TASK" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move and delete" }));
+
+    // Said in the strip as any other refusal, which stays.
+    expect(await within(dialog).findByText("Bug was not deleted.")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Move and delete" })).toBeInTheDocument();
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([projectContextKey(PROJECT), ["project-workflows", PROJECT]]),
+    );
+    invalidated.mockRestore();
   });
 
   it("moves with the target and the entry's generation, then deletes: the issues' caches read again", async () => {

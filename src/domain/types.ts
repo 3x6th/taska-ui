@@ -121,9 +121,10 @@ export interface EnumDictionaries {
    * with the names the server gives them for that mark: `UI` "UI", `API_TOKEN`
    * "API" — the token's own name stays private — and `MCP` "MCP"
    * (`MetaServiceImpl.actionChannelName`). `code` is open
-   * (`x-extensible-enum`). Optional in the contract "for client
-   * compatibility"; an answer without it reads as `[]`, so a reader falls
-   * back to the build's own words (`actionViaText`).
+   * (`x-extensible-enum`). The mark takes a name from here only for a code
+   * this build has no word for (`actionViaText`, DESIGN.md §6). Optional in
+   * the contract "for client compatibility"; an answer without it reads as
+   * `[]`.
    */
   actionChannels: DictionaryEntry[];
 }
@@ -1318,11 +1319,11 @@ export type ActionChannel = "API_TOKEN" | "MCP" | (string & {});
  * Every channel but the UI is kept: any non-empty code other than `UI`.
  * `UI`, `null`, an absent field and a blank or non-string value are all `null`
  * here, and render exactly as a change made in the UI always has (DESIGN.md
- * §4.15, §4.26). What the mark says is `actionViaText`'s: the name `/meta`
- * gives the code (`EnumDictionaries.actionChannels`), else the build's own
- * word for it, else nothing. The contract declares the token's name and id
- * private and never returns them, so the mark names the channel and nothing
- * else.
+ * §4.15, §4.26). What the mark says is `actionViaText`'s: the build's own
+ * word for a code it knows, else the name `/meta` gives the code
+ * (`EnumDictionaries.actionChannels`), else nothing. The contract declares
+ * the token's name and id private and never returns them, so the mark names
+ * the channel and nothing else.
  */
 export interface ActionVia {
   channel: ActionChannel;

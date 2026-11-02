@@ -790,6 +790,11 @@ export function ProjectWorkflowsModal({
               unavailable={null}
             />
           )
+        ) : isAdmin && registry?.length === 0 && listed && listed.length > 0 ? (
+          // An empty registry (backend TAS-440 lists the shared default all the
+          // same): New workflow needs a type to move, so an ADMIN is told why
+          // there is none. A list with no items keeps its own line below.
+          <p className="workflows-note">This project has no issue types yet, so no workflow can be created for it.</p>
         ) : null}
 
         {notice ? <WriteNotice error={notice.error} register={register} sentence={notice.sentence} /> : null}

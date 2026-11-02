@@ -1314,7 +1314,7 @@ export class RestTaskaApi implements TaskaApi {
       notificationTypes: toDictionary(body.notificationTypes),
       userStatuses: toDictionary(body.userStatuses),
       // Optional in the contract (backend TAS-443): an answer without it is
-      // an empty list, and the mark falls back to the build's own words.
+      // an empty list; the mark then has only the build's own words.
       actionChannels: toDictionary(body.actionChannels) ?? [],
     };
   }
@@ -3376,8 +3376,10 @@ export class RestTaskaApi implements TaskaApi {
         // `actor`; one that names nobody is left out, as the server leaves out
         // an id it found no profile for.
         participants: toParticipants(participants),
-        // Backend TAS-411: how the change arrived. A mark only for MCP and an
-        // API token; `UI`, `null`, absent and unknown draw nothing.
+        // Backend TAS-411: how the change arrived. Any code but `UI` is kept
+        // as it came (`toActionVia`); `UI`, `null`, absent and blank are no
+        // mark. What a kept code says is `actionViaText`'s — and one neither
+        // this build nor `/meta` names draws nothing.
         via: toActionVia(channel),
       })),
     };

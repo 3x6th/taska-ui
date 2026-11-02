@@ -626,13 +626,24 @@ describe("actionViaText (TAS-412, TAS-425, TAS-464)", () => {
     expect(actionViaText({ channel: "API_TOKEN" }, served)).toBe("via API");
   });
 
-  it("takes the name /meta gives the code, a code this build has not heard of included", () => {
-    const named = [...served, { code: "WEBHOOK", name: " Webhook ", selectable: true }, { code: "MCP", name: "Agent", selectable: true }];
+  it("takes the name /meta gives only for a code this build has no word for (DESIGN.md §6, TAS-173)", () => {
+    const named = [...served, { code: "WEBHOOK", name: " Webhook ", selectable: true }];
     expect(actionViaText({ channel: "WEBHOOK" }, named)).toBe("via Webhook");
-    // The first row of a code is the one read.
-    expect(actionViaText({ channel: "MCP" }, named)).toBe("via MCP");
+    // A code this build knows keeps its own word, whatever /meta calls it.
     expect(actionViaText({ channel: "API_TOKEN" }, [{ code: "API_TOKEN", name: "Token API", selectable: true }])).toBe(
-      "via Token API",
+      "via API",
+    );
+    expect(actionViaText({ channel: "MCP" }, [{ code: "MCP", name: "Agent", selectable: true }])).toBe("via MCP");
+  });
+
+  it("reads no word off the object's prototype for a code such as constructor", () => {
+    for (const channel of ["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"]) {
+      expect(actionViaText({ channel })).toBeNull();
+      expect(actionViaText({ channel }, served)).toBeNull();
+    }
+    // Named by /meta, it is said like any other code this build does not know.
+    expect(actionViaText({ channel: "constructor" }, [{ code: "constructor", name: "Builder", selectable: true }])).toBe(
+      "via Builder",
     );
   });
 

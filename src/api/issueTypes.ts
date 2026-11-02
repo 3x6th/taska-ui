@@ -113,23 +113,41 @@ export const ISSUE_TYPE_ORDER_REPEATS_MESSAGE = "codes must be a complete permut
  */
 export const ISSUE_TYPES_CHANGED_MESSAGE = "Issue type registry changed; reload the current types before reordering";
 /**
- * `details.reason` of a registry that changed under a write — 409 `ABORTED` on
- * every route the yml names it for since backend TAS-440 (develop `d886b031`):
- * the reorder above, a type's create, a delete with a move, and a workflow's
- * binding change (create, or a PATCH with `issueTypes`). Read with the code.
+ * `details.reason` of a registry that changed under a write — read with the
+ * code, 409 `ABORTED`. At develop `d886b031` (backend TAS-440) the server
+ * answers it that way on the reorder above, a type's create
+ * (`IssueTypeCreationCoordinator.REJECTED` holds `ABORTED`) and a workflow's
+ * binding change (create, or a PATCH with `issueTypes`).
+ *
+ * **Not on a delete with a move**, although the yml names a 409 there too:
+ * `IssueTypeDeletionCoordinator.REJECTED` (line 32) has no `ABORTED`, so the
+ * reservation's `ISSUE_TYPES_CHANGED` — and issue-service's `ISSUE_TYPE_CHANGED`
+ * from `IssueTypeMoveService.validateRegistry` — come back as 503
+ * `UNAVAILABLE` `ISSUE_TYPE_DELETION_PENDING`, a pending delete that
+ * `recover()` never settles: the type gate stays, and `/context`,
+ * `/workflows` and every type write answer 409 `ISSUE_TYPE_OPERATION_PENDING`
+ * meanwhile. Backend TAS-465. The client says that 503 as any pending delete
+ * and offers the repeat.
  */
 export const ISSUE_TYPES_CHANGED_REASON = "ISSUE_TYPES_CHANGED";
 /*
  * The reasons of backend TAS-433, TAS-437 and TAS-440 (develop `d886b031`)
  * that the Issue types dialog and New issue branch on — always with
  * `details.reason`, never the prose. Read in `IssueTypeDeletionTransactions`,
- * `IssueTypeCreationTransactions` (project-service), `WorkflowCreatedTypeBindingService`
- * (workflow-service) and `IssueTypeMoveService`, `IssueTypeWriteGuard`
- * (issue-service).
+ * `IssueTypeDeletionCoordinator`, `IssueTypeCreationTransactions`,
+ * `IssueTypeCreationCoordinator` (project-service),
+ * `WorkflowCreatedTypeBindingService` (workflow-service) and
+ * `IssueTypeMoveService`, `IssueTypeWriteGuard` (issue-service).
  */
 /** A delete with a move whose target is the type itself, malformed or not registered (400 `INVALID_ARGUMENT`). */
 export const ISSUE_TYPE_TARGET_INVALID_REASON = "ISSUE_TYPE_TARGET_INVALID";
-/** A delete with a move whose `expectedGeneration` is not the entry's (409 `ABORTED`, `details.generation`). */
+/**
+ * A delete with a move whose `expectedGeneration` is not the entry's (409
+ * `ABORTED`, `details.generation`), refused before the move starts
+ * (`IssueTypeDeletionTransactions.beginNew`). The same reason from the move
+ * itself (`IssueTypeMoveService.validateRegistry`) is the non-settling 503 of
+ * `ISSUE_TYPES_CHANGED_REASON` above at `d886b031` (backend TAS-465).
+ */
 export const ISSUE_TYPE_CHANGED_REASON = "ISSUE_TYPE_CHANGED";
 /** A delete with a move and no `expectedGeneration` for a code created again (409 `ABORTED`). */
 export const ISSUE_TYPE_GENERATION_REQUIRED_REASON = "ISSUE_TYPE_GENERATION_REQUIRED";
@@ -139,11 +157,19 @@ export const ISSUE_STATUSES_UNMAPPED_REASON = "ISSUE_STATUSES_UNMAPPED";
 export const ISSUE_TYPE_STATUS_MAPPING_INVALID_REASON = "ISSUE_TYPE_STATUS_MAPPING_INVALID";
 /**
  * A type's delete the server has not finished: 503 `UNAVAILABLE` with
- * `operationId` on the delete — repeat the same command — and, on an issue
- * create naming the type while it is pending, 400 `FAILED_PRECONDITION`.
+ * `operationId` on the delete (`IssueTypeDeletionTransactions.pendingError`,
+ * raised by `IssueTypeDeletionCoordinator`) — repeat the same command — and,
+ * on an issue create naming the type while it is pending, 400
+ * `FAILED_PRECONDITION`. At `d886b031` it is also what a move refused
+ * `ABORTED` mid-way answers, and that one does not settle (backend TAS-465,
+ * see `ISSUE_TYPES_CHANGED_REASON`).
  */
 export const ISSUE_TYPE_DELETION_PENDING_REASON = "ISSUE_TYPE_DELETION_PENDING";
-/** A type's create the server has not finished (503 `UNAVAILABLE`, `operationId`): repeat it with the same `X-Request-Id`. */
+/**
+ * A type's create the server has not finished (503 `UNAVAILABLE`,
+ * `operationId`, raised by `IssueTypeCreationCoordinator`): repeat it with the
+ * same `X-Request-Id`.
+ */
 export const ISSUE_TYPE_CREATION_PENDING_REASON = "ISSUE_TYPE_CREATION_PENDING";
 /** A create whose `workflowId` is neither an own workflow of the project nor the shared default (400 `INVALID_ARGUMENT`). */
 export const WORKFLOW_NOT_IN_PROJECT_REASON = "WORKFLOW_NOT_IN_PROJECT";

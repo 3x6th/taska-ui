@@ -381,16 +381,18 @@ const channelWords: KnownLabels = {
 
 /**
  * The channel mark in a comment's head and on an Activity event's meta line
- * (TAS-412, TAS-411): "via {name}" — the name `/meta` gives the code
- * (`EnumDictionaries.actionChannels`, printed only when `isEnglishName` lets
- * it), else the build's own word for it: "via MCP", "via API". The token's
- * name is not part of it — the contract declares a token's name and id
- * private, and no answer carries them (DESIGN.md §4.15, §4.26).
+ * (TAS-412, TAS-411): "via {name}", named by DESIGN.md §6's rule (TAS-173) — a
+ * code this build knows by its own word, "via MCP", "via API"; one it does not
+ * by the name `/meta` gives it (`EnumDictionaries.actionChannels`, printed only
+ * when `isEnglishName` lets it). The token's name is not part of it — the
+ * contract declares a token's name and id private, and no answer carries them
+ * (DESIGN.md §4.15, §4.26).
  *
  * `null` — draw nothing — for no mark at all and for `UI`, which is a change
  * made in the UI and looks exactly as it did before the mark existed, and for
- * a channel neither `/meta` nor this build has a word for: a mark it cannot
- * read says nothing true.
+ * a channel neither this build nor `/meta` has a word for: a mark it cannot
+ * read says nothing true. The build's words are looked up as own keys only, so
+ * a code such as `constructor` is not read off the object's prototype.
  */
 export const actionViaText = (
   via: ActionVia | null | undefined,
@@ -400,7 +402,11 @@ export const actionViaText = (
   const code = via.channel;
   if (code.trim() === "" || code === "UI") return null;
   const served = channels?.find((entry) => entry.code === code);
-  const name = served && isEnglishName(served.name) ? served.name.trim() : channelWords[code];
+  const name = Object.hasOwn(channelWords, code)
+    ? channelWords[code]
+    : served && isEnglishName(served.name)
+      ? served.name.trim()
+      : undefined;
   return name ? `via ${name}` : null;
 };
 

@@ -507,11 +507,27 @@ The entry as it stood:
   (`MockTaskaApi.test.ts`): after the fix they model a state the gateway can
   no longer produce.
 
+### A delete with a move that meets a changed registry: the yml says 409 `ISSUE_TYPES_CHANGED`, the Java answers a 503 that never settles
+
+- **Endpoint:** `DELETE /projects/{projectId}/issue-types/{code}` with a move body.
+- **Contract** (develop `af7ab57e`): 409 `ABORTED` with `details.reason` `ISSUE_TYPES_CHANGED` when the registry changed under the move.
+- **Java** (`d886b031`, read by api-contract-guard on TAS-464, not probed): since TAS-440 the workflow reservation refuses with `ABORTED` `ISSUE_TYPES_CHANGED`, and issue-service with `ISSUE_TYPE_CHANGED` (`IssueTypeMoveService.validateRegistry`). `IssueTypeDeletionCoordinator.REJECTED` does not hold `ABORTED`, so `drive` keeps the operation pending and answers 503 `UNAVAILABLE` `ISSUE_TYPE_DELETION_PENDING`; `recover()` retries it every 5 s and never settles. Until the operation is cleared by hand, the project's type gate stays taken: the context, `GET /workflows` and every type write answer 409 `ISSUE_TYPE_OPERATION_PENDING`. The gate should keep the state from arising, so it is probably rare.
+- **What the UI does:** no compensation. The 503 is said as «still being applied» with a repeat, which is true. Since TAS-464 a 409 `ABORTED` `ISSUE_TYPES_CHANGED` re-reads the context and the list on create and on a delete with a move, so the yml's answer is handled the day it arrives.
+- **Removal:** [TAS-465](https://jira.ozero.dev/browse/TAS-465) — `ABORTED` in `IssueTypeDeletionCoordinator.REJECTED`, as `IssueTypeCreationCoordinator` and `WorkflowBindingCoordinator` already have it. Then this entry closes; no client change.
+
 ---
 
 ## The contract is silent or lacks what the UI needs
 
 Same rule as above: "Closed by" is settled, the rest is live.
+
+### Issue-type and workflow refusals the client branches on that the yml does not name
+
+- **Found by api-contract-guard on TAS-464** (yml at develop `af7ab57e`, Java at `d886b031`).
+- `ISSUE_TYPE_TARGET_INVALID` (400, `IssueTypeDeletionTransactions`) on a delete with a move: `isIssueTypeTargetInvalid` re-reads the registry and restarts the step.
+- `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT` (400, `WorkflowBindingTransactions`) on workflow create and edit: `ProjectWorkflowsModal` branches on `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT_REASON`.
+- Said generically with the request id, not branched on: the type create's binding refusals, 400 `INVALID_ARGUMENT` with `WORKFLOW_NOT_AVAILABLE`, `ISSUE_TYPE_ALREADY_REGISTERED`, `ISSUE_TYPE_CREATION_NOT_PENDING`, `ISSUE_TYPE_CREATION_NOT_RESERVED` (`WorkflowCreatedTypeBindingService.failed`); and the `/users` 503 «Project membership service is unavailable».
+- **Removal:** [TAS-465](https://jira.ozero.dev/browse/TAS-465), part two — the yml names them. The branches stay; only this entry goes.
 
 
 ### Closed by TAS-224 and TAS-209: membership and member reads are deployed, the synthesis came out, and hybrid is gone

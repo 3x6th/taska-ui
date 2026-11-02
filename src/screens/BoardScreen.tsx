@@ -6202,8 +6202,8 @@ function CommentItem({
   };
   const when = formatDateTime(comment.createdAt);
   const asking = canManage && confirming && !editing;
-  // "via MCP" or "via API" — the name `/meta` gives the channel, else the
-  // build's own word — and nothing for a comment written in the UI (TAS-412).
+  // "via MCP" or "via API" — the build's word for a channel it knows, else the
+  // name `/meta` gives it — and nothing for a comment written in the UI (TAS-412).
   const channels = useMeta()?.actionChannels;
   const via = actionViaText(comment.via, channels);
 

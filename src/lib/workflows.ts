@@ -477,7 +477,12 @@ export const ISSUE_TYPE_OPERATION_PENDING_REASON = "ISSUE_TYPE_OPERATION_PENDING
 /** Whether a binding change was refused with `reason` — 400 `INVALID_ARGUMENT`. */
 export const isBindingRefusal = (error: unknown, reason: string) => hasRefusalReason(error, "INVALID_ARGUMENT", reason);
 
-/** Whether a moving type was deleted or made again meanwhile — 409 `ABORTED` `ISSUE_TYPES_CHANGED`. */
+/**
+ * Whether a write met a registry that changed under it — 409 `ABORTED`
+ * `ISSUE_TYPES_CHANGED`: a binding change's moving type deleted or made again
+ * meanwhile, and in Issue types a create (and, once backend TAS-465 makes it
+ * the 409 the yml names, a delete with a move).
+ */
 export const isIssueTypesChanged = (error: unknown) => hasRefusalReason(error, "ABORTED", ISSUE_TYPES_CHANGED_REASON);
 
 /**
