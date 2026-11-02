@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TOKEN_PLACEHOLDER, mcpServerUrl, mcpSnippet } from "./mcpConnect";
+import { TOKEN_PLACEHOLDER, cursorOAuthSnippet, mcpServerUrl, mcpSnippet } from "./mcpConnect";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -18,6 +18,12 @@ describe("the MCP connect snippets (TAS-412)", () => {
       mcpServers: { taska: { url, headers: { Authorization: "Bearer YOUR_TOKEN" } } },
     });
     expect(snippet.split("\n")).toHaveLength(10);
+  });
+
+  it("gives Cursor's OAuth entry (TAS-414) the address alone, in the same print as the token one", () => {
+    const snippet = cursorOAuthSnippet(url);
+    expect(JSON.parse(snippet)).toEqual({ mcpServers: { taska: { url } } });
+    expect(snippet).toBe(`{\n  "mcpServers": {\n    "taska": {\n      "url": "${url}"\n    }\n  }\n}`);
   });
 
   it("takes the address from the build, and has none when it is unset or blank", () => {

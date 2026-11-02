@@ -7,7 +7,7 @@ import { ErrorNote } from "../../components/ErrorNote";
 import type { ConnectedApp, ConnectedApps } from "../../domain/types";
 import { formatDayWithYearIfOther } from "../../lib/format";
 import { ME_QUERY_KEY } from "../../lib/ownAvatarLink";
-import { ConnectClaude } from "./McpConnect";
+import { ConnectAiApp } from "./McpConnect";
 
 const keyFor = (userId: string) => ["connected-apps", userId] as const;
 const displayDate = (value: string) => Number.isNaN(Date.parse(value)) ? null : formatDayWithYearIfOther(value);
@@ -102,7 +102,7 @@ function ConnectedAppsList({ userId }: { userId: string }) {
       })}</ul> : null}
       {/* How an app gets into this list — only where the list says OAuth is
           on, whether or not anything is connected yet (TAS-414). */}
-      {query.data?.available ? <><hr className="settings-divider" /><ConnectClaude /></> : null}
+      {query.data?.available ? <><hr className="settings-divider" /><ConnectAiApp /></> : null}
     </>
   );
 }

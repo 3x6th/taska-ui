@@ -3207,11 +3207,12 @@ h1 {
   margin-top: 9px;
 }
 
-/* Connect Claude (TAS-414): three numbered steps under the lead. The numbers
-   hang in the first 18 of the column, `--fg-2` like the page's other quiet
-   text; the steps are `--fg`, because they are what the reader does. An item
-   stays `display: list-item` — a flex one loses its number — so the address
-   step stacks its line, box and answer inside a `.mcp-snippet-wrap`. */
+/* Connect an AI app (TAS-414): the chosen app's numbered steps under the
+   picker. The numbers hang in the first 18 of the column, `--fg-2` like the
+   page's other quiet text; the steps are `--fg`, because they are what the
+   reader does. An item stays `display: list-item` — a flex one loses its
+   number — so a step with a box stacks its line, box and answer inside a
+   `.mcp-snippet-wrap`. */
 .mcp-steps {
   margin: 14px 0 0;
   padding: 0 0 0 18px;
@@ -3237,7 +3238,7 @@ h1 {
   margin-top: 0;
 }
 
-/* The help article, on its own line under the first step: the 28 floor of
+/* The app maker's guide, on its own line in the first step: the 28 floor of
    the actor filter's link (44 below 820, with the page's other targets), and
    `fit-content`, so the ring circles the words and the icon, not the column. */
 .mcp-help-link {
