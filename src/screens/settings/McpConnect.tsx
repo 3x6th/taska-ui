@@ -223,7 +223,7 @@ function AppSteps({ app, url }: { app: OAuthApp; url: string }) {
       </li>
       <li>
         <p className="mcp-step-text">
-          Open Cursor’s MCP settings, sign in next to Taska, then sign in to Taska and allow access.
+          In Cursor’s MCP settings, choose to connect Taska, then sign in to Taska and allow access.
         </p>
       </li>
     </ol>

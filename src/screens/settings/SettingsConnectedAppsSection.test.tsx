@@ -231,7 +231,7 @@ describe("Connect an AI app (TAS-414)", () => {
     choose("Cursor");
     expect(steps()).toEqual([
       expect.stringContaining("Add this to ~/.cursor/mcp.json:"),
-      "Open Cursor’s MCP settings, sign in next to Taska, then sign in to Taska and allow access.",
+      "In Cursor’s MCP settings, choose to connect Taska, then sign in to Taska and allow access.",
     ]);
     expect(guide()!.querySelector(".mcp-snippet-code")?.textContent).toBe(CURSOR_CONFIG);
     expect(guide()!.textContent).not.toContain("Bearer");

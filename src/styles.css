@@ -3216,7 +3216,6 @@ h1 {
 .mcp-steps {
   margin: 14px 0 0;
   padding: 0 0 0 18px;
-  color: var(--fg);
   font-size: 12.5px;
 }
 
@@ -3231,6 +3230,7 @@ h1 {
 
 .mcp-step-text {
   margin: 0;
+  color: var(--fg);
   text-wrap: pretty;
 }
 
@@ -3247,6 +3247,7 @@ h1 {
   align-items: center;
   gap: 4px;
   min-height: 28px;
+  margin-top: 6px;
 }
 
 .mcp-steps + .mcp-note {
@@ -3262,6 +3263,10 @@ h1 {
 
   .mcp-snippet .compact-button {
     justify-self: start;
+  }
+
+  .mcp-steps .mcp-snippet {
+    margin-inline-start: -18px;
   }
 }
 
@@ -5158,11 +5163,10 @@ h1 {
   text-wrap: pretty;
 }
 
-/* A story key inside a sentence, in the two places this area names one: the
-   placeholder for a section with no endpoints, and the Events note for the one
-   endpoint the gateway has not deployed yet. One affordance, two names — each
-   says where it is, and neither pretends to be a general link style for an area
-   whose other links are all navigation. */
+/* The shared quiet-link recipe: `--fg-2` underlined text that turns accent on
+   hover, with a rounded accent focus ring. Used by the admin notes, the Members
+   modal (`ProjectMembersModal.tsx`), and the Settings Connected apps guide (the
+   help links and the access-token link). */
 .admin-placeholder-link,
 .admin-note-link,
 .admin-audit-actor-filter {
