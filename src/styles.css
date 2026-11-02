@@ -3207,6 +3207,51 @@ h1 {
   margin-top: 9px;
 }
 
+/* Connect Claude (TAS-414): three numbered steps under the lead. The numbers
+   hang in the first 18 of the column, `--fg-2` like the page's other quiet
+   text; the steps are `--fg`, because they are what the reader does. An item
+   stays `display: list-item` — a flex one loses its number — so the address
+   step stacks its line, box and answer inside a `.mcp-snippet-wrap`. */
+.mcp-steps {
+  margin: 14px 0 0;
+  padding: 0 0 0 18px;
+  color: var(--fg);
+  font-size: 12.5px;
+}
+
+.mcp-steps > li + li {
+  margin-top: 12px;
+}
+
+.mcp-steps > li::marker {
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.mcp-step-text {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+.mcp-steps .mcp-snippet-wrap {
+  margin-top: 0;
+}
+
+/* The help article, on its own line under the first step: the 28 floor of
+   the actor filter's link (44 below 820, with the page's other targets), and
+   `fit-content`, so the ring circles the words and the icon, not the column. */
+.mcp-help-link {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+}
+
+.mcp-steps + .mcp-note {
+  margin-top: 14px;
+}
+
 /* Below 560 Copy goes under the snippet, so the text has the box's whole
    width: beside it, the Cursor JSON broke inside its address at 390. */
 @media (max-width: 559px) {
@@ -3225,7 +3270,8 @@ h1 {
   .token-read-failure .secondary-button,
   .token-confirm .compact-button,
   .token-secret-row .compact-button,
-  .mcp-snippet .compact-button {
+  .mcp-snippet .compact-button,
+  .mcp-help-link {
     min-height: 44px;
   }
 }

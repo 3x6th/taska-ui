@@ -6,6 +6,9 @@
  * Both use the agent's **user-level** configuration — Claude Code's
  * `--scope user`, Cursor's `~/.cursor/mcp.json` — and never a project file:
  * a token in a file that is shared or committed is a token given away.
+ *
+ * Settings → Connected apps' "Connect Claude" (TAS-414) reads the same address
+ * for claude.ai's custom connector, which signs in through OAuth instead.
  */
 
 /** What stands where the token goes when the page has no fresh one to put there. */
@@ -41,3 +44,11 @@ export function mcpSnippet(client: McpClient, url: string, token: string): strin
 export function mcpSnippetPlace(client: McpClient): string {
   return client === "claude-code" ? "Run this in a terminal." : "Add this to ~/.cursor/mcp.json.";
 }
+
+/**
+ * Anthropic's own article on adding a custom connector to Claude, linked from
+ * "Connect Claude" (TAS-414): Claude's screens are Claude's to describe, so the
+ * steps name one path through them and point here for the rest.
+ */
+export const CLAUDE_CONNECTOR_HELP_URL =
+  "https://support.claude.com/en/articles/11175166-getting-started-with-custom-connectors-using-remote-mcp";
