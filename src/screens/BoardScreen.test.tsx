@@ -680,7 +680,7 @@ const {
     },
     // The Workflows dialog's read (TAS-382): what the dialog does with it is
     // ProjectWorkflowsModal.test.tsx's; here it only has to open.
-    listProjectWorkflows: async () => [],
+    listProjectWorkflows: async () => ({ mainWorkflowId: null, items: [] }),
     // The board's one frame read since TAS-251, composed from the same state
     // the five separate reads below were. All or nothing, as on the server: a
     // failure or a hold of any part is a failure or a hold of the whole, so
@@ -8136,7 +8136,7 @@ describe("New issue and Esc", () => {
   });
 });
 
-describe("the channel mark on history and comments (TAS-412, TAS-425)", () => {
+describe("the channel mark on history and comments (TAS-412, TAS-425, TAS-464)", () => {
   const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
   const comment = (overrides: Partial<IssueComment>): IssueComment => ({
     id: "comment-1",
@@ -8191,7 +8191,8 @@ describe("the channel mark on history and comments (TAS-412, TAS-425)", () => {
     const row = (await panel.findByText("Retry guard is in review.")).closest(".comment-item") as HTMLElement;
     const head = row.querySelector(".comment-head") as HTMLElement;
     // Right after the name, before the time; never the `edited` badge's <em>.
-    expect(head.querySelector("strong + .via-mark")).toHaveTextContent(/^via API token$/);
+    // "API", as the server names `API_TOKEN` (backend TAS-443), with no /meta to ask.
+    expect(head.querySelector("strong + .via-mark")).toHaveTextContent(/^via API$/);
     expect(head.querySelector("em")).toBeNull();
 
     // The feed names an actor neither the server nor a member row names
@@ -8204,7 +8205,7 @@ describe("the channel mark on history and comments (TAS-412, TAS-425)", () => {
       "Unknown created this issue",
     ]);
     expect(document.querySelector(".activity-item p .via-mark")).toBeNull();
-    for (const [index, mark] of ["via API token", "via MCP"].entries()) {
+    for (const [index, mark] of ["via API", "via MCP"].entries()) {
       const meta = events[index].meta as HTMLElement;
       expect(meta).toHaveClass("activity-meta");
       // The time, a dot only the eye gets, then the mark — and a plain space
@@ -8220,6 +8221,37 @@ describe("the channel mark on history and comments (TAS-412, TAS-425)", () => {
         .join("");
       expect(spoken).toBe(`${meta.children[0].textContent} ${mark}`);
     }
+  });
+
+  it("says a channel by the name /meta gives it — one this build has not heard of included — and never marks the UI", async () => {
+    seedMeta({
+      issueTypes: null,
+      priorities: null,
+      linkTypes: null,
+      notificationTypes: null,
+      userStatuses: null,
+      actionChannels: [
+        { code: "UI", name: "UI", selectable: true },
+        { code: "API_TOKEN", name: "API", selectable: true },
+        { code: "MCP", name: "MCP", selectable: true },
+        { code: "WEBHOOK", name: "Webhook", selectable: true },
+      ],
+    });
+    seedHistory([
+      event({ id: "history-1", via: { channel: "UI" } }),
+      event({ id: "history-2", occurredAt: "2026-08-01T10:00:00Z", via: { channel: "WEBHOOK" } }),
+    ]);
+    seedComments([comment({ via: { channel: "WEBHOOK" } })]);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    const row = (await panel.findByText("Retry guard is in review.")).closest(".comment-item") as HTMLElement;
+    await waitFor(() => expect(row.querySelector(".comment-head strong + .via-mark")).toHaveTextContent(/^via Webhook$/));
+    const events = feed();
+    expect((events[0].meta as HTMLElement).querySelector(".via-mark")).toHaveTextContent(/^via Webhook$/);
+    // The UI's own event: the bare time, as a change made in the UI always was.
+    expect(events[1].meta?.tagName).toBe("TIME");
+    expect(document.querySelectorAll(".via-mark")).toHaveLength(2);
   });
 
   it("draws a change with no channel, or one this build cannot read, exactly as before", async () => {

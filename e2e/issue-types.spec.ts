@@ -644,6 +644,46 @@ test("a new type runs on the main workflow by default, and Workflows lists it th
   await expect(own.locator(".workflow-type")).toHaveText(["Task", "Spike"]);
 });
 
+/**
+ * TAS-464 (backend TAS-440): on an empty registry there is no first type to be
+ * «the same as», and the server refuses a create there without a workflow. The
+ * mock makes such a project when its description holds `[no types]`
+ * (`MOCK_PROJECT_TRIGGERS.noIssueTypes`).
+ */
+test("an empty registry's first type goes on the shared workflow, chosen, with no «Same as …»", async ({ page }) => {
+  await signIn(page);
+  await expect(page.locator(".skeleton-card")).toHaveCount(0);
+  await page.getByRole("button", { name: "New project" }).click();
+  const create = page.getByRole("dialog", { name: "New project" });
+  await create.getByLabel("Key", { exact: true }).fill("NOTY");
+  await create.getByLabel("Name").fill("No types yet");
+  await create.getByLabel("Description").fill("Fresh [no types]");
+  await create.getByRole("button", { name: "Create project" }).click();
+  await expect(create).toBeHidden();
+  await page.locator(".project-card", { hasText: "No types yet" }).click();
+  await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
+
+  const dialog = await openIssueTypes(page);
+  await expect(dialog.getByText("This project has no issue types yet, so no issue can be created in it.")).toBeVisible();
+  await dialog.getByRole("button", { name: "Add type" }).click();
+  const form = dialog.getByRole("form", { name: "New type" });
+  const workflow = form.getByRole("combobox", { name: "Workflow" });
+  await expect(workflow.locator("option")).toHaveText(["Default workflow (shared)"]);
+  await expect(workflow.locator("option:checked")).toHaveText("Default workflow (shared)");
+  await form.getByLabel("Name").fill("Task");
+  const submit = form.getByRole("button", { name: "Add type" });
+  await expect(submit).not.toHaveAttribute("aria-disabled");
+  await submit.click();
+
+  await expect(rowNames(dialog)).toHaveText(["Task"]);
+  await expect(dialog.getByText("Type Task added. It uses Default workflow.")).toBeAttached();
+  // The registry has a first type now: the next one offers «same as» it.
+  await dialog.getByRole("button", { name: "Add type" }).click();
+  await expect(dialog.getByRole("form", { name: "New type" }).getByRole("combobox", { name: "Workflow" }).locator("option")).toHaveText([
+    "Default workflow (shared, same as Task)",
+  ]);
+});
+
 /** §4.28 «Ещё применяется»: the mock answers a type named with the trigger 503 once, and the repeat finishes it. */
 test("a create the server is still applying is held, and pressing Add type again finishes it once", async ({ page }) => {
   await openBoard(page, "Taska Platform");

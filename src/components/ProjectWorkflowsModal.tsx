@@ -20,6 +20,7 @@ import type {
   ProjectIssueType,
   ProjectRole,
   ProjectWorkflowEntry,
+  ProjectWorkflowList,
   WorkflowDefinition,
   WorkflowDefinitionTransition,
   WorkflowStatus,
@@ -383,8 +384,9 @@ interface ProjectWorkflowsModalProps {
  * no secret. The shared default is read-only for everybody — the server
  * refuses a write to it — so its card carries no control at all.
  *
- * **A new workflow is a verbatim copy of the shared default** — or, when no
- * type runs on it, of the project's main workflow — not editable
+ * **A new workflow is a verbatim copy of the shared default** — which the list
+ * always carries since backend TAS-440; should it not, of the workflow the
+ * list names as the project's main one (`mainWorkflowId`) — not editable
  * before it is sent (docs/ai/API-DIVERGENCE.md); it is edited afterwards, one
  * row at a time, and every edit is re-validated whole on the server, which
  * keeps a `TODO` status and a visible transition in every workflow.
@@ -416,7 +418,8 @@ export function ProjectWorkflowsModal({
   const workflowsQuery = useQuery(projectWorkflowsOptions(projectId));
   const unread = useUnanswered(workflowsQuery);
   const undeployed = unread.unanswered && isUndeployedRoute(unread.error, UNDEPLOYED_ROUTE_MESSAGE);
-  const listed = workflowsQuery.data;
+  const listed = workflowsQuery.data?.items;
+  const mainWorkflowId = workflowsQuery.data?.mainWorkflowId ?? null;
   const entries = useMemo(
     () => orderWorkflowEntries(listed ?? [], (registry ?? []).map((entry) => entry.code)),
     [listed, registry],
@@ -424,11 +427,10 @@ export function ProjectWorkflowsModal({
   const categories = useMemo(() => statusCategoriesOf(listed ?? []), [listed]);
   const shared = entries.find((entry) => entry.shared);
   const isAdmin = readerRole === "ADMIN" && !archived;
-  // A new workflow is a copy of the shared default — or, when the list does
-  // not carry it (no type runs on it), of the project's main workflow, the one
-  // the registry's first type runs on (§4.28 «New workflow»).
-  const firstType = registry?.[0]?.code;
-  const copySource = shared ?? entries.find((entry) => firstType !== undefined && entry.issueTypes.includes(firstType));
+  // A new workflow is a copy of the shared default — or, should the list not
+  // carry it, of the project's main workflow as the server names it
+  // (`mainWorkflowId`, backend TAS-440; §4.28 «New workflow»).
+  const copySource = shared ?? entries.find((entry) => mainWorkflowId !== null && entry.workflow.id === mainWorkflowId);
   // Always, while the project has types: since backend TAS-436 a type with a
   // workflow of its own moves rather than being refused.
   const canCreate = isAdmin && (registry?.length ?? 0) > 0 && copySource !== undefined;
@@ -602,10 +604,11 @@ export function ProjectWorkflowsModal({
       let placed = false;
       if (sent.kind !== "create" && sent.kind !== "delete-workflow" && !isBindingWrite(sent)) {
         await queryClient.cancelQueries({ queryKey: listKey });
-        const current = queryClient.getQueryData<ProjectWorkflowEntry[]>(listKey);
-        const next = current ? withWorkflowEntry(current, answer) : null;
-        if (next) {
-          queryClient.setQueryData(listKey, next);
+        const current = queryClient.getQueryData<ProjectWorkflowList>(listKey);
+        const next = current ? withWorkflowEntry(current.items, answer) : null;
+        if (current && next) {
+          // An edit changes no binding, so the main workflow stays the one named.
+          queryClient.setQueryData<ProjectWorkflowList>(listKey, { ...current, items: next });
           placed = true;
         }
       }
@@ -1024,7 +1027,9 @@ function WorkflowCard({
             </ul>
           ) : (
             // A donor (backend TAS-436): its types went to another workflow,
-            // and the server keeps it with its graph.
+            // and the server keeps it with its graph — or the shared default
+            // when no type runs on it, which the list carries all the same
+            // since backend TAS-440.
             <span className="workflow-types-none">
               No issue type uses it.{editable ? " Choose its types with Edit, or delete it." : null}
             </span>
@@ -2028,8 +2033,8 @@ function FormStep({ step }: { step: { view: MoveStep; answerable: boolean } }) {
 
 /**
  * New workflow (§4.28, TAS-437): a name and the types to move. The statuses
- * and transitions are a copy of the shared default — or, when no type runs on
- * it, of the project's main workflow — as the list sent them. **Every** type
+ * and transitions are a copy of the shared default — or, should the list not
+ * carry it, of the main workflow it names — as the list sent them. **Every** type
  * of the registry is offered: one that runs on a workflow of the project's own
  * moves here too (backend TAS-436). Issues of a moving type in a status the
  * copy lacks turn the form into its mapping step.

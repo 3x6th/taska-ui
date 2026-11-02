@@ -232,15 +232,17 @@ describe("the lifetimes a policy allows", () => {
 
 describe("the channel mark on the REST wire (TAS-411, TAS-425)", () => {
   // `channel` on `IssueHistoryResponseDto` and `CommentResponseDto` (develop
-  // `78019ece`): an open string, null or absent on old records. Only MCP and
-  // an API token become a mark; nothing names the token.
+  // `78019ece`): an open string, null or absent on old records. Every code but
+  // the UI's is kept as it came — one this build has not heard of included,
+  // which `/meta` may name (TAS-443); nothing names the token.
   const channels: [label: string, value: Record<string, unknown>, via: { channel: string } | null][] = [
     ["MCP", { channel: "MCP" }, { channel: "MCP" }],
     ["API_TOKEN", { channel: "API_TOKEN" }, { channel: "API_TOKEN" }],
     ["UI", { channel: "UI" }, null],
     ["null", { channel: null }, null],
     ["absent", {}, null],
-    ["an unknown channel", { channel: "WEBHOOK" }, null],
+    ["an unknown channel", { channel: "WEBHOOK" }, { channel: "WEBHOOK" }],
+    ["a blank channel", { channel: " " }, null],
     ["a non-string", { channel: 3 }, null],
   ];
 

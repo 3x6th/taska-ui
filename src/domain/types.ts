@@ -115,6 +115,17 @@ export interface EnumDictionaries {
   linkViewTypes: DictionaryEntry[] | null;
   notificationTypes: DictionaryEntry[] | null;
   userStatuses: DictionaryEntry[] | null;
+  /**
+   * The channels a history event or a comment can have come through
+   * (`MetaResponseDto.actionChannels`, backend TAS-443, develop `d886b031`),
+   * with the names the server gives them for that mark: `UI` "UI", `API_TOKEN`
+   * "API" — the token's own name stays private — and `MCP` "MCP"
+   * (`MetaServiceImpl.actionChannelName`). `code` is open
+   * (`x-extensible-enum`). Optional in the contract "for client
+   * compatibility"; an answer without it reads as `[]`, so a reader falls
+   * back to the build's own words (`actionViaText`).
+   */
+  actionChannels: DictionaryEntry[];
 }
 /**
  * The notification kinds the gateway can emit — exactly the contract's
@@ -368,10 +379,13 @@ export interface InvitationResult {
  * before the password is chosen, without spending the link: the address the
  * account was invited under and the name it carries now.
  *
- * `kind` is `INVITATION` for an account an admin invited and `SIGNUP` for one
- * made by self-signup (backend TAS-423; signup is off on the stand). Read as
- * an open string — a kind this build has never heard of is kept as it came and
- * worded as an invitation. Since TAS-426 the invite tab words a `SIGNUP` link
+ * `kind` is the **account's origin** (`createdVia`), not the link's — so the
+ * yml documents it since backend TAS-443 (develop `d886b031`): `INVITATION`
+ * for an account an admin invited, which keeps it even when it activates
+ * through email sign-up, and `SIGNUP` for one made by self-signup (backend
+ * TAS-423; signup is off on the stand). Open (`x-extensible-enum`), and read
+ * as an open string — a kind this build has never heard of is kept as it came
+ * and worded as an invitation. Since TAS-426 the invite tab words a `SIGNUP` link
  * as finishing an account (DESIGN.md §4.31).
  */
 export interface InvitationPreview {
@@ -720,6 +734,28 @@ export interface ProjectWorkflowEntry {
   shared: boolean;
 }
 
+/**
+ * `ProjectWorkflowsResponseDto` (backend PR #208; `mainWorkflowId` since
+ * backend TAS-440, develop `d886b031`): every workflow of the project once, and
+ * which of them the registry's first type runs on — the project's main
+ * workflow, which a new type without a `workflowId` is bound to. The server
+ * states it; no reader works it out from `items`.
+ */
+export interface ProjectWorkflowList {
+  /**
+   * `mainWorkflowId` as the server sent it: the id of the workflow the
+   * registry's first type runs on, `null` when the registry is empty — and
+   * also when the field is missing or not a UUID, which this build cannot
+   * name a workflow by.
+   */
+  mainWorkflowId: string | null;
+  /**
+   * `items`, the shared default always among them since TAS-440, even when no
+   * type runs on it.
+   */
+  items: ProjectWorkflowEntry[];
+}
+
 /** `ProjectIssueTypeColorDto` — closed in the contract (backend #212). */
 export type IssueTypeColor = "blue" | "red" | "green" | "amber" | "purple" | "teal" | "slate";
 /**
@@ -760,9 +796,10 @@ export interface ProjectIssueType {
    * `generation` (backend TAS-433, develop `78019ece`): which lifecycle of the
    * code this entry is — a new UUID each time the code is created again. A
    * delete that moves the type's issues sends it back as `expectedGeneration`,
-   * so it cannot delete a type of the same code made since. Nullable on the
-   * wire; left out here when the server sent none this build can read, and a
-   * move is then sent without it.
+   * so it cannot delete a type of the same code made since. Required and
+   * non-null on the wire since backend TAS-440 (develop `d886b031`), and still
+   * read tolerantly: left out here when the server sent none this build can
+   * read, and a move is then sent without it.
    */
   generation?: string;
 }
@@ -1264,10 +1301,12 @@ export type IssueEventType =
 
 /**
  * How a change reached Taska when it did not come from the UI (TAS-411, epic
- * TAS-399): through the MCP server, or straight to the gateway with a personal
- * access token — `channel` `MCP` and `API_TOKEN` on the wire (see `ActionVia`).
+ * TAS-399): an open string, as the contract has it ("UI, API_TOKEN or MCP;
+ * an open string for future channels"). `MCP` is the MCP server and
+ * `API_TOKEN` a personal access token straight to the gateway; a code this
+ * build has not heard of is kept as it came (see `ActionVia`).
  */
-export type ActionChannel = "API_TOKEN" | "MCP";
+export type ActionChannel = "API_TOKEN" | "MCP" | (string & {});
 
 /**
  * The channel mark on a history event or a comment (TAS-412, TAS-411):
@@ -1276,11 +1315,14 @@ export type ActionChannel = "API_TOKEN" | "MCP";
  * API_TOKEN or MCP", absent or `null` on records older than the field. A
  * comment's is the channel of its **last** write.
  *
- * Only the two channels that are not the UI become a mark. `UI`, `null`, an
- * absent field and a channel this build has no word for are all `null` here,
- * and render exactly as a change made in the UI always has (DESIGN.md §4.15,
- * §4.26). The contract declares the token's name and id private and never
- * returns them, so the mark names the channel and nothing else.
+ * Every channel but the UI is kept: any non-empty code other than `UI`.
+ * `UI`, `null`, an absent field and a blank or non-string value are all `null`
+ * here, and render exactly as a change made in the UI always has (DESIGN.md
+ * §4.15, §4.26). What the mark says is `actionViaText`'s: the name `/meta`
+ * gives the code (`EnumDictionaries.actionChannels`), else the build's own
+ * word for it, else nothing. The contract declares the token's name and id
+ * private and never returns them, so the mark names the channel and nothing
+ * else.
  */
 export interface ActionVia {
   channel: ActionChannel;

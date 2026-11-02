@@ -80,8 +80,15 @@ export const ISSUE_TYPE_INVALID_FIELDS_MESSAGE = "Invalid issue type name, color
 export const LAST_ISSUE_TYPE_MESSAGE = "Cannot delete the last issue type";
 /** `details.reason` of the refused delete of the only type left (backend TAS-418). */
 export const LAST_ISSUE_TYPE_REASON = "LAST_ISSUE_TYPE";
-/** A create whose code the project already holds (409 `ALREADY_EXISTS`). */
-export const issueTypeExistsMessage = (code: string) => `Issue type ${code} already exists in this project`;
+/**
+ * A create whose code the project already holds (409 `ALREADY_EXISTS`, no
+ * `details.reason`, and no code in the sentence since the create moved to
+ * `IssueTypeCreationTransactions.begin` in backend TAS-436). Not the only
+ * `ALREADY_EXISTS` a create can meet: a replay under another command's
+ * `X-Request-Id` is one too, with `REQUEST_ID_REUSED` (develop `d886b031`), so
+ * «code taken» is read off the code **and** the missing reason.
+ */
+export const ISSUE_TYPE_EXISTS_MESSAGE = "Issue type already exists";
 /**
  * DELETE of a type live issues still carry — deleted ones no longer count
  * since backend TAS-418 (400 `FAILED_PRECONDITION`, `details.reason`
@@ -105,14 +112,20 @@ export const ISSUE_TYPE_ORDER_REPEATS_MESSAGE = "codes must be a complete permut
  * same code as a malformed body.
  */
 export const ISSUE_TYPES_CHANGED_MESSAGE = "Issue type registry changed; reload the current types before reordering";
-/** `details.reason` of the stale reorder above — what the dialog branches on, with the `ABORTED` code. */
+/**
+ * `details.reason` of a registry that changed under a write — 409 `ABORTED` on
+ * every route the yml names it for since backend TAS-440 (develop `d886b031`):
+ * the reorder above, a type's create, a delete with a move, and a workflow's
+ * binding change (create, or a PATCH with `issueTypes`). Read with the code.
+ */
 export const ISSUE_TYPES_CHANGED_REASON = "ISSUE_TYPES_CHANGED";
 /*
- * The reasons of backend TAS-433 and TAS-437 (develop `78019ece`) that the
- * Issue types dialog and New issue branch on — always with `details.reason`,
- * never the prose. Read in `IssueTypeDeletionTransactions`,
- * `IssueTypeCreationCoordinator` (project-service) and `IssueTypeMoveService`,
- * `IssueTypeWriteGuard` (issue-service).
+ * The reasons of backend TAS-433, TAS-437 and TAS-440 (develop `d886b031`)
+ * that the Issue types dialog and New issue branch on — always with
+ * `details.reason`, never the prose. Read in `IssueTypeDeletionTransactions`,
+ * `IssueTypeCreationTransactions` (project-service), `WorkflowCreatedTypeBindingService`
+ * (workflow-service) and `IssueTypeMoveService`, `IssueTypeWriteGuard`
+ * (issue-service).
  */
 /** A delete with a move whose target is the type itself, malformed or not registered (400 `INVALID_ARGUMENT`). */
 export const ISSUE_TYPE_TARGET_INVALID_REASON = "ISSUE_TYPE_TARGET_INVALID";
@@ -134,9 +147,22 @@ export const ISSUE_TYPE_DELETION_PENDING_REASON = "ISSUE_TYPE_DELETION_PENDING";
 export const ISSUE_TYPE_CREATION_PENDING_REASON = "ISSUE_TYPE_CREATION_PENDING";
 /** A create whose `workflowId` is neither an own workflow of the project nor the shared default (400 `INVALID_ARGUMENT`). */
 export const WORKFLOW_NOT_IN_PROJECT_REASON = "WORKFLOW_NOT_IN_PROJECT";
-/** A type write while another type operation of the project is pending (409 `ABORTED`, project-service). */
-export const PROJECT_TYPE_OPERATION_PENDING_REASON = "PROJECT_TYPE_OPERATION_PENDING";
-/** A pending command's `X-Request-Id` sent again with another body (409 `ALREADY_EXISTS`). */
+/**
+ * A create without `workflowId` on a project whose registry is empty — there
+ * is no first type whose workflow it could take (400 `FAILED_PRECONDITION`,
+ * "Choose a workflow for the first project issue type", backend TAS-440,
+ * `IssueTypeCreationTransactions.begin` at `d886b031`). Checked after the code
+ * is found free, before anything is reserved.
+ */
+export const ISSUE_TYPE_WORKFLOW_REQUIRED_REASON = "ISSUE_TYPE_WORKFLOW_REQUIRED";
+/** The message of the refusal above, as project-service words it. */
+export const ISSUE_TYPE_WORKFLOW_REQUIRED_MESSAGE = "Choose a workflow for the first project issue type";
+/**
+ * A recoverable command's `X-Request-Id` sent again with another body (409
+ * `ALREADY_EXISTS`): a type's create (`IssueTypeCreationTransactions`) and a
+ * workflow's binding change (`WorkflowBindingTransactions`), the one replay
+ * reason of both since backend TAS-440 (develop `d886b031`).
+ */
 export const REQUEST_ID_REUSED_REASON = "REQUEST_ID_REUSED";
 
 /** An issue write naming a well-formed key the registry does not hold (400 `INVALID_ARGUMENT`). */
@@ -204,10 +230,11 @@ const GENERATION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 
 /**
  * One `ProjectIssueTypeDto`, or `null` when it carries no usable code. See
- * `toProjectIssueTypes`. `generation` (backend TAS-433) is nullable and read
- * defensively: kept only when it is a UUID, and left out otherwise — a delete
- * with a move then goes without `expectedGeneration` rather than with a value
- * the gateway's `format: uuid` would refuse.
+ * `toProjectIssueTypes`. `generation` (backend TAS-433) is required and
+ * non-null since backend TAS-440 and still read defensively: kept only when it
+ * is a UUID, and left out otherwise — a delete with a move then goes without
+ * `expectedGeneration` rather than with a value the gateway's `format: uuid`
+ * would refuse.
  */
 export function toProjectIssueType(value: unknown): ProjectIssueType | null {
   if (typeof value !== "object" || value === null) return null;

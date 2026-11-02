@@ -1728,6 +1728,7 @@ Everything below is the entry as it stood, in the past tense.
 
 ### TAS-412: personal access tokens and the channel mark ship ahead of the gateway, on shapes nobody has specified
 
+- **TAS-464 (2026-11-02): the mark is named by the server.** Backend TAS-443 added `actionChannels` to `GET /meta` (`MetaServiceImpl.actionChannelName`: `UI` «UI», `API_TOKEN` «API», `MCP` «MCP»; on the stand, measured 2026-11-02). The mark reads «via {name}» from that dictionary, with «via MCP» / «via API» built in when `/meta` has not answered; any non-empty `channel` other than `UI` is kept, and an unknown code with no name draws nothing. So «via API token» below, and on the stand until this build deploys, becomes «via API».
 - **TAS-417 (2026-10-26):** the token routes are deployed (401 without a token, rid `76b3a012-99c3-429f-9d31-40a29ef7f543`) and specified at develop `be5085e5`; TAS-417 removed the provisional mapping and follows the real shapes (policy, server order, `ACTIVE_TOKEN_LIMIT`, `SESSION_REQUIRED`, 204 on any revoke). Still open on the token half: the three PAT probes behind the lead's promise, and the kept not-deployed branch they unlock. The channel half stays (TAS-411, backend PR #242 open).
 - **TAS-425 (2026-10-27): the channel half is closed.** Develop `78019ece` states `channel` on `IssueHistoryResponseDto` and `CommentResponseDto` (nullable open string, "UI, API_TOKEN or MCP", on a comment the channel of its last write; the token's name and id are never returned). `RestTaskaApi` maps it in `getIssue` and `toComment` through `toActionVia`: `MCP` and `API_TOKEN` become the mark, `UI`, `null`, absent, non-string and unknown values draw nothing. `ActionVia.tokenName` is gone, and so is the request for it on TAS-411. The Channel, `rest` and Removal lines below are history for the token half only.
 - **TAS-412 stand check (2026-10-27): the token half is closed.** Probed with two of the owner's tokens, one read-and-write and one read, issued and revoked in Settings → Access tokens on the stand. The token list answers 403 `PERMISSION_DENIED` with `details.reason` `SESSION_REQUIRED` to either token (rid `5bee008c-0f07-4544-b962-3bdd952c3b46`). The GLOBAL_ADMIN read-and-write token gets the same 403 on `GET /readonly/audit-entries` and on `PATCH /admin/users/{absent uuid}` (rids `e405b1a7-d4f0-4fd2-9923-1482112f75be`, `143ee3cf-51ea-4389-b83c-56b52d134567`; 403, not 404, so the scope gate answers before the user lookup). The read token gets 403 `INSUFFICIENT_SCOPE`, `requiredScope: write`, on `POST /projects` and on `POST …/comments` (rids `1413b3a7-5ac1-47d9-95bd-ce73114048e3`, `f3868275-1768-4160-ab9b-ede35caa24f2`). The read-and-write token's issue and comment carry `channel: "API_TOKEN"` on both history events and on the comment (rid `272b70e1-6f69-4004-9dc2-66b8741a10ba`), and the stand UI draws «via API token» on the comment head and on both Activity lines (issue PAT3ALX-1; the probe project is archived). After the revoke both tokens answer 401 `UNAUTHENTICATED` «Invalid or expired access token» (rids `fc75e9c9-cbd6-409f-95ac-61108db19e86`, `a2397d24-0509-452f-9f9f-31e2df5e3c11`). Not measured: `MCP`, because the Pages build has no MCP server address. The kept not-deployed branch can go now (BACKLOG «Left by TAS-412»).
@@ -1899,6 +1900,22 @@ Everything below is the entry as it stood, in the past tense.
 
 ### TAS-426: sign-up and provider sign-in — what the Java says that the yml does not
 
+- **TAS-464 (2026-11-02): closed by contract, the Removal below is met.** Develop `d886b031`
+  (backend TAS-444, PR #265; unchanged at `af7ab57e`) states in the yml what this entry read from
+  the Java: the origin-root landing and the eight `OAuthErrorReason` values (TAS-457 took those),
+  the refusal table of the exchange and the name step by status and `details.reason` (401
+  `STATE_INVALID`; 403 `ACCOUNT_BLOCKED`, `ACCOUNT_LOCKED`, `SIGNUP_DISABLED`; 503
+  `PROVIDER_UNAVAILABLE`; 400 `DISPLAY_NAME_INVALID` before the claim; 429 before the claim),
+  `details.retryAfterSeconds` and `Retry-After` as strings, `providers` as the
+  `GOOGLE`/`GITHUB`/`APPLE` enum, the preview's `kind` as the account's origin, and
+  `details.lockedUntil` on a provider's `ACCOUNT_LOCKED` (`OAuthErrors.java:31`) — the clause
+  «has no `lockedUntil`» below is history; the UI already reads it when present
+  (`authText.ts`), and since TAS-464 the mock sends it. What stays Java-only and true: the
+  sign-up details under «`POST /auth/signup` beyond the uniform 202», the 240-an-hour budget,
+  the upper-case segment's 503, and the mock notes. For the enum 500, TAS-443 made `status` and
+  `provider` on the exchange answer open (`x-extensible-enum`), which is what the comment asked;
+  not probed (the stand has sign-up and providers off).
+
 - **Endpoints:** `GET /api/v1/auth/methods`, `POST /api/v1/auth/signup` (backend TAS-423);
   `GET /api/v1/auth/oauth/{provider}/start`, `GET|POST /api/v1/auth/oauth/{provider}/callback`,
   `POST /api/v1/auth/oauth/exchange`, `POST /api/v1/auth/oauth/signup` (TAS-424). All in the
@@ -2017,6 +2034,13 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** [TAS-444](https://jira.ozero.dev/browse/TAS-444) (A3: the request id on the error redirect).
 
 ### GET /users refuses a non-admin in no project once sign-up is on (backend TAS-423)
+
+- **TAS-464 (2026-11-02): the 403 half is closed by contract.** Develop `d886b031` (backend
+  TAS-444) states the membership rule in the route's description and a `403` with
+  `details.reason` `PROJECT_MEMBERSHIP_REQUIRED` (`DirectoryMembershipAccess`); the mock's 403
+  carries the same reason since TAS-464. Still not in the yml: the 503 when project-service is
+  unreachable, and the hidden unconfirmed sign-up accounts below («Возвращает ACTIVE, INVITED и
+  временно LOCKED» does not say it). The Observed line is history for the 403.
 
 - **Endpoint:** `GET /api/v1/users`.
 - **Observed (Java, `9fcf0253`):** `UserDirectoryService.search` runs

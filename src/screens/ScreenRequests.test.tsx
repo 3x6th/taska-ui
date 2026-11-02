@@ -116,6 +116,8 @@ function respondToWrite(method: string, path: string, body: unknown): unknown {
 function respond(path: string, search = new URLSearchParams()): unknown {
   if (path === `/projects/${PROJECT}/workflows`) {
     return {
+      // The registry's first type, TASK, runs on the own workflow (backend TAS-440).
+      mainWorkflowId: OWN_WORKFLOW,
       items: [
         { workflow: ownWorkflow, issueTypes: ["TASK"], shared: false },
         { workflow: sharedWorkflow, issueTypes: ["BUG", "STORY"], shared: true },

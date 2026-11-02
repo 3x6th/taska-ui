@@ -609,15 +609,48 @@ describe("formatDayWithYearIfOther", () => {
   });
 });
 
-describe("actionViaText (TAS-412, TAS-425)", () => {
+describe("actionViaText (TAS-412, TAS-425, TAS-464)", () => {
+  /** `/meta`'s `actionChannels` as `MetaServiceImpl` names them (backend TAS-443, develop `d886b031`). */
+  const served = [
+    { code: "UI", name: "UI", selectable: true },
+    { code: "API_TOKEN", name: "API", selectable: true },
+    { code: "MCP", name: "MCP", selectable: true },
+  ];
+
   it("names the channel and nothing else — the token's name is never on the wire", () => {
+    // Without a dictionary: the build's own words, which are the server's names.
     expect(actionViaText({ channel: "MCP" })).toBe("via MCP");
-    expect(actionViaText({ channel: "API_TOKEN" })).toBe("via API token");
+    expect(actionViaText({ channel: "API_TOKEN" })).toBe("via API");
+    expect(actionViaText({ channel: "API_TOKEN" }, [])).toBe("via API");
+    expect(actionViaText({ channel: "MCP" }, served)).toBe("via MCP");
+    expect(actionViaText({ channel: "API_TOKEN" }, served)).toBe("via API");
   });
 
-  it("says nothing for a change made in the UI, or a channel this build has no word for", () => {
+  it("takes the name /meta gives the code, a code this build has not heard of included", () => {
+    const named = [...served, { code: "WEBHOOK", name: " Webhook ", selectable: true }, { code: "MCP", name: "Agent", selectable: true }];
+    expect(actionViaText({ channel: "WEBHOOK" }, named)).toBe("via Webhook");
+    // The first row of a code is the one read.
+    expect(actionViaText({ channel: "MCP" }, named)).toBe("via MCP");
+    expect(actionViaText({ channel: "API_TOKEN" }, [{ code: "API_TOKEN", name: "Token API", selectable: true }])).toBe(
+      "via Token API",
+    );
+  });
+
+  it("passes over a name this English UI may not print, for the build's word or nothing", () => {
+    expect(actionViaText({ channel: "MCP" }, [{ code: "MCP", name: "Агент", selectable: true }])).toBe("via MCP");
+    expect(actionViaText({ channel: "API_TOKEN" }, [{ code: "API_TOKEN", name: " ", selectable: true }])).toBe("via API");
+    expect(actionViaText({ channel: "WEBHOOK" }, [{ code: "WEBHOOK", name: "", selectable: true }])).toBeNull();
+  });
+
+  it("says nothing for a change made in the UI, or a channel neither /meta nor this build has a word for", () => {
     expect(actionViaText(undefined)).toBeNull();
     expect(actionViaText(null)).toBeNull();
-    expect(actionViaText({ channel: "FAX" } as unknown as Parameters<typeof actionViaText>[0])).toBeNull();
+    expect(actionViaText({ channel: "UI" })).toBeNull();
+    // `UI` never draws a mark, whatever /meta calls it.
+    expect(actionViaText({ channel: "UI" }, served)).toBeNull();
+    expect(actionViaText({ channel: "FAX" })).toBeNull();
+    expect(actionViaText({ channel: "FAX" }, served)).toBeNull();
+    expect(actionViaText({ channel: "" })).toBeNull();
+    expect(actionViaText({ channel: 3 } as unknown as Parameters<typeof actionViaText>[0])).toBeNull();
   });
 });
