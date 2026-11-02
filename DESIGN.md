@@ -2631,6 +2631,9 @@ TAS-418): сервер атомарно пишет `sortOrder` 10, 20, 30… и 
       `.admin-write-hint`: «This project's workflows could not be loaded, so the type cannot be
       added. Cancel, then press Add type to try again.» Без слов сервера и id, как у заметки
       непустого реестра.
+    - Список ответил, но workflow в нём нет (с TAS-440 не бывает: общий в списке всегда) — вариант
+      «No workflow loaded», отправка `aria-disabled` без фразы: «could not be loaded» было бы
+      неправдой.
     - Общего в списке нет — первым `disabled` «Choose a workflow», отправка `aria-disabled` без фразы
       до выбора (рецепт шага переноса).
   - В правке поля нет: workflow типа меняет «Used by» в Workflows.
@@ -2640,8 +2643,7 @@ TAS-418): сервер атомарно пишет `sortOrder` 10, 20, 30… и 
 - Кнопки: «Cancel» и «Add type» / «Save changes». Создание шлёт `sortOrder` = наибольший + 10 —
   новый тип всегда последний; правка шлёт только изменённые поля.
 - Отказы: «The type was not added.» / «The type was not saved.» + слова сервера +
-  `X-Request-Id`. 409 `ALREADY_EXISTS` при создании — причина у кода «{CODE} is already a type
-  in this project.»; 404 правки — «{Name} is no longer one of this project's issue types.» и
+  `X-Request-Id`. 404 правки — «{Name} is no longer one of this project's issue types.» и
   перечитывание контекста. 404 правки и 403 на записи формы говорятся в слоте уведомлений
   диалога: форма с ними уходит.
   - 409 `ALREADY_EXISTS` при создании — причина у кода «{CODE} is already a type in this
@@ -2657,7 +2659,8 @@ TAS-418): сервер атомарно пишет `sortOrder` 10, 20, 30… и 
     workflow and add it again.» без слов сервера, с `X-Request-Id`; {Workflow} — имя отправленного
     по списку на момент отправки, нет его — «The chosen workflow». Список перечитывается, select
     возвращается к основному (на пустом реестре — к общему); фокус — на select, не на отправку:
-    повторный Enter не должен слать workflow, которого читатель не выбирал.
+    читатель видит, к чему вернулся выбор, прежде чем жать Add type; успех называет workflow
+    («It uses …»).
 - Клавиатура: Name → Code → цвета → формы → иконки → Workflow (только создание) → Cancel → отправка. Enter в поле отправляет; `Esc`
   закрывает форму, фокус — на её триггер (§4.11; имя и код — значения, `Esc` не держат).
 
