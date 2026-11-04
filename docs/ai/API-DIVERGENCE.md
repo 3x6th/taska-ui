@@ -2284,11 +2284,18 @@ Everything below is the entry as it stood, in the past tense.
     is open, a 403 `MEMBERSHIP_INACTIVE` or 404 `TENANT_NOT_FOUND` for T on any request (also after renewal and
     re-selection) is read the same way: the session layer releases the company and emits its own "left" signal
     (`TaskaApi.onWorkspaceLeft`, a no-op in today's build), `CompanyGate` refreshes the list and lands on `/companies`
-    with «You left …» — never §4.35. The blueprint is silent on replaying a leave. Removal: ask A27.
+    with «You left …» — never §4.35. A lost leave is remembered only for the company session it was sent with (renewal
+    and re-selection of that session included), and is forgotten on a 202, a definite refusal of its retry, a "left"
+    release, a 2xx with that session to a request sent after the loss, and any change of account; a 429 retry keeps it;
+    a 401 on the retry counts as left only when renewal was refused and re-selection answered «no longer a member» (an
+    unreachable refresh keeps the record). The blueprint is silent on replaying a leave.
+    Removal: ask A27.
   - `readAllPages` fails (no message of its own) at its 50-page cap or on a cursor the server repeats, rather than
     showing a partial directory as everyone.
   - `INVALID_STATE` on a member row, an invitation and Leave shows the action's own sentence, never the server's words
-    (the mock's say «tenant», which §4.33 forbids). Removal: ask A23 / A5 (named codes).
+    (the mock's say «tenant», which §4.33 forbids). The invite modal picks «already a member» or «already has a pending
+    invitation» by matching the sent address against the members and invitations lists already loaded; otherwise «This
+    invitation was not created.». Removal: ask A29 (a reason on `INVALID_STATE`), with A23 and A5.
   - The reader's company role outside Members (the project Members dialog's hint line, and the Leave zone when the
     reader's own row is missing) comes from the cached members list, else the company list's `ownerId`; no read of its
     own. Removal: ask A26.

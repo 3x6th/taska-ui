@@ -4552,5 +4552,9 @@ asks A26 (TAS-338) and A27 (TAS-315) went to Jira; A28 (the B2B dictionaries in 
   the fallback; the server decides) (L5).
 - **B2B deep links (`/c/{id}/…`) show a blank `--bg` plane before first paint** — not TAS-502 (N-f).
 - **`refusalViolations`** is exported and tested but unused, since DESIGN chose one sentence per refusal (guard N6).
+- **The admin list jumps ~97 px on load**: «Pending invitations» arrives ~100 ms after Members and inserts above it,
+  because the invitations read waits for the reader's role (art-director; A26 would remove the wait). Option: for
+  admins, draw the groups once invitations answer or fail.
+- **The 2-minute removal stop lands on the first poll after 120 s**, up to ~10 s late (art-director: fine).
 - **The full gate on `a0fcfec` failed 43 unrelated mobile specs** while a reviewer ran mutations in place in the
   worktree; `--last-failed` on the clean tree passed 43/43. Briefs now ask for mutations in a `git archive` copy.
