@@ -1657,6 +1657,8 @@ TAS-204); добавления по id нет — оно и создавало �
   `replace` и сбросом запросов доски. Закрытие любым путём возвращает фокус на
   триггер.
 
+**Сборка B2B** (TAS-502). Вторая строка пустого результата поиска людей — не про аккаунт Taska и не про global admin: ссылка на `/admin/users` в B2B вела бы в §4.18 (§4.16). Админу компании: «Only members of {Company} can be added. Invite people from Settings › Members.», где «Settings › Members» — ссылка `.admin-note-link` на `/c/{companyId}/settings/members`. Остальным и при неизвестной роли: «Only members of {Company} can be added — a company admin can invite people.»
+
 ### 4.23 Поделиться задачей (TAS-248)
 
 Две ссылки на открытую задачу, у каждой своя кнопка копирования. Действие только
@@ -3336,6 +3338,132 @@ time…»). Не «can no longer be opened»: позднее подтвержд�
 компании одного имени в списке путают. Возврат по D216 — ничего сверх смены состояния: компания встаёт в
 первую группу выбора, и её адрес открывает app shell.
 
+### 4.38 Участники компании (TAS-502)
+Только сборка B2B. Решение art-director 2026-11-04 до сборки, сведённое с api-contract-guard (`docs/ai/API-DIVERGENCE.md` «TAS-502»): контролы зависят от роли читателя в его собственной строке списка (`role`, `isOwner`), а не от capabilities — их реестра контракт пока не даёт (ask A21); правила владельца и мест — ответы сервера, клиент их не считает. Записи не оптимистичны — исключение из §6 «мутации оптимистичные» по критерию приёмки истории.
+
+**Где.** Settings → группа «Company» → «Members», `/c/{companyId}/settings/members` (§5.9). Почему не модалка и не своя область: это справочник, к которому возвращаются. У Settings уже есть рельс, шапка и колонка 560, и TAS-504 и TAS-512 встанут в ту же группу. Раздел видит каждый участник компании любой роли; управление — по роли читателя в компании. Входы — рельс Settings и строка пустого поиска людей в Members проекта (§4.22, сборка B2B). В меню профиля (решение владельца, §4.16), в переключателе (§4.34) и на Projects входа нет. Слово — §4.33: «Members», роли «Owner», «Admin», «Member»; никогда «team», «tenant», «workspace».
+
+**Шапка и лид.** Шапка — рецепт §5.9 («Settings ›» + «Members»), вход из рельса ставит фокус на `h1`. Лид `.settings-lead` 12.5/400 `--fg-2`:
+- админу — «Everyone in {Company}, and the people invited to join.»;
+- остальным — «Everyone in {Company}. Only its admins can invite people or change members.»
+{Company} — имя из списка компаний; если имени нет — «this company» (§4.35).
+
+**Места** — только владельцу и Admin. Участнику строки нет, и запрос квот для неё не уходит. Строка стоит под лидом через 8: 12.5/400 `--fg-2`, `tabular-nums`. Числа — из `SEAT` снимка квот как есть; клиент их не выводит из списка.
+- Обычно: «{used+reserved} of {limit} seats in use». При `reserved > 0` добавляется « · {reserved} held by invitations» (при единице — «1 held by an invitation»).
+- Мест нет (`used+reserved ≥ limit`): «All {limit} seats are in use» (если больше лимита — «{n} of {limit} seats in use») и тот же хвост. Второй строкой: «To invite someone, remove a member or revoke an invitation.» Объяснение плана — слот TAS-512.
+- `unlimited`: «{n} seats in use · no limit» и тот же хвост.
+- В полёте — `.value-skeleton` 200×13.
+- Отказ чтения — `ErrorNote` «Seat usage could not be loaded.» + id, не живая. Приглашать это не мешает: решает сервер.
+Строка мест меняется только ответом сервера: её перечитывает каждая запись раздела и истечение приглашения.
+
+**Invite a member.**
+- Через 14 под строкой мест (у участника — под лидом) primary compact «Invite a member»: `UserPlus` 13, gap 6, высота 29, ≤820 — 44, слева (как «Create token», §5.9). Единственный акцент раздела (§1).
+- Кнопка есть, только если читатель — Admin компании (своя строка списка).
+- Мест нет по снимку — кнопка остаётся рабочей: решает сервер (422 `QUOTA_EXCEEDED`, ниже); `aria-describedby` указывает на строку мест, которая говорит, что мест нет. Снимок мог устареть (отзыв в другой вкладке, обход администратора платформы), поэтому клиент по нему не запрещает.
+- Компания ограничена (`READ_ONLY`) — кнопка та же; отказ сервера говорит о причине на месте.
+
+**Список.**
+- Группы идут по порядку. Подпись группы — `h2` 12/600 `--fg-2` и через 6 число 12/400 `--fg-2` `tabular-nums` (рецепт «Current members» §4.22; count-pill не берётся: его `--fg-3` на `--bg` даёт 2.91). Список группы — `ul` с `aria-labelledby` на её `h2`.
+- Отступы: 22 над первой группой и между группами, 4 от `h2` до строк.
+- Группы:
+  - «Pending invitations» — `PENDING`, только админам и только если есть. Новые сверху: `expiresAt` по убыванию, затем почта.
+  - «Members» — `ACTIVE` и `SUSPENDED` вместе, рисуется всегда. По имени (`localeCompare`, `sensitivity:'base'`, затем `userId`); своя строка не поднимается.
+  - «Expired invitations» — `EXPIRED`, свежие сверху; только админам и только если сервер их вернул.
+- `REMOVED`, `ACCEPTED`, `REVOKED` не рисуются.
+- Список читается по `nextCursor` (`limit` 100) целиком до первой отрисовки.
+- Поиска и фильтра нет.
+
+**Строка** — рецепт строк Settings: линия `1px --border` только между строками, без hover. Сетка `28px minmax(0,1fr) auto`, `column-gap:10`, `align-items:center`, padding `8 0`, `min-height:48`.
+- **Аватар** — 28 (§2.7, §4.4). У приглашения — пустой пунктирный круг 28 (§4.4 Unassigned). Фото — только по ссылке из той же строки; ссылки нет — инициалы. Чтения аватара на каждого человека нет (§4.4).
+- **Первая строка** — имя 13/550 `--fg`, многоточие, полное имя в `title`. У своей строки после имени — «(you)» 13/400 `--fg-2`. У приглашения вместо имени — почта 13/550 `--fg` с переносом где угодно (§4.16).
+- **Вторая строка** — 11.5/400 `--fg-2`, перенос где угодно:
+  - участник — почта;
+  - `SUSPENDED` — «Suspended · {email}» («Suspended» весом 600), и имя строки становится `--fg-2`. Это не `opacity` (§2.2) и не пилюля: рецепт `BLOCKED` из §5.8 на `--bg` даёт 3.92 в светлой теме. Признак несёт слово, а строка остаётся на месте.
+  - удаление принято сервером — «{email} · Being removed»;
+  - `PENDING` — «Invited by {name} · Expires {Mon D, HH:mm}» (местное время; другой год — «Mon D, YYYY, HH:mm»; без отсчёта, §4.37) и « · {n} projects» / « · 1 project», если гранты есть. Пригласил сам читатель — «Invited by you». Если `createdBy` нет в списке, фразы «Invited by» нет (§6).
+  - `EXPIRED` — «Expired {Mon D}» и « · invited by …»; почта в первой строке — `--fg-2`.
+- **Справа** — ряд `gap:8` из трёх ячеек постоянной ширины: роль `min-width:92`, действие `min-width:80`, разрушительное 32 (≤820 — 44). Пустой слот — `aria-hidden` (§4.22). Читатель без управления видит только слово роли, прижатое вправо.
+  - **Роль.** Select 29 рецепта §4.22 («Admin», «Member») — у участника `ACTIVE`, которого читатель может менять. Иначе слово 12/550 `--fg-2`: «Owner», «Admin», «Member». У приглашения — роль приглашения словом. Роль вне словаря — как пришла.
+  - **Действие** — ghost §4.1 (29): «Suspend» у `ACTIVE`, «Reactivate» у `SUSPENDED`, «Resend» у `PENDING`, «Invite again» у `EXPIRED`.
+  - **Разрушительное** — ghost-destructive icon-button 32, `Trash2` 14: у участника — Remove, у `PENDING` — Revoke; у `EXPIRED` его нет.
+  - **Доступные имена:** «Role of {Name}», «Suspend {Name}», «Reactivate {Name}», «Remove {Name} from {Company}», «Resend the invitation to {email}», «Revoke the invitation to {email}», «Invite {email} again». `title` у корзин — «Remove from company» / «Revoke invitation».
+  - Состояние вне словаря печатается как пришло, действий у строки нет.
+
+**Кому какие контролы.** Контролы управления рисуются, только если читатель — Admin компании по своей строке списка; у остальных их нет в DOM — не `disabled` (§5.7, §5.8). Внутри — то, что видно в строке:
+- **Владелец** (`isOwner`) — ни select'а, ни действий, без фразы: сервер владельца не понижает и не убирает (`OWNER_MEMBERSHIP_PROTECTED`).
+- **Последний активный админ** клиентом не вычисляется — клиент админов не считает (список постраничный и устаревает); контролы есть, отказ `LAST_ADMIN` говорит сервер (таблица ниже).
+- **Своя строка** — select (если читатель не владелец), без Suspend и корзины: свой путь — Leave company.
+- **`SUSPENDED`** — роль словом, «Reactivate», корзина.
+- **Роль или состояние вне словаря** — контролов нет.
+- **Своей строки в списке нет** (роль читателя неизвестна) — контролов нет. Под лидом строка 11.5 `--fg-2`: «Taska couldn’t check what you can change here, so changes aren’t offered.»
+
+**Вопросы.** Полоса §4.22 под строкой, слева 38. Cancel получает фокус первым. `Esc` закрывает полосу, фокус — на контрол, который её открыл. Фразы — только верные. Фраза о приглашениях («The {n} invitations they sent are revoked.» / «The invitation they sent is revoked.»; о себе — «The {n} invitations you sent are revoked.») добавляется к Suspend, Remove, понижению и Leave (contracts §8, L03) только при n > 0; n клиент считает по `createdBy` прочитанного списка приглашений.
+
+| Действие | Вопрос | Ответ |
+| --- | --- | --- |
+| Admin → Member, чужой | «{Name} will be a Member and keep only the projects they were added to.» + фраза о приглашениях | «Make Member» |
+| Admin → Member, себя | «You’ll be a Member and keep only the projects you were added to. You won’t be able to manage members or make yourself an admin again.» + фраза о приглашениях | «Make me a Member» |
+| Suspend | «{Name} loses access to {Company} at once but keeps their seat. If you reactivate them later, they come back as a Member, without their projects.» + фраза о приглашениях | «Suspend» |
+| Remove, `ACTIVE` | «{Name} is removed from {Company} and loses access at once. Their seat is freed.» + фраза о приглашениях | «Remove» |
+| Remove, `SUSPENDED` | «{Name} is removed from {Company}. Their seat is freed.» | «Remove» |
+| Revoke | «The invitation to {email} stops working, and its seat is freed.» | «Revoke» |
+
+Member → Admin, Reactivate и Resend не спрашивают. Пока открыт вопрос понижения, select держит «Member»; Cancel и `Esc` возвращают прежнюю роль.
+
+**Без оптимизма.**
+- **В полёте.** Все контролы строки и ответ полосы — рецепт «в полёте» §4.1. Select показывает запрошенную роль. Кэш, строка мест, числа групп, правило единственного админа и другие строки ждут ответа; другие строки при этом остаются рабочими.
+- **Ответ 200 `Membership`.** В строку он не вливается (в ответе может не быть имени и почты): строка остаётся «в полёте», пока перечитывание списка (и, где сказано, мест и приглашений) не придёт — затем строка показывает то, что ответил список. Своя строка — вкладка заново входит в компанию (новый контекст, без уведомления): кэш со старой ролью не переживает смену. Ответ прежней сессии компании отбрасывает API-слой (§6).
+- **Suspend и Reactivate.** Строка остаётся на месте; фокус — на действие, сменившее нажатое. После своего понижения — на `h1`.
+- **Remove — 202 `Operation`.** Контролы строки уходят, вторая строка — «· Being removed». Операция опрашивается по каденсу §4.37, но не дольше 2 минут — дальше ghost «Check again» под строкой. Фокус — на первое действие следующей строки, иначе предыдущей, иначе на «Invite a member», иначе на `h1`. `SUCCEEDED` — строка уходит после перечитывания, без анимации. `FAILED` — контролы возвращаются, под строкой `ErrorNote` «{Name} was not removed.» и «{failureCode} · operation {id}».
+- **Revoke (204).** Строка уходит, фокус — по тому же правилу.
+- **Resend (200).** Фокус остаётся на кнопке; срок не меняется (сервер его не продлевает), прежняя ссылка из письма перестаёт работать.
+- **Итоги.** Их говорит скрытая постоянная `role="status"` раздела, по узлу на фразу (§5.6): «{Name} is now an Admin.», «{Name} is now a Member.», «{Name} is suspended. Their seat stays taken.», «{Name} is active again, as a Member.», «{Name} was removed from {Company}. Their seat is free.», «The invitation to {email} was revoked. Its seat is free.», «Another invitation email to {email} is queued. The earlier link stops working; it still expires {date}.», «The invitation to {email} expired, so its seat is free.» Видимой строки статуса и подсветки строки нет.
+
+**Отказы.** Полоса закрывается, фокус — на её триггер, select возвращает роль сервера. Под строкой (отступ 38) — `ErrorNote` §5.6 + `X-Request-Id`, не живая: предложение говорит скрытый статус. Один отказ на раздел; следующее действие его снимает. Любой отказ перечитывает список и места. Ветка — по `Problem.code`. Слова сервера печатаются только у кода вне таблицы и у 5xx: в них бывает «tenant».
+
+| Код | Роль | Suspend / Reactivate | Remove | Revoke / Resend |
+| --- | --- | --- | --- | --- |
+| `LAST_ADMIN` | «{Name} is the only active admin, so their role did not change.» (о себе — «You are the only active admin, so your role did not change.») | «{Name} is the only active admin, so they were not suspended.» | «… so they were not removed.» | — |
+| `OWNER_MEMBERSHIP_PROTECTED` | «{Name} owns {Company}, so their role did not change.» | «… so they were not suspended.» | «… so they were not removed.» | — |
+| `VERSION_CONFLICT` | «{Name} was changed elsewhere, so nothing changed. The list now shows the latest.» | то же | то же | «This invitation changed elsewhere, so nothing changed. The list now shows the latest.» |
+| `RESOURCE_NOT_FOUND` | «{Name} is no longer in {Company}.» | то же | то же | «This invitation no longer exists.» |
+| `INVITATION_EXPIRED` | — | — | — | «The invitation to {email} has expired, so nothing was sent. Invite them again.» |
+| `READ_ONLY`, `CAPABILITY_DISABLED` | «Members can’t be changed right now.» | то же | то же | «Invitations can’t be changed right now.» |
+| `SCOPE_DENIED` | «Only company admins can change members.» | то же | то же | «Only company admins can change invitations.» |
+| `INVALID_STATE` | слова сервера + id (участник не активен, приглашение уже не ждёт) | то же | то же | то же |
+| `RATE_LIMITED` | — | — | — | «An email to {email} was queued moments ago. Try again in {wait}.» (§4.31) |
+| 5xx, сеть | «Taska couldn’t confirm the change. The list shows what Taska has now.» + слова + id, повтор тем же ключом | то же | то же | то же |
+| прочее | «The role did not change for {Name}.» | «{Name} was not suspended.» / «{Name} was not reactivated.» | «{Name} was not removed.» | «The invitation to {email} was not revoked.» / «The invitation email to {email} was not sent again.» |
+
+**Приглашение** — модалка §4.11 «Invite a member». `Esc` — по §4.11 (почта — значение), `Cmd/Ctrl+Enter` отправляет. Тело `gap:13`:
+- Сверху 12 `--fg-2`: «The invitation holds one of {Company}’s seats until it’s accepted, revoked or expires.» Если места прочитаны — ещё « {free} of {limit} are free.»
+- **«Email».** `type=email`, `maxLength 254`, автофокус, `autoComplete="off"`. Пусто — Send стойко недоступна, под полем «Enter an email address.» (рецепт Users §5.8).
+- **«Role».** Радио-пара `.token-access-option` (§5.9). «Member» — «Works in the projects they’re added to.»; «Admin» — «Manages members and invitations, and is an admin in every project.» По умолчанию Member.
+- **«Projects (optional)»** — только при Member. Строки — рецепт списка типов §4.28: checkbox 14, бейдж ключа §4.5, имя 12.5/500 `--fg`, `min-height:28`, ≤820 — 44. Справа, вне `label`, — select 29 «Admin / Member / Viewer», только у отмеченной строки; по умолчанию Member. Набор — Projects компании из кэша, без архивных. Проектов нет — «{Company} has no projects yet. You can add people to projects later.» Проекты не прочитались — «Projects could not be loaded, so none can be chosen here. You can add people to projects later.» При Admin вместо группы 11.5 `--fg-2`: «Admins are admins in every project, so no projects are chosen here.» Уходит `projectGrants: []`, а отмеченные строки помнятся до закрытия модалки.
+- **Футер.** Cancel и primary «Send invitation». В полёте — `aria-disabled`, подписи прежние.
+- **Повтор.** Ключ идемпотентности — один на попытку. 5xx, 408 и сеть — «Taska couldn’t confirm the invitation was created. Try again — it won’t create a second one.» + слова + id; повтор — тем же ключом и телом.
+- **201.** Модалка закрывается, фокус на «Invite a member». Строка из ответа встаёт первой в «Pending invitations» в том же кадре, затем перечитываются список и места. Статус: «{email} is invited. The email is queued, and the invitation holds a seat until {date}.» Слово — «queued».
+- **Отказы** — `ErrorNote` в конце тела, `live="alert"`, перемонтируется на каждую попытку; введённое остаётся: `QUOTA_EXCEEDED` — «All seats are in use, so this invitation was not created. Remove a member or revoke an invitation to free a seat.» + id, места перечитываются; `VALIDATION_FAILED` — «Taska didn’t accept this email or one of the chosen projects.» + id; `RATE_LIMITED` — «Too many invitations were sent just now. Try again in {wait}.»; `READ_ONLY`, `CAPABILITY_DISABLED` — «Invitations can’t be sent right now.» + id; прочее — «This invitation was not created.» + слова + id.
+- **«Invite again»** открывает ту же модалку с почтой, ролью и грантами проектов, которые ещё существуют.
+
+**Истечение на открытой странице.** Когда местные часы проходят самый ранний `expiresAt`, приглашения и места перечитываются один раз и ещё раз через 60 с, затем — нет. Строка, которая всё ещё `PENDING`, говорит «Expired · releasing its seat»; `EXPIRED` клиент не ставит сам.
+
+**Leave company** — опасная зона §4.11 после списка: линия `1px --border`, `margin-top:22; padding-top:14`.
+- Строка зоны: 12 `--fg-2` «Leaving removes you from {Company} and its projects at once.», справа secondary compact «Leave company» (29; ≤820 — 44; ≤560 — под предложением).
+- Вопрос — полоса §4.22 во всю ширину: «You’ll lose access to {Company} and its projects at once. Only an admin can invite you back.» Кнопки — Cancel и «Leave company».
+- Владельцу (`isOwner`) вместо зоны — «You own {Company}, so you can’t leave it.» Последний активный админ клиентом не вычисляется: зона есть, отказ `LAST_ADMIN` говорит сервер.
+- Обе кнопки — «в полёте», пока не пришёл ответ.
+- 202, операция не `FAILED` — успех: сессия компании отпускается, кэш компании чистится, вкладка уходит на `/companies` с заменой, фокус на `h1`, скрытый статус «You left {Company}.» Экран §4.35 после своего ухода не рисуется никогда: отказы, пришедшие во время ухода, компанию не «закрывают». Повтор потерянного ответа, отказанный 401/403/404, читается как «вы уже не участник» — тот же успех.
+- Отказ — полоса закрывается, фокус на «Leave company», под зоной `ErrorNote`: `LAST_ADMIN` — «You’re the only active admin, so you didn’t leave {Company}.»; `OWNER_MEMBERSHIP_PROTECTED` — «You own {Company}, so you didn’t leave it.»; операция `FAILED` — «You didn’t leave {Company}.» и «{failureCode} · operation {id}»; прочее — «You didn’t leave {Company}.» + слова + id.
+
+**Состояния.** Загрузка — три строки-скелета (круг 28, `.value-skeleton` 140×13 и 200×11) и скрытый `role="status"` «Loading members»; без спиннера. Отказ чтения списка — `ApiNotice` «Members could not be loaded.» + слова + id, не живая; через 8 secondary «Try again»; зоны Leave нет. Приглашения не прочитались (участники прочитались) — `ErrorNote` «Invitations could not be loaded.» + id на месте группы. Фоновое перечитывание не удалось — строки остаются, над группами `ApiNotice` «Members could not be refreshed. The last loaded list is shown.» Пустым список не бывает.
+
+**Клавиатура.** Страница — Tab: рельс → Invite a member → (Try again) → строки по группам; в строке — select → действие → корзина → Leave company. Модалка — Email → Role (одна остановка) → чекбоксы и их select'ы по порядку → Cancel → Send invitation.
+
+**Ширины** (оценка до сборки). ≥900 — колонка 560, ряд справа 92+8+80+8+32 = 220, тексту ≈280. ≤820 — ghost-кнопки, primary и Leave 44 в высоту; корзины 44×44; select 29 — долг §7. ≤560 — ряд справа уходит под текст (`grid-column:2; margin-top:8`). 390×844 (колонка ≈352) и 320×568 (≈282, текст 244, ряд 232) — ряд в одну строку. 50 строк ≈ 2 400 px, без виртуализации.
+
+**Цвет и движение.** Новых токенов нет. Контраст на `--bg`: `--fg` 16.56 / 17.13, `--fg-2` 6.73 / 7.35. Полоса — `--fg` на `--surface-2` 15.72 / 16.38. Пунктир аватара приглашения — 1.36 / 1.46: это край, смысл несут слова (§7). Строки появляются и уходят без анимации.
+
 ## 5. Patterns
 
 ### 5.1 App shell и маршруты
@@ -3384,7 +3512,7 @@ Safari 16.2) *новее* базы `dvh` (Chrome 108 / Safari 15.4) — брау
 | Notifications | поповер, без маршрута | — |
 | Choose a company (сборка B2B) | `/companies` (§4.33) | по сессии аккаунта |
 | Create a company (сборка B2B) | `/companies/new` (§4.36) | по сессии аккаунта |
-| Компания (сборка B2B) | `/c/:companyId/…` — Projects, Board, Issue card, Issue by key и Settings под префиксом; Admin нет (§4.16) | по сессии аккаунта и сессии компании вкладки; отказ — §4.35 / §4.18; компания, которая ещё не открывалась, — карточка §4.37 вместо app shell |
+| Компания (сборка B2B) | `/c/:companyId/…` — Projects, Board, Issue card, Issue by key и Settings (в том числе Settings › Members, §4.38) под префиксом; Admin нет (§4.16) | по сессии аккаунта и сессии компании вкладки; отказ — §4.35 / §4.18; компания, которая ещё не открывалась, — карточка §4.37 вместо app shell |
 
 **Компания — в адресе** (TAS-500, сборка B2B). Компания вкладки — та, что в адресе:
 `/c/{companyId}` — префикс, под которым живёт всё приложение, кроме `/login`, `/invite`,
@@ -4503,6 +4631,8 @@ history: прямая ссылка и перезагрузка обязаны д
 сессии (§5.1), ролевого гейта нет: это свой профиль и свой вид, `VIEWER` владеет ими так же, как
 `ADMIN`; пустой плоскости `--bg` на время чтения профиля тоже нет.
 
+**Сборка B2B — группа «Company»** (TAS-502). Под личными разделами рельса — разделитель `1px --border` (`margin:9 0`) и подпись «Company» 11.5/550 `--fg-2` (Field label §2.3), padding `0 9 4`. В группе — «Members» (`Users` 15), `/c/{companyId}/settings/members` (§4.38). Группа — оговорка к «области читателя о себе»: её разделы — о компании вкладки, и туда же встанут TAS-504 и TAS-512. Группу видит любая роль компании; без флага её нет. Ниже 900 подпись визуально скрыта (`role="group"` с `aria-labelledby`), а между группами полосы стоит разделитель 1×18 `--border` (§4.13).
+
 **Рельс.** Рецепт §5.8: 168, `--surface`, правая граница `1px --border`, padding `13 9`; пункт —
 иконка 15 + 12/600, padding `6 9`, radius 8, `--fg-2`, hover и активный — `--surface-2` + `--fg`,
 `aria-current="page"` от `NavLink`; `nav aria-label="Settings"`. Пункты: «My profile» (`UserRound`),
@@ -4956,7 +5086,7 @@ workflow-статуса раньше подписи сборки, если в н
 | --- | --- | --- |
 | session | currentUser, accessToken/refresh | auth-контекст + `GET /users/me` |
 | route | projectId, issueId | URL (§7 handoff README) |
-| server | projects, project stats (`["project-stats"]`), membership, workflow, workflows (`/workflows`, TAS-382), board (`["board", projectId, {issueType, assigneeId, labelId, query}]` — запись на комбинацию фильтров, префикс `["board", projectId]` для инвалидаций; колонки до 200 задач с `totalCount`/`hasMore`, `unplacedIssues` с `unplacedTotalCount`/`unplacedHasMore`; запись без фильтров держится наблюдателем — из неё `Y` и пикер связи, §5.4), issue+history, comments, worklogs (страницы по 100, `useInfiniteQuery`), notifications | react-query, мутации оптимистичные + инвалидация; смена фильтра — `placeholderData` (§5.4) |
+| server | (B2B: участники и приглашения компании — **не оптимистичны**, TAS-502 §4.38: критерий истории «меняются только после успеха сервера») projects, project stats (`["project-stats"]`), membership, workflow, workflows (`/workflows`, TAS-382), board (`["board", projectId, {issueType, assigneeId, labelId, query}]` — запись на комбинацию фильтров, префикс `["board", projectId]` для инвалидаций; колонки до 200 задач с `totalCount`/`hasMore`, `unplacedIssues` с `unplacedTotalCount`/`unplacedHasMore`; запись без фильтров держится наблюдателем — из неё `Y` и пикер связи, §5.4), issue+history, comments, worklogs (страницы по 100, `useInfiniteQuery`), notifications | react-query, мутации оптимистичные + инвалидация; смена фильтра — `placeholderData` (§5.4) |
 | board ui | `{ q, type, assignee, label }` — набранное; в ключ чтения доски `q` уходит после паузы 200 мс, обрезанный и непустой (§5.4); dragIssueId, dragOverStatus | локальный стейт экрана |
 | app ui | notifOpen, creating, draft, editingCommentId | локальный стейт / контекст |
 | reader prefs (TAS-380) | theme, issueDetails, boardColumns | `localStorage` (`taska.theme`, `taska.issueDetails`, `taska.boardColumns`), отражены в атрибуты `<html>` до первой отрисовки; незнакомое значение — по умолчанию (§5.9) |
@@ -5259,6 +5389,7 @@ e2e). Другое значение останавливает dev-сервер,
   псевдоэлемент и правило пары, что у «Log out» (TAS-500) и «Use a different email» (TAS-426). Строки
   планов — не меньше 44 своим содержимым (48.8 / 65.5 у радио-пары §5.9 на 1440, выше на 320), долга
   нет; цель — вся строка `label`, а не кружок 14.
+- **Открыто в TAS-502** (решение art-director 2026-11-04, до сборки): select роли в строках Members (§4.38) и в строках проектов модалки приглашения — 29 на 390. У `select` нет `::before`, поэтому тот же долг, что у select'а участников проекта (TAS-158). Остальные контролы раздела ниже 820 — 44, строки проектов — 44.
 - Поповер уведомлений: `aria-expanded` на триггере, счётчик непрочитанных в `aria-label`.
 - Иконки-кнопки без текста — обязателен `aria-label`.
 - Drag & drop дублируется кнопками переходов (клавиатурный путь).

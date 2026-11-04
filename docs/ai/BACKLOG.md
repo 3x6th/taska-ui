@@ -4517,3 +4517,21 @@ speed after clean verdicts).
 - `companies.spec.ts:146` sub-pixel flake on desktop (43.999996 < 44) seen once by api-contract-guard; passed 3/3.
 - `SettingsConnectedAppsSection.test.tsx` «selects the text … when the clipboard refuses» (TAS-414) flaked once under
   load in the orchestrator's gate on `b85e869`; 5/5 alone, and green in every later run.
+
+### Left by TAS-502 pre-build (company members and invitations, B2B blueprint `758f8fc6`, 2026-11-05)
+
+From the api-contract-guard design and the art-director ruling (`docs/ai/reviews/TAS-502/`, git-ignored). Backend asks
+A17–A25 went to Jira as comments on their owner stories.
+
+- **TAS-501's mock answers a malformed `If-Match` 428 `VALIDATION_FAILED`**; contracts §6 says malformed → 400
+  `VALIDATION_FAILED`, missing → 428 `VERSION_CONFLICT`.
+- **New B2B enums** (membership role and state, invitation state, quota kind) belong in `/meta` (the TAS-217 pattern).
+- **A cursor invalidated by a concurrent change** is the same 400 as a forged one.
+- **A deleted account's name is a Russian placeholder** (contracts §10); ask for a flag and draw English words.
+- **Membership carries no `joinedAt` / `suspendedAt`** on the wire (the columns exist) — no «Member since» / «Suspended on».
+- **The mock's quota snapshot has only the SEAT row** (TAS-512 adds PROJECT and STORAGE).
+- **Members beyond 50 seats** need a filter; inviting several emails at once; the invitation row naming its projects;
+  §4.36 «5 members» vs §4.38 «seats» wording — align in TAS-512; ~150 Tab stops at 50 rows (roving focus if heavy);
+  My profile «Role · User» → «Taska role» in the B2B build (as the menu).
+- **Discoverability:** Members is reachable only through Settings (and the project Members dialog's empty search); a
+  «Members» row in the switcher footer is the fallback if the owner finds it too deep.
