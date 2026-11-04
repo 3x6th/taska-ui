@@ -88,6 +88,33 @@ function fakeTransport() {
     cancelTenantCreation: vi.fn<B2bTransport["cancelTenantCreation"]>(async (_bearer, tenantId) => ({
       id: tenantId, name: "Northwind", ownerId: USER, lifecycle: "OWNER_CANCELLED", restrictions: ["PENDING_FIRST_PAYMENT"], createdAt: "2026-05-01T09:00:00Z", version: "5",
     })),
+    // TAS-502.
+    listTenantMembers: vi.fn<B2bTransport["listTenantMembers"]>(async (_bearer, tenantId) => ({
+      items: [{ id: "m-1", tenantId, userId: USER, role: "TENANT_ADMIN", state: "ACTIVE", isOwner: false, displayName: "A", email: "a@example.com", version: "1" }],
+    })),
+    setTenantMemberRole: vi.fn<B2bTransport["setTenantMemberRole"]>(async (_bearer, tenantId, userId, role) => ({
+      id: "m-1", tenantId, userId, role, state: "ACTIVE", isOwner: false, displayName: "A", email: "a@example.com", version: "2",
+    })),
+    setTenantMemberState: vi.fn<B2bTransport["setTenantMemberState"]>(async (_bearer, tenantId, userId, state) => ({
+      id: "m-1", tenantId, userId, role: "MEMBER", state, isOwner: false, displayName: "A", email: "a@example.com", version: "2",
+    })),
+    removeTenantMember: vi.fn<B2bTransport["removeTenantMember"]>(async (_bearer, tenantId) => ({
+      id: "op-remove", type: "removeTenantMember", state: "PENDING", createdAt: "2026-11-05T10:00:00Z", updatedAt: "2026-11-05T10:00:00Z", tenantId,
+    })),
+    leaveTenant: vi.fn<B2bTransport["leaveTenant"]>(async (_bearer, tenantId) => ({
+      id: "op-leave", type: "leaveTenant", state: "SUCCEEDED", createdAt: "2026-11-05T10:00:00Z", updatedAt: "2026-11-05T10:00:00Z", tenantId,
+    })),
+    listTenantInvitations: vi.fn<B2bTransport["listTenantInvitations"]>(async () => ({ items: [] })),
+    createTenantInvitation: vi.fn<B2bTransport["createTenantInvitation"]>(async (_bearer, tenantId, input) => ({
+      id: "inv-1", tenantId, email: input.email, role: input.role, state: "PENDING", expiresAt: "2026-11-12T10:00:00Z", createdBy: USER, projectGrants: input.projectGrants, version: "1",
+    })),
+    resendTenantInvitation: vi.fn<B2bTransport["resendTenantInvitation"]>(async (_bearer, tenantId, invitationId) => ({
+      id: invitationId, tenantId, email: "kai@example.com", role: "MEMBER", state: "PENDING", expiresAt: "2026-11-12T10:00:00Z", createdBy: USER, projectGrants: [], version: "2",
+    })),
+    revokeTenantInvitation: vi.fn<B2bTransport["revokeTenantInvitation"]>(async () => undefined),
+    getTenantQuotas: vi.fn<B2bTransport["getTenantQuotas"]>(async (_bearer, tenantId) => ({
+      tenantId, version: "1", quotas: [{ kind: "SEAT", used: "4", reserved: "1", limit: "5", unlimited: false }], asOf: "2026-11-05T10:00:00Z",
+    })),
   };
 }
 
@@ -768,3 +795,149 @@ describe("a company that has never opened is not closed by its refusals (api-con
   });
 });
 
+
+describe("a company's members, invitations and seats (TAS-502)", () => {
+  async function inNorthwind() {
+    const local = new MemoryStorage();
+    signedIn(local);
+    const tab = openTab({ local });
+    await tab.client.enterCompany(NORTHWIND);
+    const closed: WorkspaceClosedEvent[] = [];
+    tab.client.onWorkspaceClosed((event) => closed.push(event));
+    return { ...tab, local, closed };
+  }
+
+  it("every route goes with the tab's company session, the caller's key and the row's version", async () => {
+    const { client, transport } = await inNorthwind();
+    await client.listTenantMembers(NORTHWIND, { limit: 100 });
+    await client.setTenantMemberRole(NORTHWIND, USER, "MEMBER", "4", "key-role");
+    await client.setTenantMemberState(NORTHWIND, USER, "SUSPENDED", "5", "key-state");
+    await client.removeTenantMember(NORTHWIND, USER, "6", "key-remove");
+    await client.listTenantInvitations(NORTHWIND, { cursor: "c", limit: 100 });
+    await client.createTenantInvitation(NORTHWIND, { email: "kai@example.com", role: "MEMBER", projectGrants: [{ projectId: "p", role: "VIEWER" }] }, "key-invite");
+    await client.resendTenantInvitation(NORTHWIND, "inv-1", "key-resend");
+    await client.revokeTenantInvitation(NORTHWIND, "inv-1", "2", "key-revoke");
+    await expect(client.getTenantQuotas(NORTHWIND)).resolves.toMatchObject({ quotas: [{ kind: "SEAT", used: "4" }] });
+    expect(transport.listTenantMembers.mock.calls[0].slice(0, 3)).toEqual(["t1-access", NORTHWIND, { limit: 100 }]);
+    expect(transport.setTenantMemberRole.mock.calls[0]).toEqual(["t1-access", NORTHWIND, USER, "MEMBER", "4", "key-role"]);
+    expect(transport.setTenantMemberState.mock.calls[0]).toEqual(["t1-access", NORTHWIND, USER, "SUSPENDED", "5", "key-state"]);
+    expect(transport.removeTenantMember.mock.calls[0]).toEqual(["t1-access", NORTHWIND, USER, "6", "key-remove"]);
+    expect(transport.listTenantInvitations.mock.calls[0].slice(0, 3)).toEqual(["t1-access", NORTHWIND, { cursor: "c", limit: 100 }]);
+    // The body is the three fields, in one order, so a retry sends the same bytes.
+    expect(JSON.stringify(transport.createTenantInvitation.mock.calls[0][2])).toBe(
+      '{"email":"kai@example.com","role":"MEMBER","projectGrants":[{"projectId":"p","role":"VIEWER"}]}',
+    );
+    expect(transport.resendTenantInvitation.mock.calls[0]).toEqual(["t1-access", NORTHWIND, "inv-1", "key-resend"]);
+    expect(transport.revokeTenantInvitation.mock.calls[0]).toEqual(["t1-access", NORTHWIND, "inv-1", "2", "key-revoke"]);
+    expect(transport.getTenantQuotas.mock.calls[0].slice(0, 2)).toEqual(["t1-access", NORTHWIND]);
+  });
+
+  it("a call for a company the tab does not hold is refused without a request — never a TENANT_MISMATCH that would close it", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    await expect(client.listTenantMembers(GLOBEX)).rejects.toBeInstanceOf(WorkspaceClosedError);
+    await expect(client.setTenantMemberRole(GLOBEX, USER, "MEMBER", "1", "k")).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(transport.listTenantMembers).not.toHaveBeenCalled();
+    expect(transport.setTenantMemberRole).not.toHaveBeenCalled();
+    expect(closed).toEqual([]);
+    // And with no company at all, nothing goes with the account session either.
+    await client.leaveCompany();
+    await expect(client.getTenantQuotas(NORTHWIND)).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(transport.getTenantQuotas).not.toHaveBeenCalled();
+  });
+
+  it("a 401 renews the company family and retries once with the same key, body and version", async () => {
+    const { client, transport } = await inNorthwind();
+    transport.setTenantMemberRole.mockImplementationOnce(async () => {
+      throw refusal(401, "AUTHENTICATION_REQUIRED");
+    });
+    await client.setTenantMemberRole(NORTHWIND, USER, "MEMBER", "4", "key-role");
+    expect(transport.setTenantMemberRole.mock.calls.map((call) => call.slice(1))).toEqual([
+      [NORTHWIND, USER, "MEMBER", "4", "key-role"],
+      [NORTHWIND, USER, "MEMBER", "4", "key-role"],
+    ]);
+    expect(transport.setTenantMemberRole.mock.calls[1][0]).not.toBe(transport.setTenantMemberRole.mock.calls[0][0]);
+  });
+
+  it("leaving: on a 202 that is not FAILED the company session is released, and nothing draws §4.35", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    const operation = await client.leaveTenant(NORTHWIND, "key-leave");
+    expect(operation).toMatchObject({ state: "SUCCEEDED" });
+    expect(transport.leaveTenant.mock.calls[0]).toEqual(["t1-access", NORTHWIND, "key-leave"]);
+    expect(client.currentWorkspace()).toBeNull();
+    expect(transport.revokeTenantSession).toHaveBeenCalledWith("g0-access", "ts-1", expect.any(String));
+    expect(closed).toEqual([]);
+  });
+
+  it("a closing refusal while leaving closes nothing; a FAILED operation keeps the session", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    const held = gate<unknown>();
+    transport.leaveTenant.mockImplementationOnce(() => held.promise);
+    const leaving = client.leaveTenant(NORTHWIND, "key-leave");
+    await vi.waitFor(() => expect(transport.leaveTenant).toHaveBeenCalled());
+    // A read in flight meets the server's removal of the reader meanwhile.
+    const inactive = refusal(403, "MEMBERSHIP_INACTIVE");
+    await expect(client.call("session", async () => Promise.reject(inactive), { read: true })).rejects.toBe(inactive);
+    expect(closed).toEqual([]);
+    held.resolve({ id: "op", type: "leaveTenant", state: "FAILED", failureCode: "DEPENDENCY_UNAVAILABLE", createdAt: "x", updatedAt: "x" });
+    await expect(leaving).resolves.toMatchObject({ state: "FAILED", failureCode: "DEPENDENCY_UNAVAILABLE" });
+    expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+    // After it, the closing rule is back.
+    await expect(client.call("session", async () => Promise.reject(inactive))).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+  });
+
+  it("a leave whose answer was lost, retried with its key and refused 401/403/404, is the same success", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    transport.leaveTenant.mockImplementationOnce(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toBeInstanceOf(TypeError);
+    expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+    transport.leaveTenant.mockImplementationOnce(async () => {
+      throw refusal(404, "TENANT_NOT_FOUND");
+    });
+    await expect(client.leaveTenant(NORTHWIND, "key-leave")).resolves.toBeNull();
+    expect(transport.leaveTenant.mock.calls.map((call) => call[2])).toEqual(["key-leave", "key-leave"]);
+    expect(client.currentWorkspace()).toBeNull();
+    expect(closed).toEqual([]);
+  });
+
+  it("a first leave refused LAST_ADMIN is that refusal: the session stays, nothing closes", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    transport.leaveTenant.mockImplementationOnce(async () => {
+      throw refusal(409, "LAST_ADMIN");
+    });
+    await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toMatchObject({ code: "LAST_ADMIN" });
+    expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+    expect(closed).toEqual([]);
+  });
+
+  it("re-entering after the reader's own change mints a new session, then revokes the old one; the epoch moves", async () => {
+    const { client, transport } = await inNorthwind();
+    const before = client.currentWorkspace();
+    const old = client.call("session", () => new Promise(() => {}));
+    await client.reenterCompany(NORTHWIND);
+    expect(client.currentWorkspace()).toMatchObject({ tenantId: NORTHWIND, tenantSessionId: "ts-2" });
+    expect(client.currentWorkspace()?.tenantSessionId).not.toBe(before?.tenantSessionId);
+    expect(transport.revokeTenantSession).toHaveBeenCalledWith("g0-access", "ts-1", expect.any(String));
+    await expect(old).rejects.toBeInstanceOf(WorkspaceClosedError);
+    await client.listTenantMembers(NORTHWIND);
+    expect(transport.listTenantMembers.mock.calls.at(-1)?.[0]).toBe("t2-access");
+  });
+
+  it("a re-entry that gets no answer keeps the session the tab has; one refused MEMBERSHIP_INACTIVE closes the company", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    transport.createTenantSession.mockImplementationOnce(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await client.reenterCompany(NORTHWIND);
+    expect(client.currentWorkspace()?.tenantSessionId).toBe("ts-1");
+    expect(closed).toEqual([]);
+    transport.createTenantSession.mockImplementationOnce(async () => {
+      throw refusal(403, "MEMBERSHIP_INACTIVE");
+    });
+    await client.reenterCompany(NORTHWIND);
+    expect(client.currentWorkspace()).toBeNull();
+    expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+  });
+});

@@ -79,6 +79,19 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   getTenant: "session",
   getTenantOperation: "session",
   cancelTenantCreation: "session",
+  // TAS-502: every one with the tab's company session, picked by the session
+  // layer as for the REST leg; `MockTenantServer` checks it the blueprint's way.
+  listTenantMembers: "session",
+  setTenantMemberRole: "session",
+  setTenantMemberState: "session",
+  removeTenantMember: "session",
+  leaveTenant: "session",
+  listTenantInvitations: "session",
+  createTenantInvitation: "session",
+  resendTenantInvitation: "session",
+  revokeTenantInvitation: "session",
+  getTenantQuotas: "session",
+  reenterCompany: "session",
   getMeta: "account",
   listProjects: "tenant-read",
   createProject: "tenant-write",
@@ -201,6 +214,17 @@ type SessionMethods = Pick<
   | "getTenant"
   | "getTenantOperation"
   | "cancelTenantCreation"
+  | "listTenantMembers"
+  | "setTenantMemberRole"
+  | "setTenantMemberState"
+  | "removeTenantMember"
+  | "leaveTenant"
+  | "listTenantInvitations"
+  | "createTenantInvitation"
+  | "resendTenantInvitation"
+  | "revokeTenantInvitation"
+  | "getTenantQuotas"
+  | "reenterCompany"
 >;
 
 type AnyMethod = (...args: unknown[]) => unknown;
@@ -260,6 +284,17 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     getTenant: (tenantId) => web.getTenant(tenantId),
     getTenantOperation: (tenantId, operationId) => web.getTenantOperation(tenantId, operationId),
     cancelTenantCreation: (tenantId, version, key) => web.cancelTenantCreation(tenantId, version, key),
+    listTenantMembers: (tenantId, params) => web.listTenantMembers(tenantId, params),
+    setTenantMemberRole: (tenantId, userId, role, version, key) => web.setTenantMemberRole(tenantId, userId, role, version, key),
+    setTenantMemberState: (tenantId, userId, state, version, key) => web.setTenantMemberState(tenantId, userId, state, version, key),
+    removeTenantMember: (tenantId, userId, version, key) => web.removeTenantMember(tenantId, userId, version, key),
+    leaveTenant: (tenantId, key) => web.leaveTenant(tenantId, key),
+    listTenantInvitations: (tenantId, params) => web.listTenantInvitations(tenantId, params),
+    createTenantInvitation: (tenantId, input, key) => web.createTenantInvitation(tenantId, input, key),
+    resendTenantInvitation: (tenantId, invitationId, key) => web.resendTenantInvitation(tenantId, invitationId, key),
+    revokeTenantInvitation: (tenantId, invitationId, version, key) => web.revokeTenantInvitation(tenantId, invitationId, version, key),
+    getTenantQuotas: (tenantId) => web.getTenantQuotas(tenantId),
+    reenterCompany: (tenantId) => web.reenterCompany(tenantId),
   };
 
   const api: Record<string, unknown> = {};

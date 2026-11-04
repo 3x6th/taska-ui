@@ -7,6 +7,7 @@ import {
   isUndeployedRoute,
   refusalCode,
   refusalReasons,
+  refusalViolations,
 } from "../errors";
 import { TENANCY_WITHHELD_OPERATIONS, UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
 import { TAB_KEY, WEB_SESSION_KEY, createLocalLockManager } from "../webSession";
@@ -425,3 +426,141 @@ describe("creating a company on the wire (TAS-501, api-contract-guard §1, §9 p
   });
 });
 
+
+/* ------------------------------ members, invitations and seats (TAS-502) */
+
+const MEMBER = "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f";
+const PROJECT_ID = "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e";
+const INVITATION = "8d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a";
+const membershipWire = { id: "m-1", tenantId: NORTHWIND, userId: MEMBER, role: "MEMBER", state: "ACTIVE", isOwner: false, displayName: "Sofia", email: "sofia@example.com", version: "3" };
+const invitationWire = { id: INVITATION, tenantId: NORTHWIND, email: "kai@example.com", role: "MEMBER", state: "PENDING", expiresAt: "2026-11-12T10:00:00Z", createdBy: ANNA, projectGrants: [], version: "1" };
+
+function membersGateway(extra?: (sent: Sent) => Response | undefined) {
+  return blueprintGateway((request) => {
+    const answer = extra?.(request);
+    if (answer) return answer;
+    const path = request.url.replace(/^\/api\/v1/, "");
+    const base = `/tenants/${NORTHWIND}`;
+    if (path.startsWith(`${base}/members?`) || path === `${base}/members`) return json(200, { items: [membershipWire] });
+    if (path === `${base}/members/${MEMBER}/role` || path === `${base}/members/${MEMBER}/state`) return json(200, { ...membershipWire, version: "4" });
+    if (path === `${base}/members/${MEMBER}`) {
+      return json(202, { id: "op-1", type: "removeTenantMember", state: "PENDING", createdAt: "2026-11-05T10:00:00Z", updatedAt: "2026-11-05T10:00:00Z", tenantId: NORTHWIND });
+    }
+    if (path === `${base}/leave`) {
+      return json(202, { id: "op-2", type: "leaveTenant", state: "SUCCEEDED", createdAt: "2026-11-05T10:00:00Z", updatedAt: "2026-11-05T10:00:00Z", tenantId: NORTHWIND });
+    }
+    if (path.startsWith(`${base}/invitations?`) || (path === `${base}/invitations` && request.method === "GET")) return json(200, { items: [invitationWire] });
+    if (path === `${base}/invitations` && request.method === "POST") return json(201, invitationWire);
+    if (path === `${base}/invitations/${INVITATION}/resend`) return json(200, { ...invitationWire, version: "2" });
+    if (path === `${base}/invitations/${INVITATION}`) return new Response(null, { status: 204 });
+    if (path === `${base}/quotas`) {
+      return json(200, { tenantId: NORTHWIND, version: "9", quotas: [{ kind: "SEAT", used: "4", reserved: "1", limit: "5", unlimited: false }], asOf: "2026-11-05T10:00:00Z" });
+    }
+    return undefined;
+  });
+}
+
+describe("members, invitations and seats on the wire (TAS-502, api-contract-guard §1, §7 parity)", () => {
+  it("today's build refuses all eleven without a request", async () => {
+    const { fetch } = membersGateway();
+    const api = new RestTaskaApi("/api/v1");
+    for (const call of [
+      () => api.listTenantMembers(NORTHWIND),
+      () => api.setTenantMemberRole(NORTHWIND, MEMBER, "MEMBER", "1", KEY),
+      () => api.setTenantMemberState(NORTHWIND, MEMBER, "SUSPENDED", "1", KEY),
+      () => api.removeTenantMember(NORTHWIND, MEMBER, "1", KEY),
+      () => api.leaveTenant(NORTHWIND, KEY),
+      () => api.listTenantInvitations(NORTHWIND),
+      () => api.createTenantInvitation(NORTHWIND, { email: "k@example.com", role: "MEMBER", projectGrants: [] }, KEY),
+      () => api.resendTenantInvitation(NORTHWIND, INVITATION, KEY),
+      () => api.revokeTenantInvitation(NORTHWIND, INVITATION, "1", KEY),
+      () => api.getTenantQuotas(NORTHWIND),
+      () => api.reenterCompany(NORTHWIND),
+    ]) {
+      await expect(call()).rejects.toBeInstanceOf(TenancyUnavailableError);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("each route: the company session, the key, If-Match quoted, the bodies byte for byte, DELETE without one", async () => {
+    const { sent } = membersGateway();
+    const { api } = companiesApi();
+    await api.signIn({ email: "anna@example.com", password: "x" });
+    await api.enterCompany(NORTHWIND);
+    await expect(api.listTenantMembers(NORTHWIND, { limit: 100 })).resolves.toMatchObject({ items: [{ userId: MEMBER, version: "3" }], nextCursor: null });
+    await expect(api.setTenantMemberRole(NORTHWIND, MEMBER, "TENANT_ADMIN", "3", KEY)).resolves.toMatchObject({ version: "4" });
+    await api.setTenantMemberState(NORTHWIND, MEMBER, "SUSPENDED", "4", KEY);
+    await expect(api.removeTenantMember(NORTHWIND, MEMBER, "4", KEY)).resolves.toMatchObject({ id: "op-1", state: "PENDING" });
+    await api.listTenantInvitations(NORTHWIND, { cursor: "c1", limit: 100 });
+    await api.createTenantInvitation(
+      NORTHWIND,
+      { email: "kai@example.com", role: "MEMBER", projectGrants: [{ projectId: PROJECT_ID, role: "VIEWER" }] },
+      KEY,
+    );
+    await api.resendTenantInvitation(NORTHWIND, INVITATION, KEY);
+    await expect(api.revokeTenantInvitation(NORTHWIND, INVITATION, "1", KEY)).resolves.toBeUndefined();
+    await expect(api.getTenantQuotas(NORTHWIND)).resolves.toMatchObject({ version: "9", quotas: [{ kind: "SEAT", used: "4", reserved: "1", limit: "5" }] });
+
+    const at = (method: string, path: string) => sent.find((request) => request.method === method && request.url === `/api/v1/tenants/${NORTHWIND}${path}`);
+    const company = { Authorization: "Bearer t1-access" };
+    expect(at("GET", "/members?limit=100")?.headers).toMatchObject(company);
+    expect(at("GET", "/members?limit=100")?.headers["Idempotency-Key"]).toBeUndefined();
+    const role = at("PATCH", `/members/${MEMBER}/role`);
+    expect(role?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY, "If-Match": '"3"', "Content-Type": "application/json" });
+    expect(role?.body).toEqual({ role: "TENANT_ADMIN" });
+    const state = at("PATCH", `/members/${MEMBER}/state`);
+    expect(state?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY, "If-Match": '"4"' });
+    expect(state?.body).toEqual({ state: "SUSPENDED" });
+    const remove = at("DELETE", `/members/${MEMBER}`);
+    expect(remove?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY, "If-Match": '"4"' });
+    expect(remove?.body).toBeUndefined();
+    expect(remove?.headers["Content-Type"]).toBeUndefined();
+    expect(at("GET", "/invitations?cursor=c1&limit=100")?.headers).toMatchObject(company);
+    const invite = sent.find((request) => request.method === "POST" && request.url === `/api/v1/tenants/${NORTHWIND}/invitations`);
+    expect(invite?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY });
+    expect(invite?.headers["If-Match"]).toBeUndefined();
+    expect(JSON.stringify(invite?.body)).toBe(`{"email":"kai@example.com","role":"MEMBER","projectGrants":[{"projectId":"${PROJECT_ID}","role":"VIEWER"}]}`);
+    const resend = at("POST", `/invitations/${INVITATION}/resend`);
+    expect(resend?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY });
+    expect(resend?.headers["If-Match"]).toBeUndefined();
+    expect(resend?.body).toBeUndefined();
+    const revoke = at("DELETE", `/invitations/${INVITATION}`);
+    expect(revoke?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY, "If-Match": '"1"' });
+    expect(revoke?.body).toBeUndefined();
+    expect(at("GET", "/quotas")?.headers).toMatchObject(company);
+
+    // Leave: the key, `{confirmed: true}`, no If-Match (the blueprint's; ask A20) — and the company session goes.
+    await expect(api.leaveTenant(NORTHWIND, KEY)).resolves.toMatchObject({ state: "SUCCEEDED" });
+    const leave = at("POST", "/leave");
+    expect(leave?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY });
+    expect(leave?.headers["If-Match"]).toBeUndefined();
+    expect(leave?.body).toEqual({ confirmed: true });
+    expect(api.currentWorkspace()).toBeNull();
+    expect(sent.some((request) => request.method === "DELETE" && request.url === "/api/v1/auth/tenant-sessions/ts-1")).toBe(true);
+  });
+
+  it("a Problem's violations, reasons and Retry-After are read as the mock's are", async () => {
+    const answers = [
+      problem(400, "VALIDATION_FAILED", { violations: [{ field: "projectGrants[0].projectId", code: "NOT_FOUND", message: "no such project" }] }),
+      problem(403, "READ_ONLY", { reasons: ["PLATFORM_BLOCK"] }),
+      problem(429, "RATE_LIMITED", {}),
+    ];
+    membersGateway((request) => {
+      if (request.method !== "POST" || !request.url.endsWith("/invitations")) return undefined;
+      const answer = answers.shift() as Response;
+      if (answers.length === 0) answer.headers.set("Retry-After", "12");
+      return answer;
+    });
+    const { api } = companiesApi();
+    await api.signIn({ email: "anna@example.com", password: "x" });
+    await api.enterCompany(NORTHWIND);
+    const send = () => api.createTenantInvitation(NORTHWIND, { email: "k@example.com", role: "MEMBER", projectGrants: [] }, KEY).catch((error: unknown) => error);
+    const invalid = await send();
+    expect(refusalViolations(invalid).map((item) => item.field)).toEqual(["projectGrants[0].projectId"]);
+    const readOnly = await send();
+    expect([refusalCode(readOnly), refusalReasons(readOnly)]).toEqual(["READ_ONLY", ["PLATFORM_BLOCK"]]);
+    expect(refusalRetryAfter(await send())).toBe(12);
+    // None of them closed the company.
+    expect(api.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+  });
+});

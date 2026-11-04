@@ -11,6 +11,18 @@ export interface AreaSection {
 }
 
 /**
+ * A named group of sections under the area's own (TAS-502, DESIGN.md §5.9
+ * «Сборка B2B — группа «Company»»): behind a divider, under its label — a
+ * `role="group"` named by it, the label visually hidden below 900 where the
+ * rail is a strip.
+ */
+export interface AreaSectionGroup {
+  id: string;
+  label: string;
+  sections: readonly AreaSection[];
+}
+
+/**
  * An area with sections rather than a screen (DESIGN.md §5.8): the rail on the
  * left, the section's heading, and the section's own body under it. Written
  * once for `/admin` and `/settings` (TAS-380, art-director's ruling 3) — the
@@ -22,6 +34,7 @@ export interface AreaSection {
 export function SectionArea({
   name,
   sections,
+  groups = [],
   current,
   aside,
   className,
@@ -30,6 +43,8 @@ export function SectionArea({
   /** The area's own name: the rail's `aria-label` and the crumb in the heading. */
   name: string;
   sections: readonly AreaSection[];
+  /** Groups of sections after the area's own, each behind a divider under its label. */
+  groups?: readonly AreaSectionGroup[];
   /** The section the router is showing. */
   current: AreaSection;
   /** Beside the heading, on its baseline — the admin's `read-only` marker. */
@@ -39,6 +54,7 @@ export function SectionArea({
   children: ReactNode;
 }) {
   const headingId = useId();
+  const groupId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const railRef = useRef<HTMLElement>(null);
   const lastSectionId = useRef<string | null>(null);
@@ -75,23 +91,20 @@ export function SectionArea({
   return (
     <div className={className ? `area ${className}` : "area"}>
       <nav aria-label={name} className="area-rail" ref={railRef}>
-        <ul>
-          {sections.map((item) => {
-            const Icon = item.icon;
-            return (
-              <li key={item.id}>
-                {/* NavLink rather than Link: it states `aria-current="page"`
-                    from the match itself, so the rail cannot claim a section
-                    the router is not showing. Prefix matching is what keeps
-                    Data marked while a table is open. */}
-                <NavLink className="area-rail-link" to={item.path}>
-                  <Icon aria-hidden="true" size={15} />
-                  {item.label}
-                </NavLink>
-              </li>
-            );
-          })}
-        </ul>
+        <RailLinks sections={sections} />
+        {groups.map((group) => (
+          <div
+            aria-labelledby={`${groupId}-${group.id}`}
+            className="area-rail-group"
+            key={group.id}
+            role="group"
+          >
+            <p className="area-rail-group-label" id={`${groupId}-${group.id}`}>
+              {group.label}
+            </p>
+            <RailLinks sections={group.sections} />
+          </div>
+        ))}
         {/* The way out of the area belongs to the area, not to whichever
             section happens to be open (§5.8). */}
         <div className="area-rail-foot">
@@ -125,5 +138,27 @@ export function SectionArea({
         {children}
       </section>
     </div>
+  );
+}
+
+function RailLinks({ sections }: { sections: readonly AreaSection[] }) {
+  return (
+    <ul>
+      {sections.map((item) => {
+        const Icon = item.icon;
+        return (
+          <li key={item.id}>
+            {/* NavLink rather than Link: it states `aria-current="page"`
+                from the match itself, so the rail cannot claim a section
+                the router is not showing. Prefix matching is what keeps
+                Data marked while a table is open. */}
+            <NavLink className="area-rail-link" to={item.path}>
+              <Icon aria-hidden="true" size={15} />
+              {item.label}
+            </NavLink>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

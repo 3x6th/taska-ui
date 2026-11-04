@@ -19,6 +19,7 @@ import {
   tenantStateLine,
 } from "../lib/companies";
 import type { ScreenProps } from "./App";
+import { leftStatus } from "./settings/companyMembersText";
 
 /** What a navigation to `/companies` may carry (§4.33). */
 export interface CompaniesRouteState {
@@ -28,6 +29,8 @@ export interface CompaniesRouteState {
   focusHeading?: boolean;
   /** Arrived by signing in: a read that fails is announced, as the answer to that press. */
   afterSignIn?: boolean;
+  /** Arrived by leaving a company (TAS-502, §4.38): the hidden status says «You left {Company}.» */
+  left?: { name: string | null };
 }
 
 /**
@@ -49,10 +52,14 @@ export function CompaniesScreen({ theme, toggleTheme, onLogout, logoutPending }:
   const heading = useRef<HTMLHeadingElement>(null);
   /** How many times «Try again» was pressed — a failure that answers one is announced and remounted (§4.27). */
   const [retries, setRetries] = useState(0);
+  /** «You left {Company}.» — put into the region after it mounted, so it is announced (§5.6). */
+  const [leftSaid, setLeftSaid] = useState<string | null>(null);
 
   useDocumentTitle(documentTitleFor({ companyName: null, inCompany: false, picker: true }));
   useEffect(() => {
     if (state.focusHeading || state.afterSignIn) heading.current?.focus();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- after mount, so the status region speaks it.
+    if (state.left) setLeftSaid(leftStatus(state.left.name ?? null));
     // On arrival only: the first screen of a tab takes no focus (§4.33 «Фокус»).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -155,6 +162,10 @@ export function CompaniesScreen({ theme, toggleTheme, onLogout, logoutPending }:
             )}
           </>
         )}
+
+        <p className="visually-hidden" role="status">
+          {leftSaid ?? ""}
+        </p>
 
         <footer className="companies-footer">
           {/* Its place is kept from the first frame, empty until the address is

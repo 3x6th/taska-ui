@@ -5,6 +5,21 @@ import type { LoginInput, SignInResult, Workspace, WorkspaceClosedEvent, Workspa
 import { TRANSPORT_FAILURE_REASON } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
 import {
+  toInvitation,
+  toInvitationPage,
+  toMembership,
+  toMembershipPage,
+  toQuotaSnapshot,
+  type CreateInvitationInput,
+  type Invitation,
+  type InvitationPage,
+  type KnownMembershipRole,
+  type ListCompanyPageParams,
+  type Membership,
+  type MembershipPage,
+  type QuotaSnapshot,
+} from "./tenantMembers";
+import {
   toCreateTenantResult,
   toPlanVersionPage,
   toTenant,
@@ -96,6 +111,53 @@ export interface B2bTransport {
   getTenantOperation(bearer: string | null, tenantId: string, operationId: string, signal: AbortSignal): Promise<unknown>;
   /** `POST /tenants/{tenantId}/cancel-creation` with WEB_TENANT, `Idempotency-Key` and `If-Match: "{version}"`. */
   cancelTenantCreation(bearer: string | null, tenantId: string, version: string, idempotencyKey: string): Promise<unknown>;
+
+  /*
+   * A company's members, invitations and seats (TAS-502), all with that
+   * company's WEB_TENANT. `version` goes as `If-Match: "{version}"`; every
+   * write carries the caller's `Idempotency-Key`.
+   */
+
+  /** `GET /tenants/{tenantId}/members?cursor&limit` — 200 `MembershipPage`. */
+  listTenantMembers(bearer: string | null, tenantId: string, params: ListCompanyPageParams, signal: AbortSignal): Promise<unknown>;
+  /** `PATCH /tenants/{tenantId}/members/{userId}/role` `{role}` with the key and `If-Match` — 200 `Membership`. */
+  setTenantMemberRole(
+    bearer: string | null,
+    tenantId: string,
+    userId: string,
+    role: KnownMembershipRole,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<unknown>;
+  /** `PATCH /tenants/{tenantId}/members/{userId}/state` `{state}` with the key and `If-Match` — 200 `Membership`. */
+  setTenantMemberState(
+    bearer: string | null,
+    tenantId: string,
+    userId: string,
+    state: "ACTIVE" | "SUSPENDED",
+    version: string,
+    idempotencyKey: string,
+  ): Promise<unknown>;
+  /** `DELETE /tenants/{tenantId}/members/{userId}`, no body, the key and `If-Match` — 202 `Operation`. */
+  removeTenantMember(bearer: string | null, tenantId: string, userId: string, version: string, idempotencyKey: string): Promise<unknown>;
+  /** `POST /tenants/{tenantId}/leave` `{confirmed: true}` with the key, **no `If-Match`** (the blueprint's; ask A20) — 202 `Operation`. */
+  leaveTenant(bearer: string | null, tenantId: string, idempotencyKey: string): Promise<unknown>;
+  /** `GET /tenants/{tenantId}/invitations?cursor&limit` — 200 `InvitationPage`. */
+  listTenantInvitations(bearer: string | null, tenantId: string, params: ListCompanyPageParams, signal: AbortSignal): Promise<unknown>;
+  /** `POST /tenants/{tenantId}/invitations` `{email, role, projectGrants}` with the key — 201 `Invitation`. */
+  createTenantInvitation(bearer: string | null, tenantId: string, input: CreateInvitationInput, idempotencyKey: string): Promise<unknown>;
+  /** `POST /tenants/{tenantId}/invitations/{invitationId}/resend`, no body, the key only — 200 `Invitation`. */
+  resendTenantInvitation(bearer: string | null, tenantId: string, invitationId: string, idempotencyKey: string): Promise<unknown>;
+  /** `DELETE /tenants/{tenantId}/invitations/{invitationId}` with the key and `If-Match` — 204. */
+  revokeTenantInvitation(
+    bearer: string | null,
+    tenantId: string,
+    invitationId: string,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<void>;
+  /** `GET /tenants/{tenantId}/quotas` — 200 `QuotaSnapshot`. */
+  getTenantQuotas(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
 }
 
 /** `AccessSession` as this layer reads it: the four strings it needs, `tenantId` only on a company session. */
@@ -344,6 +406,15 @@ export class WebSessionClient {
   private renewing: Promise<RenewOutcome> | null = null;
   private rotating: Promise<RotateOutcome> | null = null;
   private readonly names = new Map<string, string>();
+  /**
+   * The company this tab is leaving (TAS-502, api-contract-guard B6), from
+   * `leaveTenant`'s send until its company session is released: a closing
+   * refusal meanwhile — the server may already have removed the reader —
+   * closes nothing and draws no §4.35; it rejects its own request.
+   */
+  private leaving: string | null = null;
+  /** Keys of leaves whose answer never came (no status, 408 or 5xx): their retry, refused 401/403/404, is the same success. */
+  private readonly lostLeaves = new Set<string>();
   private readonly expired = new SessionExpiredSignal();
   private readonly changeListeners = new Set<() => void>();
   private readonly closed = new WorkspaceClosedSignal<WorkspaceClosedEvent>();
@@ -649,6 +720,234 @@ export class WebSessionClient {
     this.renameOwned();
   }
 
+  /* -------------------------------- members, invitations and seats (TAS-502) */
+
+  /*
+   * api-contract-guard's pre-build design §1, §4 and B6, with the
+   * orchestrator's rulings: every call goes with the tab's company session
+   * (`call("session")`, `{read: true}` on the three reads), and only once the
+   * tab holds **that** company — a call for another is refused here without a
+   * request (`inCompany`), because sent it would be the server's 403
+   * `TENANT_MISMATCH`, which closes the tab's own company. The key and
+   * `If-Match` are the caller's: a retry of one intent sends the same ones.
+   */
+
+  async listTenantMembers(tenantId: string, params: ListCompanyPageParams = {}): Promise<MembershipPage> {
+    return toMembershipPage(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.listTenantMembers(bearer, tenantId, params, signal), {
+        read: true,
+      }),
+    );
+  }
+
+  async setTenantMemberRole(
+    tenantId: string,
+    userId: string,
+    role: KnownMembershipRole,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<Membership> {
+    return this.membership(
+      await this.inCompany(tenantId, (bearer) =>
+        this.transport.setTenantMemberRole(bearer, tenantId, userId, role, version, idempotencyKey),
+      ),
+    );
+  }
+
+  async setTenantMemberState(
+    tenantId: string,
+    userId: string,
+    state: "ACTIVE" | "SUSPENDED",
+    version: string,
+    idempotencyKey: string,
+  ): Promise<Membership> {
+    return this.membership(
+      await this.inCompany(tenantId, (bearer) =>
+        this.transport.setTenantMemberState(bearer, tenantId, userId, state, version, idempotencyKey),
+      ),
+    );
+  }
+
+  async removeTenantMember(tenantId: string, userId: string, version: string, idempotencyKey: string): Promise<TenantOperation> {
+    return this.operation(
+      await this.inCompany(tenantId, (bearer) => this.transport.removeTenantMember(bearer, tenantId, userId, version, idempotencyKey)),
+    );
+  }
+
+  /**
+   * `POST /tenants/{tenantId}/leave` — leaving the company on purpose (B6).
+   * While it is out, a refusal that would close the company closes nothing
+   * (`leaving`). Answered 202 with an operation that is not `FAILED`, the
+   * tab's company session is released (`leaveCompany`) before this answers:
+   * nothing of the company can be sent after it. A retry with the key of a
+   * leave whose answer never came, refused 401, 403 or 404, means the first
+   * one was applied — the reader is no longer a member — and is the same
+   * success, answered `null`. An operation that is `FAILED` is answered as
+   * it came, with the session kept.
+   */
+  async leaveTenant(tenantId: string, idempotencyKey: string): Promise<TenantOperation | null> {
+    const retry = this.lostLeaves.has(idempotencyKey);
+    this.leaving = tenantId;
+    let answer: unknown;
+    try {
+      answer = await this.inCompany(tenantId, (bearer) => this.transport.leaveTenant(bearer, tenantId, idempotencyKey));
+    } catch (error) {
+      if (!isWorkspaceClosed(error)) {
+        const { status } = apiErrorFacts(error);
+        if (retry && (status === 401 || status === 403 || status === 404)) {
+          this.lostLeaves.delete(idempotencyKey);
+          await this.releaseLeft(tenantId);
+          return null;
+        }
+        if (status === null || status === 408 || status >= 500) this.lostLeaves.add(idempotencyKey);
+      }
+      if (this.leaving === tenantId) this.leaving = null;
+      throw error;
+    }
+    this.lostLeaves.delete(idempotencyKey);
+    let operation: TenantOperation;
+    try {
+      operation = this.operation(answer);
+    } catch (error) {
+      if (this.leaving === tenantId) this.leaving = null;
+      throw error;
+    }
+    if (operation.state === "FAILED") {
+      if (this.leaving === tenantId) this.leaving = null;
+      return operation;
+    }
+    await this.releaseLeft(tenantId);
+    return operation;
+  }
+
+  /** The company left: its session released, and only then the closing rule back on. */
+  private async releaseLeft(tenantId: string): Promise<void> {
+    try {
+      if (this.owned?.record.tenantId === tenantId) await this.leaveCompany();
+    } finally {
+      if (this.leaving === tenantId) this.leaving = null;
+    }
+  }
+
+  async listTenantInvitations(tenantId: string, params: ListCompanyPageParams = {}): Promise<InvitationPage> {
+    return toInvitationPage(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.listTenantInvitations(bearer, tenantId, params, signal), {
+        read: true,
+      }),
+    );
+  }
+
+  /** The body is the three fields exactly, in one order, so a retry with the same key sends the same bytes. */
+  async createTenantInvitation(tenantId: string, input: CreateInvitationInput, idempotencyKey: string): Promise<Invitation> {
+    const body: CreateInvitationInput = {
+      email: input.email,
+      role: input.role,
+      projectGrants: input.projectGrants.map((grant) => ({ projectId: grant.projectId, role: grant.role })),
+    };
+    return this.invitation(
+      await this.inCompany(tenantId, (bearer) => this.transport.createTenantInvitation(bearer, tenantId, body, idempotencyKey)),
+    );
+  }
+
+  async resendTenantInvitation(tenantId: string, invitationId: string, idempotencyKey: string): Promise<Invitation> {
+    return this.invitation(
+      await this.inCompany(tenantId, (bearer) => this.transport.resendTenantInvitation(bearer, tenantId, invitationId, idempotencyKey)),
+    );
+  }
+
+  async revokeTenantInvitation(tenantId: string, invitationId: string, version: string, idempotencyKey: string): Promise<void> {
+    await this.inCompany(tenantId, (bearer) =>
+      this.transport.revokeTenantInvitation(bearer, tenantId, invitationId, version, idempotencyKey),
+    );
+  }
+
+  async getTenantQuotas(tenantId: string): Promise<QuotaSnapshot> {
+    return toQuotaSnapshot(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.getTenantQuotas(bearer, tenantId, signal), { read: true }),
+    );
+  }
+
+  /**
+   * A new company session for the tab's company (TAS-502, the orchestrator's
+   * ruling 3): after a change to the reader's own membership, so that nothing
+   * cached under the old role survives — a new session is a new context, and
+   * the shell remounts on the route it was on, without a notice. The new
+   * session is made first and the old one revoked best-effort after it; a
+   * refusal that closes the company closes it (§4.35); no answer, or any other
+   * refusal, keeps the session the tab has — the server checks the role on
+   * every request either way (contracts §2).
+   */
+  reenterCompany(tenantId: string): Promise<void> {
+    return this.serialize(async () => {
+      await this.restoring;
+      const owned = this.owned;
+      if (owned === null || owned.record.tenantId !== tenantId) return;
+      let session: AccessSession;
+      try {
+        session = await this.createSession(tenantId);
+      } catch (error) {
+        if (owned !== this.owned) return;
+        if (error instanceof AccountGone) {
+          if (error.refused) this.expireAccount();
+          return;
+        }
+        const code = refusalCode(error);
+        if (code !== null && CLOSING_CODES.has(code)) {
+          const { requestId, message } = apiErrorFacts(error);
+          this.closeWorkspace(owned, code, requestId, refusalReasons(error), message);
+        }
+        return;
+      }
+      if (owned !== this.owned) {
+        void this.revokeQuietly(session.sessionId);
+        return;
+      }
+      this.moveEpoch();
+      const { tenantSessionId, tenantName } = owned.record;
+      this.dropOwned();
+      void this.revokeQuietly(tenantSessionId);
+      await this.install(session, tenantName);
+      this.notifyChange();
+    });
+  }
+
+  /** `call("session")` for `tenantId` only: refused without a request (`WorkspaceClosedError`) unless the tab holds it. */
+  private inCompany<T>(
+    tenantId: string,
+    send: (bearer: string | null, signal: AbortSignal) => Promise<T>,
+    options: { read?: boolean } = {},
+  ): Promise<T> {
+    return this.call(
+      "session",
+      (bearer, signal) => {
+        const owned = this.owned;
+        if (owned === null || owned.record.tenantId !== tenantId || bearer !== owned.record.accessToken) {
+          return Promise.reject(new WorkspaceClosedError());
+        }
+        return send(bearer, signal);
+      },
+      options,
+    );
+  }
+
+  private membership(answer: unknown): Membership {
+    const membership = toMembership(answer);
+    if (membership === null) throw new Error("The answer held no membership.");
+    return membership;
+  }
+
+  private invitation(answer: unknown): Invitation {
+    const invitation = toInvitation(answer);
+    if (invitation === null) throw new Error("The answer held no invitation.");
+    return invitation;
+  }
+
+  private operation(answer: unknown): TenantOperation {
+    const operation = toTenantOperation(answer);
+    if (operation === null) throw new Error("The answer held no operation.");
+    return operation;
+  }
+
   /* --------------------------------------------------------------- requests */
 
   /**
@@ -706,8 +1005,8 @@ export class WebSessionClient {
         const code = refusalCode(error);
         const reasons = refusalReasons(error);
         if (code !== null && CLOSING_CODES.has(code)) {
-          this.closeWorkspace(owned, code, requestId, reasons, message);
-          throw new WorkspaceClosedError();
+          if (this.closeWorkspace(owned, code, requestId, reasons, message)) throw new WorkspaceClosedError();
+          throw error;
         }
         // A company that has never opened (TAS-501, B4): its content is
         // refused until the first payment, and that is no closure — the
@@ -720,8 +1019,8 @@ export class WebSessionClient {
           throw error;
         }
         if (read && code === "CAPABILITY_DISABLED" && reasons.length > 0) {
-          this.closeWorkspace(owned, code, requestId, reasons, message);
-          throw new WorkspaceClosedError();
+          if (this.closeWorkspace(owned, code, requestId, reasons, message)) throw new WorkspaceClosedError();
+          throw error;
         }
         throw error;
       }
@@ -940,21 +1239,29 @@ export class WebSessionClient {
     });
   }
 
-  /** Closes the tab's company with a reason the shell can word (DESIGN.md §4.35). */
+  /**
+   * Closes the tab's company with a reason the shell can word (DESIGN.md
+   * §4.35). Answers whether the request that asked is to be answered
+   * `WorkspaceClosedError` — `false` only while the tab is leaving this
+   * company (TAS-502, B6): then nothing is closed, no §4.35 is drawn, and the
+   * refusal stands as that request's answer.
+   */
   private closeWorkspace(
     owned: Owned,
     reason: string,
     requestId: string | null,
     reasons: readonly string[],
     message: string | null,
-  ): void {
-    if (owned !== this.owned) return;
+  ): boolean {
+    if (owned !== this.owned) return true;
+    if (this.leaving !== null && this.leaving === owned.record.tenantId) return false;
     this.moveEpoch();
     const { tenantId, tenantName, tenantSessionId } = owned.record;
     this.dropOwned();
     void this.revokeQuietly(tenantSessionId);
     this.notifyChange();
     this.closed.emit({ reason, tenantId, tenantName, requestId, reasons: [...reasons], message });
+    return true;
   }
 
   /* ------------------------------------------------------- the account family */

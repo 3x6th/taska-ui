@@ -1,5 +1,15 @@
-import { apiErrorFacts } from "../errors";
+import { apiErrorFacts, type FieldViolation } from "../errors";
 import type { LoginInput } from "../TaskaApi";
+import {
+  isKnownMembershipRole,
+  isKnownProjectGrantRole,
+  invitationEmailProblem,
+  sameInvitationEmail,
+  trimInvitationEmail,
+  type CreateInvitationInput,
+  type KnownMembershipRole,
+  type ListCompanyPageParams,
+} from "../tenantMembers";
 import { tenantNameProblem, type CreateTenantInput, type ListBillingPlansParams, type ListTenantsParams } from "../tenants";
 import type { B2bTransport } from "../webSession";
 import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed } from "./MockTaskaApi";
@@ -13,12 +23,13 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * revoked one, a suspended membership or a paused company is refused here the
  * way the blueprint says the gateway will refuse it.
  *
- * **Shared by every tab** through `localStorage` `taska.mockServer.v2`: the
- * companies, memberships, sessions and tokens — and since TAS-501 the FREE
- * ledger, the creations' operations and their durable receipts — read and
- * written on every operation, so a second tab — or a duplicated one — meets
- * the same server. (v1 was TAS-500's; the bump re-seeds, signing every mock
- * account out once.)
+ * **Shared by every tab** through `localStorage` `taska.mockServer.v3`: the
+ * companies, memberships, sessions and tokens — since TAS-501 the FREE
+ * ledger, the creations' operations and their durable receipts, and since
+ * TAS-502 the invitations, the seat limits, the membership generation and the
+ * member writes' durable receipts — read and written on every operation, so a
+ * second tab — or a duplicated one — meets the same server. (v1 was TAS-500's,
+ * v2 TAS-501's; each bump re-seeds, signing every mock account out once.)
  * Each company's projects and issues are this page's own, in memory, as
  * today's mock's are: they reset with a reload.
  *
@@ -27,7 +38,7 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * untouched and enforces nothing.
  */
 
-export const MOCK_SERVER_KEY = "taska.mockServer.v2";
+export const MOCK_SERVER_KEY = "taska.mockServer.v3";
 
 /**
  * `localStorage` key for the server's test hooks, as JSON — the seam
@@ -66,6 +77,24 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v2";
  * - `latePaymentConfirmed`: `[tenantId]` — an AUTO_CLOSED company opens
  *   (D216); never an OWNER_CANCELLED one.
  *
+ * A company's members and invitations (TAS-502, api-contract-guard §7):
+ *
+ * - `refuseNext` and `delayMs` take the new operation ids too
+ *   (`listTenantMembers`, `setTenantMemberRole`, `setTenantMemberState`,
+ *   `removeTenantMember`, `leaveTenant`, `listTenantInvitations`,
+ *   `createTenantInvitation`, `resendTenantInvitation`,
+ *   `revokeTenantInvitation`, `getTenantQuotas`) — `LAST_ADMIN` is reachable
+ *   only this way, because every company's owner is an admin the server
+ *   protects;
+ * - `clockOffsetMs` also expires invitations;
+ * - `memberOperationStepMs`: a removal's operation is PENDING for this long,
+ *   RUNNING as long again, then `memberOperationOutcome` (`SUCCEEDED` by
+ *   default, `FAILED` with `memberOperationFailureCode`, or `MANUAL_REVIEW`);
+ *   the default 0 removes at once;
+ * - `restrict`: `{[tenantId]: string[]}`, restrictions added to a company for
+ *   the member routes only — `PAYMENT_EXPIRED` shows the RECOVERY policy
+ *   (remove and revoke allowed, the rest `READ_ONLY`).
+ *
  * Everything time- or hook-driven is evaluated on every read of the server's
  * state: there are no timers.
  */
@@ -90,6 +119,10 @@ export interface MockTenantHooks {
   loseAnswer?: string[];
   firstPaymentConfirmed?: string[];
   latePaymentConfirmed?: string[];
+  memberOperationStepMs?: number;
+  memberOperationOutcome?: string;
+  memberOperationFailureCode?: string;
+  restrict?: Record<string, string[]>;
 }
 
 /** The fixture companies' ids (fixed, `createdAt` ascending in this order). */
@@ -201,6 +234,18 @@ export const MOCK_LONG_TENANT_NAME =
   "Consolidated Intercontinental Widget Manufacturing and Logistics Holdings of Northern Europe, Asia and the Pacific Coast";
 
 const { anna, sofia, tom, priya } = MOCK_ACCOUNT_IDS;
+/** Omar Haddad — in today's seed the LOCKED account; here also Northwind's suspended member (TAS-502). */
+const omar = "d58f0e73-4b2c-4c9d-8e15-3f6a70b2c9d4";
+
+/** The fixture invitations' ids (TAS-502). */
+export const MOCK_INVITATION_IDS = {
+  /** Northwind, pending: Kai, invited by Anna as a Member of WEB, holds Northwind's fifth seat. */
+  kai: "9c1f2e3d-4b5a-4c6d-8e7f-0a1b2c3d4e01",
+  /** Northwind, expired two days before the seed. */
+  zoe: "9c1f2e3d-4b5a-4c6d-8e7f-0a1b2c3d4e02",
+  /** Umbrella, pending, sent by Priya — revoked when Tom demotes her. */
+  lena: "9c1f2e3d-4b5a-4c6d-8e7f-0a1b2c3d4e03",
+} as const;
 
 type MembershipRole = "TENANT_ADMIN" | "MEMBER";
 type MembershipState = "ACTIVE" | "SUSPENDED" | "REMOVED";
@@ -215,13 +260,36 @@ interface StoredTenant {
   creationDeadline?: string;
   version: string;
   ownerVersion: string;
+  /** The plan's SEAT limit, a decimal string, or `null` for an unlimited one (TAS-502). Never on the wire. */
+  seatLimit: string | null;
+  /** `QuotaSnapshot.version`: moves whenever `used` or `reserved` does. Never on the wire. */
+  quotaVersion: number;
+  /** The membership generation: moves with every change to a membership, and the members cursor is bound to it. */
+  generation: number;
 }
 
 interface StoredMembership {
+  id: string;
   tenantId: string;
   userId: string;
   role: MembershipRole;
   state: MembershipState;
+  version: number;
+  /** Not on the wire (`Membership` has no `joinedAt`); the list's order, `(joinedAt, userId)` as develop has it. */
+  joinedAt: string;
+}
+
+/** An invitation (TAS-502). `issuedAt` orders the list and is not on the wire. */
+interface StoredInvitation {
+  id: string;
+  tenantId: string;
+  email: string;
+  role: MembershipRole;
+  state: string;
+  issuedAt: string;
+  expiresAt: string;
+  createdBy: string;
+  projectGrants: Array<{ projectId: string; role: string }>;
   version: number;
 }
 
@@ -274,6 +342,8 @@ interface StoredOperation {
   state: string;
   updatedAt: string;
   failureCode?: string;
+  /** A removal's subject (TAS-502) — never on the wire. */
+  subjectUserId?: string;
 }
 
 /**
@@ -289,7 +359,7 @@ interface StoredCreation {
 }
 
 interface ServerState {
-  v: 2;
+  v: 3;
   tenants: StoredTenant[];
   memberships: StoredMembership[];
   sessions: StoredSession[];
@@ -302,6 +372,21 @@ interface ServerState {
   creations: Record<string, StoredCreation>;
   /** Cancel receipts, `{actor}:{key}` — the answer a replay of the same key gets. */
   cancels: Record<string, { hash: string; answer: unknown }>;
+  /** TAS-502. */
+  invitations: StoredInvitation[];
+  /**
+   * The member writes' receipts — **durable**, `{actor}:{operation}:{key}`:
+   * the same key with the same request (body and `If-Match`) answers what it
+   * answered, with another is 409 `IDEMPOTENCY_CONFLICT`. A removal's receipt
+   * names its operation, whose state is read as it is now.
+   */
+  memberReceipts: Record<string, { hash: string; answer: unknown; operationId?: string }>;
+  /**
+   * People whose project rows and assignments a suspension, removal or leave
+   * cleared (contracts §8), so that a company store this page builds from the
+   * seed — after a reload, or in another tab — leaves them out too.
+   */
+  cleared: Array<{ tenantId: string; userId: string; seq: number }>;
 }
 
 /**
@@ -322,15 +407,25 @@ export class MockProblemError extends Error {
     readonly reasons: readonly string[] = [],
     /** The wait a 429 names — `Retry-After` on the wire (api-contract-guard N1). */
     readonly retryAfterSeconds: number | null = null,
+    violations: readonly FieldViolation[] = [],
   ) {
     super(title);
     this.name = "MockProblemError";
     this.requestId = uuid();
+    // Only on a refusal that names fields (TAS-502): a Problem without
+    // `violations` carries none, as TAS-501's refusals are pinned to.
+    if (violations.length > 0) this.violations = violations;
   }
+
+  /** `Problem.violations`, the fields a `VALIDATION_FAILED` names (TAS-502); absent when it names none. */
+  readonly violations?: readonly FieldViolation[];
 }
 
 const problem = (status: number, code: string, title: string, reasons: readonly string[] = [], retryAfterSeconds: number | null = null) =>
   new MockProblemError(status, code, title, reasons, retryAfterSeconds);
+
+const invalid = (title: string, violations: readonly FieldViolation[]) =>
+  new MockProblemError(400, "VALIDATION_FAILED", title, [], null, violations);
 
 const uuid = () =>
   globalThis.crypto?.randomUUID?.() ??
@@ -349,6 +444,21 @@ const DEFAULT_ACCESS_TTL_S = 900;
 const CREATION_WINDOW_MS = 30 * DAY;
 const DEFAULT_PROVISIONING_STEP_MS = 1200;
 const TERMINAL_OPERATION_STATES: ReadonlySet<string> = new Set(["SUCCEEDED", "FAILED", "MANUAL_REVIEW"]);
+/** An invitation's lifetime (contracts §8: 7 days by default, configurable 1–30). */
+const INVITATION_TTL_MS = 7 * DAY;
+/** The operation type of a removal (TAS-502) — the screens never key on it. */
+const REMOVE_OPERATION_TYPE = "removeTenantMember";
+const LEAVE_OPERATION_TYPE = "leaveTenant";
+/** The restrictions the RECOVERY policy allows remove and revoke under (access-matrix.json; api-contract-guard §2). */
+const RECOVERY_ALLOWED: ReadonlySet<string> = new Set(["PAYMENT_EXPIRED", "OVER_QUOTA"]);
+/** The SEAT limit of a plan of this mock's catalogue, a decimal string — `null` for unlimited. */
+const seatLimitOf = (planId: string): string | null => {
+  const seat = MOCK_PLANS.find((plan) => plan.id === planId)?.limits.find((limit) => limit.kind === "SEAT");
+  return seat && !seat.unlimited && seat.limit ? seat.limit : null;
+};
+
+/** Which restriction rule a member route answers to (access-matrix.json `membership.*`, `invitation.*`). */
+type MemberPolicy = "DIRECTORY" | "SEATS" | "ADMIN_READ" | "NORMAL" | "RECOVERY" | "LEAVE";
 const nextVersion = (version: string) => (/^[0-9]+$/.test(version) ? (BigInt(version) + 1n).toString() : "1");
 /**
  * Whether a paused or blocked company's projects can still be read — the
@@ -382,8 +492,16 @@ export type MockRouteKind = "tenant-read" | "tenant-write" | "tenant-self" | "ac
  * The FREE ledger: Anna used hers on Northwind, Priya on Globex, and Sofia on
  * Vandelay — deleted and unlisted, because deleting a company does not give
  * the allowance back; Nina and Tom have theirs.
+ *
+ * TAS-502 adds the members' states and the invitations (api-contract-guard
+ * §7): Northwind (FREE, 5 seats) is full — Anna, Sofia, Tom and Omar
+ * (suspended, so still holding his seat) use four, Kai's pending invitation
+ * holds the fifth, and Zoe's has expired; Umbrella has Priya as a second
+ * admin, with Lena's invitation of hers pending; Globex is Anna's member view;
+ * Initech, paused, keeps its directory readable and its Leave open; Hooli,
+ * blocked, refuses Priya's admin writes `READ_ONLY`.
  */
-function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships" | "freeLedger"> {
+function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships" | "freeLedger" | "invitations"> {
   const at = (day: number) => `2026-05-${String(day).padStart(2, "0")}T09:00:00Z`;
   const iso = (ms: number) => new Date(ms).toISOString();
   const tenant = (
@@ -393,19 +511,53 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
     day: number,
     lifecycle = "ACTIVE",
     restrictions: string[] = [],
-  ): StoredTenant => ({ id, name, ownerId, lifecycle, restrictions, createdAt: at(day), version: "3", ownerVersion: "1" });
-  const member = (tenantId: string, userId: string, role: MembershipRole, state: MembershipState = "ACTIVE") => ({
+    seatLimit: string | null = seatLimitOf(MOCK_PLAN_IDS.team),
+  ): StoredTenant => ({
+    id,
+    name,
+    ownerId,
+    lifecycle,
+    restrictions,
+    createdAt: at(day),
+    version: "3",
+    ownerVersion: "1",
+    seatLimit,
+    quotaVersion: 1,
+    generation: 1,
+  });
+  const free = seatLimitOf(MOCK_PLAN_IDS.free);
+  const ids = MOCK_TENANT_IDS;
+  const joined = new Map<string, string>([
+    [ids.northwind, at(1)],
+    [ids.globex, at(2)],
+    [ids.initech, at(3)],
+    [ids.umbrella, at(4)],
+    [ids.hooli, at(5)],
+    [ids.massive, at(6)],
+    [ids.longName, at(7)],
+    [ids.stark, iso(seedAt - 20 * DAY)],
+    [ids.wayne, iso(seedAt - 5 * DAY)],
+    [ids.vandelay, at(10)],
+  ]);
+  const member = (
+    tenantId: string,
+    userId: string,
+    role: MembershipRole,
+    state: MembershipState = "ACTIVE",
+    version = 1,
+  ): StoredMembership => ({
+    id: uuid(),
     tenantId,
     userId,
     role,
     state,
-    version: 1,
+    version,
+    joinedAt: joined.get(tenantId) ?? at(1),
   });
-  const ids = MOCK_TENANT_IDS;
   return {
     tenants: [
-      tenant(ids.northwind, "Northwind", anna, 1),
-      tenant(ids.globex, "Globex", priya, 2),
+      tenant(ids.northwind, "Northwind", anna, 1, "ACTIVE", [], free),
+      tenant(ids.globex, "Globex", priya, 2, "ACTIVE", [], free),
       tenant(ids.initech, "Initech", sofia, 3, "ACTIVE", ["OWNER_PAUSE"]),
       tenant(ids.umbrella, "Umbrella", tom, 4),
       tenant(ids.hooli, "Hooli", priya, 5, "ACTIVE", ["PLATFORM_BLOCK"]),
@@ -426,17 +578,19 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
         creationDeadline: iso(seedAt - 5 * DAY + CREATION_WINDOW_MS),
         version: "2",
       },
-      tenant(ids.vandelay, "Vandelay Industries", sofia, 10, "DELETED"),
+      tenant(ids.vandelay, "Vandelay Industries", sofia, 10, "DELETED", [], free),
     ],
     memberships: [
       member(ids.northwind, anna, "TENANT_ADMIN"),
       member(ids.northwind, sofia, "MEMBER"),
       member(ids.northwind, tom, "MEMBER"),
+      member(ids.northwind, omar, "MEMBER", "SUSPENDED", 2),
       member(ids.globex, priya, "TENANT_ADMIN"),
       member(ids.globex, anna, "MEMBER"),
       member(ids.initech, sofia, "TENANT_ADMIN"),
       member(ids.initech, anna, "MEMBER"),
       member(ids.umbrella, tom, "TENANT_ADMIN"),
+      member(ids.umbrella, priya, "TENANT_ADMIN"),
       member(ids.umbrella, anna, "MEMBER", "SUSPENDED"),
       member(ids.hooli, priya, "TENANT_ADMIN"),
       member(ids.hooli, sofia, "MEMBER"),
@@ -449,6 +603,44 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
       member(ids.vandelay, sofia, "TENANT_ADMIN", "REMOVED"),
     ],
     freeLedger: { [anna]: ids.northwind, [priya]: ids.globex, [sofia]: ids.vandelay },
+    invitations: [
+      {
+        id: MOCK_INVITATION_IDS.kai,
+        tenantId: ids.northwind,
+        email: "kai@example.com",
+        role: "MEMBER",
+        state: "PENDING",
+        issuedAt: iso(seedAt - 2 * DAY),
+        expiresAt: iso(seedAt + 5 * DAY),
+        createdBy: anna,
+        projectGrants: [{ projectId: MOCK_PROJECT_IDS.web, role: "MEMBER" }],
+        version: 1,
+      },
+      {
+        id: MOCK_INVITATION_IDS.zoe,
+        tenantId: ids.northwind,
+        email: "zoe@example.com",
+        role: "TENANT_ADMIN",
+        state: "EXPIRED",
+        issuedAt: iso(seedAt - 9 * DAY),
+        expiresAt: iso(seedAt - 2 * DAY),
+        createdBy: anna,
+        projectGrants: [],
+        version: 2,
+      },
+      {
+        id: MOCK_INVITATION_IDS.lena,
+        tenantId: ids.umbrella,
+        email: "lena@example.com",
+        role: "MEMBER",
+        state: "PENDING",
+        issuedAt: iso(seedAt - 1 * DAY),
+        expiresAt: iso(seedAt + 6 * DAY),
+        createdBy: priya,
+        projectGrants: [{ projectId: MOCK_TENANT_PROJECT_IDS.umbrellaResearch, role: "VIEWER" }],
+        version: 1,
+      },
+    ],
   };
 }
 
@@ -559,7 +751,7 @@ const TENANT_SEEDS: Readonly<Record<string, MockTenantSeed>> = {
         key: "RND",
         name: "Research",
         createdAt: "2026-06-09T09:03:00Z",
-        members: [[tom, "ADMIN"]],
+        members: [[tom, "ADMIN"], [priya, "ADMIN"]],
         issues: [],
       },
     ],
@@ -634,6 +826,8 @@ export class MockTenantServer {
   private readonly stores = new Map<string, MockTaskaStore>();
   /** Used only when `storage` refuses (a locked-down profile): the state then lives as long as the page. */
   private memory: ServerState | null = null;
+  /** The `cleared` entries each of this page's company stores has applied, by `seq` (TAS-502). */
+  private readonly appliedClears = new Map<string, Set<number>>();
 
   constructor(options: MockTenantServerOptions) {
     this.storage = options.storage;
@@ -658,6 +852,19 @@ export class MockTenantServer {
       getTenant: (bearer, tenantId) => this.getTenant(bearer, tenantId),
       getTenantOperation: (bearer, tenantId, operationId) => this.getTenantOperation(bearer, tenantId, operationId),
       cancelTenantCreation: (bearer, tenantId, version, key) => this.cancelTenantCreation(bearer, tenantId, version, key),
+      listTenantMembers: (bearer, tenantId, params) => this.listTenantMembers(bearer, tenantId, params),
+      setTenantMemberRole: (bearer, tenantId, userId, role, version, key) =>
+        this.setTenantMemberRole(bearer, tenantId, userId, role, version, key),
+      setTenantMemberState: (bearer, tenantId, userId, memberState, version, key) =>
+        this.setTenantMemberState(bearer, tenantId, userId, memberState, version, key),
+      removeTenantMember: (bearer, tenantId, userId, version, key) => this.removeTenantMember(bearer, tenantId, userId, version, key),
+      leaveTenant: (bearer, tenantId, key) => this.leaveTenant(bearer, tenantId, key),
+      listTenantInvitations: (bearer, tenantId, params) => this.listTenantInvitations(bearer, tenantId, params),
+      createTenantInvitation: (bearer, tenantId, input, key) => this.createTenantInvitation(bearer, tenantId, input, key),
+      resendTenantInvitation: (bearer, tenantId, invitationId, key) => this.resendTenantInvitation(bearer, tenantId, invitationId, key),
+      revokeTenantInvitation: (bearer, tenantId, invitationId, version, key) =>
+        this.revokeTenantInvitation(bearer, tenantId, invitationId, version, key),
+      getTenantQuotas: (bearer, tenantId) => this.getTenantQuotas(bearer, tenantId),
     };
   }
 
@@ -668,7 +875,7 @@ export class MockTenantServer {
    */
   async serve<T>(bearer: string | null, kind: MockRouteKind, operation: string, run: (store: MockTaskaStore) => Promise<T>): Promise<T> {
     await this.delay(operation, 0);
-    const { grant, members } = this.read((state) => {
+    const { grant, members, cleared } = this.read((state) => {
       const granted = this.authorize(state, bearer, kind);
       const tenantId = granted.tenantId;
       // The company's directory is its active members (TENANT_DIRECTORY, backend TAS-321).
@@ -680,9 +887,10 @@ export class MockTenantServer {
                 .filter((item) => item.tenantId === tenantId && this.membershipState(state, tenantId, item.userId) === "ACTIVE")
                 .map((item) => item.userId),
             );
-      return { grant: granted, members: active };
+      return { grant: granted, members: active, cleared: tenantId === null ? [] : state.cleared.filter((item) => item.tenantId === tenantId) };
     });
     const store = kind === "account" || grant.tenantId === null ? this.accountStore : this.tenantStore(grant.tenantId);
+    if (grant.tenantId !== null && store !== this.accountStore) this.applyClears(grant.tenantId, cleared);
     if (!store.restoreSession(grant.userId)) throw problem(401, "AUTHENTICATION_REQUIRED", "Invalid session");
     if (store !== this.accountStore) store.scopeDirectory(members);
     return run(store);
@@ -780,7 +988,7 @@ export class MockTenantServer {
       const listed = state.tenants
         .filter((tenant) => this.membershipState(state, tenant.id, grant.userId) === "ACTIVE")
         .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-      const items = listed.slice(offset, offset + limit).map((tenant) => ({ ...tenant, restrictions: [...tenant.restrictions] }));
+      const items = listed.slice(offset, offset + limit).map((tenant) => this.wireTenant(tenant));
       const next = offset + limit;
       return next < listed.length ? { items, nextCursor: this.writeCursor(next, grant.userId) } : { items };
     });
@@ -913,6 +1121,9 @@ export class MockTenantServer {
         ...(free ? {} : { creationDeadline: new Date(createdMs + CREATION_WINDOW_MS).toISOString() }),
         version: "1",
         ownerVersion: "1",
+        seatLimit: seatLimitOf(plan.id),
+        quotaVersion: 1,
+        generation: 1,
       };
       const operation: StoredOperation = {
         id: uuid(),
@@ -924,7 +1135,15 @@ export class MockTenantServer {
         updatedAt: createdAt,
       };
       state.tenants.push(tenant);
-      state.memberships.push({ tenantId: tenant.id, userId: grant.userId, role: "TENANT_ADMIN", state: "ACTIVE", version: 1 });
+      state.memberships.push({
+        id: uuid(),
+        tenantId: tenant.id,
+        userId: grant.userId,
+        role: "TENANT_ADMIN",
+        state: "ACTIVE",
+        version: 1,
+        joinedAt: createdAt,
+      });
       state.operations.push(operation);
       if (free) state.freeLedger[grant.userId] = tenant.id;
       state.creations[receiptKey] = { hash, tenantId: tenant.id, operationId: operation.id };
@@ -985,6 +1204,582 @@ export class MockTenantServer {
       state.cancels[receiptKey] = { hash, answer };
       return answer;
     });
+  }
+
+  /* ------------------------------ members, invitations and seats (TAS-502) */
+
+  /*
+   * api-contract-guard §7, with the orchestrator's rulings: PR #287's order of
+   * checks — (1) the company ACTIVE, (2) the caller ACTIVE, (3) the caller a
+   * TENANT_ADMIN, (4) the route's restriction policy, (5) the key's receipt,
+   * (6) the target, (7) the owner, (8) the version, (9) the last admin, (10)
+   * apply — **except where develop deviates from the blueprint**: a change to
+   * a target that is not ACTIVE is 409 `INVALID_STATE` (never the caller's
+   * 403 `MEMBERSHIP_INACTIVE`, ask A17), and a change to the caller's own
+   * membership never refuses the caller's next request (no stale-generation
+   * refusal, ask A18 — the role is checked online, contracts §2).
+   */
+
+  /**
+   * `GET /tenants/{t}/members`: ACTIVE and SUSPENDED, `(joinedAt, userId)`,
+   * `limit` 1–100 (default 50), the cursor bound to the reader, the company
+   * and the membership generation — a change meanwhile makes it a 400, as
+   * develop does. The profile fields come from the account store (the
+   * blueprint's to-be, TAS-321); `avatarPath` is never sent (no route loads
+   * it, B7).
+   */
+  private async listTenantMembers(bearer: string | null, tenantId: string, params: ListCompanyPageParams): Promise<unknown> {
+    await this.delay("listTenantMembers");
+    return this.read((state) => {
+      const { session, tenant } = this.authorizeMembers(state, bearer, tenantId, "listTenantMembers", "DIRECTORY");
+      const limit = this.pageLimit(params);
+      const bound = `members:${tenantId}:${tenant.generation}`;
+      const offset = params.cursor === undefined ? 0 : this.readCursor(params.cursor, `${session.userId}:${bound}`);
+      const listed = state.memberships
+        .filter((item) => item.tenantId === tenantId && (item.state === "ACTIVE" || item.state === "SUSPENDED"))
+        .sort((a, b) => (a.joinedAt < b.joinedAt ? -1 : a.joinedAt > b.joinedAt ? 1 : a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
+      const items = listed.slice(offset, offset + limit).map((item) => this.wireMembership(state, tenant, item));
+      const next = offset + limit;
+      return next < listed.length ? { items, nextCursor: this.writeCursor(next, `${session.userId}:${bound}`) } : { items };
+    });
+  }
+
+  /**
+   * `PATCH …/members/{userId}/role`. A demotion revokes the person's pending
+   * invitations (L03, B03) and their company sessions (api-contract-guard §7)
+   * — a session is re-selected by the client, never a refusal that closes
+   * (ruling 2); the same role is a no-op 200 at the same version.
+   */
+  private async setTenantMemberRole(
+    bearer: string | null,
+    tenantId: string,
+    userId: string,
+    role: KnownMembershipRole,
+    version: string,
+    key: string,
+  ): Promise<unknown> {
+    await this.delay("setTenantMemberRole");
+    return this.write((state) => {
+      const { session, tenant } = this.authorizeMembers(state, bearer, tenantId, "setTenantMemberRole", "NORMAL");
+      if (!isKnownMembershipRole(role)) {
+        throw invalid("Invalid request", [{ field: "role", code: "INVALID", message: "role must be MEMBER or TENANT_ADMIN" }]);
+      }
+      const receipt = this.memberReceipt(state, session.userId, "setTenantMemberRole", key, { userId, role, version });
+      if (receipt.replay !== undefined) return receipt.replay;
+      const target = this.targetMembership(state, tenantId, userId);
+      if (this.membershipState(state, tenantId, userId) !== "ACTIVE") {
+        throw problem(409, "INVALID_STATE", "The membership is not active");
+      }
+      if (tenant.ownerId === userId) throw problem(409, "OWNER_MEMBERSHIP_PROTECTED", "The owner's membership is protected");
+      this.checkVersion(version, target.version);
+      if (target.role === role) return receipt.keep(this.wireMembership(state, tenant, target));
+      if (target.role === "TENANT_ADMIN" && this.otherActiveAdmins(state, tenantId, userId) === 0) {
+        throw problem(409, "LAST_ADMIN", "The last active admin cannot be demoted");
+      }
+      target.role = role;
+      target.version += 1;
+      tenant.generation += 1;
+      if (role === "MEMBER") {
+        this.revokeInvitationsBy(state, tenant, userId);
+        this.revokeSessionsOf(state, tenant, userId);
+      }
+      return receipt.keep(this.wireMembership(state, tenant, target));
+    });
+  }
+
+  /**
+   * `PATCH …/members/{userId}/state`. Suspending keeps the seat and revokes
+   * the person's company sessions, pending invitations, project rows and
+   * assignments (contracts §8); reactivating restores none of them and
+   * answers MEMBER, whatever the role was (L03).
+   */
+  private async setTenantMemberState(
+    bearer: string | null,
+    tenantId: string,
+    userId: string,
+    memberState: "ACTIVE" | "SUSPENDED",
+    version: string,
+    key: string,
+  ): Promise<unknown> {
+    await this.delay("setTenantMemberState");
+    return this.write((state) => {
+      const { session, tenant } = this.authorizeMembers(state, bearer, tenantId, "setTenantMemberState", "NORMAL");
+      if (memberState !== "ACTIVE" && memberState !== "SUSPENDED") {
+        throw invalid("Invalid request", [{ field: "state", code: "INVALID", message: "state must be ACTIVE or SUSPENDED" }]);
+      }
+      const receipt = this.memberReceipt(state, session.userId, "setTenantMemberState", key, { userId, state: memberState, version });
+      if (receipt.replay !== undefined) return receipt.replay;
+      const target = this.targetMembership(state, tenantId, userId);
+      const now = this.membershipState(state, tenantId, userId);
+      if (memberState === "SUSPENDED" && now !== "ACTIVE") throw problem(409, "INVALID_STATE", "The membership is not active");
+      if (memberState === "ACTIVE" && now !== "SUSPENDED") throw problem(409, "INVALID_STATE", "The membership is not suspended");
+      if (tenant.ownerId === userId) throw problem(409, "OWNER_MEMBERSHIP_PROTECTED", "The owner's membership is protected");
+      this.checkVersion(version, target.version);
+      if (memberState === "SUSPENDED") {
+        if (target.role === "TENANT_ADMIN" && this.otherActiveAdmins(state, tenantId, userId) === 0) {
+          throw problem(409, "LAST_ADMIN", "The last active admin cannot be suspended");
+        }
+        target.state = "SUSPENDED";
+        this.cutOff(state, tenant, userId);
+      } else {
+        target.state = "ACTIVE";
+        target.role = "MEMBER";
+      }
+      target.version += 1;
+      tenant.generation += 1;
+      return receipt.keep(this.wireMembership(state, tenant, target));
+    });
+  }
+
+  /**
+   * `DELETE …/members/{userId}` — 202 with an operation of its own; the
+   * removal is applied, and the seat released, when it succeeds
+   * (`memberOperationStepMs`). A removal already under way is 409.
+   */
+  private async removeTenantMember(bearer: string | null, tenantId: string, userId: string, version: string, key: string): Promise<unknown> {
+    await this.delay("removeTenantMember");
+    return this.write((state) => {
+      const { session, tenant } = this.authorizeMembers(state, bearer, tenantId, "removeTenantMember", "RECOVERY");
+      const receiptKey = `${session.userId}:removeTenantMember:${key}`;
+      if (!CANONICAL_KEY.test(key)) throw problem(400, "VALIDATION_FAILED", "Idempotency-Key must be a canonical UUID");
+      const hash = JSON.stringify({ userId, version });
+      const stored = state.memberReceipts[receiptKey];
+      if (stored) {
+        if (stored.hash !== hash) throw problem(409, "IDEMPOTENCY_CONFLICT", "The key was used for another request");
+        const operation = state.operations.find((item) => item.id === stored.operationId);
+        return operation ? this.wireOperation(operation, false) : stored.answer;
+      }
+      const target = this.targetMembership(state, tenantId, userId);
+      if (tenant.ownerId === userId) throw problem(409, "OWNER_MEMBERSHIP_PROTECTED", "The owner's membership is protected");
+      this.checkVersion(version, target.version);
+      if (state.operations.some((item) => item.subjectUserId === userId && item.tenantId === tenantId && !TERMINAL_OPERATION_STATES.has(item.state))) {
+        throw problem(409, "INVALID_STATE", "The member is already being removed");
+      }
+      if (
+        target.role === "TENANT_ADMIN" &&
+        this.membershipState(state, tenantId, userId) === "ACTIVE" &&
+        this.otherActiveAdmins(state, tenantId, userId) === 0
+      ) {
+        throw problem(409, "LAST_ADMIN", "The last active admin cannot be removed");
+      }
+      const createdAt = new Date(this.lifecycleNow()).toISOString();
+      const operation: StoredOperation = {
+        id: uuid(),
+        tenantId,
+        actorId: session.userId,
+        type: REMOVE_OPERATION_TYPE,
+        createdAt,
+        state: "PENDING",
+        updatedAt: createdAt,
+        subjectUserId: userId,
+      };
+      state.operations.push(operation);
+      // A zero step finishes the removal in the same answer.
+      this.evaluate(state);
+      const answer = this.wireOperation(operation, false);
+      state.memberReceipts[receiptKey] = { hash, answer, operationId: operation.id };
+      return answer;
+    });
+  }
+
+  /**
+   * `POST …/leave` (TENANT_SELF): never refused by a restriction; the owner
+   * and the last active admin are; applied at once, as a removal of oneself —
+   * 202 with a SUCCEEDED operation. The transport always sends
+   * `{confirmed: true}`, so the 422 `CONFIRMATION_REQUIRED` is unreachable here.
+   */
+  private async leaveTenant(bearer: string | null, tenantId: string, key: string): Promise<unknown> {
+    await this.delay("leaveTenant");
+    return this.write((state) => {
+      const { session, tenant, actor } = this.authorizeMembers(state, bearer, tenantId, "leaveTenant", "LEAVE");
+      const receipt = this.memberReceipt(state, session.userId, "leaveTenant", key, { confirmed: true });
+      if (receipt.replay !== undefined) return receipt.replay;
+      if (tenant.ownerId === session.userId) throw problem(409, "OWNER_MEMBERSHIP_PROTECTED", "The owner cannot leave the company");
+      if (actor.role === "TENANT_ADMIN" && this.otherActiveAdmins(state, tenantId, session.userId) === 0) {
+        throw problem(409, "LAST_ADMIN", "The last active admin cannot leave");
+      }
+      this.removeMembership(state, tenant, actor);
+      const at = new Date(this.lifecycleNow()).toISOString();
+      const operation: StoredOperation = {
+        id: uuid(),
+        tenantId,
+        actorId: session.userId,
+        type: LEAVE_OPERATION_TYPE,
+        createdAt: at,
+        state: "SUCCEEDED",
+        updatedAt: at,
+      };
+      state.operations.push(operation);
+      return receipt.keep(this.wireOperation(operation, false));
+    });
+  }
+
+  /** `GET …/invitations` (a company admin's): every state, `(issuedAt, id)`; the screen keeps PENDING and EXPIRED. */
+  private async listTenantInvitations(bearer: string | null, tenantId: string, params: ListCompanyPageParams): Promise<unknown> {
+    await this.delay("listTenantInvitations");
+    return this.read((state) => {
+      const { session } = this.authorizeMembers(state, bearer, tenantId, "listTenantInvitations", "ADMIN_READ");
+      const limit = this.pageLimit(params);
+      const bound = `${session.userId}:invitations:${tenantId}`;
+      const offset = params.cursor === undefined ? 0 : this.readCursor(params.cursor, bound);
+      const listed = state.invitations
+        .filter((item) => item.tenantId === tenantId)
+        .sort((a, b) => (a.issuedAt < b.issuedAt ? -1 : a.issuedAt > b.issuedAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const items = listed.slice(offset, offset + limit).map((item) => this.wireInvitation(item));
+      const next = offset + limit;
+      return next < listed.length ? { items, nextCursor: this.writeCursor(next, bound) } : { items };
+    });
+  }
+
+  /**
+   * `POST …/invitations`. The mock's answers where the blueprint is silent
+   * (ask A23): an address that fails the shared rule, or a grant naming a
+   * project that is not this company's, is 400 with a violation; an address
+   * with a pending invitation, or of a current member, is 409 `INVALID_STATE`.
+   * Then the seat: `used + reserved + 1 ≤ limit`, else 422 `QUOTA_EXCEEDED`.
+   * Seven days on the lifecycle clock.
+   */
+  private async createTenantInvitation(
+    bearer: string | null,
+    tenantId: string,
+    input: CreateInvitationInput,
+    key: string,
+  ): Promise<unknown> {
+    await this.delay("createTenantInvitation");
+    return this.write((state) => {
+      const { session, tenant } = this.authorizeMembers(state, bearer, tenantId, "createTenantInvitation", "NORMAL");
+      const receipt = this.memberReceipt(state, session.userId, "createTenantInvitation", key, {
+        email: input.email,
+        role: input.role,
+        projectGrants: input.projectGrants,
+      });
+      if (receipt.replay !== undefined) return receipt.replay;
+      const violations: FieldViolation[] = [];
+      if (typeof input.email !== "string" || input.email !== trimInvitationEmail(input.email) || invitationEmailProblem(input.email) !== null) {
+        violations.push({ field: "email", code: "INVALID", message: "email must be an email address of at most 254 characters" });
+      }
+      if (!isKnownMembershipRole(input.role)) violations.push({ field: "role", code: "INVALID", message: "role must be MEMBER or TENANT_ADMIN" });
+      const grants = Array.isArray(input.projectGrants) ? input.projectGrants : [];
+      if (grants.length > 100) violations.push({ field: "projectGrants", code: "TOO_MANY", message: "at most 100 grants" });
+      const store = this.tenantStore(tenantId);
+      this.applyClears(tenantId, state.cleared.filter((item) => item.tenantId === tenantId));
+      grants.forEach((grant, index) => {
+        if (!store.hasOpenProject(grant.projectId)) {
+          violations.push({ field: `projectGrants[${index}].projectId`, code: "NOT_FOUND", message: "no such project in this tenant" });
+        }
+        if (!isKnownProjectGrantRole(grant.role)) {
+          violations.push({ field: `projectGrants[${index}].role`, code: "INVALID", message: "role must be ADMIN, MEMBER or VIEWER" });
+        }
+      });
+      if (violations.length > 0) throw invalid("Invalid request", violations);
+      if (state.invitations.some((item) => item.tenantId === tenantId && item.state === "PENDING" && sameInvitationEmail(item.email, input.email))) {
+        throw problem(409, "INVALID_STATE", "An invitation to this email is already pending");
+      }
+      const isMember = state.memberships.some(
+        (item) =>
+          item.tenantId === tenantId &&
+          (item.state === "ACTIVE" || item.state === "SUSPENDED") &&
+          sameInvitationEmail(this.accountStore.accountProfile(item.userId)?.email ?? null, input.email),
+      );
+      if (isMember) throw problem(409, "INVALID_STATE", "This email belongs to a member of the tenant");
+      const seats = this.seatCounts(state, tenant);
+      if (tenant.seatLimit !== null && seats.used + seats.reserved + 1n > BigInt(tenant.seatLimit)) {
+        throw problem(422, "QUOTA_EXCEEDED", "No seat is free");
+      }
+      const issued = this.lifecycleNow();
+      const invitation: StoredInvitation = {
+        id: uuid(),
+        tenantId,
+        email: input.email,
+        role: input.role,
+        state: "PENDING",
+        issuedAt: new Date(issued).toISOString(),
+        expiresAt: new Date(issued + INVITATION_TTL_MS).toISOString(),
+        createdBy: session.userId,
+        projectGrants: grants.map((grant) => ({ projectId: grant.projectId, role: grant.role })),
+        version: 1,
+      };
+      state.invitations.push(invitation);
+      tenant.quotaVersion += 1;
+      return receipt.keep(this.wireInvitation(invitation));
+    });
+  }
+
+  /** `POST …/invitations/{id}/resend`: PENDING only (409), an expired one 422; a new link, the same `expiresAt`, no seat. */
+  private async resendTenantInvitation(bearer: string | null, tenantId: string, invitationId: string, key: string): Promise<unknown> {
+    await this.delay("resendTenantInvitation");
+    return this.write((state) => {
+      const { session } = this.authorizeMembers(state, bearer, tenantId, "resendTenantInvitation", "NORMAL");
+      const receipt = this.memberReceipt(state, session.userId, "resendTenantInvitation", key, { invitationId });
+      if (receipt.replay !== undefined) return receipt.replay;
+      const invitation = this.targetInvitation(state, tenantId, invitationId);
+      if (invitation.state === "EXPIRED") throw problem(422, "INVITATION_EXPIRED", "The invitation has expired");
+      if (invitation.state !== "PENDING") throw problem(409, "INVALID_STATE", "The invitation is no longer pending");
+      invitation.version += 1;
+      return receipt.keep(this.wireInvitation(invitation));
+    });
+  }
+
+  /** `DELETE …/invitations/{id}` with `If-Match`: PENDING only (409), then the version; its seat is released. 204. */
+  private async revokeTenantInvitation(
+    bearer: string | null,
+    tenantId: string,
+    invitationId: string,
+    version: string,
+    key: string,
+  ): Promise<void> {
+    await this.delay("revokeTenantInvitation");
+    this.write((state) => {
+      const { session, tenant } = this.authorizeMembers(state, bearer, tenantId, "revokeTenantInvitation", "RECOVERY");
+      const receipt = this.memberReceipt(state, session.userId, "revokeTenantInvitation", key, { invitationId, version });
+      if (receipt.replay !== undefined) return;
+      const invitation = this.targetInvitation(state, tenantId, invitationId);
+      if (invitation.state !== "PENDING") throw problem(409, "INVALID_STATE", "The invitation is no longer pending");
+      this.checkVersion(version, invitation.version);
+      invitation.state = "REVOKED";
+      invitation.version += 1;
+      tenant.quotaVersion += 1;
+      receipt.keep(null);
+    });
+  }
+
+  /** `GET …/quotas`: the SEAT row only (the mock has no PROJECT or STORAGE rows, TAS-512); never refused by a restriction. */
+  private async getTenantQuotas(bearer: string | null, tenantId: string): Promise<unknown> {
+    await this.delay("getTenantQuotas");
+    return this.read((state) => {
+      const { tenant } = this.authorizeMembers(state, bearer, tenantId, "getTenantQuotas", "SEATS");
+      const seats = this.seatCounts(state, tenant);
+      return {
+        tenantId,
+        version: String(tenant.quotaVersion),
+        quotas: [
+          {
+            kind: "SEAT",
+            used: seats.used.toString(),
+            reserved: seats.reserved.toString(),
+            ...(tenant.seatLimit === null ? { unlimited: true } : { limit: tenant.seatLimit, unlimited: false }),
+          },
+        ],
+        asOf: new Date(this.now()).toISOString(),
+      };
+    });
+  }
+
+  /**
+   * The checks in front of every member route, in PR #287's order up to the
+   * receipt: a company session of exactly this company (WEB_GLOBAL is 400
+   * `TENANT_REQUIRED`, another company's 403 `TENANT_MISMATCH`), the company
+   * there (404), a `refuseNext` hook, (1) the lifecycle, (2) the caller's
+   * membership ACTIVE, (3) a company admin where the route needs one, (4) the
+   * route's restriction policy:
+   *
+   * - `DIRECTORY` (the members list, CONTENT_READ): refused 403
+   *   `CAPABILITY_DISABLED` before the first payment, and under a pause or a
+   *   block only when the global read flag is off;
+   * - `SEATS` and `LEAVE`: never;
+   * - `ADMIN_READ` (the invitations list): none stated, so never;
+   * - `NORMAL` (role, state, invite, resend): `READ_ONLY` under any restriction;
+   * - `RECOVERY` (remove, revoke): allowed under `PAYMENT_EXPIRED` and
+   *   `OVER_QUOTA` only, otherwise `READ_ONLY`.
+   */
+  private authorizeMembers(
+    state: ServerState,
+    bearer: string | null,
+    tenantId: string,
+    operation: string,
+    policy: MemberPolicy,
+  ): { session: StoredSession; tenant: StoredTenant; actor: StoredMembership } {
+    if (!bearer) throw problem(401, "AUTHENTICATION_REQUIRED", "Authentication required");
+    const session = this.sessionOf(state, bearer);
+    if (session.kind === "WEB_GLOBAL") throw problem(400, "TENANT_REQUIRED", "A company session is required");
+    const refusal = this.takeRefusal(operation);
+    if (refusal) throw refusal;
+    if (!UUID_PATTERN.test(tenantId)) throw problem(400, "VALIDATION_FAILED", "tenantId must be a UUID");
+    if (session.tenantId !== tenantId) throw problem(403, "TENANT_MISMATCH", "The session is for another tenant");
+    const tenant = state.tenants.find((item) => item.id === tenantId);
+    if (!tenant || tenant.lifecycle === "DELETED") throw problem(404, "TENANT_NOT_FOUND", "Tenant not found");
+    const read = policy === "DIRECTORY" || policy === "SEATS" || policy === "ADMIN_READ";
+    if (read ? tenant.lifecycle === "PROVISIONING" : tenant.lifecycle !== "ACTIVE") {
+      throw problem(409, "INVALID_STATE", "The tenant is not active");
+    }
+    const actor = state.memberships.find((item) => item.tenantId === tenantId && item.userId === session.userId);
+    if (!actor || this.membershipState(state, tenantId, session.userId) !== "ACTIVE") {
+      throw problem(403, "MEMBERSHIP_INACTIVE", "Membership is not active");
+    }
+    if ((policy === "ADMIN_READ" || policy === "NORMAL" || policy === "RECOVERY") && actor.role !== "TENANT_ADMIN") {
+      throw problem(403, "SCOPE_DENIED", "A tenant admin is required");
+    }
+    const restrictions = this.restrictionsOf(tenant);
+    if (policy === "DIRECTORY") {
+      if (restrictions.includes("PENDING_FIRST_PAYMENT") || (restrictions.length > 0 && !this.contentReadUnderRestriction())) {
+        throw problem(403, "CAPABILITY_DISABLED", "The directory is not available", restrictions);
+      }
+    }
+    if (policy === "NORMAL" && restrictions.length > 0) throw problem(403, "READ_ONLY", "The tenant is read-only", restrictions);
+    if (policy === "RECOVERY" && restrictions.some((code) => !RECOVERY_ALLOWED.has(code))) {
+      throw problem(403, "READ_ONLY", "The tenant is read-only", restrictions);
+    }
+    return { session, tenant, actor };
+  }
+
+  /** The company's restrictions, with the `restrict` hook's added — for the member routes only. */
+  private restrictionsOf(tenant: StoredTenant): string[] {
+    const extra = this.hooks().restrict?.[tenant.id];
+    const added = Array.isArray(extra) ? extra.filter((code): code is string => typeof code === "string" && code !== "") : [];
+    return [...new Set([...tenant.restrictions, ...added])];
+  }
+
+  /**
+   * (5) The key's durable receipt: a key that is not a canonical UUID is 400;
+   * seen with the same request, `replay` is what it answered; with another,
+   * 409 `IDEMPOTENCY_CONFLICT`. `keep` records an answer and hands it back.
+   */
+  private memberReceipt(
+    state: ServerState,
+    actorId: string,
+    operation: string,
+    key: string,
+    request: unknown,
+  ): { replay: unknown; keep: <T>(answer: T) => T } {
+    if (!CANONICAL_KEY.test(key)) throw problem(400, "VALIDATION_FAILED", "Idempotency-Key must be a canonical UUID");
+    const receiptKey = `${actorId}:${operation}:${key}`;
+    const hash = JSON.stringify(request);
+    const stored = state.memberReceipts[receiptKey];
+    if (stored) {
+      if (stored.hash !== hash) throw problem(409, "IDEMPOTENCY_CONFLICT", "The key was used for another request");
+      return { replay: stored.answer ?? null, keep: (answer) => answer };
+    }
+    return {
+      replay: undefined,
+      keep: (answer) => {
+        state.memberReceipts[receiptKey] = { hash, answer };
+        return answer;
+      },
+    };
+  }
+
+  /** (6) The target membership: absent or REMOVED is 404 `RESOURCE_NOT_FOUND`. */
+  private targetMembership(state: ServerState, tenantId: string, userId: string): StoredMembership {
+    const target = state.memberships.find((item) => item.tenantId === tenantId && item.userId === userId);
+    if (!target || target.state === "REMOVED") throw problem(404, "RESOURCE_NOT_FOUND", "Membership not found");
+    return target;
+  }
+
+  private targetInvitation(state: ServerState, tenantId: string, invitationId: string): StoredInvitation {
+    const invitation = state.invitations.find((item) => item.id === invitationId && item.tenantId === tenantId);
+    if (!invitation) throw problem(404, "RESOURCE_NOT_FOUND", "Invitation not found");
+    return invitation;
+  }
+
+  /** (8) `If-Match`: missing 428 `VERSION_CONFLICT`, malformed 400 `VALIDATION_FAILED`, stale 412 (contracts §6). */
+  private checkVersion(version: string, current: number): void {
+    if (version === "") throw problem(428, "VERSION_CONFLICT", "If-Match is required");
+    if (!/^(0|[1-9][0-9]{0,18})$/.test(version)) throw problem(400, "VALIDATION_FAILED", "If-Match must be a quoted version");
+    if (version !== String(current)) throw problem(412, "VERSION_CONFLICT", "The resource has changed");
+  }
+
+  /** (9) The active admins other than `userId` — the owner is always one, so this is 0 only in a fixture nobody seeds. */
+  private otherActiveAdmins(state: ServerState, tenantId: string, userId: string): number {
+    return state.memberships.filter(
+      (item) =>
+        item.tenantId === tenantId &&
+        item.userId !== userId &&
+        item.role === "TENANT_ADMIN" &&
+        this.membershipState(state, tenantId, item.userId) === "ACTIVE",
+    ).length;
+  }
+
+  /** `used` (ACTIVE and SUSPENDED memberships) and `reserved` (PENDING invitations), in BigInt. */
+  private seatCounts(state: ServerState, tenant: StoredTenant): { used: bigint; reserved: bigint } {
+    const used = state.memberships.filter(
+      (item) => item.tenantId === tenant.id && (item.state === "ACTIVE" || item.state === "SUSPENDED"),
+    ).length;
+    const reserved = state.invitations.filter((item) => item.tenantId === tenant.id && item.state === "PENDING").length;
+    return { used: BigInt(used), reserved: BigInt(reserved) };
+  }
+
+  /** The person's pending invitations revoked — on a suspension, removal, demotion or leave (contracts §8, L03). */
+  private revokeInvitationsBy(state: ServerState, tenant: StoredTenant, userId: string): void {
+    let revoked = false;
+    for (const invitation of state.invitations) {
+      if (invitation.tenantId !== tenant.id || invitation.createdBy !== userId || invitation.state !== "PENDING") continue;
+      invitation.state = "REVOKED";
+      invitation.version += 1;
+      revoked = true;
+    }
+    if (revoked) tenant.quotaVersion += 1;
+  }
+
+  /**
+   * What a suspension, a removal and a leave take from a person (contracts
+   * §8): their company sessions, their pending invitations, their project
+   * rows and assignments — recorded, so a store built later leaves them out.
+   */
+  private cutOff(state: ServerState, tenant: StoredTenant, userId: string): void {
+    this.revokeSessionsOf(state, tenant, userId);
+    this.revokeInvitationsBy(state, tenant, userId);
+    const seq = state.cleared.reduce((top, item) => Math.max(top, item.seq), 0) + 1;
+    state.cleared.push({ tenantId: tenant.id, userId, seq });
+    this.applyClears(
+      tenant.id,
+      state.cleared.filter((item) => item.tenantId === tenant.id),
+    );
+  }
+
+  /** The person's company sessions of this company, revoked. */
+  private revokeSessionsOf(state: ServerState, tenant: StoredTenant, userId: string): void {
+    for (const session of state.sessions) {
+      if (session.kind === "WEB_TENANT" && session.tenantId === tenant.id && session.userId === userId) session.revokedAt ??= this.now();
+    }
+  }
+
+  /** A membership ended — removed or left: REMOVED, its seat free, and everything `cutOff` takes. */
+  private removeMembership(state: ServerState, tenant: StoredTenant, membership: StoredMembership): void {
+    membership.state = "REMOVED";
+    membership.version += 1;
+    tenant.generation += 1;
+    tenant.quotaVersion += 1;
+    this.cutOff(state, tenant, membership.userId);
+  }
+
+  /** The clears this page's store of `tenantId` has not applied yet, applied — once each. */
+  private applyClears(tenantId: string, cleared: ReadonlyArray<{ userId: string; seq: number }>): void {
+    const store = this.stores.get(tenantId);
+    if (!store) return;
+    const applied = this.appliedClears.get(tenantId) ?? new Set<number>();
+    this.appliedClears.set(tenantId, applied);
+    for (const item of cleared) {
+      if (applied.has(item.seq)) continue;
+      store.forgetCompanyMember(item.userId);
+      applied.add(item.seq);
+    }
+  }
+
+  private pageLimit(params: ListCompanyPageParams): number {
+    const limit = params.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw problem(400, "VALIDATION_FAILED", "limit must be 1–100");
+    return limit;
+  }
+
+  /** `Membership` as the blueprint has it (its to-be — develop sends no profile, TAS-321); never `avatarPath`. */
+  private wireMembership(state: ServerState, tenant: StoredTenant, membership: StoredMembership): unknown {
+    const profile = this.accountStore.accountProfile(membership.userId);
+    return {
+      id: membership.id,
+      tenantId: membership.tenantId,
+      userId: membership.userId,
+      role: membership.role,
+      state: this.membershipState(state, membership.tenantId, membership.userId) ?? membership.state,
+      isOwner: tenant.ownerId === membership.userId,
+      ...(profile ? { displayName: profile.displayName, email: profile.email } : {}),
+      version: String(membership.version),
+    };
+  }
+
+  /** `Invitation` — without `issuedAt`, which is not on the wire. */
+  private wireInvitation(invitation: StoredInvitation): unknown {
+    const { issuedAt: _issued, version, projectGrants, ...rest } = invitation;
+    return { ...rest, projectGrants: projectGrants.map((grant) => ({ ...grant })), version: String(version) };
   }
 
   /* ---------------------------------------------------------- the checks */
@@ -1067,14 +1862,15 @@ export class MockTenantServer {
     return { session, tenant };
   }
 
-  /** `Tenant` as the wire carries it: `creationDeadline` only when there is one. */
+  /** `Tenant` as the wire carries it: `creationDeadline` only when there is one, and none of the mock's own bookkeeping. */
   private wireTenant(tenant: StoredTenant): unknown {
-    return { ...tenant, restrictions: [...tenant.restrictions] };
+    const { seatLimit: _seats, quotaVersion: _quota, generation: _generation, ...rest } = tenant;
+    return { ...rest, restrictions: [...tenant.restrictions] };
   }
 
   /** `Operation`; `asCreated` is develop's createTenant answer — PENDING, `updatedAt = createdAt` (ask A12). */
   private wireOperation(operation: StoredOperation, asCreated: boolean): unknown {
-    const { actorId: _actor, failureCode, ...rest } = operation;
+    const { actorId: _actor, subjectUserId: _subject, failureCode, ...rest } = operation;
     if (asCreated) return { ...rest, state: "PENDING", updatedAt: operation.createdAt };
     return { ...rest, ...(failureCode ? { failureCode } : {}) };
   }
@@ -1199,13 +1995,13 @@ export class MockTenantServer {
       const raw = this.storage.getItem(MOCK_SERVER_KEY);
       if (raw !== null) {
         const parsed = JSON.parse(raw) as ServerState;
-        if (parsed && parsed.v === 2 && Array.isArray(parsed.tenants)) return parsed;
+        if (parsed && parsed.v === 3 && Array.isArray(parsed.tenants)) return parsed;
       }
     } catch {
       if (this.memory) return this.memory;
     }
     return {
-      v: 2,
+      v: 3,
       ...seedTenants(this.now()),
       sessions: [],
       access: {},
@@ -1214,6 +2010,8 @@ export class MockTenantServer {
       operations: [],
       creations: {},
       cancels: {},
+      memberReceipts: {},
+      cleared: [],
     };
   }
 
@@ -1223,7 +2021,11 @@ export class MockTenantServer {
    * company opens when it succeeds; a confirmed first payment opens a company
    * awaiting it; a passed deadline closes it (`AUTO_CLOSED`); a late
    * confirmation reopens an auto-closed one (D216) — never a cancelled one.
-   * Each change moves the company's version. Answers whether anything changed.
+   * Each change moves the company's version. Since TAS-502 a removal's
+   * operation moves the same way by `memberOperationStepMs` (default 0) and
+   * removes the member when it succeeds, and a pending invitation whose
+   * `expiresAt` has passed is EXPIRED, its seat released. Answers whether
+   * anything changed.
    */
   private evaluate(state: ServerState): boolean {
     const now = this.lifecycleNow();
@@ -1243,18 +2045,42 @@ export class MockTenantServer {
       changed = true;
     };
 
+    const memberStep = hooks.memberOperationStepMs;
+    const memberStepMs = typeof memberStep === "number" && Number.isFinite(memberStep) && memberStep >= 0 ? memberStep : 0;
+    const memberOutcome = hooks.memberOperationOutcome;
+    const memberTerminal = memberOutcome === "FAILED" || memberOutcome === "MANUAL_REVIEW" ? memberOutcome : "SUCCEEDED";
     for (const operation of state.operations) {
       if (TERMINAL_OPERATION_STATES.has(operation.state)) continue;
+      const removal = operation.type === REMOVE_OPERATION_TYPE;
+      const step = removal ? memberStepMs : stepMs;
+      const end = removal ? memberTerminal : terminal;
       const started = Date.parse(operation.createdAt);
       const elapsed = now - started;
-      const next = elapsed < stepMs ? "PENDING" : elapsed < 2 * stepMs ? "RUNNING" : terminal;
+      const next = elapsed < step ? "PENDING" : elapsed < 2 * step ? "RUNNING" : end;
       if (next === operation.state) continue;
       operation.state = next;
-      operation.updatedAt = new Date(next === "RUNNING" ? started + stepMs : started + 2 * stepMs).toISOString();
-      if (next === "FAILED") operation.failureCode = hooks.provisioning?.failureCode ?? "DEPENDENCY_UNAVAILABLE";
+      operation.updatedAt = new Date(next === "RUNNING" ? started + step : started + 2 * step).toISOString();
+      if (next === "FAILED") {
+        operation.failureCode = removal
+          ? (hooks.memberOperationFailureCode ?? "DEPENDENCY_UNAVAILABLE")
+          : (hooks.provisioning?.failureCode ?? "DEPENDENCY_UNAVAILABLE");
+      }
       changed = true;
       const tenant = state.tenants.find((item) => item.id === operation.tenantId);
+      if (removal) {
+        const subject = state.memberships.find((item) => item.tenantId === operation.tenantId && item.userId === operation.subjectUserId);
+        if (next === "SUCCEEDED" && tenant && subject && subject.state !== "REMOVED") this.removeMembership(state, tenant, subject);
+        continue;
+      }
       if (next === "SUCCEEDED" && tenant?.lifecycle === "PROVISIONING") open(tenant);
+    }
+    for (const invitation of state.invitations) {
+      if (invitation.state !== "PENDING" || Date.parse(invitation.expiresAt) > now) continue;
+      invitation.state = "EXPIRED";
+      invitation.version += 1;
+      const tenant = state.tenants.find((item) => item.id === invitation.tenantId);
+      if (tenant) tenant.quotaVersion += 1;
+      changed = true;
     }
     for (const tenant of state.tenants) {
       if (tenant.lifecycle === "AWAITING_PAYMENT" && confirmed.has(tenant.id)) open(tenant);
