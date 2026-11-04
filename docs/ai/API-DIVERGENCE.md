@@ -2123,7 +2123,8 @@ Everything below is the entry as it stood, in the past tense.
     session"). Removal: ask A3 on TAS-315.
   - The list is the reader's active memberships, and entering one may still be refused (a closed company, a
     pause or block the server enforces at entry); no role or membership state shown; lifecycle and restrictions
-    are a state line and an order only; opening always asks the server. Removal: ask A1 on TAS-338, A2 on TAS-315.
+    are a state line and an order — and, since TAS-501, a never-opened lifecycle picks the §4.37 card instead of
+    the app shell; opening always asks the server. Removal: ask A1 on TAS-338, A2 on TAS-315.
   - A revoke of the tab's company session (switch, leave, close) is fire-and-forget, and its own 401 never signs the
     account out: backend PR #288 answers 401 for an unknown session id where contracts §6 says 404, so a 401 there is
     not evidence the account session died (the client renews the account once and retries). Removal: the PR #288
@@ -2196,8 +2197,9 @@ Everything below is the entry as it stood, in the past tense.
   `e0b1df21-e04d-498a-a2a9-f50133e4c197`, `261df0dc-ec4a-44d9-9c51-1ffc396f444d`,
   `b67d4807-a0dc-499b-a6c3-7bd5efedc8f2`; control `GET /api/v1/projects` 401
   (`e5474c61-b818-4e56-b436-45d73ec32f7a`).
-- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. No eligibility, deadline, closure or plan is computed
-  client-side. One state is read from a refusal rather than from the company: until `getTenant` answers, a content
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. No eligibility, deadline or closure is computed
+  client-side. The free plan is read as the zero-priced one (DESIGN.md §4.36: order and the default choice only,
+  never the right to it). Removal: ask A16 (`kind FREE|PAID` on PlanVersion). One state is read from a refusal rather than from the company: until `getTenant` answers, a content
   read refused with `PENDING_FIRST_PAYMENT` shows the card as «Awaiting first payment» — develop attaches that reason
   to closed creations too, so the line can be wrong for a moment until `getTenant` answers. Removal: ask A14.
 - **What the UI assumes where the blueprint is silent — each removable:**
@@ -2229,7 +2231,8 @@ Everything below is the entry as it stood, in the past tense.
     (`taska.mockTenantHooks`); the plan codes are the mock's own; createTenant receipts are durable per (actor,
     key), not the 60 s refresh receipt.
   - A company session calling createTenant answers 403 `SCOPE_DENIED`; the company's own routes (getTenant,
-    getTenantOperation, cancel) answer 403 `TENANT_MISMATCH` when the path names another company; a malformed
+    getTenantOperation, cancel) answer 403 `TENANT_MISMATCH` when the path names another company or the caller holds
+    only the account session; a malformed
     `If-Match` answers 428 `VALIDATION_FAILED` (the blueprint names no code); an operation read by anyone but its
     actor answers 404; Nina is ACTIVE in every company store so a company she creates works.
 - **Turning the flag on** additionally needs TAS-310/337/472/313/478 on the gateway, asks A9 and A15 answered,
