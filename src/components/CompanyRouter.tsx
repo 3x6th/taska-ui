@@ -2,13 +2,14 @@ import type { QueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useState, type AnchorHTMLAttributes, type MouseEvent, type ReactNode } from "react";
 import { BrowserRouter, HashRouter, useLocation } from "react-router-dom";
 import { ROUTER_MODE } from "../lib/appLinks";
-import { companyPrefix, splitCompanyRoute } from "../lib/companies";
+import { splitCompanyRoute } from "../lib/companies";
 import {
   AccountClientContext,
   CompanyAddressContext,
   hrefFor,
   readAppPath,
   rootBase,
+  routerBasename,
   useCompanyAddress,
   type CompanyAddress,
 } from "../lib/companyAddress";
@@ -65,7 +66,7 @@ export function CompanyRouter({ children }: { children: ReactNode }) {
   }, []);
 
   const Router = ROUTER_MODE === "hash" ? HashRouter : BrowserRouter;
-  const basename = `${rootBase()}${companyId === null ? "" : companyPrefix(companyId)}`;
+  const basename = routerBasename(ROUTER_MODE, rootBase(), companyId);
   const address: CompanyAddress = { companyId, go, href: hrefFor };
 
   return (

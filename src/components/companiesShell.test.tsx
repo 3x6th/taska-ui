@@ -2,7 +2,9 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi, Workspace } from "../api/TaskaApi";
 import type { User } from "../domain/types";
+import { Route, Routes } from "react-router-dom";
 import { NotFoundScreen } from "../screens/NotFoundScreen";
+import { CompanyGate } from "./CompanyGate";
 import { companiesHarness } from "../test/companiesHarness";
 import { UserProfileMenu } from "./UserProfileMenu";
 
@@ -12,8 +14,13 @@ import { UserProfileMenu } from "./UserProfileMenu";
  */
 
 const { fakeApi, state } = vi.hoisted(() => {
-  const state = { tenants: [] as unknown[], workspace: null as Workspace | null };
+  const state = { tenants: [] as unknown[], workspace: null as Workspace | null, order: [] as string[] };
   const api = {
+    enterCompany: (tenantId: string) => {
+      state.order.push(`enter ${tenantId}`);
+      return new Promise(() => {});
+    },
+    onWorkspaceClosed: () => () => {},
     listTenants: async () => ({ items: state.tenants, nextCursor: null }),
     currentWorkspace: () => state.workspace,
     onWorkspaceChange: () => () => {},
@@ -45,6 +52,28 @@ const mark: User = {
 beforeEach(() => {
   state.tenants = [tenant("n", "Northwind"), tenant("g", "Globex")];
   state.workspace = null;
+  state.order = [];
+});
+
+describe("the company gate (release-reviewer H1)", () => {
+  it("renders nothing of the company before its switch has begun, so no render-time request is the previous company's", () => {
+    function Probe() {
+      state.order.push("render the page");
+      return <p>page</p>;
+    }
+    const { wrapper } = companiesHarness({ companyId: "g", path: "/projects" });
+    render(
+      <Routes>
+        <Route element={<CompanyGate logoutPending={false} onLogout={() => {}} />}>
+          <Route path="/projects" element={<Probe />} />
+        </Route>
+      </Routes>,
+      { wrapper },
+    );
+    expect(screen.getByText("page")).toBeInTheDocument();
+    expect(state.order[0]).toBe("enter g");
+    expect(state.order.indexOf("render the page")).toBeGreaterThan(0);
+  });
 });
 
 describe("the profile menu in the companies build", () => {
@@ -71,10 +100,25 @@ describe("the profile menu in the companies build", () => {
 });
 
 describe("Page not found in the companies build", () => {
-  it("goes to the company's projects inside a company", () => {
+  it("goes to the company's projects inside a company the tab holds", () => {
+    state.workspace = { tenantId: "n", tenantName: "Northwind", tenantSessionId: "s" };
     const { wrapper } = companiesHarness({ companyId: "n", path: "/nope" });
     render(<NotFoundScreen />, { wrapper });
     expect(screen.getByRole("link", { name: "Go to projects" })).toHaveAttribute("href", "/projects");
+  });
+
+  it("after a link into a company the tab does not hold, never points back into it (N1)", () => {
+    // The address names a foreign company; the tab holds none — the picker.
+    const { wrapper } = companiesHarness({ companyId: "foreign", path: "/projects" });
+    const { unmount } = render(<NotFoundScreen />, { wrapper });
+    expect(screen.getByRole("link", { name: "Choose a company" })).toHaveAttribute("href", "/companies");
+    expect(screen.queryByRole("link", { name: "Go to projects" })).not.toBeInTheDocument();
+    unmount();
+    // The tab holds another company: that company's projects, not the foreign one's.
+    state.workspace = { tenantId: "n", tenantName: "Northwind", tenantSessionId: "s" };
+    const other = companiesHarness({ companyId: "foreign", path: "/projects" });
+    render(<NotFoundScreen />, { wrapper: other.wrapper });
+    expect(screen.getByRole("link", { name: "Go to projects" })).toHaveAttribute("href", "/c/n/projects");
   });
 
   it("offers Choose a company to a tab without one", () => {
@@ -84,6 +128,7 @@ describe("Page not found in the companies build", () => {
   });
 
   it("says the link may be in another company when it came without one and the reader has two", async () => {
+    state.workspace = { tenantId: "n", tenantName: "Northwind", tenantSessionId: "s" };
     const { wrapper } = companiesHarness({ companyId: "n", path: "/browse/WEB-12", state: { withoutCompany: true } });
     render(<NotFoundScreen />, { wrapper });
     expect(await screen.findByText("If it’s in another company, choose that company and open the link again.")).toBeInTheDocument();

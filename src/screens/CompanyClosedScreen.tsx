@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { ApiNotice } from "../components/ApiNotice";
 import { AddressLink } from "../components/CompanyRouter";
+import type { Tenant } from "../api/tenants";
 import { COMPANIES_ROUTE, closedCompanyWords } from "../lib/companies";
 
 /**
@@ -16,17 +17,20 @@ import { COMPANIES_ROUTE, closedCompanyWords } from "../lib/companies";
 export function CompanyClosedScreen({
   name,
   refusal,
+  tenant = null,
   onLogout,
   logoutPending = false,
 }: {
   name: string | null;
   refusal: { code: string | null; reasons: readonly string[]; message: string | null };
+  /** The company's row in the reader's list, when it has one — the reason when the refusal's code says none (§4.35). */
+  tenant?: Tenant | null;
   onLogout: () => void;
   logoutPending?: boolean;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
-  const words = closedCompanyWords(name, refusal, null);
+  const words = closedCompanyWords(name, refusal, tenant);
   const text = words.text ?? refusal.message;
 
   return (

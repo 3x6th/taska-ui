@@ -55,6 +55,7 @@ export function CompanyGate({ onLogout, logoutPending }: { onLogout: () => void;
   const companyId = address?.companyId ?? "";
   const workspace = useWorkspace();
   const name = useCompanyName(companyId);
+  const row = useCompanies().data?.find((tenant) => tenant.id === companyId) ?? null;
   const [entry, setEntry] = useState<Entry>({ status: "entering" });
   const [attempt, setAttempt] = useState(0);
   const liveSessionId = workspace?.tenantId === companyId ? workspace.tenantSessionId : null;
@@ -64,8 +65,19 @@ export function CompanyGate({ onLogout, logoutPending }: { onLogout: () => void;
   // switch begins here, and every request the screens make from now on is
   // this company's (`WebSessionClient.enterCompany`). One call per company and
   // attempt; asked twice — StrictMode — it is one transition.
+  /**
+   * Whether this mount has begun its switch (`enterCompany` called). Nothing
+   * under the gate renders before it: a screen may ask the server *while
+   * rendering* — the issue panel's prefetch of comments and work log — and a
+   * request asked before the switch begins is the previous company's, which
+   * the switch discards (release-reviewer H1). Set in the same layout effect,
+   * so the company renders in the commit after, before the browser paints.
+   */
+  const [begun, setBegun] = useState(false);
   useLayoutEffect(() => {
     let current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the switch has begun: render the company now, still before paint.
+    setBegun(true);
     taskaApi.enterCompany(companyId).then(
       () => {
         if (current) setEntry({ status: "open" });
@@ -143,6 +155,7 @@ export function CompanyGate({ onLogout, logoutPending }: { onLogout: () => void;
         name={name}
         onLogout={onLogout}
         refusal={{ code: event.reason, reasons: event.reasons, message: null }}
+        tenant={row}
       />
     );
   }
@@ -160,10 +173,12 @@ export function CompanyGate({ onLogout, logoutPending }: { onLogout: () => void;
         name={name}
         onLogout={onLogout}
         refusal={{ code: b2bCode ?? code, reasons: refusalReasons(error), message }}
+        tenant={row}
       />
     );
   }
 
+  if (!begun) return null;
   return (
     <QueryClientProvider client={session.client} key={session.generation}>
       <Outlet />

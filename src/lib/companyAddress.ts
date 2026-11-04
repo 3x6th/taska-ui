@@ -43,6 +43,16 @@ export function readAppPath(): string {
   return `${inside}${window.location.search}`;
 }
 
+/**
+ * The router's `basename` for a company (or none): the company's prefix, under
+ * the base path in browser routing only. A hash route never contains the base
+ * — `/repo/#/c/{id}/projects` routes `/c/{id}/projects` — so with the base in
+ * it the hash router would match nothing (release-reviewer N2).
+ */
+export function routerBasename(mode: "hash" | "browser", base: string, companyId: string | null): string {
+  return `${mode === "hash" ? "" : base}${companyId === null ? "" : companyPrefix(companyId)}`;
+}
+
 /** The `href` of an app path under this build's routing scheme. */
 export function hrefFor(path: string): string {
   if (ROUTER_MODE === "hash") return `${window.location.pathname}${window.location.search}#${path}`;

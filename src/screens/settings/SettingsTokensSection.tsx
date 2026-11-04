@@ -256,7 +256,12 @@ function AccessTokens({
     const target = pendingFocus.current;
     if (!target) return;
     pendingFocus.current = null;
-    (target === "create" ? createButton.current : revokeButtons.current.get(target))?.focus();
+    // Create token is not offered in the companies build (TAS-500): with the
+    // last row gone, focus goes to the section's heading (`tabIndex=-1`, §7
+    // exception 4) rather than to <body>.
+    const fallback =
+      createButton.current ?? document.querySelector<HTMLElement>(".settings-area .area-section-title");
+    (target === "create" ? fallback : revokeButtons.current.get(target))?.focus();
   });
 
   const revoke = useMutation({

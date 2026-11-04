@@ -73,6 +73,16 @@ export class WorkspaceClosedError extends Error {
 export const isWorkspaceClosed = (error: unknown): error is WorkspaceClosedError => error instanceof WorkspaceClosedError;
 
 /**
+ * The failure a screen may show, or `null` for a `WorkspaceClosedError` —
+ * which no screen shows, ever: its message is the client's, and the shell says
+ * what happened to the company (DESIGN.md §4.35). For the places that print an
+ * error's own message.
+ */
+export function reportable<E>(error: E | null | undefined): E | null {
+  return error === undefined || error === null || isWorkspaceClosed(error) ? null : error;
+}
+
+/**
  * An operation the B2B build does not offer (TAS-500, api-contract-guard §2,
  * B5, B8), refused by the client without a request in both implementations:
  * the legacy `POST /auth/login` and `/auth/refresh` (the account signs in with
@@ -526,8 +536,11 @@ export const isB2bErrorCode = (value: unknown): value is B2bErrorCode =>
  * else is `null`: an unknown code never closes a company or reads as one of
  * these. The reason is read as an own property, as `errorDetails` asks.
  *
- * Additive and harmless in today's build: no gateway route the stand serves
- * answers one of these codes, so this answers `null` for every refusal there.
+ * Not inert in today's build, though nothing there calls it: the stand's
+ * `LAST_ADMIN` refusal (400 `FAILED_PRECONDITION`, `details.reason`
+ * `LAST_ADMIN`, backend TAS-394) carries one of the blueprint's codes as its
+ * reason, so this answers `LAST_ADMIN` for it. Only the companies build's
+ * session layer reads it, and `LAST_ADMIN` closes nothing there.
  */
 export function refusalCode(error: unknown): B2bErrorCode | null {
   const { code, details } = apiErrorFacts(error);

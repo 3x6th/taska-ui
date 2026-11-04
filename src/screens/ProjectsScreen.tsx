@@ -4,7 +4,7 @@ import { Pencil, Plus, Search } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts } from "../api/errors";
+import { apiErrorFacts, reportable } from "../api/errors";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches, type ColorChoice } from "../components/ColorSwatches";
@@ -496,7 +496,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
           </p>
         </div>
         {/* The request id under the sentence (§5.6, TAS-397). */}
-        {create.isError ? (
+        {create.isError && reportable(create.error) ? (
           <ErrorNote requestId={apiErrorFacts(create.error).requestId}>{create.error.message}</ErrorNote>
         ) : null}
         <div className="modal-actions">

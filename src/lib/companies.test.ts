@@ -146,11 +146,25 @@ describe("the closed company's words (§4.35)", () => {
     expect(closedCompanyWords("M", { code: "DELETED", reasons: [] }, null).title).toBe("M has been deleted");
     expect(closedCompanyWords("M", { code: "DELETING", reasons: [] }, null).title).toBe("M is being deleted");
     expect(closedCompanyWords("M", { code: "PROVISIONING", reasons: [] }, null).title).toBe("M is still being set up");
-    // A code outside the table: the server's words go where the sentence would.
+    // A code outside the table takes the reason from the list row (§4.35, ask A2)…
+    expect(
+      closedCompanyWords("Massive Dynamic", { code: "INVALID_STATE", reasons: [] }, tenant("m", "Massive Dynamic", "AUTO_CLOSED")),
+    ).toEqual({ title: "Massive Dynamic is closed", text: "Its projects can no longer be opened." });
+    expect(
+      closedCompanyWords("Hooli", { code: "INVALID_STATE", reasons: [] }, tenant("h", "Hooli", "ACTIVE", ["PLATFORM_BLOCK"])).title,
+    ).toBe("Hooli is blocked");
+    // …but a refusal that names a reason wins over the row.
+    expect(
+      closedCompanyWords("Globex", { code: "MEMBERSHIP_INACTIVE", reasons: [] }, tenant("g", "Globex", "AUTO_CLOSED")).title,
+    ).toBe("You no longer have access to Globex");
+    // No row either: the table's last row, the server's words in place of the sentence.
     expect(closedCompanyWords("Massive Dynamic", { code: "INVALID_STATE", reasons: [] }, null)).toEqual({
       title: "Massive Dynamic could not be opened",
       text: null,
     });
+    expect(closedCompanyWords("Northwind", { code: "INVALID_STATE", reasons: [] }, tenant("n", "Northwind")).title).toBe(
+      "Northwind could not be opened",
+    );
   });
 
   it("titles the document by the company, the picker or nothing", () => {

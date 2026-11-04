@@ -150,3 +150,18 @@ test("a paused company opens, reads, and refuses a write on that write alone", a
   await expect(page).toHaveURL(companyPath(COMPANY.initech));
   await expect(page.getByRole("heading", { name: /is paused|no longer have access/ })).toHaveCount(0);
 });
+
+test("Access tokens offers no Create token here, and focus goes to the heading once the last token is revoked", async ({ page }) => {
+  await inCompany(page, "Northwind", COMPANY.northwind);
+  await page.goto(companyPath(COMPANY.northwind, "/settings/tokens"));
+  const list = page.getByRole("list", { name: "Your access tokens" });
+  await expect(list.getByRole("listitem")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Create token" })).toHaveCount(0);
+  for (let left = 2; left > 0; left -= 1) {
+    const row = list.getByRole("listitem").first();
+    await row.getByRole("button", { name: /^Revoke / }).click();
+    await row.getByRole("button", { name: "Revoke token" }).click();
+    await expect(list.getByRole("listitem")).toHaveCount(left - 1);
+  }
+  await expect(page.getByRole("heading", { level: 1, name: /Access tokens/ })).toBeFocused();
+});

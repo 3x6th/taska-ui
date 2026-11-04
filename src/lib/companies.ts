@@ -164,9 +164,12 @@ export interface ClosedWords {
 }
 
 /**
- * §4.35's table: the reason from the refusal — its code, then its reasons —
- * and without a refusal from the list row's lifecycle and restrictions.
- * `name` is the company's from the reader's list, else «This company».
+ * §4.35's table: the reason from the refusal — its code, then its reasons; a
+ * code outside the table, or no refusal, takes it from the list row's
+ * lifecycle, then its restrictions (a closed company may be answered with a
+ * plain `INVALID_STATE` — the contract names no code, ask A2); no row either,
+ * the table's last row, the server's words in place of the sentence. `name` is
+ * the company's from the reader's list, else «This company».
  */
 export function closedCompanyWords(
   name: string | null,
@@ -174,8 +177,6 @@ export function closedCompanyWords(
   tenant: Tenant | null,
 ): ClosedWords {
   const company = name ?? "This company";
-  const reasons = refusal ? refusal.reasons : (tenant?.restrictions ?? []);
-  const code = refusal ? refusal.code : (tenant?.lifecycle ?? null);
   const by = (key: string | null): ClosedWords | null => {
     switch (key) {
       case "MEMBERSHIP_INACTIVE":
@@ -200,7 +201,11 @@ export function closedCompanyWords(
         return null;
     }
   };
-  return by(code) ?? reasons.map(by).find((words) => words !== null) ?? { title: `${company} could not be opened`, text: null };
+  const first = (keys: readonly (string | null)[]) => keys.map(by).find((words) => words !== null) ?? null;
+  return (
+    first([refusal?.code ?? null, ...(refusal?.reasons ?? [])]) ??
+    first([tenant?.lifecycle ?? null, ...(tenant?.restrictions ?? [])]) ?? { title: `${company} could not be opened`, text: null }
+  );
 }
 
 /**

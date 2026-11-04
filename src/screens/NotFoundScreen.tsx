@@ -47,17 +47,20 @@ export function NotFoundScreen({ reason }: { reason?: NotFoundReason } = {}) {
 
 /**
  * The companies build's way out (TAS-500, §4.18): «Go to projects» is the
- * tab's company's; a tab without one is offered «Choose a company». An address
- * that came without a company and was opened in the tab's (§5.1) says it may
- * be in another, for a reader who has more than one. A foreign company is not
- * named here — this screen is the same for it.
+ * tab's company's; a tab without one is offered «Choose a company». The
+ * address's company counts only when the tab holds it — after a link into a
+ * company the reader is not in, the address names that company and the tab
+ * holds none (release-reviewer N1), and a link back into it would answer this
+ * screen again. An address that came without a company and was opened in the
+ * tab's (§5.1) says it may be in another, for a reader who has more than one.
+ * A foreign company is not named here — this screen is the same for it.
  */
 function CompanyWayOut() {
   const address = useCompanyAddress();
   const location = useLocation();
   const workspace = useWorkspace();
   const companies = useCompanies();
-  const inCompany = address?.companyId != null;
+  const inCompany = address?.companyId != null && workspace?.tenantId === address.companyId;
   const withoutCompany = inCompany && (location.state as { withoutCompany?: unknown } | null)?.withoutCompany === true;
   const elsewhere = withoutCompany && (companies.data?.length ?? 0) >= 2;
 

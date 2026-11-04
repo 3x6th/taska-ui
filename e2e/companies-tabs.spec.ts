@@ -137,7 +137,11 @@ test("AC3: a direct link into a company the reader cannot enter shows §4.35 or 
   await expect(page.locator(".project-card")).toHaveCount(0);
 });
 
-test("AC4: a company admin sees every project, a member only theirs; one key, a different issue in each company", async ({
+// The admin half shows what the server lists for a company admin. In the
+// mock's fixtures Anna and Priya are ADMIN members of every project of their
+// company; whether a TENANT_ADMIN without a project-member row is listed is the
+// backend's to say (ask A7 on TAS-340) — this does not prove the derivation.
+test("AC4: the admin sees what the server lists, a member only their projects; one key, a different issue in each company", async ({
   page,
   browser,
 }) => {
@@ -183,8 +187,9 @@ test("a duplicated tab gets its own company session, and both stay in the compan
   await expect(keys(duplicate)).toHaveText(["TAS", "WEB", "MOB"]);
   const own = await duplicate.evaluate(() => JSON.parse(window.sessionStorage.getItem("taska.tab") ?? "{}") as { tenantSessionId: string });
   expect(own.tenantSessionId).not.toBe(original.tenantSessionId);
-  const still = await first.evaluate(() => JSON.parse(window.sessionStorage.getItem("taska.tab") ?? "{}") as { tenantSessionId: string });
-  expect(still.tenantSessionId).toBe(original.tenantSessionId);
+  const tabSession = (page: Page) =>
+    page.evaluate(() => (JSON.parse(window.sessionStorage.getItem("taska.tab") ?? "{}") as { tenantSessionId: string }).tenantSessionId);
+  expect(await tabSession(first)).toBe(original.tenantSessionId);
 
   await first.waitForTimeout(2500);
   for (const page of [first, duplicate]) {
@@ -192,6 +197,65 @@ test("a duplicated tab gets its own company session, and both stay in the compan
     await expect(page.getByRole("button", { name: /TAS-101/ }).first()).toBeVisible();
     await expect(page).toHaveURL(companyPath(COMPANY.northwind, `/projects/${PROJECT.taska}/board`));
   }
+  // Renewed, not re-selected: each tab still holds the session it had — the
+  // family was refreshed by its owner, not replaced by a new entry.
+  expect(await tabSession(first)).toBe(original.tenantSessionId);
+  expect(await tabSession(duplicate)).toBe(own.tenantSessionId);
   await expect(first.getByRole("heading", { name: /no longer have access|could not be opened/ })).toHaveCount(0);
   await expect(duplicate.getByRole("heading", { name: /no longer have access|could not be opened/ })).toHaveCount(0);
+});
+
+test("H1: the issue panel's comments survive a switch and Back — answered, with no error note", async ({ page }) => {
+  await inCompany(page, "Northwind", COMPANY.northwind);
+  await page.locator(`button.project-card[data-project-id="${PROJECT.taska}"]`).click();
+  await page.locator(".issue-card", { hasText: "TAS-107" }).click();
+  const dialog = page.getByRole("dialog", { name: "TAS-107 issue" });
+  await expect(dialog).not.toHaveAttribute("aria-busy", "true");
+  await expect(page.locator(".comments .comment-item")).toHaveCount(2);
+
+  // To the picker as «Switch company» goes there (`CompanyRouter.go`: a pushed
+  // entry, announced as the browser announces Back). The open panel covers the
+  // board bar's menu, so the test makes the move the menu's link would.
+  await page.evaluate(() => {
+    const index = ((window.history.state as { idx?: number } | null)?.idx ?? 0) + 1;
+    window.history.pushState({ usr: { focusHeading: true }, key: "e2e", idx: index }, "", "/companies");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await page.getByRole("list", { name: "Companies" }).getByRole("link", { name: /^Globex/ }).click();
+  await expect(page).toHaveURL(companyPath(COMPANY.globex));
+  await expect(keys(page)).toHaveText(["OPS"]);
+
+  // Back past the picker, into the issue route of the company left.
+  await page.goBack();
+  await expect(page).toHaveURL(`${B2B}/companies`);
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`/c/${COMPANY.northwind}/projects/${PROJECT.taska}/issues/`));
+  await expect(dialog).toBeVisible();
+  await expect(dialog).not.toHaveAttribute("aria-busy", "true");
+  await expect(page.locator(".comments .comment-item")).toHaveCount(2);
+  await expect(page.locator(".comments")).not.toContainText("No comments yet");
+  await expect(page.locator(".error-note")).toHaveCount(0);
+  await expect(page.getByText("This answer belongs to a company session the tab has left")).toHaveCount(0);
+});
+
+test("§5.1: a company link opened with the platform modifier opens a new page in the same company, without the picker", async ({
+  page,
+  context,
+  isMobile,
+}) => {
+  test.skip(isMobile, "a modifier click needs a keyboard; a phone opens links by long-press");
+  await inCompany(page, "Northwind", COMPANY.northwind);
+  await page.locator(".company-switcher-trigger").click();
+  const row = page.getByRole("dialog", { name: "Companies" }).getByRole("link", { name: /^Globex/ });
+  const opened = context.waitForEvent("page");
+  await row.click({ modifiers: ["ControlOrMeta"] });
+  const tab = await opened;
+  await tab.waitForLoadState();
+  await expect(tab).toHaveURL(companyPath(COMPANY.globex));
+  await expect(tab.locator("button.project-card .key-badge")).toHaveText(["OPS"]);
+  await expect(tab.getByRole("list", { name: "Companies" })).toHaveCount(0);
+  // The tab it was opened from is where it was, popover still open (§4.34).
+  await expect(page).toHaveURL(companyPath(COMPANY.northwind));
+  await expect(page.getByRole("dialog", { name: "Companies" })).toBeVisible();
+  await expect(keys(page)).toHaveText(["TAS", "WEB", "MOB"]);
 });

@@ -23,6 +23,7 @@ import {
   isWorkspaceClosed,
   refusalCode,
   refusalReasons,
+  reportable,
   toFieldViolations,
   toReasons,
 } from "./errors";
@@ -66,6 +67,14 @@ describe("WorkspaceClosedError and TenancyUnavailableError are no gateway's refu
     });
   }
 
+  it("is never reportable: no screen prints its message", () => {
+    expect(reportable(errors[0])).toBeNull();
+    expect(reportable(null)).toBeNull();
+    expect(reportable(undefined)).toBeNull();
+    const refusal = new Error("Project not found");
+    expect(reportable(refusal)).toBe(refusal);
+  });
+
   it("each is told apart by its own predicate only", () => {
     expect(isWorkspaceClosed(errors[0])).toBe(true);
     expect(isWorkspaceClosed(errors[1])).toBe(false);
@@ -87,6 +96,8 @@ describe("the B2B refusal classifier (B6)", () => {
     expect(refusalCode(failure({ code: "READ_ONLY", details: { reason: "TENANT_NOT_FOUND" } }))).toBe("READ_ONLY");
     // Today's gateway: gRPC names and today's reasons are none of the blueprint's.
     expect(refusalCode(failure({ code: "FAILED_PRECONDITION", details: { reason: "PROJECT_ARCHIVED" } }))).toBeNull();
+    // Not inert on the stand: its last-admin refusal carries one of the blueprint's codes as its reason.
+    expect(refusalCode(failure({ code: "FAILED_PRECONDITION", status: 400, details: { reason: "LAST_ADMIN" } }))).toBe("LAST_ADMIN");
     expect(refusalCode(failure({ code: "NOT_FOUND", status: 404 }))).toBeNull();
     expect(refusalCode(failure({ code: "SOMETHING_NEW" }))).toBeNull();
     expect(refusalCode("MEMBERSHIP_INACTIVE")).toBeNull();
