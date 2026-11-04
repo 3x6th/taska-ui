@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isWorkspaceClosed, refusalCode, refusalReasons } from "../api/errors";
-import type { WorkspaceClosedEvent } from "../api/TaskaApi";
+import type { WorkspaceClosedEvent, WorkspacePendingEvent } from "../api/TaskaApi";
 import { TRANSPORT_FAILURE_REASON } from "../api/TaskaApi";
 import type { Tenant } from "../api/tenants";
 import {
@@ -12,12 +12,15 @@ import {
   companyRoute,
   documentTitleFor,
   inCompanyRest,
+  isNeverOpened,
   markRefusedThisVisit,
   refusedThisVisit,
 } from "../lib/companies";
 import { useCompanies, useCompanyName, useDocumentTitle, useWorkspace } from "../hooks/useCompanies";
+import type { Theme } from "../hooks/useTheme";
 import { createQueryClient } from "../lib/queryClient";
 import { CompanyClosedScreen, CompanyUnavailableScreen } from "../screens/CompanyClosedScreen";
+import { CompanySetupScreen } from "../screens/CompanySetupScreen";
 import { NotFoundScreen } from "../screens/NotFoundScreen";
 import { useCompanyAddress } from "../lib/companyAddress";
 
@@ -27,6 +30,13 @@ import { useCompanyAddress } from "../lib/companyAddress";
  * query client of that session's own (DESIGN.md §6). A refusal of the entry,
  * or the company closing mid-work, replaces everything under it with §4.35 or
  * §4.18 at the same address; nothing of the company's cache survives it.
+ *
+ * A company that has never opened (TAS-501, §4.37) — its list row says so, or
+ * its entry or a content read was refused for it — draws the never-opened card
+ * on any path under the prefix instead of the app shell, **without closing
+ * the company or revoking its session**. On a tab's first screen the list is
+ * waited for before anything of the company is drawn, so a pending company
+ * never shows the app shell for a frame.
  */
 
 type Entry =
@@ -50,13 +60,29 @@ const newSessionClient = (sessionId: string | null, generation: number): Session
   generation,
 });
 
-export function CompanyGate({ onLogout, logoutPending }: { onLogout: () => void; logoutPending: boolean }) {
+export function CompanyGate({
+  onLogout,
+  logoutPending,
+  theme,
+  toggleTheme,
+}: {
+  onLogout: () => void;
+  logoutPending: boolean;
+  theme: Theme;
+  toggleTheme: () => void;
+}) {
   const address = useCompanyAddress();
   const companyId = address?.companyId ?? "";
   const workspace = useWorkspace();
   const name = useCompanyName(companyId);
-  const row = useCompanies().data?.find((tenant) => tenant.id === companyId) ?? null;
+  const companies = useCompanies();
+  const row = companies.data?.find((tenant) => tenant.id === companyId) ?? null;
   const [entry, setEntry] = useState<Entry>({ status: "entering" });
+  /** A content read refused because the company has never opened (B4) — the card, and the session kept. */
+  const [pending, setPending] = useState<WorkspacePendingEvent | null>(null);
+  /** The card handed the address over and the shell's first read bounced back: the card stays (no loop). */
+  const handedOver = useRef(false);
+  const [bounced, setBounced] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const liveSessionId = workspace?.tenantId === companyId ? workspace.tenantSessionId : null;
   const [session, setSession] = useState<SessionClient>(() => newSessionClient(liveSessionId, 0));
@@ -102,6 +128,32 @@ export function CompanyGate({ onLogout, logoutPending }: { onLogout: () => void;
       }),
     [companyId],
   );
+
+  useEffect(
+    () =>
+      taskaApi.onWorkspacePending((event) => {
+        if (event.tenantId !== companyId) return;
+        setPending(event);
+        if (handedOver.current) setBounced(true);
+        handedOver.current = false;
+      }),
+    [companyId],
+  );
+
+  // The server opened a company the tab could not enter (D216's late
+  // payment, read through the list): enter it now. Only on that change — a
+  // refusal never retries by itself.
+  const rowLifecycle = row?.lifecycle ?? null;
+  const shownLifecycle = useRef(rowLifecycle);
+  useEffect(() => {
+    const was = shownLifecycle.current;
+    shownLifecycle.current = rowLifecycle;
+    if (was === rowLifecycle || !isNeverOpened(was) || isNeverOpened(rowLifecycle) || rowLifecycle === null) return;
+    if (entry.status !== "refused") return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the list says it opened: enter, as «Try again» would.
+    setEntry({ status: "entering" });
+    setAttempt((value) => value + 1);
+  }, [rowLifecycle, entry.status]);
 
   // One client per company session (§6): the one made while the session was
   // being made is that session's; a re-selected session — a new id for the
@@ -159,10 +211,35 @@ export function CompanyGate({ onLogout, logoutPending }: { onLogout: () => void;
       />
     );
   }
+  const neverOpened = isNeverOpened(rowLifecycle);
+  // On the session's own query client, like the pages: the card's reads go
+  // with this company's session and are gone with it.
+  const setupCard = (access: "open" | "entering" | "none") => (
+    <QueryClientProvider client={session.client} key={session.generation}>
+      <CompanySetupScreen
+        companyId={companyId}
+        mayOpen={!bounced}
+        onOpened={() => {
+          setPending(null);
+          handedOver.current = true;
+        }}
+        pending={pending}
+        row={row}
+        session={access}
+        theme={theme}
+        toggleTheme={toggleTheme}
+      />
+    </QueryClientProvider>
+  );
+
   if (entry.status === "refused") {
     const { error } = entry;
     const { status, code, message, requestId } = apiErrorFacts(error);
     const b2bCode = refusalCode(error);
+    // Never opened (§4.37): the list row says so, or the refusal does — and
+    // not a lapsed membership, which is §4.35's.
+    const refusedPending = b2bCode === "PAYMENT_PENDING" || refusalReasons(error).includes("PENDING_FIRST_PAYMENT");
+    if (b2bCode !== "MEMBERSHIP_INACTIVE" && (neverOpened || refusedPending)) return setupCard("none");
     // The only thing an entry sends is the company id from the address, so a
     // `VALIDATION_FAILED` is about that id (`/c/not-a-uuid/…`): §4.18, and the
     // server's words about a «tenantId» never reach the screen (§4.35).
@@ -184,6 +261,18 @@ export function CompanyGate({ onLogout, logoutPending }: { onLogout: () => void;
   }
 
   if (!begun) return null;
+  const liveSession = entry.status === "open" && workspace?.tenantId === companyId ? "open" : "entering";
+  if (neverOpened || pending !== null) return setupCard(liveSession);
+  // A tab's first screen: the list decides whether this is the app shell at all.
+  if (row === null && companies.isPending) {
+    return (
+      <main className="company-pending">
+        <p className="visually-hidden" role="status">
+          Opening Taska
+        </p>
+      </main>
+    );
+  }
   return (
     <QueryClientProvider client={session.client} key={session.generation}>
       <Outlet />

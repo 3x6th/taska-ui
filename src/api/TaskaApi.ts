@@ -1,5 +1,14 @@
 import type { AccessTokenScopes } from "./accessTokens";
-import type { ListTenantsParams, TenantPage } from "./tenants";
+import type {
+  CreateTenantInput,
+  CreateTenantResult,
+  ListBillingPlansParams,
+  ListTenantsParams,
+  PlanVersionPage,
+  Tenant,
+  TenantOperation,
+  TenantPage,
+} from "./tenants";
 import type {
   AccessTokenList,
   ConnectedApps,
@@ -1107,6 +1116,21 @@ export interface WorkspaceClosedEvent {
 /** The `reason` of a company closed because its session could not be renewed for want of an answer. */
 export const TRANSPORT_FAILURE_REASON = "TRANSPORT_FAILURE";
 
+/**
+ * A content read of the tab's company refused because the company has never
+ * opened (TAS-501, api-contract-guard B4): `reasons` carry
+ * `PENDING_FIRST_PAYMENT`, or the code is `PAYMENT_PENDING`. **The company is
+ * not closed and its session is not revoked** — payment, status and cancel go
+ * with that session — and the read itself still rejects with its own error.
+ * The shell answers it with the never-opened card (DESIGN.md §4.37).
+ */
+export interface WorkspacePendingEvent {
+  tenantId: string;
+  code: string | null;
+  reasons: readonly string[];
+  requestId: string | null;
+}
+
 export interface TaskaApi {
   login(input: LoginInput): Promise<AuthTokens>;
   /**
@@ -1375,11 +1399,49 @@ export interface TaskaApi {
   onWorkspaceChange(listener: () => void): () => void;
   /** Fires when the tab's company closed mid-work (see `WorkspaceClosedEvent`). Returns an unsubscribe. */
   onWorkspaceClosed(listener: (event: WorkspaceClosedEvent) => void): () => void;
+  /** Fires when a content read met a company that has never opened (see `WorkspacePendingEvent`). Never in today's build. */
+  onWorkspacePending(listener: (event: WorkspacePendingEvent) => void): () => void;
   /**
    * `taska.lastCompany` for the signed-in account — the company to suggest to a
    * tab that has none (DESIGN.md §5.1). A hint; it opens nothing.
    */
   lastCompanyHint(): string | null;
+
+  /*
+   * Creating a company (TAS-501), on the B2B blueprint's routes — none of them
+   * on the stand. Today's build refuses all five without a request
+   * (`TenancyUnavailableError`).
+   */
+
+  /**
+   * `GET /billing/plans` — public metadata, sent with no credential. One page,
+   * every state; the screen keeps `PUBLISHED` (`readAllPlans` follows the
+   * cursor). Nothing in it says whether FREE is still the reader's (ask A10).
+   */
+  listBillingPlans(params?: ListBillingPlansParams): Promise<PlanVersionPage>;
+  /**
+   * `POST /tenants` with the **account session**, from inside a company too
+   * (api-contract-guard B1) — `Idempotency-Key` is the caller's, and a retry
+   * sends the same key with the same body (`src/api/tenantCreation.ts`). 202
+   * `{tenant, operation}` on the first send and on a replay. Refusals: 400
+   * `VALIDATION_FAILED` (name or plan, without violations), 409
+   * `FREE_ELIGIBILITY_USED`, 409 `IDEMPOTENCY_CONFLICT` (the key with another
+   * body), 404 `TENANT_NOT_FOUND` (a replay of a deleted company), 422, 429
+   * (`refusalRetryAfter`), 503.
+   */
+  createTenant(input: CreateTenantInput, idempotencyKey: string): Promise<CreateTenantResult>;
+  /** `GET /tenants/{tenantId}` with the tab's company session of that company. */
+  getTenant(tenantId: string): Promise<Tenant>;
+  /** `GET /tenants/{tenantId}/operations/{operationId}` with the tab's company session. */
+  getTenantOperation(tenantId: string, operationId: string): Promise<TenantOperation>;
+  /**
+   * `POST /tenants/{tenantId}/cancel-creation` with the company session,
+   * `Idempotency-Key` and `If-Match: "{version}"`; 200 `Tenant`
+   * (`OWNER_CANCELLED`). Owner only (403 `OWNER_REQUIRED`); 409
+   * `INVALID_STATE` once it is no longer awaiting payment, 409
+   * `PAYMENT_PENDING`, 412 for a stale version.
+   */
+  cancelTenantCreation(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant>;
 
   /**
    * `GET /meta` — the enum dictionaries (backend TAS-217), read once per

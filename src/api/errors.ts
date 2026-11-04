@@ -563,6 +563,21 @@ export function refusalReasons(error: unknown): readonly string[] {
   return toReasons((error as { reasons?: unknown }).reasons);
 }
 
+/**
+ * The wait a refusal asked for, in whole seconds (TAS-501, api-contract-guard
+ * N1): `retryAfterSeconds` on `ApiError` — the blueprint's `Retry-After`
+ * header on a 429 (contracts §6) — and on the companies mock's
+ * `MockProblemError`. `null` when the refusal named none, or for the two
+ * client-made errors, which are no server's.
+ */
+export function refusalRetryAfter(error: unknown): number | null {
+  if (!(error instanceof Error) || error instanceof WorkspaceClosedError || error instanceof TenancyUnavailableError) {
+    return null;
+  }
+  const value = (error as { retryAfterSeconds?: unknown }).retryAfterSeconds;
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
 /** `Problem.reasons` as a body carried it: the strings, in order; anything else dropped. */
 export function toReasons(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item !== "") : [];

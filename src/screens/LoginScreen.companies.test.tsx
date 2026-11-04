@@ -68,7 +68,8 @@ describe("signing in to the companies build", () => {
     expect(state.release).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Signing in" })).toBeInTheDocument();
     for (const release of state.release) release();
-    await waitFor(() => expect(go).toHaveBeenCalledWith("/c/n/projects", { replace: true }));
+    // A company that has never opened would continue in this card (TAS-501): the state says so; the app shell ignores it.
+    await waitFor(() => expect(go).toHaveBeenCalledWith("/c/n/projects", { replace: true, state: { continuedShell: true } }));
   });
 
   it("a GLOBAL_ADMIN gets the emailed-code note in the refusal slot, and nothing more is read", async () => {

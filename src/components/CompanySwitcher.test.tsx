@@ -12,6 +12,7 @@ const { fakeApi, state } = vi.hoisted(() => {
     listTenants: async () => ({ items: state.tenants, nextCursor: null }),
     currentWorkspace: () => null,
     onWorkspaceChange: () => () => {},
+    listBillingPlans: async () => ({ items: [], nextCursor: null }),
   };
   return { fakeApi: api as unknown as TaskaApi, state };
 });
@@ -48,10 +49,22 @@ describe("the company switcher", () => {
     const dialog = screen.getByRole("dialog", { name: "Companies" });
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     const rows = within(dialog).getAllByRole("link");
-    expect(rows.map((row) => row.textContent)).toEqual(["Globex", "InitechPaused", "Northwind", "All companies"]);
+    expect(rows.map((row) => row.textContent)).toEqual(["Globex", "InitechPaused", "Northwind", "All companies", "Create a company"]);
     expect(rows[2]).toHaveAttribute("aria-current", "true");
     expect(rows[0]).toHaveAttribute("href", "/c/g/projects");
     expect(rows[3]).toHaveAttribute("href", "/companies");
+    expect(rows[4]).toHaveAttribute("href", "/companies/new");
+  });
+
+  it("«Create a company» under «All companies» carries the tab's address, and a write in flight does not hold it (TAS-501)", async () => {
+    const { wrapper, go, client } = companiesHarness({ companyId: "n", path: "/projects/p1/board" });
+    render(<CompanySwitcher />, { wrapper });
+    void client.getMutationCache().build(client, { mutationFn: () => new Promise(() => {}) }).execute(undefined);
+    fireEvent.click(await screen.findByRole("button", { name: "Northwind, switch company" }));
+    const create = within(screen.getByRole("dialog", { name: "Companies" })).getByRole("link", { name: "Create a company" });
+    expect(create).not.toHaveAttribute("aria-disabled");
+    fireEvent.click(create);
+    expect(go).toHaveBeenCalledWith("/companies/new", { state: { from: "/c/n/projects/p1/board" } });
   });
 
   it("switches by the address on a plain click and closes; keeps the other companies waiting while this tab writes", async () => {

@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TaskaApi, Workspace } from "../api/TaskaApi";
+import type { TaskaApi, Workspace, WorkspacePendingEvent } from "../api/TaskaApi";
 import type { User } from "../domain/types";
 import { Route, Routes } from "react-router-dom";
 import { NotFoundScreen } from "../screens/NotFoundScreen";
@@ -14,13 +14,26 @@ import { UserProfileMenu } from "./UserProfileMenu";
  */
 
 const { fakeApi, state } = vi.hoisted(() => {
-  const state = { tenants: [] as unknown[], workspace: null as Workspace | null, order: [] as string[] };
+  const state = {
+    tenants: [] as unknown[],
+    workspace: null as Workspace | null,
+    order: [] as string[],
+    pending: new Set<(event: WorkspacePendingEvent) => void>(),
+    closed: [] as unknown[],
+  };
   const api = {
     enterCompany: (tenantId: string) => {
       state.order.push(`enter ${tenantId}`);
       return new Promise(() => {});
     },
     onWorkspaceClosed: () => () => {},
+    onWorkspacePending: (listener: (event: WorkspacePendingEvent) => void) => {
+      state.pending.add(listener);
+      return () => state.pending.delete(listener);
+    },
+    getCurrentUser: async () => ({ id: "o", email: "o@example.com", displayName: "O", status: "ACTIVE" }),
+    getTenant: () => new Promise(() => {}),
+    listBillingPlans: async () => ({ items: [], nextCursor: null }),
     listTenants: async () => ({ items: state.tenants, nextCursor: null }),
     currentWorkspace: () => state.workspace,
     onWorkspaceChange: () => () => {},
@@ -31,11 +44,11 @@ const { fakeApi, state } = vi.hoisted(() => {
 
 vi.mock("../api/client", () => ({ taskaApi: fakeApi }));
 
-const tenant = (id: string, name: string) => ({
+const tenant = (id: string, name: string, lifecycle = "ACTIVE") => ({
   id,
   name,
   ownerId: "o",
-  lifecycle: "ACTIVE",
+  lifecycle,
   restrictions: [],
   createdAt: "2026-05-01T09:00:00Z",
   version: "1",
@@ -53,10 +66,11 @@ beforeEach(() => {
   state.tenants = [tenant("n", "Northwind"), tenant("g", "Globex")];
   state.workspace = null;
   state.order = [];
+  state.pending.clear();
 });
 
 describe("the company gate (release-reviewer H1)", () => {
-  it("renders nothing of the company before its switch has begun, so no render-time request is the previous company's", () => {
+  it("renders nothing of the company before its switch has begun, so no render-time request is the previous company's", async () => {
     function Probe() {
       state.order.push("render the page");
       return <p>page</p>;
@@ -64,15 +78,72 @@ describe("the company gate (release-reviewer H1)", () => {
     const { wrapper } = companiesHarness({ companyId: "g", path: "/projects" });
     render(
       <Routes>
-        <Route element={<CompanyGate logoutPending={false} onLogout={() => {}} />}>
+        <Route element={<CompanyGate logoutPending={false} onLogout={() => {}} theme="light" toggleTheme={() => {}} />}>
           <Route path="/projects" element={<Probe />} />
         </Route>
       </Routes>,
       { wrapper },
     );
-    expect(screen.getByText("page")).toBeInTheDocument();
+    // The list first (TAS-501): whether this is the app shell at all is its row's to say.
+    expect(await screen.findByText("page")).toBeInTheDocument();
     expect(state.order[0]).toBe("enter g");
     expect(state.order.indexOf("render the page")).toBeGreaterThan(0);
+  });
+});
+
+describe("a company that has never opened (TAS-501, DESIGN.md §4.37)", () => {
+  const gate = () => (
+    <Routes>
+      <Route element={<CompanyGate logoutPending={false} onLogout={() => {}} theme="light" toggleTheme={() => {}} />}>
+        <Route path="/projects" element={<p>page</p>} />
+        <Route path="/settings/profile" element={<p>settings</p>} />
+      </Route>
+    </Routes>
+  );
+
+  it("draws its card instead of the app shell on any path under the prefix — and enters it, so its session is there", async () => {
+    state.tenants = [tenant("s", "Stark Industries", "AWAITING_PAYMENT")];
+    const { wrapper } = companiesHarness({ companyId: "s", path: "/settings/profile" });
+    render(gate(), { wrapper });
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Stark IndustriesAwaiting first payment");
+    expect(screen.queryByText("settings")).not.toBeInTheDocument();
+    expect(state.order).toEqual(["enter s"]);
+  });
+
+  it("a content read refused for the first payment swaps the page for the card, without closing the company", async () => {
+    state.tenants = [tenant("n", "Northwind")];
+    const { wrapper } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(gate(), { wrapper });
+    expect(await screen.findByText("page")).toBeInTheDocument();
+    act(() => {
+      for (const listener of state.pending) {
+        listener({ tenantId: "n", code: "CAPABILITY_DISABLED", reasons: ["PENDING_FIRST_PAYMENT"], requestId: "rid" });
+      }
+    });
+    expect(screen.queryByText("page")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("NorthwindAwaiting first payment");
+    expect(screen.queryByText(/is paused|could not be opened|no longer have access/)).not.toBeInTheDocument();
+  });
+
+  it("on a tab's first screen draws nothing of the company until the list says what it is", async () => {
+    let answer!: (value: unknown) => void;
+    const held = new Promise((resolve) => {
+      answer = resolve;
+    });
+    const list = fakeApi.listTenants;
+    (fakeApi as unknown as { listTenants: unknown }).listTenants = () => held;
+    try {
+      const { wrapper } = companiesHarness({ companyId: "p", path: "/projects" });
+      render(gate(), { wrapper });
+      await act(async () => {});
+      expect(screen.queryByText("page")).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("Opening Taska");
+      await act(async () => answer({ items: [tenant("p", "Pending Co", "PROVISIONING")], nextCursor: null }));
+      expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Pending CoBeing set up");
+      expect(screen.queryByText("page")).not.toBeInTheDocument();
+    } finally {
+      (fakeApi as unknown as { listTenants: unknown }).listTenants = list;
+    }
   });
 });
 

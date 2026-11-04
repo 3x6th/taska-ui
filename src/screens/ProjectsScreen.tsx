@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../hooks/useMutation";
 import { Pencil, Plus, Search } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, reportable } from "../api/errors";
 import { ApiNotice } from "../components/ApiNotice";
@@ -24,6 +24,7 @@ import type { ScreenProps } from "./App";
 
 export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   /**
@@ -53,6 +54,31 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   // in the avatar.
   const companyId = useCompanyAddress()?.companyId ?? null;
   const companyName = useCompanyName(companyId);
+
+  // A company created just now and already working (TAS-501, DESIGN.md
+  // §4.36 «Ответ 202»): focus on «New project», and the page's status says it
+  // is ready — no toast, no greeting. Read once on arrival, then taken out of
+  // the history entry, so a reload does not say it again.
+  const [arrivedReady] = useState(
+    () =>
+      companyId !== null &&
+      typeof location.state === "object" &&
+      location.state !== null &&
+      (location.state as { companyReady?: unknown }).companyReady === true,
+  );
+  useEffect(() => {
+    if (!arrivedReady) return;
+    newProjectButton.current?.focus();
+    navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null });
+    // On arrival only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const readyName = arrivedReady ? companyName : null;
+  useEffect(() => {
+    // After the first frame, so the status line that is already mounted announces it.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- an arrival's announcement, once its name is known.
+    if (readyName !== null) setStatus(`${readyName} is ready.`);
+  }, [readyName]);
 
   const meQuery = useQuery({ queryKey: ["me"], queryFn: () => taskaApi.getCurrentUser() });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => taskaApi.listProjects() });
@@ -236,6 +262,10 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
           // A filter that matches nothing is not an account with no projects,
           // and the two must not read the same (§5.6).
           <p className="projects-empty">No projects match “{filter.trim()}”.</p>
+        ) : projectsQuery.isSuccess && projects.length === 0 ? (
+          // No projects at all (§5.6, both builds — TAS-501): one line, and no
+          // second primary — «New project» in the heading is the action.
+          <p className="projects-empty projects-none">No projects yet.</p>
         ) : (
           <div className="project-grid">
             {visibleProjects.map((project) => (

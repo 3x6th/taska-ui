@@ -137,3 +137,231 @@ export async function readAllTenants(list: (params: ListTenantsParams) => Promis
   }
   return tenants;
 }
+
+/* -------------------------------------------------- creating a company (TAS-501) */
+
+/*
+ * The blueprint's creation routes (`docs/contract/b2b/b2b-openapi.yaml` at
+ * develop `758f8fc6`: `listBillingPlans`, `createTenant`, `getTenant`,
+ * `getTenantOperation`, `cancelTenantCreation`), none of which the stand serves
+ * (docs/ai/API-DIVERGENCE.md «TAS-501»). Every enum is read as a known value or
+ * the server's own string (TAS-173); money stays a string of minor units — no
+ * float ever holds a price (contracts §1, `Money`).
+ */
+
+/** `PlanVersion.period`. */
+export const PLAN_PERIODS = ["CALENDAR_MONTH", "NONE"] as const;
+export type PlanPeriod = (typeof PLAN_PERIODS)[number] | (string & {});
+
+/** `PlanVersion.state` — only `PUBLISHED` is offered (DESIGN.md §4.36). */
+export const PLAN_STATES = ["DRAFT", "PUBLISHED", "RETIRED"] as const;
+export type PlanState = (typeof PLAN_STATES)[number] | (string & {});
+
+/** `Money.currency`. */
+export const CURRENCIES = ["EUR", "USD"] as const;
+export type Currency = (typeof CURRENCIES)[number] | (string & {});
+
+/** `QuotaLimit.kind`, in the order DESIGN.md §4.36 lists them on a plan's line. */
+export const QUOTA_KINDS = ["PROJECT", "SEAT", "STORAGE_BYTES", "TASK_LIFETIME"] as const;
+export type QuotaKind = (typeof QUOTA_KINDS)[number] | (string & {});
+
+/** `Operation.state`. Never keyed on `Operation.type` (develop sends "TENANT_PROVISION"). */
+export const OPERATION_STATES = ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "MANUAL_REVIEW"] as const;
+export type OperationState = (typeof OPERATION_STATES)[number] | (string & {});
+
+/** `Money`: unsigned minor units as a decimal string, never a float. */
+export interface Money {
+  amountMinor: string;
+  currency: Currency;
+  exponent: number;
+}
+
+/** `QuotaLimit`: `limit` a decimal string, absent exactly when `unlimited`. */
+export interface QuotaLimit {
+  kind: QuotaKind;
+  limit: string | null;
+  unlimited: boolean;
+}
+
+/**
+ * One `PlanVersion`. `capabilities` is not read: the blueprint calls it opaque,
+ * and the UI neither draws nor compares it (api-contract-guard §1). **Nothing
+ * here says whether the reader may take the plan** — FREE eligibility is the
+ * server's ledger, learnt only from a refusal (B3, ask A10).
+ */
+export interface PlanVersion {
+  id: string;
+  code: string | null;
+  name: string | null;
+  version: string | null;
+  /** `null` when the answer carried no readable `Money`. */
+  price: Money | null;
+  period: PlanPeriod | null;
+  limits: QuotaLimit[];
+  state: PlanState | null;
+}
+
+/** `PlanVersionPage`, as sent: `nextCursor` absent at the end. */
+export interface PlanVersionPage {
+  items: PlanVersion[];
+  nextCursor: string | null;
+}
+
+/** `GET /billing/plans`' two parameters, as `GET /tenants` has them. */
+export interface ListBillingPlansParams {
+  cursor?: string;
+  limit?: number;
+}
+
+/** `Operation` — the creation's provisioning, read by the never-opened card (DESIGN.md §4.37). */
+export interface TenantOperation {
+  id: string;
+  type: string | null;
+  state: OperationState | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  tenantId: string | null;
+  resourceId: string | null;
+  /** An `ErrorCode` when the operation failed; kept as its string. */
+  failureCode: string | null;
+}
+
+/** `CreateTenantRequest`. The name goes trimmed (`trimTenantName`); nothing else is sent — no currency, no buyer. */
+export interface CreateTenantInput {
+  name: string;
+  planVersionId: string;
+}
+
+/** `CreateTenantResponse` — the same shape on the first send and on a replay of the same key. */
+export interface CreateTenantResult {
+  tenant: Tenant;
+  /** As the server sent it — **never trusted for its `state`** (develop reports PENDING on every replay, ask A12). */
+  operation: TenantOperation;
+}
+
+const DECIMAL = /^(0|[1-9][0-9]{0,18})$/;
+
+/** `Money`, or `null` for one whose amount is not a decimal string or whose exponent is not a small whole number. */
+export function toMoney(wire: unknown): Money | null {
+  if (typeof wire !== "object" || wire === null) return null;
+  const row = wire as Record<string, unknown>;
+  const amountMinor = typeof row.amountMinor === "string" && DECIMAL.test(row.amountMinor) ? row.amountMinor : null;
+  const currency = text(row.currency);
+  const exponent =
+    typeof row.exponent === "number" && Number.isInteger(row.exponent) && row.exponent >= 0 && row.exponent <= 18
+      ? row.exponent
+      : null;
+  if (amountMinor === null || currency === null || exponent === null) return null;
+  return { amountMinor, currency, exponent };
+}
+
+/** `QuotaLimit`, or `null` for a row that states neither a limit nor `unlimited`. */
+export function toQuotaLimit(wire: unknown): QuotaLimit | null {
+  if (typeof wire !== "object" || wire === null) return null;
+  const row = wire as Record<string, unknown>;
+  const kind = text(row.kind);
+  if (kind === null) return null;
+  const limit = typeof row.limit === "string" && DECIMAL.test(row.limit) ? row.limit : null;
+  if (row.unlimited === true) return { kind, limit: null, unlimited: true };
+  return limit === null ? null : { kind, limit, unlimited: false };
+}
+
+/** One `PlanVersion`, or `null` for a row without a usable `id` — nothing could be chosen by it. */
+export function toPlanVersion(wire: unknown): PlanVersion | null {
+  if (typeof wire !== "object" || wire === null) return null;
+  const row = wire as Record<string, unknown>;
+  const id = text(row.id);
+  if (id === null) return null;
+  return {
+    id,
+    code: text(row.code),
+    name: text(row.name),
+    version: text(row.version),
+    price: toMoney(row.price),
+    period: text(row.period),
+    limits: Array.isArray(row.limits)
+      ? row.limits.map(toQuotaLimit).filter((limit): limit is QuotaLimit => limit !== null)
+      : [],
+    state: text(row.state),
+  };
+}
+
+/** `PlanVersionPage` in the server's order — the screen orders it (DESIGN.md §4.36). */
+export function toPlanVersionPage(wire: unknown): PlanVersionPage {
+  const page = typeof wire === "object" && wire !== null ? (wire as Record<string, unknown>) : {};
+  const items = Array.isArray(page.items)
+    ? page.items.map(toPlanVersion).filter((plan): plan is PlanVersion => plan !== null)
+    : [];
+  return { items, nextCursor: text(page.nextCursor) };
+}
+
+/** One `Operation`, or `null` without a usable `id`. */
+export function toTenantOperation(wire: unknown): TenantOperation | null {
+  if (typeof wire !== "object" || wire === null) return null;
+  const row = wire as Record<string, unknown>;
+  const id = text(row.id);
+  if (id === null) return null;
+  return {
+    id,
+    type: text(row.type),
+    state: text(row.state),
+    createdAt: text(row.createdAt),
+    updatedAt: text(row.updatedAt),
+    tenantId: text(row.tenantId),
+    resourceId: text(row.resourceId),
+    failureCode: text(row.failureCode),
+  };
+}
+
+/** `CreateTenantResponse`, or `null` for an answer that holds no company or no operation. */
+export function toCreateTenantResult(wire: unknown): CreateTenantResult | null {
+  if (typeof wire !== "object" || wire === null) return null;
+  const row = wire as Record<string, unknown>;
+  const tenant = toTenant(row.tenant);
+  const operation = toTenantOperation(row.operation);
+  return tenant === null || operation === null ? null : { tenant, operation };
+}
+
+/** Every published-or-not plan, all pages, as `readAllTenants` reads the company list. */
+export async function readAllPlans(
+  list: (params: ListBillingPlansParams) => Promise<PlanVersionPage>,
+): Promise<PlanVersion[]> {
+  const plans: PlanVersion[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  for (let page = 0; page < 50; page += 1) {
+    const answer = await list(cursor === undefined ? { limit: TENANT_PAGE_MAX } : { cursor, limit: TENANT_PAGE_MAX });
+    plans.push(...answer.items);
+    if (answer.nextCursor === null || seen.has(answer.nextCursor)) break;
+    seen.add(answer.nextCursor);
+    cursor = answer.nextCursor;
+  }
+  return plans;
+}
+
+/* -------------------------------------------------------- the company's name */
+
+/** `CreateTenantRequest.name`'s `maxLength` — the blueprint's 120 (develop allows 128, ask A13). */
+export const TENANT_NAME_MAX = 120;
+
+/** A control character (`\p{Cc}`) — never part of a company's name (DESIGN.md §4.36). */
+const CONTROL = /\p{Cc}/gu;
+
+/** What a typed name keeps: everything but its control characters. Applied as the reader types. */
+export const withoutControlCharacters = (value: string) => value.replace(CONTROL, "");
+
+/** The name as it is sent: trimmed at both ends. */
+export const trimTenantName = (value: string) => value.trim();
+
+/**
+ * The one name rule, shared by the form and the mock server (api-contract-guard
+ * §9 parity): a name is sent trimmed, 1–120 code points, with no control
+ * character. `null` — acceptable; otherwise what is wrong with it.
+ */
+export function tenantNameProblem(name: string): "empty" | "untrimmed" | "too-long" | "control" | null {
+  if (name.length === 0) return "empty";
+  if (name !== name.trim()) return "untrimmed";
+  if (new RegExp(CONTROL.source, "u").test(name)) return "control";
+  if ([...name].length > TENANT_NAME_MAX) return "too-long";
+  return null;
+}

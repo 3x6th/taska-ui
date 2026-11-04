@@ -13,7 +13,8 @@ import {
   type B2bTransport,
   type LockManagerLike,
 } from "./webSession";
-import type { WorkspaceClosedEvent } from "./TaskaApi";
+import type { WorkspaceClosedEvent, WorkspacePendingEvent } from "./TaskaApi";
+import { TENANT_CREATION_KEY } from "./tenantCreation";
 
 /*
  * The companies build's session layer (TAS-500) against a scripted transport.
@@ -73,6 +74,20 @@ function fakeTransport() {
       return accessSession(`ts-${minted}`, `t${minted}`, tenantId);
     }),
     revokeTenantSession: vi.fn<B2bTransport["revokeTenantSession"]>(async () => undefined),
+    listBillingPlans: vi.fn<B2bTransport["listBillingPlans"]>(async () => ({ items: [] })),
+    createTenant: vi.fn<B2bTransport["createTenant"]>(async (_bearer, input) => ({
+      tenant: { id: "tenant-new", name: input.name, ownerId: USER, lifecycle: "PROVISIONING", restrictions: [], createdAt: "2026-11-04T10:00:00Z", version: "1" },
+      operation: { id: "operation-new", type: "TENANT_PROVISION", state: "PENDING", createdAt: "2026-11-04T10:00:00Z", updatedAt: "2026-11-04T10:00:00Z", tenantId: "tenant-new" },
+    })),
+    getTenant: vi.fn<B2bTransport["getTenant"]>(async (_bearer, tenantId) => ({
+      id: tenantId, name: "Northwind", ownerId: USER, lifecycle: "AWAITING_PAYMENT", restrictions: ["PENDING_FIRST_PAYMENT"], createdAt: "2026-05-01T09:00:00Z", version: "4",
+    })),
+    getTenantOperation: vi.fn<B2bTransport["getTenantOperation"]>(async (_bearer, tenantId, operationId) => ({
+      id: operationId, type: "TENANT_PROVISION", state: "RUNNING", createdAt: "2026-11-04T10:00:00Z", updatedAt: "2026-11-04T10:00:01Z", tenantId,
+    })),
+    cancelTenantCreation: vi.fn<B2bTransport["cancelTenantCreation"]>(async (_bearer, tenantId) => ({
+      id: tenantId, name: "Northwind", ownerId: USER, lifecycle: "OWNER_CANCELLED", restrictions: ["PENDING_FIRST_PAYMENT"], createdAt: "2026-05-01T09:00:00Z", version: "5",
+    })),
   };
 }
 
@@ -632,3 +647,124 @@ describe("another tab changes the account (§4)", () => {
     expect(client.currentWorkspace()?.tenantSessionId).toBe("ts-1");
   });
 });
+
+/* --------------------------------------------- creating a company (TAS-501) */
+
+describe("creating a company goes with the account session (api-contract-guard B1)", () => {
+  async function inNorthwind() {
+    const local = new MemoryStorage();
+    signedIn(local);
+    const tab = openTab({ local });
+    await tab.client.enterCompany(NORTHWIND);
+    return { ...tab, local };
+  }
+
+  it("from inside a company, createTenant sends WEB_GLOBAL — never the company's — with the caller's key and the body exactly", async () => {
+    const { client, transport } = await inNorthwind();
+    const result = await client.createTenant({ name: "Acme", planVersionId: "plan-free" }, "key-1");
+    expect(transport.createTenant).toHaveBeenCalledWith("g0-access", { name: "Acme", planVersionId: "plan-free" }, "key-1");
+    expect(result.tenant).toMatchObject({ id: "tenant-new", name: "Acme", lifecycle: "PROVISIONING" });
+    expect(result.operation).toMatchObject({ id: "operation-new", state: "PENDING" });
+    // The tab is still in Northwind: creating is not entering.
+    expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+  });
+
+  it("a 401 rotates the account family once and sends again with the same key and the same body", async () => {
+    const { client, transport } = await inNorthwind();
+    transport.createTenant.mockRejectedValueOnce(refusal(401, "AUTHENTICATION_REQUIRED"));
+    await client.createTenant({ name: "Acme", planVersionId: "plan-team" }, "key-2");
+    expect(transport.refreshWebSession).toHaveBeenCalledTimes(1);
+    expect(transport.createTenant.mock.calls).toEqual([
+      ["g0-access", { name: "Acme", planVersionId: "plan-team" }, "key-2"],
+      ["g1-access", { name: "Acme", planVersionId: "plan-team" }, "key-2"],
+    ]);
+  });
+
+  it("learns the new company's name, so the tab that enters it next is not «This company»", async () => {
+    const { client } = await inNorthwind();
+    await client.createTenant({ name: "Acme", planVersionId: "plan-free" }, "key-3");
+    await expect(client.enterCompany("tenant-new")).resolves.toMatchObject({ tenantId: "tenant-new", tenantName: "Acme" });
+  });
+
+  it("an answer that lands after signing out is WorkspaceClosedError, and a refusal is the server's as it came", async () => {
+    const { client, transport } = await inNorthwind();
+    const held = gate<unknown>();
+    transport.createTenant.mockReturnValueOnce(held.promise);
+    const asked = client.createTenant({ name: "Acme", planVersionId: "plan-free" }, "key-4");
+    await client.signOut();
+    held.resolve({});
+    await expect(asked).rejects.toBeInstanceOf(WorkspaceClosedError);
+
+    const other = await inNorthwind();
+    const used = refusal(409, "FREE_ELIGIBILITY_USED");
+    other.transport.createTenant.mockRejectedValueOnce(used);
+    await expect(other.client.createTenant({ name: "Acme", planVersionId: "plan-free" }, "key-5")).rejects.toBe(used);
+  });
+
+  it("the plans go with no credential; the company's own reads and its cancel go with the tab's company session", async () => {
+    const { client, transport } = await inNorthwind();
+    await client.listBillingPlans({ limit: 100 });
+    expect(transport.listBillingPlans).toHaveBeenCalledWith({ limit: 100 }, expect.any(AbortSignal));
+    await expect(client.getTenant(NORTHWIND)).resolves.toMatchObject({ lifecycle: "AWAITING_PAYMENT", creationDeadline: null });
+    expect(transport.getTenant).toHaveBeenCalledWith("t1-access", NORTHWIND, expect.any(AbortSignal));
+    await client.getTenantOperation(NORTHWIND, "operation-1");
+    expect(transport.getTenantOperation).toHaveBeenCalledWith("t1-access", NORTHWIND, "operation-1", expect.any(AbortSignal));
+    await expect(client.cancelTenantCreation(NORTHWIND, "4", "key-6")).resolves.toMatchObject({ lifecycle: "OWNER_CANCELLED" });
+    expect(transport.cancelTenantCreation).toHaveBeenCalledWith("t1-access", NORTHWIND, "4", "key-6");
+  });
+
+  it("signing out forgets the tab's creation attempt", async () => {
+    const { client, session } = await inNorthwind();
+    session.setItem(TENANT_CREATION_KEY, JSON.stringify({ v: 1, userId: USER, key: "k", name: "Acme", planVersionId: "p", sentAt: "x" }));
+    await client.signOut();
+    expect(session.getItem(TENANT_CREATION_KEY)).toBeNull();
+  });
+});
+
+describe("a company that has never opened is not closed by its refusals (api-contract-guard B4)", () => {
+  async function inPending() {
+    const local = new MemoryStorage();
+    signedIn(local);
+    const tab = openTab({ local });
+    await tab.client.enterCompany(NORTHWIND);
+    const closed: WorkspaceClosedEvent[] = [];
+    const pending: WorkspacePendingEvent[] = [];
+    tab.client.onWorkspaceClosed((event) => closed.push(event));
+    tab.client.onWorkspacePending((event) => pending.push(event));
+    return { ...tab, closed, pending };
+  }
+
+  it("a content read refused for PENDING_FIRST_PAYMENT tells the shell, keeps the session, revokes nothing and rejects as refused", async () => {
+    const { client, transport, closed, pending } = await inPending();
+    const refused = refusal(403, "CAPABILITY_DISABLED", ["PENDING_FIRST_PAYMENT"]);
+    await expect(client.call("session", async () => Promise.reject(refused), { read: true })).rejects.toBe(refused);
+    expect(pending).toEqual([
+      { tenantId: NORTHWIND, code: "CAPABILITY_DISABLED", reasons: ["PENDING_FIRST_PAYMENT"], requestId: "rid-CAPABILITY_DISABLED" },
+    ]);
+    expect(closed).toEqual([]);
+    expect(client.currentWorkspace()?.tenantSessionId).toBe("ts-1");
+    expect(transport.revokeTenantSession).not.toHaveBeenCalled();
+    // The session still answers the company's own reads.
+    await expect(client.getTenant(NORTHWIND)).resolves.toMatchObject({ id: NORTHWIND });
+  });
+
+  it("so does code PAYMENT_PENDING on a read; on a write it is that write's refusal and nothing more", async () => {
+    const { client, closed, pending } = await inPending();
+    const refused = refusal(409, "PAYMENT_PENDING");
+    await expect(client.call("session", async () => Promise.reject(refused))).rejects.toBe(refused);
+    expect(pending).toEqual([]);
+    await expect(client.call("session", async () => Promise.reject(refused), { read: true })).rejects.toBe(refused);
+    expect(pending.map((event) => event.code)).toEqual(["PAYMENT_PENDING"]);
+    expect(closed).toEqual([]);
+  });
+
+  it("a pause still closes the company, and a lapsed membership wins over the payment reason", async () => {
+    const { client, closed, pending } = await inPending();
+    await expect(
+      client.call("session", async () => Promise.reject(refusal(403, "MEMBERSHIP_INACTIVE", ["PENDING_FIRST_PAYMENT"])), { read: true }),
+    ).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+    expect(pending).toEqual([]);
+  });
+});
+

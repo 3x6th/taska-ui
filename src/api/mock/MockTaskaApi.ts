@@ -47,6 +47,7 @@ import type {
   WorkflowTransitionInput,
   Workspace,
   WorkspaceClosedEvent,
+  WorkspacePendingEvent,
 } from "../TaskaApi";
 import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
@@ -65,7 +66,16 @@ import {
   WORKLOG_COMMENT_MAX_LENGTH,
   LEGACY_TENANCY,
 } from "../TaskaApi";
-import type { ListTenantsParams, TenantPage } from "../tenants";
+import type {
+  CreateTenantInput,
+  CreateTenantResult,
+  ListBillingPlansParams,
+  ListTenantsParams,
+  PlanVersionPage,
+  Tenant,
+  TenantOperation,
+  TenantPage,
+} from "../tenants";
 import {
   ATTACHMENT_BUCKET,
   ATTACHMENT_MAX_SIZE_BYTES,
@@ -9584,8 +9594,33 @@ export class MockTaskaApi implements TaskaApi {
     return () => {};
   }
 
+  onWorkspacePending(_listener: (event: WorkspacePendingEvent) => void): () => void {
+    return () => {};
+  }
+
   lastCompanyHint(): string | null {
     return null;
+  }
+
+  // Creating a company (TAS-501): today's build has none, like the list above.
+  async listBillingPlans(_params?: ListBillingPlansParams): Promise<PlanVersionPage> {
+    throw new TenancyUnavailableError("listBillingPlans");
+  }
+
+  async createTenant(_input: CreateTenantInput, _idempotencyKey: string): Promise<CreateTenantResult> {
+    throw new TenancyUnavailableError("createTenant");
+  }
+
+  async getTenant(_tenantId: string): Promise<Tenant> {
+    throw new TenancyUnavailableError("getTenant");
+  }
+
+  async getTenantOperation(_tenantId: string, _operationId: string): Promise<TenantOperation> {
+    throw new TenancyUnavailableError("getTenantOperation");
+  }
+
+  async cancelTenantCreation(_tenantId: string, _version: string, _idempotencyKey: string): Promise<Tenant> {
+    throw new TenancyUnavailableError("cancelTenantCreation");
   }
 
   async getMeta(): Promise<EnumDictionaries> {

@@ -1,9 +1,24 @@
 import { clearLastCompany, readLastCompany, writeLastCompany } from "../lib/lastCompany";
 import { WorkspaceClosedError, apiErrorFacts, isWorkspaceClosed, refusalCode, refusalReasons } from "./errors";
 import { SessionExpiredSignal, WorkspaceClosedSignal } from "./session";
-import type { LoginInput, SignInResult, Workspace, WorkspaceClosedEvent } from "./TaskaApi";
+import type { LoginInput, SignInResult, Workspace, WorkspaceClosedEvent, WorkspacePendingEvent } from "./TaskaApi";
 import { TRANSPORT_FAILURE_REASON } from "./TaskaApi";
-import { toTenantPage, type ListTenantsParams, type TenantPage } from "./tenants";
+import { TENANT_CREATION_KEY } from "./tenantCreation";
+import {
+  toCreateTenantResult,
+  toPlanVersionPage,
+  toTenant,
+  toTenantOperation,
+  toTenantPage,
+  type CreateTenantInput,
+  type CreateTenantResult,
+  type ListBillingPlansParams,
+  type ListTenantsParams,
+  type PlanVersionPage,
+  type Tenant,
+  type TenantOperation,
+  type TenantPage,
+} from "./tenants";
 
 /*
  * The companies build's session layer (TAS-500), shared by both
@@ -71,6 +86,16 @@ export interface B2bTransport {
   createTenantSession(bearer: string, tenantId: string, idempotencyKey: string): Promise<unknown>;
   /** `DELETE /auth/tenant-sessions/{sessionId}` with WEB_GLOBAL — 204. */
   revokeTenantSession(bearer: string, tenantSessionId: string, idempotencyKey: string): Promise<void>;
+  /** `GET /billing/plans` — public, no credential (TAS-501). */
+  listBillingPlans(params: ListBillingPlansParams, signal: AbortSignal): Promise<unknown>;
+  /** `POST /tenants` with WEB_GLOBAL and the caller's `Idempotency-Key` — 202 `CreateTenantResponse`. */
+  createTenant(bearer: string, input: CreateTenantInput, idempotencyKey: string): Promise<unknown>;
+  /** `GET /tenants/{tenantId}` with that company's WEB_TENANT. */
+  getTenant(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
+  /** `GET /tenants/{tenantId}/operations/{operationId}` with that company's WEB_TENANT. */
+  getTenantOperation(bearer: string | null, tenantId: string, operationId: string, signal: AbortSignal): Promise<unknown>;
+  /** `POST /tenants/{tenantId}/cancel-creation` with WEB_TENANT, `Idempotency-Key` and `If-Match: "{version}"`. */
+  cancelTenantCreation(bearer: string | null, tenantId: string, version: string, idempotencyKey: string): Promise<unknown>;
 }
 
 /** `AccessSession` as this layer reads it: the four strings it needs, `tenantId` only on a company session. */
@@ -322,6 +347,7 @@ export class WebSessionClient {
   private readonly expired = new SessionExpiredSignal();
   private readonly changeListeners = new Set<() => void>();
   private readonly closed = new WorkspaceClosedSignal<WorkspaceClosedEvent>();
+  private readonly pending = new WorkspaceClosedSignal<WorkspacePendingEvent>();
 
   constructor(deps: WebSessionDeps) {
     this.transport = deps.transport;
@@ -413,6 +439,7 @@ export class WebSessionClient {
         if (account) void this.revokeQuietly(owned.record.tenantSessionId, account, false);
       }
       this.removeTab();
+      this.removeItem(this.session, TENANT_CREATION_KEY);
       this.removeItem(this.local, WEB_SESSION_KEY);
       clearLastCompany(this.local);
       this.accountUserId = null;
@@ -547,6 +574,81 @@ export class WebSessionClient {
     return this.closed.subscribe(listener);
   }
 
+  onWorkspacePending(listener: (event: WorkspacePendingEvent) => void): () => void {
+    return this.pending.subscribe(listener);
+  }
+
+  /* ------------------------------------------------ creating a company (TAS-501) */
+
+  /** `GET /billing/plans`: public metadata, sent with no credential. */
+  async listBillingPlans(params: ListBillingPlansParams = {}): Promise<PlanVersionPage> {
+    return toPlanVersionPage(await this.call("none", (_bearer, signal) => this.transport.listBillingPlans(params, signal)));
+  }
+
+  /**
+   * `POST /tenants` — **always the account session** (api-contract-guard B1):
+   * from inside a company `call("session")` would send that company's session,
+   * which the server refuses. Guarded by the account epoch, as the company list
+   * is: a sign-out or another account meanwhile answers `WorkspaceClosedError`.
+   * A 401 rotates the account family once and sends again — the same key and
+   * the same body, because `send` is the same closure. The new company's name
+   * is learnt here, so the tab that enters it next is not «This company».
+   */
+  async createTenant(input: CreateTenantInput, idempotencyKey: string): Promise<CreateTenantResult> {
+    const epoch = this.accountEpoch;
+    const body: CreateTenantInput = { name: input.name, planVersionId: input.planVersionId };
+    let result: CreateTenantResult | null;
+    try {
+      result = toCreateTenantResult(
+        await this.withAccount((bearer) => this.transport.createTenant(bearer, body, idempotencyKey)),
+      );
+    } catch (error) {
+      if (epoch !== this.accountEpoch) throw new WorkspaceClosedError();
+      if (error instanceof AccountGone) {
+        if (error.refused) this.expireAccount();
+        throw new WorkspaceClosedError();
+      }
+      throw error;
+    }
+    if (epoch !== this.accountEpoch) throw new WorkspaceClosedError();
+    if (result === null) throw new Error("The creation answer held no company.");
+    if (result.tenant.name !== null) this.names.set(result.tenant.id, result.tenant.name);
+    return result;
+  }
+
+  /** `GET /tenants/{tenantId}` with the tab's company session — the never-opened card's read (DESIGN.md §4.37). */
+  async getTenant(tenantId: string): Promise<Tenant> {
+    const tenant = toTenant(await this.call("session", (bearer, signal) => this.transport.getTenant(bearer, tenantId, signal)));
+    if (tenant === null) throw new Error("The answer held no company.");
+    this.learnName(tenant);
+    return tenant;
+  }
+
+  /** `GET /tenants/{tenantId}/operations/{operationId}` with the tab's company session. */
+  async getTenantOperation(tenantId: string, operationId: string): Promise<TenantOperation> {
+    const operation = toTenantOperation(
+      await this.call("session", (bearer, signal) => this.transport.getTenantOperation(bearer, tenantId, operationId, signal)),
+    );
+    if (operation === null) throw new Error("The answer held no operation.");
+    return operation;
+  }
+
+  /** `POST /tenants/{tenantId}/cancel-creation` with the tab's company session, the key and `If-Match`. */
+  async cancelTenantCreation(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant> {
+    const tenant = toTenant(
+      await this.call("session", (bearer) => this.transport.cancelTenantCreation(bearer, tenantId, version, idempotencyKey)),
+    );
+    if (tenant === null) throw new Error("The answer held no company.");
+    this.learnName(tenant);
+    return tenant;
+  }
+
+  private learnName(tenant: Tenant): void {
+    if (tenant.name === null) return;
+    this.names.set(tenant.id, tenant.name);
+    this.renameOwned();
+  }
+
   /* --------------------------------------------------------------- requests */
 
   /**
@@ -563,9 +665,11 @@ export class WebSessionClient {
    * `TENANT_MISMATCH` close the company. So does a **read** refused
    * `CAPABILITY_DISABLED` with `reasons` — a paused or blocked company whose
    * content cannot be read is an answer about the company, not a missing page
-   * (DESIGN.md §4.35, api-contract-guard N2, ask A2c). `READ_ONLY`, and
-   * `CAPABILITY_DISABLED` on a write, do not: they reject that one request
-   * with their `reasons`.
+   * (DESIGN.md §4.35, api-contract-guard N2, ask A2c) — **except** one whose
+   * `reasons` carry `PENDING_FIRST_PAYMENT`, or code `PAYMENT_PENDING`: that
+   * company has never opened, and the read only tells `onWorkspacePending`
+   * (TAS-501, B4). `READ_ONLY`, and `CAPABILITY_DISABLED` on a write, do not
+   * close: they reject that one request with their `reasons`.
    */
   async call<T>(
     credential: RequestCredential,
@@ -601,8 +705,21 @@ export class WebSessionClient {
         }
         const code = refusalCode(error);
         const reasons = refusalReasons(error);
-        const contentClosed = read && code === "CAPABILITY_DISABLED" && reasons.length > 0;
-        if (code !== null && (CLOSING_CODES.has(code) || contentClosed)) {
+        if (code !== null && CLOSING_CODES.has(code)) {
+          this.closeWorkspace(owned, code, requestId, reasons, message);
+          throw new WorkspaceClosedError();
+        }
+        // A company that has never opened (TAS-501, B4): its content is
+        // refused until the first payment, and that is no closure — the
+        // session stays, because paying, reading the company and cancelling
+        // go with it. The shell is told; the read rejects as it was refused.
+        if (read && (code === "PAYMENT_PENDING" || reasons.includes("PENDING_FIRST_PAYMENT"))) {
+          if (owned === this.owned) {
+            this.pending.emit({ tenantId: owned.record.tenantId, code, reasons: [...reasons], requestId });
+          }
+          throw error;
+        }
+        if (read && code === "CAPABILITY_DISABLED" && reasons.length > 0) {
           this.closeWorkspace(owned, code, requestId, reasons, message);
           throw new WorkspaceClosedError();
         }
@@ -936,6 +1053,7 @@ export class WebSessionClient {
     this.moveAccountEpoch();
     if (this.owned) this.dropOwned();
     this.removeTab();
+    this.removeItem(this.session, TENANT_CREATION_KEY);
     this.removeItem(this.local, WEB_SESSION_KEY);
     this.accountUserId = null;
     this.notifyChange();
@@ -959,6 +1077,7 @@ export class WebSessionClient {
     this.moveAccountEpoch();
     if (this.owned) this.dropOwned();
     this.removeTab();
+    this.removeItem(this.session, TENANT_CREATION_KEY);
     this.accountUserId = account?.userId ?? null;
     this.notifyChange();
     if (account === null && hadAccount) this.expired.emit();

@@ -1,5 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
-import { isKnownRestrictionCode, isKnownTenantLifecycle, readAllTenants, toTenant, toTenantPage, type TenantPage } from "./tenants";
+import {
+  isKnownRestrictionCode,
+  isKnownTenantLifecycle,
+  readAllPlans,
+  readAllTenants,
+  tenantNameProblem,
+  toCreateTenantResult,
+  toMoney,
+  toPlanVersion,
+  toPlanVersionPage,
+  toQuotaLimit,
+  toTenant,
+  toTenantOperation,
+  toTenantPage,
+  trimTenantName,
+  withoutControlCharacters,
+  type TenantPage,
+} from "./tenants";
 
 const wire = {
   id: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b01",
@@ -75,3 +92,115 @@ describe("reading every company (DESIGN.md §4.33)", () => {
     expect(list).toHaveBeenCalledTimes(2);
   });
 });
+
+/* ------------------------------------------------ creating a company (TAS-501) */
+
+const plan = {
+  id: "7d2c4e1a-5b3f-4a6c-9e8d-0f1a2b3c4d02",
+  code: "team",
+  version: "2",
+  name: "Team",
+  price: { amountMinor: "2000", currency: "EUR", exponent: 2 },
+  period: "CALENDAR_MONTH",
+  limits: [
+    { kind: "PROJECT", limit: "5", unlimited: false },
+    { kind: "TASK_LIFETIME", unlimited: true },
+  ],
+  capabilities: ["projects.basic"],
+  state: "PUBLISHED",
+  publishedAt: "2026-05-01T00:00:00Z",
+};
+
+describe("a plan as the catalogue sends it (api-contract-guard §1, §9 parity)", () => {
+  it("reads what the form draws, leaves capabilities unread, and keeps money a string", () => {
+    expect(toPlanVersion(plan)).toEqual({
+      id: plan.id,
+      code: "team",
+      name: "Team",
+      version: "2",
+      price: { amountMinor: "2000", currency: "EUR", exponent: 2 },
+      period: "CALENDAR_MONTH",
+      limits: [
+        { kind: "PROJECT", limit: "5", unlimited: false },
+        { kind: "TASK_LIFETIME", limit: null, unlimited: true },
+      ],
+      state: "PUBLISHED",
+    });
+    expect(toPlanVersion(plan)).not.toHaveProperty("capabilities");
+  });
+
+  it("keeps a period, state, currency or quota kind this build does not know as its string", () => {
+    const read = toPlanVersion({
+      ...plan,
+      period: "CALENDAR_QUARTER",
+      state: "SCHEDULED",
+      price: { amountMinor: "100", currency: "GBP", exponent: 2 },
+      limits: [{ kind: "API_CALLS", limit: "1000", unlimited: false }],
+    });
+    expect(read).toMatchObject({ period: "CALENDAR_QUARTER", state: "SCHEDULED", price: { currency: "GBP" } });
+    expect(read?.limits).toEqual([{ kind: "API_CALLS", limit: "1000", unlimited: false }]);
+  });
+
+  it("refuses money that is not a decimal string of minor units — never a float", () => {
+    expect(toMoney({ amountMinor: 20, currency: "EUR", exponent: 2 })).toBeNull();
+    expect(toMoney({ amountMinor: "20.00", currency: "EUR", exponent: 2 })).toBeNull();
+    expect(toMoney({ amountMinor: "020", currency: "EUR", exponent: 2 })).toBeNull();
+    expect(toMoney({ amountMinor: "0", currency: "EUR", exponent: 2.5 })).toBeNull();
+    expect(toMoney({ amountMinor: "9223372036854775807", currency: "EUR", exponent: 2 })?.amountMinor).toBe("9223372036854775807");
+    expect(toQuotaLimit({ kind: "SEAT", unlimited: false })).toBeNull();
+    expect(toQuotaLimit({ kind: "SEAT", limit: "5", unlimited: true })).toEqual({ kind: "SEAT", limit: null, unlimited: true });
+  });
+
+  it("a page ends where nextCursor is absent, and every page is read", async () => {
+    expect(toPlanVersionPage({ items: [plan, { name: "no id" }] })).toEqual({ items: [toPlanVersion(plan)], nextCursor: null });
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [toPlanVersion(plan)!], nextCursor: "p2" })
+      .mockResolvedValueOnce({ items: [toPlanVersion({ ...plan, id: "other" })!], nextCursor: null });
+    expect((await readAllPlans(list)).map((item) => item.id)).toEqual([plan.id, "other"]);
+    expect(list.mock.calls).toEqual([[{ limit: 100 }], [{ cursor: "p2", limit: 100 }]]);
+  });
+});
+
+describe("a creation's answer (202 CreateTenantResponse)", () => {
+  const operation = {
+    id: "9a1b2c3d-0000-4000-8000-000000000001",
+    type: "TENANT_PROVISION",
+    state: "PENDING",
+    createdAt: "2026-11-04T10:00:00Z",
+    updatedAt: "2026-11-04T10:00:00Z",
+    tenantId: wire.id,
+  };
+
+  it("reads the company and the operation; an absent deadline is null; an unknown state is kept", () => {
+    const result = toCreateTenantResult({ tenant: { ...wire, lifecycle: "PROVISIONING" }, operation });
+    expect(result?.tenant).toMatchObject({ id: wire.id, lifecycle: "PROVISIONING", creationDeadline: null });
+    expect(result?.operation).toEqual({ ...operation, resourceId: null, failureCode: null });
+    expect(toTenantOperation({ ...operation, state: "COMPENSATING", failureCode: "DEPENDENCY_UNAVAILABLE" })).toMatchObject({
+      state: "COMPENSATING",
+      failureCode: "DEPENDENCY_UNAVAILABLE",
+    });
+  });
+
+  it("is no answer without the company or the operation", () => {
+    expect(toCreateTenantResult({ tenant: wire })).toBeNull();
+    expect(toCreateTenantResult({ operation })).toBeNull();
+    expect(toCreateTenantResult(null)).toBeNull();
+  });
+});
+
+describe("the one name rule, shared by the form and the mock (DESIGN.md §4.36, ask A13)", () => {
+  it("is trimmed, 1–120 code points, with no control character", () => {
+    expect(tenantNameProblem("Acme")).toBeNull();
+    expect(tenantNameProblem("")).toBe("empty");
+    expect(tenantNameProblem(" Acme")).toBe("untrimmed");
+    expect(tenantNameProblem("Ac\u0007me")).toBe("control");
+    expect(tenantNameProblem("x".repeat(120))).toBeNull();
+    expect(tenantNameProblem("x".repeat(121))).toBe("too-long");
+    // Code points, not UTF-16 units: 120 emoji are 240 units and still a name.
+    expect(tenantNameProblem("🙂".repeat(120))).toBeNull();
+    expect(trimTenantName("  Acme \n")).toBe("Acme");
+    expect(withoutControlCharacters("Ac\tme\u0000")).toBe("Acme");
+  });
+});
+

@@ -69,7 +69,16 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   settleWorkspace: "session",
   onWorkspaceChange: "session",
   onWorkspaceClosed: "session",
+  onWorkspacePending: "session",
   lastCompanyHint: "session",
+  // TAS-501: the session layer picks their credentials, as for the REST leg —
+  // none for the plans, the account's for creating, the company session for
+  // the other three (`MockTenantServer`'s "tenant-control" kind).
+  listBillingPlans: "session",
+  createTenant: "session",
+  getTenant: "session",
+  getTenantOperation: "session",
+  cancelTenantCreation: "session",
   getMeta: "account",
   listProjects: "tenant-read",
   createProject: "tenant-write",
@@ -185,7 +194,13 @@ type SessionMethods = Pick<
   | "settleWorkspace"
   | "onWorkspaceChange"
   | "onWorkspaceClosed"
+  | "onWorkspacePending"
   | "lastCompanyHint"
+  | "listBillingPlans"
+  | "createTenant"
+  | "getTenant"
+  | "getTenantOperation"
+  | "cancelTenantCreation"
 >;
 
 type AnyMethod = (...args: unknown[]) => unknown;
@@ -238,7 +253,13 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     settleWorkspace: () => web.settleWorkspace(),
     onWorkspaceChange: (listener) => web.onWorkspaceChange(listener),
     onWorkspaceClosed: (listener) => web.onWorkspaceClosed(listener),
+    onWorkspacePending: (listener) => web.onWorkspacePending(listener),
     lastCompanyHint: () => web.lastCompanyHint(),
+    listBillingPlans: (params) => web.listBillingPlans(params),
+    createTenant: (input, key) => web.createTenant(input, key),
+    getTenant: (tenantId) => web.getTenant(tenantId),
+    getTenantOperation: (tenantId, operationId) => web.getTenantOperation(tenantId, operationId),
+    cancelTenantCreation: (tenantId, version, key) => web.cancelTenantCreation(tenantId, version, key),
   };
 
   const api: Record<string, unknown> = {};

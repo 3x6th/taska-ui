@@ -68,7 +68,7 @@ test("an address without a company opens in the tab's company", async ({ page })
 test("Nina, in no company, is told so; Mark, the administrator, meets the emailed-code note and no session", async ({ page }) => {
   await signIn(page, "nina@example.com");
   await expect(page.getByRole("heading", { level: 1, name: "You’re not in a company yet" })).toBeVisible();
-  await expect(page.getByText("Work in Taska happens inside a company. Ask a company admin to invite you.")).toBeVisible();
+  await expect(page.getByText("Work in Taska happens inside a company. Create one, or ask a company admin to invite you.")).toBeVisible();
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(page).toHaveURL(`${B2B}/login`);
 
