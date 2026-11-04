@@ -419,9 +419,10 @@ Slide-over — единственная поверхность с горизон
   вход карточки логина `.auth-card-wrap` (`tk-pop` 500ms из прототипа): экран
   показывается один раз за сессию и ни с чем не конкурирует. Исключений внутри
   рабочих экранов не бывает.
-- Выбор компании (§4.33) живёт в той же оболочке, но входит `tk-pop var(--dur-enter)`: 500 мс
-  `.auth-card-wrap` остаются только за `/login`, `/invite` и `/auth/callback` — экран компаний
-  открывают изнутри приложения по нескольку раз в день (TAS-500).
+- Выбор компании (§4.33), создание (§4.36) и карточка компании до открытия (§4.37) живут в той же
+  оболочке, но входят `tk-pop var(--dur-enter)`: 500 мс `.auth-card-wrap` остаются только за `/login`,
+  `/invite` и `/auth/callback` (TAS-500, TAS-501). Переход между ними — смена содержимого той же
+  карточки: оболочка не перемонтируется, второго входа нет.
 
 ---
 
@@ -457,8 +458,8 @@ Slide-over — единственная поверхность с горизон
   (§4.21). (Прежние `.5`/`pointer-events:none` в коде не действовали; контрасты §2.2 и §5.7
   мерены на `.58`.)
 - **`aria-disabled` — два вида, по причине.** *В полёте* (запрос, начатый этим нажатием): без
-  затемнения, `cursor:progress`, подпись прежняя — кроме форм входа (§4.27: «Signing in»,
-  «Activating»). *Стойко недоступен после нажатия или до выбора* (Add без выбранного, «Send new
+  затемнения, `cursor:progress`, подпись прежняя — кроме форм карточки оболочки входа (§4.27: «Signing in»,
+  «Activating»; §4.36: «Creating company»). *Стойко недоступен после нажатия или до выбора* (Add без выбранного, «Send new
   link» после 409): рецепт `disabled` руками — `opacity:.58; cursor:not-allowed`. В обоих
   случаях обработчик сам отказывается работать, `Cmd/Ctrl+Enter` тоже. Оба вида в одной кнопке — Add label (Labels): пустое имя — `disabled`; имя, набранное, пока предыдущая метка в полёте, — «в полёте». Отправка очищает поле и ставит в него фокус, как Add в Members (§4.22): нажатая кнопка, ставшая `disabled` от пустого поля, роняла фокус в `<body>` (замер 2026-10-24).
 
@@ -3017,7 +3018,8 @@ B4). Обычный клик входит в этой вкладке; модиф
 | --- | --- | --- |
 | вход в этот заход отказал `MEMBERSHIP_INACTIVE` | «You no longer have access» | вторая |
 | `DELETED` / `DELETING` | «Deleted» / «Being deleted» | вторая |
-| `AUTO_CLOSED`, `OWNER_CANCELLED` | «Closed» | вторая |
+| `OWNER_CANCELLED` | «Cancelled» | вторая |
+| `AUTO_CLOSED` | «Closed» | вторая |
 | `PROVISIONING` | «Being set up» | вторая |
 | `PLATFORM_BLOCK` в `restrictions` | «Blocked by Taska» | первая |
 | `OWNER_PAUSE` в `restrictions` | «Paused by its owner» | первая |
@@ -3025,7 +3027,8 @@ B4). Обычный клик входит в этой вкладке; модиф
 | `ACTIVE` | — | первая |
 | `lifecycle` вне словаря | код как есть (§6) | первая |
 
-Группа — только порядок и цвет имени, не допуск. Финансовые ограничения строки здесь не дают — их
+Строки `PROVISIONING`, `AWAITING_PAYMENT`, `OWNER_CANCELLED`, `AUTO_CLOSED` ведут на адрес компании, где
+рисуется карточка §4.37 (TAS-501). Группа — только порядок и цвет имени, не допуск. Финансовые ограничения строки здесь не дают — их
 слот у TAS-512. Ролей «Admin»/«Member» и состояния членства нет: `TenantPage` их не несёт, чтения
 на строку нет никогда (довод §4.4); придут в списке — встают метой на место «Owner», раскладка та же.
 
@@ -3033,8 +3036,16 @@ B4). Обычный клик входит в этой вкладке; модиф
 при равенстве — по id. По использованию не переставлять.
 
 **Нет компаний.** `h1` «You’re not in a company yet»; 13/400 `--fg`, lh 1.55: «Work in Taska happens
-inside a company. Ask a company admin to invite you.» Подвал тот же. Между текстом и подвалом —
-место primary «Create a company» во всю ширину, 39 (TAS-501); до него пусто, не заглушка.
+inside a company. Create one, or ask a company admin to invite you.» Подвал тот же. Между текстом и
+подвалом — primary-ссылка «Create a company» (`/companies/new`, §4.36) во всю ширину, 39,
+`margin-top:14`.
+
+**Создать** (TAS-501). Под списком — ссылка «Create a company» (`/companies/new`) боксом строки
+(`margin-inline:-11px`, `min-height:44`, padding `7 11`, radius 9, `gap:10`, hover `--surface-3`):
+`Plus` 15 `--fg-2` и 13/550 `--fg-2`, на hover — `--fg`. Вне `ul`: это не компания, и счёт списка её
+не включает; `margin-top:2`. Первая группа пуста (только закрытые) — вместо строки primary «Create a
+company» во всю ширину, 39, `margin-top:14`, как в «Нет компаний». Tab: строки → Create a company →
+Log out → тема.
 
 **Загрузка** (экран открыт первым — перезагрузка `/companies`, чистая вкладка): одна строка 13/400
 `--fg-2` по центру, `role="status"`, «Loading your companies»; без спиннера и скелетона — число
@@ -3087,8 +3098,9 @@ Platform access (вход в компанию без членства) — не 
     `cursor:progress`, без подписи: запись компании A не должна доехать, когда на экране уже B
     (api-contract-guard §4). Текущая строка и «All companies» не меняются.
   - *Подвал* — `border-top:1px solid var(--border); margin-top:6; padding-top:6`; «All companies» —
-    класс строки Settings §4.16, `Building2` 15, на `/companies`; при ≤ 820 — 44 в высоту, как строки. TAS-501 ставит под ним «Create a
-    company» (`Plus` 15).
+    класс строки Settings §4.16, `Building2` 15, на `/companies`; при ≤ 820 — 44 в высоту, как строки. Под ним — «Create a company» тем
+    же классом, `Plus` 15, ссылкой на `/companies/new` с адресом вкладки в state маршрута (`from`);
+    ≤ 820 — 44. Пока запись вкладки в полёте, не выключается: уходит из компании, как «All companies».
   - Список не прочитан — `ErrorNote` «Your companies could not be loaded.» с id на месте строк;
     подвал на месте. Пустым не бывает.
 - **Переключение.** Клик или Enter — переход этой вкладки (push; Back возвращает в прежнюю компанию
@@ -3134,12 +3146,14 @@ Request id нет: это ответ, не сбой (кроме последне
 | `MEMBERSHIP_INACTIVE` | «You no longer have access to {Company}» | «Your membership was suspended or removed. If that’s a mistake, ask one of the company’s admins.» |
 | `PLATFORM_BLOCK` | «{Company} is blocked» | «Taska has blocked this company, so its projects can’t be opened right now.» |
 | `OWNER_PAUSE` | «{Company} is paused» | «Its owner has paused it, so its projects can’t be opened right now.» |
-| `PROVISIONING` | «{Company} is still being set up» | «Its projects can be opened once setup finishes.» |
-| `AUTO_CLOSED`, `OWNER_CANCELLED` | «{Company} is closed» | «Its projects can no longer be opened.» |
 | `DELETING` / `DELETED` | «{Company} is being deleted» / «{Company} has been deleted» | «Its projects can no longer be opened.» |
 | код вне таблицы и строки списка нет | «{Company} could not be opened» | слова сервера как есть и `X-Request-Id` (§4.18 «Request id»): это уже не ответ о компании, а сбой, который читатель перешлёт |
 
-**Не этот экран.** 404 (`TENANT_NOT_FOUND`, `RESOURCE_NOT_FOUND`) и `VALIDATION_FAILED` на id
+**Не этот экран.** Компания, которая ещё не открывалась (`PROVISIONING`, `AWAITING_PAYMENT`,
+`OWNER_CANCELLED`, `AUTO_CLOSED`, или отказ чтения с `PENDING_FIRST_PAYMENT` в `reasons` или
+`PAYMENT_PENDING`), — карточка §4.37 на том же адресе, не этот экран, и сессия компании при этом не
+отзывается (TAS-501). Если бэк когда-нибудь закроет уже открывавшуюся компанию через `AUTO_CLOSED`,
+строка вернётся сюда. 404 (`TENANT_NOT_FOUND`, `RESOURCE_NOT_FOUND`) и `VALIDATION_FAILED` на id
 компании из адреса (`/c/not-a-uuid/…` — слова сервера про «tenantId» на экран не попадают, §4.33
 «Слово») — §4.18 без изменений, чужая компания не называется. Бывший участник получает
 `MEMBERSHIP_INACTIVE` и этот экран, посторонний — 404 и §4.18; так ничего не раскрывается. Транспорт,
@@ -3153,6 +3167,169 @@ not open this company right now. Nothing in it is known yet.» со словам
 **Чужая задача по ссылке.** Адрес называет компанию: читатель в ней `ACTIVE` — вкладка входит и
 открывает задачу без вопроса; закрыта — таблица выше; не его — §4.18. Адрес без компании — §5.1 и
 §4.18.
+
+### 4.36 Создание компании (TAS-501)
+Только сборка B2B. Решение art-director 2026-11-04 до сборки; ключ идемпотентности, чтение операции и
+сессия — api-contract-guard (`docs/ai/API-DIVERGENCE.md` «TAS-501»).
+
+**Где.** `/companies/new`, оболочка §4.33 (`AuthShell`, карточка 392, без табов). Не модалка — ни внутри
+компании, ни поверх выбора: создание идёт **сессией аккаунта** (contracts §2; из компании тоже), его итог
+меняет компанию вкладки, а следующие шаги (§4.37) — страницы. Заголовок документа — «Create a company —
+Taska».
+
+**Входы** — только эти, все `<a href="/companies/new">` (модификатор — новая вкладка): выбор без компаний
+и выбор с пустой первой группой — primary (§4.33); выбор со списком — строка под списком (§4.33);
+переключатель — строка под «All companies» (§4.34); закрытое создание — primary (§4.37). В меню профиля,
+Projects и Settings входа нет. Вход из компании кладёт её адрес в state маршрута (`from`). Каталог планов
+читается заранее, когда вход отрисован, чтобы форма обычно открывалась целой.
+
+**Анатомия** (`.form-stack`, gap 13):
+- `h1.auth-title` «Create a company» (14/650, `tabIndex=-1`).
+- «Company name» — поле карточки входа (§4.3, фон `--surface`, 38), `autoComplete="organization"`,
+  `maxLength=120` (`CreateTenantRequest.name` 1..120), без плейсхолдера, уходит обрезанным по краям; символы
+  управления не принимаются. Подсказка 11.5 `--fg-2`, `aria-describedby`: «Everyone you invite will see
+  this name.» Пусто после обрезки — «Enter a company name.» на месте подсказки и `aria-invalid`, только после
+  первой правки или нажатия (поведение Create account §4.31); Create с причиной ничего не шлёт и ставит фокус
+  в поле, кнопка не бледнеет.
+- **Plan** — `fieldset`, `legend` «Plan» (11.5/550 `--fg-2`). Рецепт радио-пары Access из New access token
+  (§5.9, `.token-access-option`): нативное радио 14, `accent-color:var(--accent)` (роль «активное» §2.1, как
+  §4.29 — акцентом действия не считается), строка — `label` во всю ширину, padding `6 0`, gap 4, вся строка —
+  цель нажатия. Без рамок, карточек, теней, «Recommended», галочек фич и сравнения: это выбор в форме, а не
+  страница цен.
+  - Первая строка — `PlanVersion.name` 12.5/600 `--fg` (имя с кириллицей — `code`, §6); справа
+    (`margin-left:auto`) цена 12.5/550 `--fg`: «€20 a month» (`CALENDAR_MONTH`), «€20» (`NONE`); нулевая цена
+    — пусто. Цена — из `Money` строкой minor units, без float (§6): `amountMinor / 10^exponent`, символ валюты —
+    `Intl.NumberFormat('en', {style:'currency'})`, без «.00» у целой суммы.
+  - Вторая — лимиты одной строкой 11.5/400 `--fg-2` через « · », в порядке PROJECT, SEAT, STORAGE_BYTES,
+    TASK_LIFETIME: «1 project · 5 members · 100 MB storage · 50 issues per project»; `unlimited` — «unlimited
+    projects / members / storage / issues»; байты — десятичные (100 000 000 — «100 MB», 5 000 000 000 —
+    «5 GB»), не больше одного знака после точки; `kind` вне словаря — `{limit} {KIND}` как есть (§6).
+  - У плана с ненулевой ценой — третья строка 11.5 `--fg-2`: «Nothing is charged now. The company opens once
+    its first payment is confirmed.» Срок оплаты здесь не называется: его снимок даёт только созданная
+    компания (`creationDeadline`, §4.37), а настройка сервера — не константа клиента.
+  - `aria-labelledby` — имя и цена; `aria-describedby` — лимиты и третья строка.
+  - Набор — `GET /billing/plans` все страницы, только `state = PUBLISHED`, по цене, затем по имени.
+    `capabilities` не рисуются и не сравниваются. По умолчанию выбран бесплатный план (нулевая цена), если не
+    известно, что он израсходован; платный по умолчанию не выбирается никогда. Ничего не выбрано — Create
+    «стойко недоступна до выбора» (§4.1); нажатие ставит фокус на группу.
+  - **Бесплатный израсходован.** Права заранее контракт не даёт (ask A10 в TAS-338): бесплатный план
+    предлагается всегда, и клиент не выводит право из списка компаний, владельца или кода плана. Узнаётся
+    только отказом 409 `FREE_ELIGIBILITY_USED`: строка остаётся на месте, радио `disabled` (`.58` только на нём,
+    стрелки его пропускают), имя `--fg-2` (не `opacity` — §2.2 «Дизейбл»), вместо лимитов 11.5 `--fg-2`:
+    «You’ve used your one free company. Deleting it doesn’t bring it back.» Знание держится в памяти до выхода
+    из аккаунта (не в хранилище): право не возвращается (contracts §8).
+  - Каталог в полёте — на месте группы строка 12.5/400 `--fg-2`, `role="status"`: «Loading plans»; без
+    скелетона (число планов неизвестно). Не прочитался — `ErrorNote` «Plans could not be loaded.» со словами
+    сервера и id (не живая — состояние на входе); на месте Create — secondary «Try again» во всю ширину, 39 (в
+    полёте `aria-disabled`, `cursor:progress`), ответ — `live="alert"`, перемонтируется на попытку.
+    Опубликованных планов нет — «No plans are available right now.» 12.5 `--fg-2`, Create нет.
+- Primary «Create company» во всю ширину, 39; в полёте «Creating company», `aria-disabled`,
+  `cursor:progress`; нажатие и Enter в полёте ничего не шлют.
+- `ErrorNote` отказа — под кнопкой, `live="alert"`, перемонтируется на попытку (§4.27).
+- Ghost «Cancel» (32, 12.5/550 `--fg-2`, по центру — рецепт «Back to sign in» §4.31): есть `from` — туда с
+  заменой; иначе `/companies`. Подвала «Signed in as» нет: он шагом раньше, в выборе.
+
+**Повтор — что видит читатель.** Одна попытка — один ключ и одно тело (`sessionStorage`, до отправки).
+Перезагрузка, пока у попытки нет итогового ответа, восстанавливает её имя и план и сама повторяет её тем же
+ключом: на экране форма в полёте, второй компании не бывает. Итоговый ответ (202 или отказ) закрывает
+попытку, следующее нажатие — новая. 5xx, 408, 429 и сеть итогом не считаются: значения заперты, повтор — тем
+же ключом и тем же телом. 202 у повтора может вернуть закрытую компанию — тогда её карточка §4.37, попытка
+закрыта.
+
+**Ответ 202** (`tenant` + `operation`). В том же кадре компания встаёт в список читателя (кэш выбора и
+переключателя) из `tenant` ответа, затем список перечитывается; триггер §4.34 с первого кадра несёт её имя,
+а не скелетон; вкладка уходит на `/c/{tenant.id}/projects` с **заменой** (Back не возвращает к отправленной
+форме) и входит по §5.1. Дальше решает `lifecycle` (не план и не `operation.state` ответа — его сервер у
+повтора не обновляет):
+- `ACTIVE` — app shell, Projects без проектов (§5.6); фокус на «New project»; постоянная скрытая
+  `role="status"` страницы: «{Company} is ready.» Без тоста, приветствия и тура.
+- `PROVISIONING`, `AWAITING_PAYMENT`, закрытые — карточка §4.37, сменой содержимого той же карточки (§3).
+
+**Отказы.** Компания при отказе не рисуется никогда: в список она не встаёт, адрес не меняется. Слова
+сервера — только где сказано (в `title` бэка бывает «tenant», §4.33 «Слово»).
+
+| Причина | Текст | Ещё |
+| --- | --- | --- |
+| 409 `FREE_ELIGIBILITY_USED` | «This company was not created.» + id | бесплатная строка — «израсходован», выбор снят, фокус остаётся на кнопке |
+| 400 `VALIDATION_FAILED` (имя или план — сервер их не различает, ask A13) | «Taska didn’t accept this name or plan. Check the name, or choose the plan again.» + id | каталог перечитывается; введённое остаётся |
+| 503 `POLICY_NOT_CONFIGURED`, `DEPENDENCY_UNAVAILABLE` | «Taska can’t create a company right now. Try again later.» + id | ключ сохраняется |
+| 429 `RATE_LIMITED` | «Too many attempts. Try again in {wait}.» ({wait} из `Retry-After` — §4.31) | ключ сохраняется |
+| 5xx, 408, сеть | «Taska couldn’t confirm the company was created. Try again — it won’t create a second one.» + слова сервера + id | повтор тем же ключом |
+| 404 `TENANT_NOT_FOUND` у повтора | «That company no longer exists.» + id | попытка закрыта |
+| прочее (403, 409 `IDEMPOTENCY_CONFLICT`, 422, код вне словаря) | «This company was not created.» + id | |
+| 401 | — | §5.1 |
+
+**Клавиатура и фокус.** Фокус на входе — в «Company name», из любого входа (первый фокус формы, как у Name
+§4.31). Tab: имя → группа планов (одна остановка: выбранное радио, иначе первое доступное; стрелки —
+нативно) → Create company → Cancel → тема. Enter в поле отправляет. `Esc` ничего не делает: это страница, а
+не диалог.
+
+**Ширины** (оценка до сборки, build review меряет). 1440×810, 1440×900 и 390×844 — карточка целиком в
+кадре. 320×568 (карточка 288, поле 234): лимиты и третья строка переносятся (`text-wrap:pretty`), экран
+прокручивается на ~25 (`safe center`, принято с TAS-426); Create и Cancel — в первом кадре.
+
+### 4.37 Компания до открытия (TAS-501)
+Компания, которая ещё ни разу не открывалась: `PROVISIONING`, `AWAITING_PAYMENT`, `OWNER_CANCELLED`,
+`AUTO_CLOSED` (два последних — исходы создания без первой оплаты, contracts §8, TAS-478). Её адрес `/c/{id}/…`
+рисует не app shell и не §4.35, а карточку оболочки §4.33 — продолжение создания. Так на любом пути под
+префиксом, без редиректа; перезагрузка переспрашивает сервер. Решает `lifecycle` (`getTenant` сессией этой
+компании, иначе строка списка); отказ входа с этими состояниями и отказ чтения с `PENDING_FIRST_PAYMENT` в
+`reasons` или `PAYMENT_PENDING` ведут сюда же — **без закрытия компании и без отзыва её сессии**: оплата,
+статус и отмена идут именно ею (api-contract-guard B4). Рабочих функций здесь нет ни в каком виде: ни
+Projects, ни «New project», ни приглашений, ни поиска, ни колокольчика — и не потому, что их спрятали:
+сервер их не отдаёт (contracts §5, D208). Заголовок документа — «{Company} — Taska». Срок, закрытие и
+открытие — только по ответу сервера: клиент их не вычисляет.
+
+**Шапка** — один `h1.auth-title` (`tabIndex=-1`): имя 14/650 `--fg`, `overflow-wrap:anywhere`, под ним
+блоком строка 12.5/400 `--fg-2` словами выбора §4.33: «Being set up», «Awaiting first payment», «Cancelled»,
+«Closed». Фокус на `h1` при приходе изнутри приложения и при смене состояния на месте (исключение 4 §7);
+первым экраном вкладки — не ставится. Внизу любого состояния — ghost «All companies» (32, по центру) на
+`/companies`. Request id нет: это ответ, а не сбой (кроме `ErrorNote` ниже).
+
+**Being set up** (`PROVISIONING`). Текст 13/400 `--fg`, lh 1.55, в постоянной `role="status"`: «Taska is
+setting it up. This page opens it when it’s ready.» Через 30 с на странице — «It’s taking a while. You can
+leave this page — the company will be in your list when it’s ready.» Ни спиннера, ни прогресса, ни таймера.
+Страница переспрашивает операцию из ответа создания (иначе компанию) по одному запросу: через 1, 2, 4, 8 с,
+дальше раз в 10 с; в скрытой вкладке — пауза; через 5 минут — перестаёт и показывает ghost «Check again».
+Итог — на месте: `ACTIVE` — app shell по §4.36 «Ответ 202»; `AWAITING_PAYMENT` — состояние ниже, фокус на
+`h1`. Операция `FAILED` — строка «Setup failed», `ErrorNote` (`polite`) «Taska couldn’t set up this company.» с
+`failureCode` и id операции в строке деталей (у операции нет request id). `MANUAL_REVIEW` — «Taska is
+checking this company’s setup, which can take a while. It will be in your list when it’s ready.»
+
+**Awaiting first payment** (`AWAITING_PAYMENT`). Перечитывается при входе и при возврате во вкладку, без
+опроса; когда местные часы проходят `creationDeadline` — один раз.
+- Текст 13/400 `--fg`: «Its projects and invitations open once the first payment is confirmed. If it isn’t
+  paid by {deadline}, it closes automatically.» {deadline} — `creationDeadline` в местном времени: «Dec 4,
+  14:32», другой год — «Dec 4, 2027, 14:32»; `<time dateTime>`; не тикает, без цвета и отсчёта. Нет
+  `creationDeadline` (поле необязательно) — «If it isn’t paid in time, it closes automatically.» Срок прошёл, а
+  сервер ещё не закрыл — «Its payment deadline, {deadline}, has passed. If it was paid in time, it opens once
+  Taska confirms the payment.»
+- **Слот оплаты** (TAS-513) — под текстом, `margin-top:14`. Сейчас — строка 12.5/400 `--fg-2`: «This version
+  of Taska can’t take payments yet.» (прецедент строки токенов §4.33). TAS-513 ставит сюда primary «Pay» во
+  всю ширину, 39, и всё, что нужно оплате; это будет единственный акцент карточки, до тех пор акцента нет.
+- **Отмена** — только владельцу (`ownerId` — читатель; у остальных раздела нет; сервер отказывает и сам).
+  Опасная зона §4.11 под слотом, над «All companies»: линия `1px --border`, `margin-top:16; padding-top:14`;
+  предложение 12 `--fg-2` «Cancelling closes this company before it opens.» и справа secondary compact
+  «Cancel creation» (29); ≤ 390 кнопка уходит под предложение. Вопрос — полоса §4.22 под строкой на всю
+  ширину: «This company will be cancelled and can’t be reopened.» Кнопки — «Keep it» (фокус первым; не
+  «Cancel»: рядом с «Cancel creation» это слово значило бы обе вещи) и ответ «Cancel creation» (рецепт ответа
+  §4.22). `Esc` закрывает полосу, фокус — на триггер. В полёте обе `aria-disabled`, подписи прежние, без
+  оптимизма. Запрос несёт `If-Match` версии компании.
+  - Успех (200 `Tenant`) — состояние «Cancelled» на месте, строка списка — из ответа, фокус на `h1`.
+  - Отказ — полоса закрывается, фокус на триггер, под строкой `ErrorNote` «This company was not cancelled.»
+    + id; 409 `PAYMENT_PENDING` — «This company can’t be cancelled while a payment is being processed.»; 412 —
+    «This company changed while you were deciding, so it was not cancelled. Check it and try again.» Любой
+    отказ перечитывает компанию: сменился `lifecycle` (оплата подтвердилась, вышел срок) — карточка следует
+    ему, `ErrorNote` уходит.
+
+**Cancelled** (`OWNER_CANCELLED`) — «It was cancelled before its first payment, so it never opened.»
+**Closed** (`AUTO_CLOSED`) — «Its first payment wasn’t confirmed by {deadline}, so it closed without opening.
+If it was paid in time, it reopens once Taska confirms the payment.» (без срока — «…wasn’t confirmed in
+time…»). Не «can no longer be opened»: позднее подтверждение своевременной оплаты возвращает именно эту
+компанию (D216). Под текстом — primary «Create a company» во всю ширину, 39: новая попытка на
+`/companies/new` с пустой формой и новым ключом. Ни «Retry», ни «Resume»; имя прежней не подставляется — две
+компании одного имени в списке путают. Возврат по D216 — ничего сверх смены состояния: компания встаёт в
+первую группу выбора, и её адрес открывает app shell.
 
 ## 5. Patterns
 
@@ -3201,7 +3378,8 @@ Safari 16.2) *новее* базы `dvh` (Chrome 108 / Safari 15.4) — брау
 | Not found / no access | `*` (fallback); также борд при NOT_FOUND / PERMISSION_DENIED (§4.18) | публичный |
 | Notifications | поповер, без маршрута | — |
 | Choose a company (сборка B2B) | `/companies` (§4.33) | по сессии аккаунта |
-| Компания (сборка B2B) | `/c/:companyId/…` — Projects, Board, Issue card, Issue by key и Settings под префиксом; Admin нет (§4.16) | по сессии аккаунта и сессии компании вкладки; отказ — §4.35 / §4.18 |
+| Create a company (сборка B2B) | `/companies/new` (§4.36) | по сессии аккаунта |
+| Компания (сборка B2B) | `/c/:companyId/…` — Projects, Board, Issue card, Issue by key и Settings под префиксом; Admin нет (§4.16) | по сессии аккаунта и сессии компании вкладки; отказ — §4.35 / §4.18; компания, которая ещё не открывалась, — карточка §4.37 вместо app shell |
 
 **Компания — в адресе** (TAS-500, сборка B2B). Компания вкладки — та, что в адресе:
 `/c/{companyId}` — префикс, под которым живёт всё приложение, кроме `/login`, `/invite`,
@@ -3368,6 +3546,9 @@ select встаёт по своему правилу по умолчанию, п
   единственный текст на экране таковой не является. Записано здесь, потому что раньше
   исключение жило комментарием в CSS — то есть код правил документом в обход порядка
   авторитетов.
+- **Projects без проектов** (не результат фильтра; новая компания приходит сюда — §4.36): под шапкой
+  одна строка 13/400 `--fg-2` «No projects yet.» (рецепт `.projects-empty`: единственное содержимое —
+  `--fg-2`). Второго primary нет: действие — «New project» в шапке. Обе сборки (TAS-501).
 - **Часть, которую чтение задачи не принесло** (TAS-246): одна строка 12.5/400
   `--fg-2` на месте строки «No … yet» своего раздела — «The {part} could not be
   loaded with this issue. Reopen it to try again.» Не `--fg-3`: это не мета рядом с
@@ -5068,6 +5249,11 @@ e2e). Другое значение останавливает dev-сервер,
   ghost 32 на 390, тот же долг и тот же псевдоэлемент, что «Use a different email» (TAS-426). Строки
   §4.33 — 44 на любой ширине; строки поповера §4.34 — 44 при ≤ 820; триггер стоит только с 768 —
   вне тач-блока бара (`max-width:767px`), долга нет.
+- **Открыто в TAS-501** (решение art-director 2026-11-04, до сборки): ghost «Cancel» формы §4.36 и
+  «All companies» §4.37 — 32 на 390; «Cancel creation», «Keep it» и ответ полосы — 29. Тот же долг,
+  псевдоэлемент и правило пары, что у «Log out» (TAS-500) и «Use a different email» (TAS-426). Строки
+  планов — не меньше 44 своим содержимым (48.8 / 65.5 у радио-пары §5.9 на 1440, выше на 320), долга
+  нет; цель — вся строка `label`, а не кружок 14.
 - Поповер уведомлений: `aria-expanded` на триггере, счётчик непрочитанных в `aria-label`.
 - Иконки-кнопки без текста — обязателен `aria-label`.
 - Drag & drop дублируется кнопками переходов (клавиатурный путь).

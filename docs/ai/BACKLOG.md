@@ -4456,3 +4456,22 @@ From the api-contract-guard design and the art-director ruling before the build
     «is paused» with no id (the §4.35 row fallback).
   - From release-reviewer's narrow pass: a `VALIDATION_FAILED` on entering a company is always read as the address
     id, so a malformed request of the client's own (a bad `Idempotency-Key`) would also show «Page not found».
+
+### Left by TAS-501 pre-build (company creation, B2B blueprint `758f8fc6`, 2026-11-04)
+
+From the api-contract-guard design and the art-director ruling (`docs/ai/reviews/TAS-501/`, git-ignored). Backend
+asks A9–A16 went to Jira as comments on their owner stories.
+
+- **Tenant has no `closedAt` / `cancelledAt`**, so the never-opened card cannot date a closure or a cancel.
+- **FREE for an unverified email**: the blueprint is silent.
+- **Who issues the INITIAL invoice**: L02's provisioning step «billing invoice» against `CreateInvoiceRequest`
+  needing buyer, currency and method from the owner (TAS-337/475/513).
+- **A new FREE company on the mock does not enforce the one-project limit** (TAS-512's quotas).
+- **The Massive Dynamic fixture** is AUTO_CLOSED with a non-owner member, impossible under the invitation denial;
+  harmless.
+- **A lost createTenant answer followed by a new tab** (not a reload) can create a second paid company: the key is
+  per tab. The company still appears in the list.
+- **The catalogue does not say whether a price includes VAT** (art-director); TAS-513.
+- **The never-opened card names no plan or price** until a subscription or invoice read exists (TAS-513).
+- **The second `.projects-page` glow** (the §1 known violation) is now the first thing a new owner sees.
+- **The picker's state line could carry the deadline**, later.
