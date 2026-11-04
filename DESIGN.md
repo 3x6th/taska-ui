@@ -3119,8 +3119,9 @@ Platform access (вход в компанию без членства) — не 
 **Анатомия.** `h1` 22/700 `--fg`; текст 13/400 `--fg-2`, `max-width:340`, `text-wrap:pretty`; ряд
 `gap:8; margin-top:14`: primary-ссылка «Choose a company» (`/companies`) и secondary «Log out».
 Request id нет: это ответ, не сбой. {Company} — из списка компаний читателя, иначе «This company».
-Причина — из отказа (`code`, затем `reasons`), без отказа — из `lifecycle`/`restrictions` строки
-списка.
+Причина — из отказа (`code`, затем `reasons`); код отказа вне таблицы или отказа нет — из
+`lifecycle`/`restrictions` строки списка (у закрытой компании сервер может ответить и общим
+`INVALID_STATE`, контракт код не назвал — ask A2 в TAS-315); строки нет — последняя строка таблицы.
 
 | Причина | `h1` | Текст |
 | --- | --- | --- |

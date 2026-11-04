@@ -4413,3 +4413,20 @@ From the api-contract-guard design and the art-director ruling before the build
 - **Settings sections that become per company** (art-director): Access tokens and Connected apps — each owner story
   (TAS-509) decides whether its route stays under `/c/:companyId` with the rest of Settings.
 - **Per-screen document titles** beyond the company name (art-director): later.
+
+### Left by TAS-500 review (release-reviewer wave 1 on `27e75e9`, 2026-11-04)
+
+- **The B2B e2e server is browser-routed only.** The Pages build is hash-routed; with the flag on, hash routing at
+  base `/` was checked by hand (builder, release-reviewer), never by a spec. The PR that turns the flag on adds a
+  hash-routed B2B spec or switches the third server to hash.
+- **`refusedThisVisit`** (`src/lib/companies.ts`) survives a sign-out or an account change within the same page.
+- **`rotateAccount` writes the rotated record without a final re-read** (`src/api/webSession.ts`): a sign-out or
+  sign-in in another tab during a rotation could be overwritten. Inferred, not reproduced.
+- **Flag-off error parsing now prefers a non-gateway body's `title`** (Spring's 404 on an undeployed route) over
+  "Request failed with N". Only undeployed routes are affected.
+- **The mock's per-page stores and random ids** make cold-tab issue-URL tests impossible; stable seed ids would let
+  the cold-tab case of TAS-500's H1 be pinned.
+- **Raw `error.message` ErrorNotes for mutations** (`ProjectsScreen.tsx`, `BoardScreen.tsx`) are unpinned against
+  `WorkspaceClosedError`; the builder's argument is that the company subtree is replaced before any can show it.
+- **A suspended company reads «This company» on a later visit** (builder): the list omits it, so its name is gone.
+  Falls away with ask A1 (membership in the list) if the backend lists inactive memberships.

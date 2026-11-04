@@ -2131,7 +2131,8 @@ Everything below is the entry as it stood, in the past tense.
   - Refusals read from Problem (`code`, `requestId`, `reasons`) and from the legacy envelope's `details.reason`.
     Removal: ask A6 on TAS-316.
   - GLOBAL_ADMIN: either sign-in answer (200 `MfaChallenge`, 403 `MFA_REQUIRED`) ends in a "not in this version"
-    note; the admin console is flag-off only; platform mode is not built. Removal: TAS-510 + ask A5 on TAS-345.
+    note; the admin console is flag-off only; platform mode is not built. Removal: TAS-510 + ask A5 on TAS-345,
+    then the frontend in [TAS-521](https://jira.ozero.dev/browse/TAS-521).
   - "TENANT_ADMIN sees all projects" is whatever the project reads answer; the UI takes the role from
     `currentUserRole` and synthesises nothing. Removal: ask A7 on TAS-340.
 - **Turning the flag on** needs TAS-315, TAS-338, TAS-316 and TAS-340 deployed, and the enabling PR carries the
