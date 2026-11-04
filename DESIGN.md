@@ -3287,7 +3287,8 @@ Projects, ни «New project», ни приглашений, ни поиска, 
 «Closed». Фокус на `h1` при приходе изнутри приложения и при смене состояния на месте (исключение 4 §7);
 первым экраном вкладки — не ставится. Внизу любого состояния — ghost «All companies» (32, по центру) на
 `/companies`. Request id нет: это ответ, а не сбой (кроме `ErrorNote` ниже). Не прочиталась сама компания
-(`getTenant` отказал) — под шапкой `ErrorNote` «Taska could not read this company's state.» + id; строка
+(`getTenant` отказал) — под содержимым состояния, над «All companies», `ErrorNote` «Taska could not read this
+company’s state.» + id; строка
 состояния остаётся из строки списка; слова сервера не показываются (в них бывает «tenant»).
 
 **Being set up** (`PROVISIONING`). Текст 13/400 `--fg`, lh 1.55, в постоянной `role="status"`: «Taska is

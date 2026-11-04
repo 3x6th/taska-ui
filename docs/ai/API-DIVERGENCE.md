@@ -2198,8 +2198,8 @@ Everything below is the entry as it stood, in the past tense.
   `b67d4807-a0dc-499b-a6c3-7bd5efedc8f2`; control `GET /api/v1/projects` 401
   (`e5474c61-b818-4e56-b436-45d73ec32f7a`).
 - **Compensation: none.** Behind `VITE_TASKA_TENANTS`. No eligibility, deadline or closure is computed
-  client-side. The free plan is read as the zero-priced one (DESIGN.md §4.36: order and the default choice only,
-  never the right to it). Removal: ask A16 (`kind FREE|PAID` on PlanVersion). One state is read from a refusal rather than from the company: until `getTenant` answers, a content
+  client-side. The free plan is read as the zero-priced one (DESIGN.md §4.36: the default choice, the row marked used
+  after a 409 and the rows without the paid-plan note — never the right to it; the order is by price). Removal: ask A16 (`kind FREE|PAID` on PlanVersion). One state is read from a refusal rather than from the company: until `getTenant` answers, a content
   read refused with `PENDING_FIRST_PAYMENT` shows the card as «Awaiting first payment» — develop attaches that reason
   to closed creations too, so the line can be wrong for a moment until `getTenant` answers. Removal: ask A14.
 - **What the UI assumes where the blueprint is silent — each removable:**
