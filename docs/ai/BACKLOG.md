@@ -4447,3 +4447,12 @@ From the api-contract-guard design and the art-director ruling before the build
   - Reloading `/companies` after arriving from inside the app focuses its heading again (the router state survives).
   - An unknown route under the company prefix (`/c/{id}/nope`) gets the title «Taska» and only «Choose a company»,
     not «Go to projects» in that company.
+  - The last §4.35 row prints the server's words as they come, so a `TENANT_MISMATCH` would put «Tenant mismatch» on
+    screen — the word §4.33 keeps off it (art-director re-verdict). A fault state where the request id matters more.
+  - From api-contract-guard's re-verdict: no REST test that a GET refused `CAPABILITY_DISABLED` with reasons closes
+    the company while a POST does not (REST's `read: method === "GET"` mutant survives); no CompanyGate test that a
+    mid-work `TENANT_MISMATCH` shows the server's words and a copyable request id; narrow the read closure to the
+    content-blocking reasons when ask A2c answers; a `TENANT_MISMATCH` in a company whose list row is paused reads
+    «is paused» with no id (the §4.35 row fallback).
+  - From release-reviewer's narrow pass: a `VALIDATION_FAILED` on entering a company is always read as the address
+    id, so a malformed request of the client's own (a bad `Idempotency-Key`) would also show «Page not found».

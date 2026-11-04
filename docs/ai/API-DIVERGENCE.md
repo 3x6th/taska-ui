@@ -2131,6 +2131,11 @@ Everything below is the entry as it stood, in the past tense.
   - `TENANT_REQUIRED` and `TENANT_MISMATCH` on a company session close the company (the epoch moves, the session is
     revoked best effort, never an automatic switch) — both mean the tab sent the wrong credential, and nothing it
     holds can be trusted after that. Removal: none needed; it is the client's own rule.
+  - A content read refused 403 `CAPABILITY_DISABLED` with `reasons` closes the company with those reasons (DESIGN.md
+    §4.35 «Initech is paused»); a write so refused only rejects that action. REST counts every GET as a read, the
+    mock its company content routes. The rule is broader than the two content-blocking reasons (`OWNER_PAUSE`,
+    `PLATFORM_BLOCK`) because contracts §5 does not say which reasons a read can carry. Removal: ask A2c on TAS-316.
+    The mock reaches it through the hook `contentReadUnderRestriction: false` in `taska.mockTenantHooks`.
   - Sign-out revokes the tab's tenant session and drops the global record locally; the global family and sibling
     tabs' families stay live until expiry. Removal: ask A4 on TAS-315.
   - Provider sign-in hidden under the flag. Removal: ask A8 on TAS-315.
