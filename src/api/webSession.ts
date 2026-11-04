@@ -311,6 +311,10 @@ export class WebSessionClient {
   private view: Workspace | null = null;
   private accountUserId: string | null;
   private readonly restoring: Promise<void>;
+  /** The tab record's company while `restore()` has not finished: the company the tab is already in. */
+  private restoringTenantId: string | null = null;
+  /** The company a switch has been asked for and not finished — one transition per company at a time. */
+  private entering: { tenantId: string; promise: Promise<Workspace> } | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   private renewing: Promise<RenewOutcome> | null = null;
   private rotating: Promise<RotateOutcome> | null = null;
@@ -329,9 +333,15 @@ export class WebSessionClient {
     this.documentTabId = this.newKey();
     this.accountUserId = this.readAccount()?.userId ?? null;
     deps.events?.addEventListener("storage", this.onStorage);
+    const tab = this.readTab();
+    this.restoringTenantId = tab !== null && tab.userId === this.accountUserId ? tab.tenantId : null;
     // At once, so the ownership wait starts with the page rather than with the
     // first request; every request and transition waits for it.
-    this.restoring = this.restore().catch(() => undefined);
+    this.restoring = this.restore()
+      .catch(() => undefined)
+      .finally(() => {
+        this.restoringTenantId = null;
+      });
   }
 
   /* ---------------------------------------------------------------- account */
@@ -438,16 +448,36 @@ export class WebSessionClient {
     return page;
   }
 
+  /**
+   * The switch **begins when this is called**, not when the queue reaches it:
+   * the epoch moves at once (aborting every request of the company being
+   * left), and every request asked from then on is asked of `tenantId` — it
+   * waits for the session and goes with it. That is what lets the shell
+   * render the target company's screens, loading, in the frame of the click
+   * (DESIGN.md §4.34), while nothing of the previous company can answer
+   * them. A refused entry moves the epoch once more, so what waited is
+   * discarded rather than sent with no company. Asked twice for the same
+   * company, it is one transition and one answer.
+   */
   enterCompany(tenantId: string): Promise<Workspace> {
-    return this.serialize(async (): Promise<Workspace> => {
+    if (this.entering?.tenantId === tenantId) return this.entering.promise;
+    if (this.companyInView() !== tenantId) this.moveEpoch();
+    const started = this.epoch;
+    // Only if no later switch has taken the epoch over since.
+    const discardWaiting = () => {
+      if (this.epoch === started) this.moveEpoch();
+    };
+    const promise = this.serialize(async (): Promise<Workspace> => {
       await this.restoring;
       const account = this.readAccount();
-      if (account === null) throw new Error("There is no account session to enter a company with.");
+      if (account === null) {
+        discardWaiting();
+        throw new Error("There is no account session to enter a company with.");
+      }
       const current = this.owned;
       if (current && current.record.tenantId === tenantId && current.record.userId === account.userId && this.view) {
         return this.view;
       }
-      this.moveEpoch();
       if (current) {
         this.dropOwned();
         void this.revokeQuietly(current.record.tenantSessionId);
@@ -456,19 +486,37 @@ export class WebSessionClient {
       try {
         await this.mint(tenantId, this.names.get(tenantId) ?? null);
       } catch (error) {
+        discardWaiting();
         if (error instanceof AccountGone) {
           if (error.refused) this.expireAccount();
           throw new WorkspaceClosedError();
         }
         throw error;
-      } finally {
-        // Anything asked while the session was being made was asked of no company.
-        this.moveEpoch();
       }
       this.notifyChange();
       if (this.view === null) throw new WorkspaceClosedError();
       return this.view;
     });
+    this.entering = { tenantId, promise };
+    const done = () => {
+      if (this.entering?.promise === promise) this.entering = null;
+    };
+    promise.then(done, done);
+    return promise;
+  }
+
+  /** The tab's company as a new request would meet it: the one being entered, the one held, or the one being restored. */
+  private companyInView(): string | null {
+    return this.entering?.tenantId ?? this.owned?.record.tenantId ?? this.restoringTenantId;
+  }
+
+  /**
+   * The tab's company once it is known — after a reload's or a duplicate's
+   * restoration and any transition already asked for — or `null`.
+   */
+  async settleWorkspace(): Promise<Workspace | null> {
+    await this.settled();
+    return this.view;
   }
 
   leaveCompany(): Promise<void> {

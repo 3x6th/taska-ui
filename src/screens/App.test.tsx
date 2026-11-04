@@ -31,6 +31,11 @@ const { fakeApi, expireSession, signIn, signOut, metaReads, breakNotFound, notFo
       state.signedIn = true;
       return { accessToken: "access", refreshToken: "refresh", expiresIn: 3600 };
     },
+    // `signIn` is `login` in today's build (TAS-500), and the login card calls it.
+    signIn: async () => {
+      await api.login();
+      return { status: "SIGNED_IN" as const, userId: null };
+    },
     // The login card's methods (TAS-426): the stand's answer, so the card is today's.
     getAuthMethods: async () => ({ signupEnabled: false, providers: [] }),
     getMeta: async () => {

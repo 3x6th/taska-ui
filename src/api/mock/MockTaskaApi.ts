@@ -2272,6 +2272,13 @@ export class MockTaskaStore {
   private inviteTokens: MockInviteToken[];
   private currentUserId = ANNA_ID;
   /**
+   * Whom `GET /users` may name in the companies build (TAS-500): the
+   * company's active members — the target's TENANT_DIRECTORY policy (backend
+   * TAS-321) — set per call by `MockTenantServer`. `null` in today's build,
+   * where the directory is everybody it lists, as the stand's is.
+   */
+  private directoryScope: ReadonlySet<string> | null = null;
+  /**
    * Accounts with no password (TAS-424): made by the name step, or `INVITED`
    * ones a provider sign-in activated. `login` refuses them as the server does.
    */
@@ -3564,10 +3571,12 @@ export class MockTaskaStore {
     if (length < 3 || length > 100 || hasIsoControl(needle)) {
       throw new MockApiError("INVALID_ARGUMENT", DIRECTORY_QUERY_REFUSAL_MESSAGE);
     }
+    const scope = this.directoryScope;
     const rows = this.users
       .filter(
         (user) =>
           DIRECTORY_STATUSES.has(user.status) &&
+          (scope === null || scope.has(user.id)) &&
           (user.displayName.toLowerCase().includes(needle) || user.email.toLowerCase().includes(needle)),
       )
       .sort(
@@ -4105,6 +4114,11 @@ export class MockTaskaStore {
         ];
       });
     }
+  }
+
+  /** The companies build's directory scope (see `directoryScope`); never called in today's build. */
+  scopeDirectory(userIds: ReadonlySet<string> | null): void {
+    this.directoryScope = userIds;
   }
 
   /**
@@ -9555,6 +9569,10 @@ export class MockTaskaApi implements TaskaApi {
   }
 
   currentWorkspace(): Workspace | null {
+    return null;
+  }
+
+  async settleWorkspace(): Promise<Workspace | null> {
     return null;
   }
 

@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../hooks/useMutation";
 import { Pencil, Plus, Search } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -7,6 +8,8 @@ import { apiErrorFacts } from "../api/errors";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches, type ColorChoice } from "../components/ColorSwatches";
+import { useCompanyName } from "../hooks/useCompanies";
+import { useCompanyAddress } from "../lib/companyAddress";
 import { EditProjectModal } from "../components/EditProjectModal";
 import { ErrorNote } from "../components/ErrorNote";
 import { Modal } from "../components/Modal";
@@ -45,6 +48,11 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   const newProjectButton = useRef<HTMLButtonElement>(null);
 
   const [filter, setFilter] = useState("");
+  // The companies build (TAS-500, DESIGN.md §5.1): «N projects · {Company}» —
+  // on a phone the switcher is not in the bar, and the reader's own name is
+  // in the avatar.
+  const companyId = useCompanyAddress()?.companyId ?? null;
+  const companyName = useCompanyName(companyId);
 
   const meQuery = useQuery({ queryKey: ["me"], queryFn: () => taskaApi.getCurrentUser() });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => taskaApi.listProjects() });
@@ -181,7 +189,7 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
               ) : (
                 projects.length
               )}{" "}
-              projects · {meQuery.data?.displayName ?? "Member"}
+              projects · {companyId !== null ? (companyName ?? "Company") : (meQuery.data?.displayName ?? "Member")}
             </p>
           </div>
           <div className="projects-heading-actions">

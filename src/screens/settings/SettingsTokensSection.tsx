@@ -1,4 +1,5 @@
-import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../../hooks/useMutation";
 import { Check, Copy } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import {
@@ -11,6 +12,7 @@ import { taskaApi } from "../../api/client";
 import { apiErrorFacts, isUndeployedRoute } from "../../api/errors";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../../api/TaskaApi";
 import { ApiNotice } from "../../components/ApiNotice";
+import { useCompanyAddress } from "../../lib/companyAddress";
 import { ErrorNote } from "../../components/ErrorNote";
 import { Modal } from "../../components/Modal";
 import type { AccessToken, AccessTokenList, IssuedAccessToken } from "../../domain/types";
@@ -217,6 +219,9 @@ function AccessTokens({
   const confirmPrefix = useId();
   const revokeKey = ["access-tokens", "revoke", userId] as const;
   const revoking = useIsMutating({ mutationKey: revokeKey }) > 0;
+  // The companies build issues no token — the list and revoke stay (TAS-500,
+  // DESIGN.md §4.33; a token for a company is TAS-509's).
+  const canCreate = useCompanyAddress() === null;
 
   /**
    * An unseen token's id goes once its token has left the list: revoked, or
@@ -317,11 +322,13 @@ function AccessTokens({
 
   return (
     <>
-      <div className="tokens-actions">
-        <button className="primary-button" onClick={onCreate} ref={createButton} type="button">
-          Create token
-        </button>
-      </div>
+      {canCreate ? (
+        <div className="tokens-actions">
+          <button className="primary-button" onClick={onCreate} ref={createButton} type="button">
+            Create token
+          </button>
+        </div>
+      ) : null}
 
       {query.isError && !query.data ? (
         <ReadFailure error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />

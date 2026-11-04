@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
-import { apiErrorFacts } from "../api/errors";
+import { apiErrorFacts, isWorkspaceClosed } from "../api/errors";
 import { refusalWords } from "../lib/projectArchive";
 import { RequestId } from "./RequestId";
 
@@ -46,6 +46,9 @@ export function ApiNotice({
   /** Events — a rejected drop, a rolled-back move — can be dismissed. States cannot. */
   dismiss?: { label: string; onDismiss: () => void };
 }) {
+  // An answer of a company session the tab has left (TAS-500) is nobody's
+  // failure to report: the shell says what happened (DESIGN.md §4.35).
+  if (isWorkspaceClosed(error)) return null;
   const { requestId } = apiErrorFacts(error);
   // The server's words — or, for a write refused because the project was
   // archived meanwhile, ours in their place (DESIGN.md §5.7).

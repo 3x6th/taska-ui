@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../hooks/useMutation";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import type {

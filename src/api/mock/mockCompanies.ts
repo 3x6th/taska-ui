@@ -66,6 +66,7 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   enterCompany: "session",
   leaveCompany: "session",
   currentWorkspace: "session",
+  settleWorkspace: "session",
   onWorkspaceChange: "session",
   onWorkspaceClosed: "session",
   lastCompanyHint: "session",
@@ -181,6 +182,7 @@ type SessionMethods = Pick<
   | "enterCompany"
   | "leaveCompany"
   | "currentWorkspace"
+  | "settleWorkspace"
   | "onWorkspaceChange"
   | "onWorkspaceClosed"
   | "lastCompanyHint"
@@ -233,6 +235,7 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     enterCompany: (tenantId) => web.enterCompany(tenantId),
     leaveCompany: () => web.leaveCompany(),
     currentWorkspace: () => web.currentWorkspace(),
+    settleWorkspace: () => web.settleWorkspace(),
     onWorkspaceChange: (listener) => web.onWorkspaceChange(listener),
     onWorkspaceClosed: (listener) => web.onWorkspaceClosed(listener),
     lastCompanyHint: () => web.lastCompanyHint(),

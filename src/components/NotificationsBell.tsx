@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../hooks/useMutation";
 import { Bell } from "lucide-react";
 import { useCallback, useRef, useState, type RefObject } from "react";
 import { useNavigate } from "react-router-dom";

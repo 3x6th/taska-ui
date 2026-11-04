@@ -1411,6 +1411,10 @@ export class RestTaskaApi implements TaskaApi {
     return this.web?.currentWorkspace() ?? null;
   }
 
+  async settleWorkspace(): Promise<Workspace | null> {
+    return this.web ? this.web.settleWorkspace() : null;
+  }
+
   onWorkspaceChange(listener: () => void): () => void {
     return this.web ? this.web.onWorkspaceChange(listener) : () => {};
   }

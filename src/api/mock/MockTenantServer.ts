@@ -468,9 +468,23 @@ export class MockTenantServer {
    */
   async serve<T>(bearer: string | null, kind: MockRouteKind, operation: string, run: (store: MockTaskaStore) => Promise<T>): Promise<T> {
     await this.delay(operation, 0);
-    const grant = this.read((state) => this.authorize(state, bearer, kind));
+    const { grant, members } = this.read((state) => {
+      const granted = this.authorize(state, bearer, kind);
+      const tenantId = granted.tenantId;
+      // The company's directory is its active members (TENANT_DIRECTORY, backend TAS-321).
+      const active =
+        tenantId === null
+          ? null
+          : new Set(
+              state.memberships
+                .filter((item) => item.tenantId === tenantId && this.membershipState(state, tenantId, item.userId) === "ACTIVE")
+                .map((item) => item.userId),
+            );
+      return { grant: granted, members: active };
+    });
     const store = kind === "account" || grant.tenantId === null ? this.accountStore : this.tenantStore(grant.tenantId);
     if (!store.restoreSession(grant.userId)) throw problem(401, "AUTHENTICATION_REQUIRED", "Invalid session");
+    if (store !== this.accountStore) store.scopeDirectory(members);
     return run(store);
   }
 

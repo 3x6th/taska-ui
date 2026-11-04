@@ -295,20 +295,51 @@ describe("an answer of a context the tab has left never lands (B3)", () => {
     });
   }
 
-  it("a request asked while the tab is switching is never sent", async () => {
+  it("a request asked once a switch has begun waits and goes to the new company; one asked before is discarded", async () => {
     const local = new MemoryStorage();
     signedIn(local);
     const { client, transport } = openTab({ local });
     await client.enterCompany(NORTHWIND);
+    const before = gate<string>();
+    const askedBefore = client.call("session", () => before.promise);
     const created = gate<unknown>();
     transport.createTenantSession.mockImplementationOnce(() => created.promise);
     const switching = client.enterCompany(GLOBEX);
-    const send = vi.fn(async () => "sent");
-    const asked = client.call("session", send);
+    // Asked twice for the same company: one transition, one answer.
+    expect(client.enterCompany(GLOBEX)).toBe(switching);
+    const send = vi.fn(async (bearer: string | null) => bearer);
+    const askedAfter = client.call("session", send);
     created.resolve(accessSession("ts-g", "g-company", GLOBEX));
     await switching;
+    before.resolve("Northwind's answer");
+    await expect(askedBefore).rejects.toBeInstanceOf(WorkspaceClosedError);
+    await expect(askedAfter).resolves.toBe("g-company-access");
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(transport.createTenantSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("a refused switch discards what waited for it rather than sending it with no company", async () => {
+    const local = new MemoryStorage();
+    signedIn(local);
+    const { client, transport } = openTab({ local });
+    transport.createTenantSession.mockRejectedValueOnce(refusal(403, "MEMBERSHIP_INACTIVE"));
+    const entering = client.enterCompany(GLOBEX);
+    const send = vi.fn(async () => "sent");
+    const asked = client.call("session", send);
+    await expect(entering).rejects.toMatchObject({ code: "MEMBERSHIP_INACTIVE" });
     await expect(asked).rejects.toBeInstanceOf(WorkspaceClosedError);
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("settles the tab's company once a reload's restoration is done", async () => {
+    const local = new MemoryStorage();
+    signedIn(local);
+    const first = openTab({ local });
+    await first.client.enterCompany(NORTHWIND);
+    const reloaded = openTab({ local, session: first.session });
+    await expect(reloaded.client.settleWorkspace()).resolves.toMatchObject({ tenantId: NORTHWIND, tenantSessionId: "ts-1" });
+    const fresh = openTab({ local });
+    await expect(fresh.client.settleWorkspace()).resolves.toBeNull();
   });
 
   it("entering the company the tab is in sends nothing; switching revokes the previous session best-effort", async () => {

@@ -1362,6 +1362,13 @@ export interface TaskaApi {
   leaveCompany(): Promise<void>;
   /** The tab's company once this tab owns its session; `null` before, between and after. Synchronous, for a guard. */
   currentWorkspace(): Workspace | null;
+  /**
+   * The tab's company once it is known: after a reload's or a duplicated
+   * tab's restoration and any switch already asked for. `null` for a tab with
+   * none — and always in today's build. For an address without a company,
+   * which opens in the tab's (DESIGN.md §5.1).
+   */
+  settleWorkspace(): Promise<Workspace | null>;
   /** Fires whenever `currentWorkspace()` may answer something else — for `useSyncExternalStore`. */
   onWorkspaceChange(listener: () => void): () => void;
   /** Fires when the tab's company closed mid-work (see `WorkspaceClosedEvent`). Returns an unsubscribe. */

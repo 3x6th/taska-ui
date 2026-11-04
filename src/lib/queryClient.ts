@@ -1,4 +1,5 @@
 import { QueryClient, type Query } from "@tanstack/react-query";
+import { isWorkspaceClosed } from "../api/errors";
 import { keepSignedAvatarLink, ME_QUERY_KEY } from "./ownAvatarLink";
 
 /**
@@ -35,7 +36,10 @@ export function createQueryClient(): QueryClient {
     defaultOptions: {
       queries: {
         staleTime: STALE_TIME_MS,
-        retry: 1,
+        // One retry, as always — never of an answer that belongs to a company
+        // session the tab has left (TAS-500): retried, it would be asked again
+        // under the next session's credential.
+        retry: (failureCount, error) => failureCount < 1 && !isWorkspaceClosed(error),
         refetchOnWindowFocus: refetchFailedOnFocus,
       },
     },

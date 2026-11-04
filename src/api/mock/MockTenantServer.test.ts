@@ -127,6 +127,18 @@ describe("companies and who sees what (§7 fixtures)", () => {
     expect(await projectKeys(priya)).toEqual(["FIN", "OPS", "WEB"]);
   });
 
+  it("the people directory names the company's active members only (TENANT_DIRECTORY)", async () => {
+    const { open, local } = browser();
+    const { api } = open();
+    await signedIn(api, "anna@example.com");
+    await api.enterCompany(MOCK_TENANT_IDS.northwind);
+    const emails = async () => (await api.searchUsers({ query: "example.com" })).items.map((user) => user.email).sort();
+    // Northwind is Anna, Sofia and Tom — not Mark, Priya or anyone else in the seed.
+    expect(await emails()).toEqual(["anna@example.com", "sofia@example.com", "tom@example.com"]);
+    local.setItem(MOCK_TENANT_HOOKS_KEY, JSON.stringify({ suspend: [{ tenantId: MOCK_TENANT_IDS.northwind, userId: MOCK_ACCOUNT_IDS.tom }] }));
+    expect(await emails()).toEqual(["anna@example.com", "sofia@example.com"]);
+  });
+
   it("the same key is a different issue in each company's tab", async () => {
     const { open } = browser();
     const northwind = open().api;
