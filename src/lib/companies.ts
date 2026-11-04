@@ -12,6 +12,24 @@ import { isKnownTenantLifecycle, readAllTenants, type Tenant } from "../api/tena
 /** The picker (§4.33). Outside every company. */
 export const COMPANIES_ROUTE = "/companies";
 
+/** «Create a company» (§4.36, TAS-501). Outside every company, under the picker's path. */
+export const CREATE_COMPANY_ROUTE = "/companies/new";
+
+/**
+ * Router state of a move from one card of the sign-in shell to another across
+ * the company prefix (TAS-501, §3): the form's 202 to the company's address,
+ * the never-opened card to the picker or the form, a picker row to a company.
+ * The prefix remounts the router; the card it lands on does not enter again,
+ * and takes focus on its heading — the move came from inside the app (§7
+ * exception 4).
+ */
+export interface ContinuedShellState {
+  continuedShell?: boolean;
+}
+
+export const isContinuedShell = (state: unknown): boolean =>
+  typeof state === "object" && state !== null && (state as ContinuedShellState).continuedShell === true;
+
 /** The routes that live outside `/c/{companyId}` (§5.1). Everything else in the app lives inside it. */
 export const OUTSIDE_COMPANY_ROUTES: readonly string[] = ["/login", "/invite", "/auth/callback", COMPANIES_ROUTE];
 
@@ -99,7 +117,8 @@ export function tenantStateLine(tenant: Tenant, refusedThisVisit: ReadonlySet<st
   if (refusedThisVisit.has(tenant.id)) return "You no longer have access";
   if (tenant.lifecycle === "DELETED") return "Deleted";
   if (tenant.lifecycle === "DELETING") return "Being deleted";
-  if (tenant.lifecycle === "AUTO_CLOSED" || tenant.lifecycle === "OWNER_CANCELLED") return "Closed";
+  if (tenant.lifecycle === "OWNER_CANCELLED") return "Cancelled";
+  if (tenant.lifecycle === "AUTO_CLOSED") return "Closed";
   if (tenant.lifecycle === "PROVISIONING") return "Being set up";
   if (tenant.restrictions.includes("PLATFORM_BLOCK")) return "Blocked by Taska";
   if (tenant.restrictions.includes("OWNER_PAUSE")) return "Paused by its owner";
@@ -164,7 +183,8 @@ export interface ClosedWords {
 }
 
 /**
- * §4.35's table: the reason from the refusal — its code, then its reasons; a
+ * §4.35's table (TAS-500; TAS-501 moved the never-opened rows to §4.37's
+ * card — `isNeverOpened`): the reason from the refusal — its code, then its reasons; a
  * code outside the table, or no refusal, takes it from the list row's
  * lifecycle, then its restrictions (a closed company may be answered with a
  * plain `INVALID_STATE` — the contract names no code, ask A2); no row either,
@@ -190,11 +210,8 @@ export function closedCompanyWords(
         return { title: `${company} is blocked`, text: "Taska has blocked this company, so its projects can’t be opened right now." };
       case "OWNER_PAUSE":
         return { title: `${company} is paused`, text: "Its owner has paused it, so its projects can’t be opened right now." };
-      case "PROVISIONING":
-        return { title: `${company} is still being set up`, text: "Its projects can be opened once setup finishes." };
-      case "AUTO_CLOSED":
-      case "OWNER_CANCELLED":
-        return { title: `${company} is closed`, text: "Its projects can no longer be opened." };
+      // PROVISIONING, AUTO_CLOSED and OWNER_CANCELLED are not this screen's
+      // (TAS-501): a company that has never opened draws §4.37's card.
       case "DELETING":
         return { title: `${company} is being deleted`, text: "Its projects can no longer be opened." };
       case "DELETED":
@@ -220,6 +237,52 @@ export function documentTitleFor(path: { companyName: string | null; inCompany: 
   if (path.inCompany) return path.companyName === null ? "Taska" : `${path.companyName} — Taska`;
   if (path.picker) return "Choose a company — Taska";
   return "Taska";
+}
+
+/* ------------------------------------------- a company that never opened */
+
+/**
+ * The lifecycles of a company that has never opened (TAS-501, DESIGN.md
+ * §4.37): being set up, awaiting its first payment, and the two ends of a
+ * creation without one. Its address draws the never-opened card — never the
+ * app shell and never §4.35 — on any path under the prefix.
+ */
+export const NEVER_OPENED_LIFECYCLES: ReadonlySet<string> = new Set([
+  "PROVISIONING",
+  "AWAITING_PAYMENT",
+  "OWNER_CANCELLED",
+  "AUTO_CLOSED",
+]);
+
+export const isNeverOpened = (lifecycle: string | null | undefined): boolean =>
+  lifecycle !== null && lifecycle !== undefined && NEVER_OPENED_LIFECYCLES.has(lifecycle);
+
+/** The list with `tenant` in it — replacing the row of the same id, or added at the end. */
+export function upsertTenant(list: readonly Tenant[] | undefined, tenant: Tenant): Tenant[] {
+  const rows = list ?? [];
+  return rows.some((row) => row.id === tenant.id) ? rows.map((row) => (row.id === tenant.id ? tenant : row)) : [...rows, tenant];
+}
+
+/**
+ * Whether the reader's one FREE company is known to be used (§4.36): learnt
+ * only from a 409 `FREE_ELIGIBILITY_USED` (the contract has no read for it,
+ * ask A10), and kept **in memory until the account signs out** — never in
+ * storage: the right does not come back, but nothing about it is the client's
+ * to persist. Keyed by the account, so another account in the same page
+ * knows nothing of it.
+ */
+let freeUsedBy: string | null = null;
+
+export function markFreeUsed(userId: string): void {
+  freeUsedBy = userId;
+}
+
+export function freeUsedKnown(userId: string | null): boolean {
+  return userId !== null && freeUsedBy === userId;
+}
+
+export function forgetFreeUsed(): void {
+  freeUsedBy = null;
 }
 
 /* ------------------------------------------------- the account-level list */

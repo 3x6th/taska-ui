@@ -16,6 +16,7 @@ const { fakeApi, state } = vi.hoisted(() => {
     refusal: null as Error | null,
     workspace: null as Workspace | null,
     holdMe: false,
+    planReads: 0,
   };
   const api = {
     listTenants: async () => {
@@ -28,6 +29,10 @@ const { fakeApi, state } = vi.hoisted(() => {
     },
     currentWorkspace: () => state.workspace,
     onWorkspaceChange: () => () => {},
+    listBillingPlans: async () => {
+      state.planReads += 1;
+      return { items: [], nextCursor: null };
+    },
   };
   return { fakeApi: api as unknown as TaskaApi, state };
 });
@@ -51,6 +56,7 @@ beforeEach(() => {
   state.refusal = null;
   state.workspace = null;
   state.holdMe = false;
+  state.planReads = 0;
 });
 
 describe("Choose a company", () => {
@@ -114,8 +120,45 @@ describe("Choose a company", () => {
     const { wrapper } = companiesHarness({ path: "/companies" });
     render(<CompaniesScreen {...props} />, { wrapper });
     expect(await screen.findByRole("heading", { level: 1, name: "You’re not in a company yet" })).toBeInTheDocument();
-    expect(screen.getByText("Work in Taska happens inside a company. Ask a company admin to invite you.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Work in Taska happens inside a company. Create one, or ask a company admin to invite you."),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Companies" })).not.toBeInTheDocument();
+    // TAS-501: the card's primary, and the catalogue read ahead for it.
+    const create = screen.getByRole("link", { name: "Create a company" });
+    expect(create).toHaveAttribute("href", "/companies/new");
+    expect(create).toHaveClass("primary-button");
+    await waitFor(() => expect(state.planReads).toBe(1));
+  });
+
+  it("offers «Create a company» as a row under the list, outside it, when there is a working company (TAS-501)", async () => {
+    state.tenants = [tenant("n", "Northwind"), tenant("m", "Massive Dynamic", "AUTO_CLOSED")];
+    const { wrapper, go } = companiesHarness({ path: "/companies" });
+    render(<CompaniesScreen {...props} />, { wrapper });
+    const list = await screen.findByRole("list", { name: "Companies" });
+    expect(within(list).getAllByRole("link")).toHaveLength(2);
+    const create = screen.getByRole("link", { name: "Create a company" });
+    expect(list).not.toContainElement(create);
+    expect(create).toHaveClass("company-create-row");
+    expect(create).not.toHaveClass("primary-button");
+    // Tab: the rows, then Create a company, then Log out.
+    const order = [...document.querySelectorAll("a, button")].map((node) => node.textContent);
+    expect(order.indexOf("Create a company")).toBeGreaterThan(order.findIndex((text) => text?.startsWith("Massive Dynamic")));
+    expect(order.indexOf("Log out")).toBeGreaterThan(order.indexOf("Create a company"));
+    fireEvent.click(create);
+    expect(go).toHaveBeenCalledWith("/companies/new", { state: undefined });
+  });
+
+  it("with no working company — only closed ones — «Create a company» is the card's primary (TAS-501)", async () => {
+    state.tenants = [tenant("w", "Wayne Enterprises", "OWNER_CANCELLED"), tenant("m", "Massive Dynamic", "AUTO_CLOSED")];
+    const { wrapper } = companiesHarness({ path: "/companies" });
+    render(<CompaniesScreen {...props} />, { wrapper });
+    const list = await screen.findByRole("list", { name: "Companies" });
+    expect(within(list).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "Massive DynamicClosed",
+      "Wayne EnterprisesCancelled",
+    ]);
+    expect(screen.getByRole("link", { name: "Create a company" })).toHaveClass("primary-button");
   });
 
   it("a failed read is a refusal with the server's words and a retry — never «no companies»", async () => {
@@ -140,6 +183,7 @@ describe("Choose a company", () => {
     fireEvent.click(row, { metaKey: true });
     expect(go).not.toHaveBeenCalled();
     fireEvent.click(row);
-    expect(go).toHaveBeenCalledWith("/c/g/projects", { state: undefined });
+    // A company that has never opened continues in this card (TAS-501, §3).
+    expect(go).toHaveBeenCalledWith("/c/g/projects", { state: { continuedShell: true } });
   });
 });

@@ -4,6 +4,7 @@ import { taskaApi } from "../api/client";
 import type { Workspace } from "../api/TaskaApi";
 import { onRefusedThisVisit, refusedThisVisit, tenantsQueryOptions } from "../lib/companies";
 import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
+import { plansQueryOptions } from "../lib/plans";
 
 /*
  * The companies build's hooks (TAS-500): the tab's company session, the
@@ -72,3 +73,16 @@ export function useDocumentTitle(title: string | null): void {
   }, [title]);
 }
 
+/**
+ * The plan catalogue read ahead, on the account's client, wherever an entry to
+ * «Create a company» is drawn (DESIGN.md §4.36 «Входы», TAS-501) — so the form
+ * usually opens whole. Public and cached for the client's stale time: an entry
+ * drawn again within it asks nothing. Inert in today's build.
+ */
+export function usePrefetchPlans(active = true): void {
+  const accountClient = useAccountQueryClient();
+  useEffect(() => {
+    if (!active || accountClient === null) return;
+    void accountClient.prefetchQuery(plansQueryOptions(taskaApi));
+  }, [active, accountClient]);
+}

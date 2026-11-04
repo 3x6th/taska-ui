@@ -1,12 +1,19 @@
 import { useIsMutating } from "@tanstack/react-query";
-import { Building2, Check, ChevronsUpDown } from "lucide-react";
+import { Building2, Check, ChevronsUpDown, Plus } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { apiErrorFacts } from "../api/errors";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
-import { COMPANIES_ROUTE, companyRoute, orderTenants, switcherStateLabel, tenantGroup } from "../lib/companies";
-import { useCompanies, useCompanyName, useRefusedThisVisit } from "../hooks/useCompanies";
+import {
+  COMPANIES_ROUTE,
+  CREATE_COMPANY_ROUTE,
+  companyRoute,
+  orderTenants,
+  switcherStateLabel,
+  tenantGroup,
+} from "../lib/companies";
+import { useCompanies, useCompanyName, usePrefetchPlans, useRefusedThisVisit } from "../hooks/useCompanies";
 import { AddressLink } from "./CompanyRouter";
-import { useCompanyAddress } from "../lib/companyAddress";
+import { useAppPath, useCompanyAddress } from "../lib/companyAddress";
 import { ErrorNote } from "./ErrorNote";
 
 /**
@@ -34,8 +41,11 @@ export function CompanySwitcher() {
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverId = useId();
+  const appPath = useAppPath();
 
   useDismissOnOutside(open, rootRef, () => setOpen(false), triggerRef);
+  // «Create a company» is drawn while the popover is open (TAS-501, §4.36 «Входы»).
+  usePrefetchPlans(open);
 
   useEffect(() => {
     if (!focusTriggerOnMount) return;
@@ -113,6 +123,12 @@ export function CompanySwitcher() {
             <AddressLink className="user-profile-link" path={COMPANIES_ROUTE} state={{ focusHeading: true }}>
               <Building2 aria-hidden="true" size={15} />
               All companies
+            </AddressLink>
+            {/* Leaves the company like «All companies», so a write in flight does not hold it (§4.34);
+                Cancel on the form comes back to this address (§4.36). */}
+            <AddressLink className="user-profile-link" path={CREATE_COMPANY_ROUTE} state={{ from: appPath }}>
+              <Plus aria-hidden="true" size={15} />
+              Create a company
             </AddressLink>
           </div>
         </section>

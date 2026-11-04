@@ -2123,7 +2123,8 @@ Everything below is the entry as it stood, in the past tense.
     session"). Removal: ask A3 on TAS-315.
   - The list is the reader's active memberships, and entering one may still be refused (a closed company, a
     pause or block the server enforces at entry); no role or membership state shown; lifecycle and restrictions
-    are a state line and an order only; opening always asks the server. Removal: ask A1 on TAS-338, A2 on TAS-315.
+    are a state line and an order — and, since TAS-501, a never-opened lifecycle picks the §4.37 card instead of
+    the app shell; opening always asks the server. Removal: ask A1 on TAS-338, A2 on TAS-315.
   - A revoke of the tab's company session (switch, leave, close) is fire-and-forget, and its own 401 never signs the
     account out: backend PR #288 answers 401 for an unknown session id where contracts §6 says 404, so a 401 there is
     not evidence the account session died (the client renews the account once and retries). Removal: the PR #288
@@ -2132,7 +2133,10 @@ Everything below is the entry as it stood, in the past tense.
     revoked best effort, never an automatic switch) — both mean the tab sent the wrong credential, and nothing it
     holds can be trusted after that. Removal: none needed; it is the client's own rule.
   - A content read refused 403 `CAPABILITY_DISABLED` with `reasons` closes the company with those reasons (DESIGN.md
-    §4.35 «Initech is paused»); a write so refused only rejects that action. REST counts every GET as a read, the
+    §4.35 «Initech is paused»); a write so refused only rejects that action. **Except** a refusal whose `reasons`
+    carry `PENDING_FIRST_PAYMENT`, or code `PAYMENT_PENDING` (TAS-501): that company has never opened, and the tab
+    shows its §4.37 card without closing the company or revoking its session — payment, status and cancel go
+    with that session. Removal: ask A14. REST counts every GET as a read, the
     mock its company content routes. The rule is broader than the two content-blocking reasons (`OWNER_PAUSE`,
     `PLATFORM_BLOCK`) because contracts §5 does not say which reasons a read can carry. Removal: ask A2c on TAS-316.
     The mock reaches it through the hook `contentReadUnderRestriction: false` in `taska.mockTenantHooks`.
@@ -2153,7 +2157,8 @@ Everything below is the entry as it stood, in the past tense.
   404, a suspended membership closes its tab. Before TAS-316 and TAS-340 the flag is **unsafe**, not merely early:
   a gateway that issues tenant sessions but does not scope data routes would show the same projects in every
   company's tab, and the UI cannot tell.
-- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v1`); this
+- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v2` since
+  TAS-501; `v1` before it); this
   narrows "The mock has a session flag but no session enforcement" for the flag-on build only.
 - **Mock answers where the blueprint is silent** (`src/api/mock/MockTenantServer.ts`, `mockCompanies.ts`) — the
   mock's choices, not the blueprint's behaviour; each falls away with the ask named:
@@ -2165,6 +2170,9 @@ Everything below is the entry as it stood, in the past tense.
     contracts §5, where a financial READ_ONLY still allows some admin actions; the reader's own notifications,
     notification settings and Telegram are not stopped (TAS-325). Content reads under a restriction are allowed:
     `MOCK_PROJECT_CONTENT_READ_UNDER_RESTRICTION = true`, the "separate global flag" of contracts §5. Ask A2c.
+    **Except `PENDING_FIRST_PAYMENT`** (since TAS-501): the blueprint denies a pending company's content reads
+    unconditionally (`access-matrix.json` CONTENT_READ), and the mock refuses them 403 `CAPABILITY_DISABLED`
+    with the reason whatever the flag.
   - The people directory (`searchUsers`) is the company's active members — the TENANT_DIRECTORY target (TAS-321).
   - Data routes keep today's error envelope: a foreign project id answers the store's `NOT_FOUND`, a project the
     reader is not on `PERMISSION_DENIED` — the statuses the blueprint names, the legacy codes. Ask A6 on TAS-316.
@@ -2175,6 +2183,63 @@ Everything below is the entry as it stood, in the past tense.
   it as 404 `TENANT_NOT_FOUND`; once wired, a foreign company link would read «You no longer have access to This
   company» instead of §4.18. No compensation in the code. Ask A2b on TAS-315.
 - **Removal:** delete with the flag, after the probe.
+
+### TAS-501: self-service company creation ships ahead of the gateway, on the B2B blueprint
+
+- **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`; none in `openapi.yml`):
+  `GET /api/v1/billing/plans` (listBillingPlans), `POST /api/v1/tenants` (createTenant),
+  `GET /api/v1/tenants/{tenantId}` (getTenant), `GET /api/v1/tenants/{tenantId}/operations/{operationId}`
+  (getTenantOperation), `POST /api/v1/tenants/{tenantId}/cancel-creation` (cancelTenantCreation). Backend:
+  TAS-310 (create/get over gRPC merged, no REST), TAS-337, TAS-472, TAS-313, TAS-478 (not started), TAS-315
+  (PR #288 open).
+- **Observed (2026-11-04, no token, api-contract-guard):** all five 404 "No static resource" — rids
+  `1790ae06-205c-4455-b4c9-43b3182be561`, `510547c1-62de-42a5-ba53-2627bb405b82`,
+  `e0b1df21-e04d-498a-a2a9-f50133e4c197`, `261df0dc-ec4a-44d9-9c51-1ffc396f444d`,
+  `b67d4807-a0dc-499b-a6c3-7bd5efedc8f2`; control `GET /api/v1/projects` 401
+  (`e5474c61-b818-4e56-b436-45d73ec32f7a`).
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. No eligibility, deadline or closure is computed
+  client-side. The free plan is read as the zero-priced one (DESIGN.md §4.36: order and the default choice only,
+  never the right to it). Removal: ask A16 (`kind FREE|PAID` on PlanVersion). One state is read from a refusal rather than from the company: until `getTenant` answers, a content
+  read refused with `PENDING_FIRST_PAYMENT` shows the card as «Awaiting first payment» — develop attaches that reason
+  to closed creations too, so the line can be wrong for a moment until `getTenant` answers. Removal: ask A14.
+- **What the UI assumes where the blueprint is silent — each removable:**
+  - FREE eligibility is unknown until createTenant answers 409 `FREE_ELIGIBILITY_USED`; the free plan is always
+    offered, and the refusal is remembered in memory until sign-out (the right never comes back). The story's
+    «получить eligibility FREE от backend» cannot be met against this contract. Removal: ask A10 (TAS-472/313).
+  - createTenant goes with the account session (WEB_GLOBAL), from inside a company too; getTenant,
+    getTenantOperation and cancelTenantCreation with the company session minted right after. Removal: asks A9,
+    A15 (TAS-315).
+  - The Idempotency-Key and the exact sent payload live in sessionStorage `taska.tenantCreation` until a
+    definitive answer; `tenantId` and `operationId` are kept there for polling because `Tenant` does not carry
+    them. Removal: ask A11.
+  - The operation state of a createTenant answer is not trusted (develop reports PENDING on every replay); it is
+    read from getTenantOperation. Removal: ask A12.
+  - The record outlives a FAILED or MANUAL_REVIEW operation and goes only once the company leaves PROVISIONING
+    or awaiting payment, so a reload reads the failed operation again instead of polling a company that will not
+    open (release-reviewer, TAS-501 wave 1). Removal: ask A11 (the company carries its operation id) and A12.
+  - A content read refused with `reasons` ∋ `PENDING_FIRST_PAYMENT`, or code `PAYMENT_PENDING`, shows the
+    never-opened card (DESIGN.md §4.37) instead of closing the company — the exception to the TAS-500 close rule
+    above. Removal: ask A14.
+  - Name and plan refusals share one sentence (400 `VALIDATION_FAILED` without violations); the client limit is
+    120 characters, trimmed, no control characters. Removal: ask A13.
+  - The never-opened card shows no plan or price; payment and invoices are TAS-513/514.
+- **Mock answers where the blueprint is silent** (`src/api/mock/MockTenantServer.ts`, `mockCompanies.ts`):
+  - A `PENDING_FIRST_PAYMENT` company refuses content reads 403 `CAPABILITY_DISABLED` with the reason whatever
+    `contentReadUnderRestriction` says (see the TAS-500 correction above).
+  - `PROVISIONING` content routes answer 409 `INVALID_STATE` with no reasons.
+  - Provisioning, the deadline closure and payment confirmation are time- or hook-driven
+    (`taska.mockTenantHooks`); the plan codes are the mock's own; createTenant receipts are durable per (actor,
+    key), not the 60 s refresh receipt.
+  - A company session calling createTenant answers 403 `SCOPE_DENIED`; the company's own routes (getTenant,
+    getTenantOperation, cancel) answer 403 `TENANT_MISMATCH` when the path names another company or the caller holds
+    only the account session; a malformed
+    `If-Match` answers 428 `VALIDATION_FAILED` (the blueprint names no code); an operation read by anyone but its
+    actor answers 404; Nina is ACTIVE in every company store so a company she creates works.
+- **Turning the flag on** additionally needs TAS-310/337/472/313/478 on the gateway, asks A9 and A15 answered,
+  and **TAS-513 deployed, or paid plans withheld** — otherwise paid companies are created that cannot be paid and
+  auto-close after the deadline.
+- **Removal:** delete with the flag, after a stand probe: FREE create → ACTIVE; paid → AWAITING_PAYMENT with a
+  deadline and refused content; cancel; a replay with the same key returns the same company id.
 
 ### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log
 

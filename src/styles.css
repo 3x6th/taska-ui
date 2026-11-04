@@ -1888,7 +1888,10 @@ h1 {
    it is the only thing on the screen, so the exemption for "non-critical" text
    does not reach it. 12px is §5.6's own range. */
 .projects-empty {
-  margin: 0;
+  /* Centred in the page like everything else in it (`.projects-page > *`): a
+     bare 0 left the 980-wide box at the left edge, so at 1440 its centred line
+     sat 200px left of the page's centre (TAS-501). */
+  margin: 0 auto;
   padding: 30px 18px;
   color: var(--fg-2);
   font-size: 12px;
@@ -11282,4 +11285,218 @@ button.attachment-open:hover:not(:disabled) {
   min-height: 100vh;
   min-height: 100dvh;
   background: var(--bg);
+}
+
+/* ===================================================================
+   Creating a company (TAS-501, the companies build only): the picker's and
+   the switcher's entries (§4.33, §4.34), «Create a company» §4.36 and the
+   card of a company that has never opened §4.37. Tokens only; no new colour.
+   =================================================================== */
+
+/* §3: a card that continues the one just on screen across the company prefix
+   does not enter a second time. */
+.auth-card-wrap.is-continued {
+  animation: none;
+}
+
+/* The card's full-width primary as a link: «Create a company» in the picker
+   (no companies, or none working) and under a closed creation (§4.33, §4.37). */
+.companies-create-primary,
+.company-setup-create {
+  text-decoration: none;
+}
+
+.companies-create-primary {
+  margin-top: 14px;
+}
+
+.company-setup-create {
+  margin-top: 1px;
+}
+
+.companies-create-primary:hover,
+.company-setup-create:hover {
+  filter: brightness(1.06);
+}
+
+.companies-create-primary:active,
+.company-setup-create:active {
+  filter: brightness(0.96);
+}
+
+/* §4.33 «Создать»: the row's box under the list — not in it, so not counted.
+   `--fg-2` until hovered; 44 at every width. */
+.company-create-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  margin: 2px -11px 0;
+  border-radius: 9px;
+  padding: 7px 11px;
+  color: var(--fg-2);
+  font-size: 13px;
+  font-weight: 550;
+  text-decoration: none;
+  transition: background-color var(--dur-hover) var(--ease), color var(--dur-hover) var(--ease);
+}
+
+.company-create-row:hover {
+  background: var(--surface-3);
+  color: var(--fg);
+}
+
+.company-create-icon {
+  flex: none;
+}
+
+/* §4.36: the plan choice is §5.9's radio pair; only what it adds is here. */
+.create-company-loading {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.create-company-plan-failure .error-note {
+  margin: 0;
+}
+
+.create-company-plan-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.create-company-plan-price {
+  flex: none;
+  margin-left: auto;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+/* The free row once it is known to be used: still there, the radio alone at
+   §4.1's .58, the name in `--fg-2` — never opacity on text (§2.2). */
+.create-company-plan.is-used {
+  cursor: not-allowed;
+}
+
+.create-company-plan.is-used input {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.create-company-plan.is-used .create-company-plan-name {
+  color: var(--fg-2);
+}
+
+/* Nothing chosen: §4.1's «steadily unavailable», by hand on `aria-disabled`.
+   Never while in flight — «Creating company» does not fade. */
+.auth-submit.is-unavailable[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+/* §4.37: the never-opened card, the form's rhythm. */
+.company-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.company-setup > .error-note {
+  margin: 0;
+}
+
+.company-setup-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.company-setup-name {
+  overflow-wrap: anywhere;
+}
+
+.company-setup-state {
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* The payment slot (TAS-513): 14 under the text, the gap's 13 and this 1. */
+.company-setup-pay {
+  margin: 1px 0 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.company-setup-all {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+/* §4.11's danger zone under the slot: one `--border` line, 16 above (the
+   gap's 13 and this 3), 14 below it. At 390 the button wraps under its
+   sentence. */
+.company-cancel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 3px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.company-cancel > .error-note {
+  margin: 0;
+}
+
+.company-cancel-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.company-cancel-note {
+  flex: 1 1 200px;
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.company-cancel-trigger {
+  flex: none;
+}
+
+/* While its question is open the trigger wears the answer's edge — the
+   archive trigger's treatment (TAS-149). */
+.secondary-button.company-cancel-trigger[aria-expanded="true"] {
+  border-color: color-mix(in oklab, var(--danger) 45%, transparent);
+  color: var(--fg);
+}
+
+/* §4.22's strip in a column: no avatar indent, no flex basis. */
+.member-confirm.company-cancel-confirm {
+  flex: none;
+  margin: 0;
+}
+
+.company-cancel-confirm .compact-button[aria-disabled="true"] {
+  cursor: progress;
+}
+
+/* §5.6 «Projects без проектов»: the only content, 13/400 `--fg-2`. */
+.projects-none {
+  font-size: 13px;
+  font-weight: 400;
 }

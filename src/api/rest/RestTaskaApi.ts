@@ -32,6 +32,7 @@ import type {
   TenancyCapabilities,
   Workspace,
   WorkspaceClosedEvent,
+  WorkspacePendingEvent,
   SearchIssuesParams,
   SearchUsersParams,
   SignupInput,
@@ -100,7 +101,16 @@ import {
   resolvePlanningFields,
 } from "../planningFields";
 import { SessionExpiredSignal } from "../session";
-import type { ListTenantsParams, TenantPage } from "../tenants";
+import type {
+  CreateTenantInput,
+  CreateTenantResult,
+  ListBillingPlansParams,
+  ListTenantsParams,
+  PlanVersionPage,
+  Tenant,
+  TenantOperation,
+  TenantPage,
+} from "../tenants";
 import { WebSessionClient, type B2bTransport, type LockManagerLike } from "../webSession";
 import type {
   AccessToken,
@@ -1007,6 +1017,12 @@ export class ApiError extends Error {
     public readonly reasons: readonly string[] = [],
     /** `Problem.violations`, the fields a `VALIDATION_FAILED` refused. Empty otherwise. */
     public readonly violations: readonly FieldViolation[] = [],
+    /**
+     * `Retry-After` in whole seconds (TAS-501, api-contract-guard N1): the
+     * blueprint's 429 names its wait in the header (contracts §6). `null` when
+     * the answer sent none, or not as a number of seconds.
+     */
+    public readonly retryAfterSeconds: number | null = null,
   ) {
     super(message);
     this.name = "ApiError";
@@ -1423,8 +1439,38 @@ export class RestTaskaApi implements TaskaApi {
     return this.web ? this.web.onWorkspaceClosed(listener) : () => {};
   }
 
+  onWorkspacePending(listener: (event: WorkspacePendingEvent) => void): () => void {
+    return this.web ? this.web.onWorkspacePending(listener) : () => {};
+  }
+
   lastCompanyHint(): string | null {
     return this.web?.lastCompanyHint() ?? null;
+  }
+
+  /*
+   * Creating a company (TAS-501): the session layer chooses each route's
+   * credential — none for the plans, the account's for `createTenant`, the
+   * tab's company session for the other three. Today's build: no request.
+   */
+
+  async listBillingPlans(params: ListBillingPlansParams = {}): Promise<PlanVersionPage> {
+    return this.companies("listBillingPlans").listBillingPlans(params);
+  }
+
+  async createTenant(input: CreateTenantInput, idempotencyKey: string): Promise<CreateTenantResult> {
+    return this.companies("createTenant").createTenant(input, idempotencyKey);
+  }
+
+  async getTenant(tenantId: string): Promise<Tenant> {
+    return this.companies("getTenant").getTenant(tenantId);
+  }
+
+  async getTenantOperation(tenantId: string, operationId: string): Promise<TenantOperation> {
+    return this.companies("getTenantOperation").getTenantOperation(tenantId, operationId);
+  }
+
+  async cancelTenantCreation(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant> {
+    return this.companies("cancelTenantCreation").cancelTenantCreation(tenantId, version, idempotencyKey);
   }
 
   /** The session layer, or the refusal today's build gives a company operation — without a request. */
@@ -1467,6 +1513,33 @@ export class RestTaskaApi implements TaskaApi {
           bearer,
         );
       },
+      // TAS-501. The body of `createTenant` is the two fields exactly, in one
+      // order, so a retry with the same key sends the same bytes.
+      listBillingPlans: (params, signal) => {
+        const search = new URLSearchParams();
+        if (params.cursor !== undefined) search.set("cursor", params.cursor);
+        if (params.limit !== undefined) search.set("limit", String(params.limit));
+        return send(`/billing/plans${this.query(search)}`, {}, null, signal);
+      },
+      createTenant: (bearer, input, idempotencyKey) =>
+        send(
+          "/tenants",
+          { method: "POST", body: { name: input.name, planVersionId: input.planVersionId }, headers: key(idempotencyKey) },
+          bearer,
+        ),
+      getTenant: (bearer, tenantId, signal) => send(`/tenants/${this.segment(tenantId)}`, {}, bearer, signal),
+      getTenantOperation: (bearer, tenantId, operationId, signal) =>
+        send(`/tenants/${this.segment(tenantId)}/operations/${this.segment(operationId)}`, {}, bearer, signal),
+      cancelTenantCreation: (bearer, tenantId, version, idempotencyKey) =>
+        send(
+          `/tenants/${this.segment(tenantId)}/cancel-creation`,
+          {
+            method: "POST",
+            body: { confirmed: true },
+            headers: { ...key(idempotencyKey), "If-Match": `"${version}"` },
+          },
+          bearer,
+        ),
     };
   }
 
@@ -3829,6 +3902,7 @@ export class RestTaskaApi implements TaskaApi {
       const code = body?.code ?? body?.error?.code ?? "UNKNOWN";
       const bodyRequestId = typeof body?.requestId === "string" && body.requestId ? body.requestId : undefined;
       const requestId = response.headers.get("X-Request-Id") ?? bodyRequestId ?? body?.error?.requestId;
+      const retryAfter = response.headers.get("Retry-After");
       throw new ApiError(
         message,
         code,
@@ -3838,6 +3912,7 @@ export class RestTaskaApi implements TaskaApi {
         errorDetails(body?.details),
         toReasons(body?.reasons),
         toFieldViolations(body?.violations),
+        retryAfter !== null && /^[1-9][0-9]{0,8}$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : null,
       );
     }
     return { status: response.status, data: data as T };

@@ -10,6 +10,7 @@ import {
 } from "../errors";
 import { TENANCY_WITHHELD_OPERATIONS, UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
 import { TAB_KEY, WEB_SESSION_KEY, createLocalLockManager } from "../webSession";
+import { refusalRetryAfter } from "../errors";
 import { ApiError, RestTaskaApi } from "./RestTaskaApi";
 
 /*
@@ -310,3 +311,117 @@ describe("the companies build calls exactly the blueprint's routes (§1, §2, B8
     await expect(asked).rejects.toBeInstanceOf(WorkspaceClosedError);
   });
 });
+
+/* --------------------------------------------- creating a company (TAS-501) */
+
+const NEW = "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
+const OPERATION = "4a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+const KEY = "1b4e28ba-2fa1-41d2-883f-0016d3cca427";
+const pendingTenant = {
+  id: NEW,
+  name: "Acme",
+  ownerId: ANNA,
+  lifecycle: "AWAITING_PAYMENT",
+  restrictions: ["PENDING_FIRST_PAYMENT"],
+  createdAt: "2026-11-04T10:00:00Z",
+  creationDeadline: "2026-12-04T10:00:00Z",
+  version: "1",
+  ownerVersion: "1",
+};
+
+/** The blueprint gateway with the creation routes answered. */
+function creationGateway(extra?: (sent: Sent) => Response | undefined) {
+  return blueprintGateway((request) => {
+    const answer = extra?.(request);
+    if (answer) return answer;
+    const path = request.url.replace(/^\/api\/v1/, "");
+    if (path.startsWith("/billing/plans")) return json(200, { items: [{ id: "plan-free", name: "Free", price: { amountMinor: "0", currency: "EUR", exponent: 2 }, period: "NONE", limits: [], capabilities: [], state: "PUBLISHED", code: "free", version: "1" }] });
+    if (path === "/tenants" && request.method === "POST") {
+      return json(202, {
+        tenant: pendingTenant,
+        operation: { id: OPERATION, type: "TENANT_PROVISION", state: "PENDING", createdAt: "2026-11-04T10:00:00Z", updatedAt: "2026-11-04T10:00:00Z", tenantId: NEW },
+      });
+    }
+    if (path === `/tenants/${NEW}` && request.method === "GET") return json(200, pendingTenant);
+    if (path === `/tenants/${NEW}/operations/${OPERATION}`) {
+      return json(200, { id: OPERATION, type: "TENANT_PROVISION", state: "SUCCEEDED", createdAt: "2026-11-04T10:00:00Z", updatedAt: "2026-11-04T10:00:03Z", tenantId: NEW });
+    }
+    if (path === `/tenants/${NEW}/cancel-creation`) return json(200, { ...pendingTenant, lifecycle: "OWNER_CANCELLED", version: "2" });
+    return undefined;
+  });
+}
+
+describe("creating a company on the wire (TAS-501, api-contract-guard §1, §9 parity)", () => {
+  it("today's build refuses all five without a request", async () => {
+    const { fetch } = creationGateway();
+    const api = new RestTaskaApi("/api/v1");
+    for (const call of [
+      () => api.listBillingPlans(),
+      () => api.createTenant({ name: "Acme", planVersionId: "p" }, KEY),
+      () => api.getTenant(NEW),
+      () => api.getTenantOperation(NEW, OPERATION),
+      () => api.cancelTenantCreation(NEW, "1", KEY),
+    ]) {
+      await expect(call()).rejects.toBeInstanceOf(TenancyUnavailableError);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("each route with its credential: plans none, creating the account's from inside a company, the rest the company's", async () => {
+    const { sent } = creationGateway();
+    const { api } = companiesApi();
+    await api.signIn({ email: "anna@example.com", password: "x" });
+    await api.enterCompany(NORTHWIND);
+    await expect(api.listBillingPlans({ limit: 100 })).resolves.toMatchObject({ items: [{ id: "plan-free" }], nextCursor: null });
+    const created = await api.createTenant({ name: "Acme", planVersionId: "plan-team" }, KEY);
+    expect(created.tenant).toMatchObject({ id: NEW, lifecycle: "AWAITING_PAYMENT", creationDeadline: "2026-12-04T10:00:00Z" });
+    // A replayed 202's operation state is read as sent — the screens never trust it (ask A12).
+    expect(created.operation.state).toBe("PENDING");
+    await api.enterCompany(NEW);
+    await expect(api.getTenant(NEW)).resolves.toMatchObject({ lifecycle: "AWAITING_PAYMENT" });
+    await expect(api.getTenantOperation(NEW, OPERATION)).resolves.toMatchObject({ state: "SUCCEEDED" });
+    await expect(api.cancelTenantCreation(NEW, "1", KEY)).resolves.toMatchObject({ lifecycle: "OWNER_CANCELLED", version: "2" });
+
+    const at = (method: string, path: string) => sent.find((request) => request.method === method && request.url === `/api/v1${path}`);
+    expect(at("GET", "/billing/plans?limit=100")?.headers.Authorization).toBeUndefined();
+    const create = at("POST", "/tenants");
+    expect(create?.headers.Authorization).toBe("Bearer g0-access");
+    expect(create?.headers["Idempotency-Key"]).toBe(KEY);
+    expect(create?.body).toEqual({ name: "Acme", planVersionId: "plan-team" });
+    expect(create?.headers["If-Match"]).toBeUndefined();
+    expect(at("GET", `/tenants/${NEW}`)?.headers.Authorization).toBe("Bearer t2-access");
+    expect(at("GET", `/tenants/${NEW}/operations/${OPERATION}`)?.headers.Authorization).toBe("Bearer t2-access");
+    const cancel = at("POST", `/tenants/${NEW}/cancel-creation`);
+    expect(cancel?.headers).toMatchObject({ Authorization: "Bearer t2-access", "Idempotency-Key": KEY, "If-Match": '"1"' });
+    expect(cancel?.body).toEqual({ confirmed: true });
+  });
+
+  it("a 429's Retry-After is the refusal's wait, in whole seconds; anything else is none", async () => {
+    const answers = [
+      problem(429, "RATE_LIMITED", {}),
+      problem(429, "RATE_LIMITED", {}),
+      problem(503, "DEPENDENCY_UNAVAILABLE", {}),
+    ];
+    const headers = ["30", "Wed, 21 Oct 2026 07:28:00 GMT", null];
+    creationGateway((request) => {
+      if (request.url !== "/api/v1/tenants" || request.method !== "POST") return undefined;
+      const answer = answers.shift() as Response;
+      const header = headers.shift();
+      if (header) answer.headers.set("Retry-After", header);
+      return answer;
+    });
+    const { api } = companiesApi();
+    await api.signIn({ email: "anna@example.com", password: "x" });
+    const refusals = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      refusals.push(await api.createTenant({ name: "Acme", planVersionId: "p" }, KEY).catch((failure: unknown) => failure));
+    }
+    expect(refusals.map((error) => [apiErrorFacts(error).status, refusalRetryAfter(error)])).toEqual([
+      [429, 30],
+      [429, null],
+      [503, null],
+    ]);
+    expect((refusals[0] as ApiError).retryAfterSeconds).toBe(30);
+  });
+});
+

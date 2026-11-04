@@ -65,7 +65,8 @@ describe("the reader's list (§4.33)", () => {
     expect(line(tenant("a", "A", "DELETED"))).toBe("Deleted");
     expect(line(tenant("a", "A", "DELETING"))).toBe("Being deleted");
     expect(line(tenant("a", "A", "AUTO_CLOSED", ["PLATFORM_BLOCK"]))).toBe("Closed");
-    expect(line(tenant("a", "A", "OWNER_CANCELLED"))).toBe("Closed");
+    // TAS-501: a cancelled creation is not a closed company (§4.33).
+    expect(line(tenant("a", "A", "OWNER_CANCELLED"))).toBe("Cancelled");
     expect(line(tenant("a", "A", "PROVISIONING"))).toBe("Being set up");
     expect(line(tenant("a", "A", "ACTIVE", ["OWNER_PAUSE", "PLATFORM_BLOCK"]))).toBe("Blocked by Taska");
     expect(line(tenant("a", "A", "ACTIVE", ["OWNER_PAUSE"]))).toBe("Paused by its owner");
@@ -149,11 +150,18 @@ describe("the closed company's words (§4.35)", () => {
     expect(closedCompanyWords(null, null, tenant("i", "Initech", "ACTIVE", ["OWNER_PAUSE"])).title).toBe("This company is paused");
     expect(closedCompanyWords("M", { code: "DELETED", reasons: [] }, null).title).toBe("M has been deleted");
     expect(closedCompanyWords("M", { code: "DELETING", reasons: [] }, null).title).toBe("M is being deleted");
-    expect(closedCompanyWords("M", { code: "PROVISIONING", reasons: [] }, null).title).toBe("M is still being set up");
     // A code outside the table takes the reason from the list row (§4.35, ask A2)…
     expect(
-      closedCompanyWords("Massive Dynamic", { code: "INVALID_STATE", reasons: [] }, tenant("m", "Massive Dynamic", "AUTO_CLOSED")),
-    ).toEqual({ title: "Massive Dynamic is closed", text: "Its projects can no longer be opened." });
+      closedCompanyWords("Vandelay", { code: "INVALID_STATE", reasons: [] }, tenant("v", "Vandelay", "DELETING")),
+    ).toEqual({ title: "Vandelay is being deleted", text: "Its projects can no longer be opened." });
+    // …and a company that has never opened is not this table's at all (TAS-501): §4.37's card draws it.
+    for (const lifecycle of ["PROVISIONING", "AWAITING_PAYMENT", "OWNER_CANCELLED", "AUTO_CLOSED"]) {
+      expect(closedCompanyWords("M", { code: lifecycle, reasons: [] }, null), lifecycle).toEqual({
+        title: "M could not be opened",
+        text: null,
+      });
+      expect(closedCompanyWords("M", { code: "INVALID_STATE", reasons: [] }, tenant("m", "M", lifecycle)).text, lifecycle).toBeNull();
+    }
     expect(
       closedCompanyWords("Hooli", { code: "INVALID_STATE", reasons: [] }, tenant("h", "Hooli", "ACTIVE", ["PLATFORM_BLOCK"])).title,
     ).toBe("Hooli is blocked");

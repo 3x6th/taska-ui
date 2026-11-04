@@ -96,7 +96,8 @@ describe("companies and who sees what (§7 fixtures)", () => {
       ["Northwind", "ACTIVE", []],
       ["Initech", "ACTIVE", ["OWNER_PAUSE"]],
       ["Hooli", "ACTIVE", ["PLATFORM_BLOCK"]],
-      ["Massive Dynamic", "AUTO_CLOSED", []],
+      // Closed by its deadline before its first payment (TAS-501): the restriction stays on, harmless.
+      ["Massive Dynamic", "AUTO_CLOSED", ["PENDING_FIRST_PAYMENT"]],
       [MOCK_LONG_TENANT_NAME, "ACTIVE", []],
     ]);
     expect(MOCK_LONG_TENANT_NAME).toHaveLength(120);

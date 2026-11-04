@@ -3806,8 +3806,9 @@ entry), kept here so they are not lost (`api-contract-guard` F6):
   invitation preview `GET /auth/invitations/{token}` (not `/meta`: it needs a
   session the invitee does not have); removes the prose-keyed `aria-invalid`
   and the hard-coded hint.
-- **`Retry-After` readable by the browser** — expose it in CORS, or name
-  `details.retryAfterSeconds` in the contract.
+- ~~**`Retry-After` readable by the browser** — expose it in CORS, or name
+  `details.retryAfterSeconds` in the contract.~~ Closed: the gateway exposes it (`access-control-expose-headers:
+  X-Request-Id, ETag, Retry-After`, measured by api-contract-guard on 2026-11-04; default at `application.yml:79`).
 - **One check for the `/users` query** — the edge (raw) and auth-service
   (trimmed code points) answer a short query with two different sentences.
 - **The directory row's avatar shape** — `AvatarDto` or an unavailable flag
@@ -4456,3 +4457,63 @@ From the api-contract-guard design and the art-director ruling before the build
     «is paused» with no id (the §4.35 row fallback).
   - From release-reviewer's narrow pass: a `VALIDATION_FAILED` on entering a company is always read as the address
     id, so a malformed request of the client's own (a bad `Idempotency-Key`) would also show «Page not found».
+
+### Left by TAS-501 pre-build (company creation, B2B blueprint `758f8fc6`, 2026-11-04)
+
+From the api-contract-guard design and the art-director ruling (`docs/ai/reviews/TAS-501/`, git-ignored). Backend
+asks A9–A16 went to Jira as comments on their owner stories.
+
+- **Tenant has no `closedAt` / `cancelledAt`**, so the never-opened card cannot date a closure or a cancel.
+- **FREE for an unverified email**: the blueprint is silent.
+- **Who issues the INITIAL invoice**: L02's provisioning step «billing invoice» against `CreateInvoiceRequest`
+  needing buyer, currency and method from the owner (TAS-337/475/513).
+- **A new FREE company on the mock does not enforce the one-project limit** (TAS-512's quotas).
+- **The Massive Dynamic fixture** is AUTO_CLOSED with a non-owner member, impossible under the invitation denial;
+  harmless.
+- **A lost createTenant answer followed by a new tab** (not a reload) can create a second paid company: the key is
+  per tab. The company still appears in the list.
+- **The catalogue does not say whether a price includes VAT** (art-director); TAS-513.
+- **The never-opened card names no plan or price** until a subscription or invoice read exists (TAS-513).
+- **The second `.projects-page` glow** (the §1 known violation) is now the first thing a new owner sees.
+- **The picker's state line could carry the deadline**, later.
+- **From release-reviewer's wave 1 on TAS-501:** the first-screen list gate holds ACTIVE companies too, adding a step
+  on a cold tab (`CompanyGate.tsx`); the AC2 e2e pins «paid spends no FREE» only through the client's memory — create
+  FREE after the paid company to pin the ledger end to end; on a cold reload the restored creation form shows in
+  flight with an empty name for one account round trip before it adopts the record.
+- **From api-contract-guard's build review of TAS-501 (2026-11-04):** a SUCCEEDED operation while the company still
+  reads PROVISIONING leaves the §4.37 card with no polling and no «Check again» (addition to ask A12: the operation's
+  terminal state and the lifecycle change in one transaction); a new creation attempt overwrites a failed company's
+  record, so that company's card falls back to polling getTenant; the name field's `maxLength` counts UTF-16 units, so
+  names with astral characters are capped below 120 code points; no request-count test covers the companies-build
+  screens (`ScreenRequests.test.tsx` untouched).
+
+### Left by TAS-501 review (company creation, three roles approve `1077658`, 2026-11-04)
+
+Non-blocking notes the roles raised on clean verdicts — kept here instead of another round (the owner's rule on
+speed after clean verdicts).
+
+- **A refused operation read is hidden and polled anyway** (api-contract-guard N1, medium, measured): after a 404/403
+  on getTenantOperation the §4.37 card keeps «Taska is setting it up…» for 5 minutes (~33 refusals) with no request id
+  (`CompanySetupScreen.tsx` poll interval ignores errors; only the company read's failure is drawn). Fix: on a
+  definitive 4xx (not 408/429) stop polling and show the setup-read refusal with the request id; transient errors
+  keep the cadence.
+- **Weak pins** (api-contract-guard N2): the «no Cancel creation without the company session» test asserts before the
+  account read answers (removing `canRead` survives); the screen-level polling wiring (cadence, terminal stop,
+  hidden-tab pause, 5-minute stop) survives mutation — only the pure `pollDelay` / `isTerminalOperation` are tested.
+  Fix: wait for the account in that test; one fake-timer test counting reads over 0–40 s with the FAILED stop and the
+  hidden-tab pause.
+- **A restored in-flight form shows the wrong plan for one account round trip** (art-director N1, observed): Free
+  checked while the replayed attempt is Team. Fix: no radio checked while the restored attempt is unverified.
+- **After an answer that isn't final (lost answer, 5xx, 429, 503) the locked name and plan silently ignore input**
+  (art-director N2): `cursor:default` on the read-only name (§4.3 «Только чтение») and on the unchosen plan rows, and
+  the hint replaced by «Taska is still checking this attempt, so its name and plan can’t change.» — a DESIGN.md §4.36
+  change with it.
+- **Setup failed: the operation id wraps mid-UUID and cannot be copied** (art-director N3): render it with the
+  ErrorNote Request ID row recipe, labelled «Operation ID:», copy button; `{failureCode}` stays as the detail line.
+- In the Setup failed card the persistent empty `role=status` takes a flex gap (h1 → ErrorNote 19 px, not 13).
+- In a brand-new mock company the bell shows «1 unread»: the mock's notifications are account-wide.
+- Not observed by any role: the non-owner view of an awaiting card (no fixture), the «deadline has passed» sentence
+  (the mock clock moves server and client together), «No plans are available right now.», 404 on a replay.
+- `companies.spec.ts:146` sub-pixel flake on desktop (43.999996 < 44) seen once by api-contract-guard; passed 3/3.
+- `SettingsConnectedAppsSection.test.tsx` «selects the text … when the clipboard refuses» (TAS-414) flaked once under
+  load in the orchestrator's gate on `b85e869`; 5/5 alone, and green in every later run.

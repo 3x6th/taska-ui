@@ -503,7 +503,8 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
       }
       if (outcome === "adminCode") return;
       if (typeof outcome === "object") {
-        if ("route" in outcome) companies?.go(outcome.route, { replace: true });
+        // A company that has never opened continues in this card (TAS-501, §3).
+        if ("route" in outcome) companies?.go(outcome.route, { replace: true, state: { continuedShell: true } });
         else navigate(COMPANIES_ROUTE, { replace: true, state: { from: outcome.picker, afterSignIn: true } });
         return;
       }
