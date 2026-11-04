@@ -312,9 +312,11 @@ Credentials for any of these are covered by *Safety* at the end of this file.
   `e2e/invite.spec.ts`, the OAuth return in TAS-426). Since TAS-426 it runs at
   base `/`: the site is served from the root of `taska.ozero.dev`, and the
   backend sends the OAuth return to the origin-root `/auth/callback` whatever
-  the base, so a base-prefixed server could not host that landing. The suite therefore binds `PORT` and `PORT+1`: a
-  parallel run in a worktree must pick a `TASKA_E2E_PORT` at least 2 away from
-  any other run's.
+  the base, so a base-prefixed server could not host that landing. Since TAS-500 a
+  third mock server runs on `PORT+2` with `VITE_TASKA_TENANTS` on, for the company
+  specs only (the B2B build, ahead of the gateway). The suite therefore binds
+  `PORT`, `PORT+1` and `PORT+2`: a parallel run in a worktree must pick a
+  `TASKA_E2E_PORT` at least 3 away from any other run's.
 - Never commit secrets, build output, or IDE state.
 
 ### Skills rank below the design system
