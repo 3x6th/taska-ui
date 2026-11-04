@@ -4475,3 +4475,7 @@ asks A9–A16 went to Jira as comments on their owner stories.
 - **The never-opened card names no plan or price** until a subscription or invoice read exists (TAS-513).
 - **The second `.projects-page` glow** (the §1 known violation) is now the first thing a new owner sees.
 - **The picker's state line could carry the deadline**, later.
+- **From release-reviewer's wave 1 on TAS-501:** the first-screen list gate holds ACTIVE companies too, adding a step
+  on a cold tab (`CompanyGate.tsx`); the AC2 e2e pins «paid spends no FREE» only through the client's memory — create
+  FREE after the paid company to pin the ledger end to end; on a cold reload the restored creation form shows in
+  flight with an empty name for one account round trip before it adopts the record.

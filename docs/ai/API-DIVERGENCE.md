@@ -2156,7 +2156,8 @@ Everything below is the entry as it stood, in the past tense.
   404, a suspended membership closes its tab. Before TAS-316 and TAS-340 the flag is **unsafe**, not merely early:
   a gateway that issues tenant sessions but does not scope data routes would show the same projects in every
   company's tab, and the UI cannot tell.
-- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v1`); this
+- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v2` since
+  TAS-501; `v1` before it); this
   narrows "The mock has a session flag but no session enforcement" for the flag-on build only.
 - **Mock answers where the blueprint is silent** (`src/api/mock/MockTenantServer.ts`, `mockCompanies.ts`) — the
   mock's choices, not the blueprint's behaviour; each falls away with the ask named:
@@ -2195,8 +2196,10 @@ Everything below is the entry as it stood, in the past tense.
   `e0b1df21-e04d-498a-a2a9-f50133e4c197`, `261df0dc-ec4a-44d9-9c51-1ffc396f444d`,
   `b67d4807-a0dc-499b-a6c3-7bd5efedc8f2`; control `GET /api/v1/projects` 401
   (`e5474c61-b818-4e56-b436-45d73ec32f7a`).
-- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. No eligibility, deadline, closure, plan or payment state is
-  computed client-side.
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. No eligibility, deadline, closure or plan is computed
+  client-side. One state is read from a refusal rather than from the company: until `getTenant` answers, a content
+  read refused with `PENDING_FIRST_PAYMENT` shows the card as «Awaiting first payment» — develop attaches that reason
+  to closed creations too, so the line can be wrong for a moment until `getTenant` answers. Removal: ask A14.
 - **What the UI assumes where the blueprint is silent — each removable:**
   - FREE eligibility is unknown until createTenant answers 409 `FREE_ELIGIBILITY_USED`; the free plan is always
     offered, and the refusal is remembered in memory until sign-out (the right never comes back). The story's
@@ -2209,6 +2212,9 @@ Everything below is the entry as it stood, in the past tense.
     them. Removal: ask A11.
   - The operation state of a createTenant answer is not trusted (develop reports PENDING on every replay); it is
     read from getTenantOperation. Removal: ask A12.
+  - The record outlives a FAILED or MANUAL_REVIEW operation and goes only once the company leaves PROVISIONING
+    or awaiting payment, so a reload reads the failed operation again instead of polling a company that will not
+    open (release-reviewer, TAS-501 wave 1). Removal: ask A11 (the company carries its operation id) and A12.
   - A content read refused with `reasons` ∋ `PENDING_FIRST_PAYMENT`, or code `PAYMENT_PENDING`, shows the
     never-opened card (DESIGN.md §4.37) instead of closing the company — the exception to the TAS-500 close rule
     above. Removal: ask A14.
@@ -2222,6 +2228,10 @@ Everything below is the entry as it stood, in the past tense.
   - Provisioning, the deadline closure and payment confirmation are time- or hook-driven
     (`taska.mockTenantHooks`); the plan codes are the mock's own; createTenant receipts are durable per (actor,
     key), not the 60 s refresh receipt.
+  - A company session calling createTenant answers 403 `SCOPE_DENIED`; the company's own routes (getTenant,
+    getTenantOperation, cancel) answer 403 `TENANT_MISMATCH` when the path names another company; a malformed
+    `If-Match` answers 428 `VALIDATION_FAILED` (the blueprint names no code); an operation read by anyone but its
+    actor answers 404; Nina is ACTIVE in every company store so a company she creates works.
 - **Turning the flag on** additionally needs TAS-310/337/472/313/478 on the gateway, asks A9 and A15 answered,
   and **TAS-513 deployed, or paid plans withheld** — otherwise paid companies are created that cannot be paid and
   auto-close after the deadline.
