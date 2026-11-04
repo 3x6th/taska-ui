@@ -2098,6 +2098,51 @@ Everything below is the entry as it stood, in the past tense.
   acceptance) has an older separate mock validator. It is outside the shared five-form helper;
   recorded in BACKLOG.md for separate frontend alignment. This entry does not claim parity there.
 
+### TAS-500: companies and per-tab workspaces ship ahead of the gateway, on the B2B blueprint
+
+- **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`; none in `openapi.yml`):
+  `POST /api/v1/auth/web-sessions` (startWebSession), `POST /api/v1/auth/web-sessions/refresh`
+  (refreshWebSession, both families), `GET /api/v1/tenants` (listTenants), `POST /api/v1/auth/tenant-sessions`
+  (createTenantSession), `DELETE /api/v1/auth/tenant-sessions/{sessionId}` (revokeTenantSession). Backend:
+  TAS-315 (PR #288 open — auth-service gRPC only, off by default, no REST route), TAS-338 (list, not started),
+  TAS-316, TAS-340, TAS-328.
+- **Observed (2026-11-04, no token, api-contract-guard):** `GET /api/v1/tenants` 404 "No static resource
+  api/v1/tenants…" (rid `2d5fd14c-9308-426a-a9c6-1295131050f4`); `GET /api/v1/auth/web-sessions/refresh` the
+  same (rid `75884062-3998-40a0-bbc9-c33a1aedd6a7`); control `GET /api/v1/projects` 401 (rid
+  `14e4b0ad-f4d0-4841-bc4a-d7b88134f5f4`). POST/DELETE inferred as in the TAS-412 entry.
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. Off (the stand): unchanged, none of these routes is
+  called. On: `RestTaskaApi` calls exactly the blueprint routes; on the stand sign-in fails closed with the 404.
+- **Where credentials live:** `taska.webSession` (localStorage, shared; rotated under a Web Lock with a recorded
+  `Idempotency-Key`) and `taska.tab` (sessionStorage; refreshed only by the tab holding the session's ownership
+  lock; a duplicated tab mints its own session and never touches the copied one).
+- **What the UI assumes where the blueprint is silent — each removable:**
+  - Tenant commands and the list go out with WEB_GLOBAL; every other route in a workspace with the tab's
+    WEB_TENANT (PR #288 scopes). Removal: ask A2 on TAS-315.
+  - A failed tenant refresh with a live global session is re-selected once; 403 `MEMBERSHIP_INACTIVE` / 404
+    `TENANT_NOT_FOUND` close the workspace, 401 signs out (PR #288 answers every refresh refusal 401 "Invalid
+    session"). Removal: ask A3 on TAS-315.
+  - The list is companies the reader may enter; no role or membership state shown; lifecycle and restrictions
+    are a state line and an order only; opening always asks the server. Removal: ask A1 on TAS-338, A2 on TAS-315.
+  - Sign-out revokes the tab's tenant session and drops the global record locally; the global family and sibling
+    tabs' families stay live until expiry. Removal: ask A4 on TAS-315.
+  - Provider sign-in hidden under the flag. Removal: ask A8 on TAS-315.
+  - Access-token create hidden under the flag; list and revoke kept. Removal: TAS-509 (createTenantPersonalToken,
+    TAS-463).
+  - Refusals read from Problem (`code`, `requestId`, `reasons`) and from the legacy envelope's `details.reason`.
+    Removal: ask A6 on TAS-316.
+  - GLOBAL_ADMIN: either sign-in answer (200 `MfaChallenge`, 403 `MFA_REQUIRED`) ends in a "not in this version"
+    note; the admin console is flag-off only; platform mode is not built. Removal: TAS-510 + ask A5 on TAS-345.
+  - "TENANT_ADMIN sees all projects" is whatever the project reads answer; the UI takes the role from
+    `currentUserRole` and synthesises nothing. Removal: ask A7 on TAS-340.
+- **Turning the flag on** needs TAS-315, TAS-338, TAS-316 and TAS-340 deployed, and the enabling PR carries the
+  stand probe: two companies, a project in each, two tabs; each lists only its own, a foreign project id answers
+  404, a suspended membership closes its tab. Before TAS-316 and TAS-340 the flag is **unsafe**, not merely early:
+  a gateway that issues tenant sessions but does not scope data routes would show the same projects in every
+  company's tab, and the UI cannot tell.
+- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v1`); this
+  narrows "The mock has a session flag but no session enforcement" for the flag-on build only.
+- **Removal:** delete with the flag, after the probe.
+
 ### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log
 
 - **Endpoints:** `GET /api/v1/users/me` (`ValidateAccessTokenResponseDto`);
