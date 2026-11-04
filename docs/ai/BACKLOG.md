@@ -4535,3 +4535,22 @@ A17–A25 went to Jira as comments on their owner stories.
   My profile «Role · User» → «Taska role» in the B2B build (as the menu).
 - **Discoverability:** Members is reachable only through Settings (and the project Members dialog's empty search); a
   «Members» row in the switcher footer is the fallback if the owner finds it too deep.
+
+### Left by TAS-502 review (company members and invitations, build review of `a0fcfec`, 2026-11-05)
+
+Non-blocking notes from the three roles (`docs/ai/reviews/TAS-502/`, git-ignored), left out of the fix round. Backend
+asks A26 (TAS-338) and A27 (TAS-315) went to Jira; A28 (the B2B dictionaries in `/meta`) is the pre-build line above.
+
+- **A write whose follow-up re-read fails** shows the old row while the hidden status already said the new state; the
+  «could not be refreshed» notice offers no retry. A compact «Try again» (29; 44 at ≤820) 8 px under it (art-director N-b).
+- **`.company-member-ghost` re-declares §4.1's ghost** instead of reusing it; the values match today (N-e).
+- **The heading hand-over after one's own demotion** is a module-level flag and depends on effect vs `setTimeout(0)`
+  order (release-reviewer L3).
+- **A background re-read that drops a row mid-removal** unmounts it and stops the polling, so the seat line can lag
+  until the next read; real backend only (L4).
+- **The Leave zone shows when the reader's own row is missing**, on the company list's `ownerId` (art-director approved
+  the fallback; the server decides) (L5).
+- **B2B deep links (`/c/{id}/…`) show a blank `--bg` plane before first paint** — not TAS-502 (N-f).
+- **`refusalViolations`** is exported and tested but unused, since DESIGN chose one sentence per refusal (guard N6).
+- **The full gate on `a0fcfec` failed 43 unrelated mobile specs** while a reviewer ran mutations in place in the
+  worktree; `--last-failed` on the clean tree passed 43/43. Briefs now ask for mutations in a `git archive` copy.

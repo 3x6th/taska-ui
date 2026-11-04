@@ -2277,23 +2277,47 @@ Everything below is the entry as it stood, in the past tense.
     ask A20.
   - No write is optimistic (the story's acceptance criterion; an exception to DESIGN.md §6); a 412 re-reads and never
     retries by itself. After a change to the reader's own row the tab re-enters the company (the client's own cache
-    rule, not a compensation).
+    rule, not a compensation): `reenterCompany` creates the new company session first and revokes the old one after,
+    and closes the company only on a refusal that closes it.
+  - A leave whose answer was lost (transport, 408, 5xx — not 429) is retried with the same key; a retry refused 401,
+    403 `MEMBERSHIP_INACTIVE` or 404 `TENANT_NOT_FOUND` is read as having left, and while such a lost leave of company T
+    is open, a 403 `MEMBERSHIP_INACTIVE` or 404 `TENANT_NOT_FOUND` for T on any request (also after renewal and
+    re-selection) is read the same way: the session layer releases the company and emits its own "left" signal
+    (`TaskaApi.onWorkspaceLeft`, a no-op in today's build), `CompanyGate` refreshes the list and lands on `/companies`
+    with «You left …» — never §4.35. The blueprint is silent on replaying a leave. Removal: ask A27.
+  - `readAllPages` fails (no message of its own) at its 50-page cap or on a cursor the server repeats, rather than
+    showing a partial directory as everyone.
+  - `INVALID_STATE` on a member row, an invitation and Leave shows the action's own sentence, never the server's words
+    (the mock's say «tenant», which §4.33 forbids). Removal: ask A23 / A5 (named codes).
+  - The reader's company role outside Members (the project Members dialog's hint line, and the Leave zone when the
+    reader's own row is missing) comes from the cached members list, else the company list's `ownerId`; no read of its
+    own. Removal: ask A26.
+  - Pending invitations are ordered by `expiresAt`, standing in for the issue time while the company's TTL is constant.
+    Removal: ask A22 (`issuedAt` on the wire).
 - **Found on develop / open PRs (not deployed), recorded, not compensated:** a role change on a non-ACTIVE target
   answers 403 `MEMBERSHIP_INACTIVE` (PR #287 `TenantMembershipMutationService.java:167-168`) — the blueprint means the
   caller (contracts §6), so on the real backend an admin changing a suspended member would see their own company close
   (ask A17); a stale membership generation of the reader after any change to their own row answers 404
   `TENANT_NOT_FOUND` on the list and 403 `MEMBERSHIP_INACTIVE` on writes (develop `TenantMembershipService.java:127,
   :154-156`; PR #287 `:114-117`; PR #288 refresh) — the same false close (ask A18); empty profile fields (develop,
-  TAS-321); leave's expected version (PR #287 `:65-66`); members ordered `(joined_at, user_id)`.
+  TAS-321); leave's expected version (PR #287 `:65-66`); members ordered `(joined_at, user_id)`; PR #287 replays a
+  leave's stored receipt before the actor check (`TenantMembershipMutationService.java:128-130`), reachable while the
+  leaver's access token lives — the mock revokes the leaver's session at once, so its own replay is unreachable.
 - **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v3`): the blueprint's
   meaning where develop deviates (a non-ACTIVE target → 409 `INVALID_STATE`; no stale-generation refusal of the reader —
   the role is re-checked online, contracts §2); PR #287's order of checks otherwise; per-policy restrictions (NORMAL /
   RECOVERY / LEAVE / DIRECTORY) for these routes, unlike the TAS-500 blanket for project routes; a duplicate pending
   email → 409 `INVALID_STATE`; a foreign project → 400 with a violation; resend of an expired invitation → 422
   `INVITATION_EXPIRED`; removal's operation timing by hook; seats SEAT-only; invitation expiry on the lifecycle clock;
-  suspend and remove clear project rows and assignees, and reactivation restores none.
+  suspend and remove clear project rows and assignees, and reactivation restores none; inviting a current member's
+  email → 409 `INVALID_STATE` (the modal says its own sentence, never the server's words); leave applied at once (its
+  operation `SUCCEEDED`; the `loseAnswer: ["leaveTenant"]` hook commits it and loses the answer); the invitations list
+  and the quotas are never refused by a restriction; the SEAT quota row carries `version`; suspend, remove and
+  leave revoke the person's sessions and pending invitations, a demotion only their pending invitations (contracts §99
+  names suspend and remove as the generation-revoking changes).
 - **Turning the flag on** additionally needs TAS-321, TAS-322, TAS-323, TAS-335 and TAS-339 on the gateway and **asks
-  A17–A20 answered** (without A17 and A18 an admin's own company closes on ordinary member changes). The enabling PR
+  A17–A20 answered** (without A17 and A18 an admin's own company closes on ordinary member changes), with A27 decided
+  together with A18 (a stale generation refused at the edge would also refuse a lost leave's replay). The enabling PR
   carries the stand probe: invite → reserved + 1; resend → unchanged; revoke → − 1; suspend keeps used; remove frees
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
 - **Removal:** delete with the flag, after the probe.
