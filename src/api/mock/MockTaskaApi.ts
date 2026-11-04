@@ -31,8 +31,10 @@ import type {
   IssueWriteAnswer,
   SearchIssuesParams,
   SearchUsersParams,
+  SignInResult,
   SignupInput,
   TaskaApi,
+  TenancyCapabilities,
   UpdateIssueInput,
   UpdateIssueWorklogInput,
   UpdateProjectInput,
@@ -43,6 +45,8 @@ import type {
   UpdateWorkflowTransitionInput,
   WorkflowStatusInput,
   WorkflowTransitionInput,
+  Workspace,
+  WorkspaceClosedEvent,
 } from "../TaskaApi";
 import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
@@ -59,7 +63,9 @@ import {
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
   WORKLOG_COMMENT_MAX_LENGTH,
+  LEGACY_TENANCY,
 } from "../TaskaApi";
+import type { ListTenantsParams, TenantPage } from "../tenants";
 import {
   ATTACHMENT_BUCKET,
   ATTACHMENT_MAX_SIZE_BYTES,
@@ -90,6 +96,7 @@ import {
   PROVIDER_UNAVAILABLE_REASON,
   SIGNUP_DISABLED_REASON,
   STATE_INVALID_REASON,
+  TenancyUnavailableError,
   type ErrorDetails,
 } from "../errors";
 import { blankSummaryRefusal, datesOutOfOrderServerMessage, issueTypePatchRefusal, issueVersionRefusal } from "../issuePatch";
@@ -281,6 +288,55 @@ const OPS_PROJECT_ID = "64d70a2b-72b0-4866-bdbf-4f71a416f9e4";
 // Mirrors how RestTaskaApi keeps its tokens in localStorage, so a reload behaves
 // the same in both modes: the id of the signed-in user, nothing secret.
 const SESSION_KEY = "taska.mockSession";
+
+/**
+ * The seeded people and projects by name, for the companies build's fixtures
+ * (TAS-500, `MockTenantServer`) — which build their companies out of this
+ * store's seed rather than a second copy of it.
+ */
+export const MOCK_ACCOUNT_IDS = {
+  anna: ANNA_ID,
+  mark: MARK_ID,
+  sofia: SOFIA_ID,
+  tom: TOM_ID,
+  priya: PRIYA_ID,
+  nina: NINA_ID,
+} as const;
+
+export const MOCK_PROJECT_IDS = {
+  taska: TASKA_PROJECT_ID,
+  web: WEB_PROJECT_ID,
+  mob: MOB_PROJECT_ID,
+  ops: OPS_PROJECT_ID,
+} as const;
+
+/**
+ * One company's projects in the companies build (TAS-500): which of this
+ * store's seeded projects it keeps, with exactly who is on each and as what,
+ * and the projects of its own it adds. See `MockTaskaStore.applyTenantSeed`.
+ */
+export interface MockTenantSeed {
+  keep: ReadonlyArray<{ projectId: string; members: ReadonlyArray<readonly [string, ProjectRole]> }>;
+  add: ReadonlyArray<{
+    id: string;
+    key: string;
+    name: string;
+    description?: string;
+    color?: string;
+    createdAt: string;
+    members: ReadonlyArray<readonly [string, ProjectRole]>;
+    /** The first issue's number (default 1) — so a company's key can name the same issue number as another's. */
+    firstNumber?: number;
+    issues: ReadonlyArray<{
+      summary: string;
+      issueType: IssueTypeCode;
+      status: IssueStatusKey;
+      priority: IssuePriorityCode;
+      assigneeId: string | null;
+      reporterId: string;
+    }>;
+  }>;
+}
 
 /**
  * The raw invitation tokens this store seeds, by whose they are — what an
@@ -3934,6 +3990,131 @@ export class MockTaskaStore {
     if (!user || user.status !== "ACTIVE") return false;
     this.currentUserId = user.id;
     return true;
+  }
+
+  /**
+   * Narrows this store to one company of the companies build (TAS-500): the
+   * kept projects with exactly the members `seed` names, and the projects of
+   * its own `seed` adds — everything else in the seed (issues, comments,
+   * history, links, watchers, attachments, work log, labels, notifications,
+   * registries and workflows of the projects it does not keep) leaves with
+   * them, so nothing of another company can be read here by id or by key.
+   * Called once, right after construction, by `MockTenantServer` only; today's
+   * build never calls it and its store is the seed as it always was.
+   *
+   * A company admin's "every project" is seeded as an `ADMIN` row on each
+   * project rather than derived from the company role: the projects' reads are
+   * the server's answer, and the UI synthesises nothing from the role
+   * (docs/ai/API-DIVERGENCE.md «TAS-500», ask A7). A project created later by
+   * someone else does not get that row.
+   */
+  applyTenantSeed(seed: MockTenantSeed): void {
+    const byId = new Map(this.projects.map((project) => [project.id, project]));
+    const kept = new Set<string>();
+    const memberRows = (project: Project, members: MockTenantSeed["keep"][number]["members"]): ProjectMember[] =>
+      members.map(([userId, role]) => ({
+        userId,
+        role,
+        addedAt: project.createdAt,
+        addedBy: members[0]?.[0] ?? userId,
+        user: this.userSummary(userId),
+      }));
+
+    this.projects = seed.keep.flatMap(({ projectId, members }) => {
+      const project = byId.get(projectId);
+      if (!project) return [];
+      kept.add(projectId);
+      return [{ ...project, memberIds: members.map(([userId]) => userId) }];
+    });
+    const keptMembers = new Map(seed.keep.map(({ projectId, members }) => [projectId, members]));
+    this.membersByProject = Object.fromEntries(
+      this.projects.map((project) => [project.id, memberRows(project, keptMembers.get(project.id) ?? [])]),
+    );
+
+    const keptIssueIds = new Set(this.issues.filter((issue) => kept.has(issue.projectId)).map((issue) => issue.id));
+    const pick = <T>(record: Record<string, T>, keys: ReadonlySet<string>): Record<string, T> =>
+      Object.fromEntries(Object.entries(record).filter(([key]) => keys.has(key)));
+    this.issues = this.issues.filter((issue) => keptIssueIds.has(issue.id));
+    this.historyByIssue = pick(this.historyByIssue, keptIssueIds);
+    this.commentsByIssue = pick(this.commentsByIssue, keptIssueIds);
+    this.labelIdsByIssue = pick(this.labelIdsByIssue, keptIssueIds);
+    this.links = this.links.filter((link) => keptIssueIds.has(link.sourceIssueId) && keptIssueIds.has(link.targetIssueId));
+    this.watchers = this.watchers.filter((watcher) => keptIssueIds.has(watcher.issueId));
+    this.attachments = this.attachments.filter((attachment) => keptIssueIds.has(attachment.issueId));
+    this.worklogs = this.worklogs.filter((worklog) => keptIssueIds.has(worklog.issueId));
+    this.projectLabels = this.projectLabels.filter((label) => kept.has(label.projectId));
+    this.notifications = this.notifications.filter((notification) =>
+      notification.projectId !== null
+        ? kept.has(notification.projectId)
+        : notification.issueId === null || keptIssueIds.has(notification.issueId),
+    );
+    this.issueTypesByProject = pick(this.issueTypesByProject, kept);
+    this.workflowOverrides = pick(this.workflowOverrides, kept);
+    this.ownedWorkflows = pick(this.ownedWorkflows, kept);
+    this.retiredTypeCodes = pick(this.retiredTypeCodes, kept);
+
+    for (const spec of seed.add) {
+      const project = this.project(
+        spec.id,
+        spec.key,
+        spec.name,
+        spec.description,
+        spec.color,
+        spec.members.map(([userId]) => userId),
+        spec.createdAt,
+      );
+      this.projects.push(project);
+      this.membersByProject[project.id] = memberRows(project, spec.members);
+      this.issueTypesByProject[project.id] = SEED_ISSUE_TYPES.map((type) => ({ ...type, generation: makeId("generation") }));
+      spec.issues.forEach((item, index) => {
+        const at = new Date(Date.parse(spec.createdAt) + (index + 1) * 60_000).toISOString();
+        const issueNumber = (spec.firstNumber ?? 1) + index;
+        const issue: StoredIssue = {
+          id: makeId(`issue-${spec.key}-${issueNumber}`),
+          projectId: project.id,
+          issueNumber,
+          issueKey: `${spec.key}-${issueNumber}`,
+          issueType: item.issueType,
+          summary: item.summary,
+          description: "",
+          status: item.status,
+          priority: item.priority,
+          assigneeId: item.assigneeId,
+          reporterId: item.reporterId,
+          createdAt: at,
+          updatedAt: at,
+          version: 1,
+          deletedAt: null,
+          labels: [],
+          storyPoints: null,
+          startDate: null,
+          dueDate: null,
+          originalEstimateMinutes: null,
+          remainingEstimateMinutes: null,
+        };
+        this.issues.push(issue);
+        this.historyByIssue[issue.id] = [
+          {
+            id: makeId("history"),
+            issueId: issue.id,
+            eventType: "CREATED",
+            actorUserId: issue.reporterId,
+            occurredAt: at,
+            payload: {},
+          },
+        ];
+      });
+    }
+  }
+
+  /**
+   * An account's status, set by a fixture (TAS-500): the companies build's
+   * account without a company is Nina, who is `BLOCKED` in today's seed and so
+   * could not sign in to show it. Never called in today's build.
+   */
+  overrideAccountStatus(userId: string, status: UserStatus): void {
+    const user = this.users.find((item) => item.id === userId);
+    if (user) user.status = status;
   }
 
   currentUser(): User {
@@ -9181,9 +9362,18 @@ export class MockTaskaStore {
  * story is about; making the store throw would be a different, larger change.
  */
 export class MockTaskaApi implements TaskaApi {
-  constructor(private readonly store = new MockTaskaStore()) {
+  constructor(
+    private readonly store = new MockTaskaStore(),
+    /**
+     * `restoreSession: false` is the companies build's (TAS-500,
+     * `createCompaniesMockApi`): its sessions are `MockTenantServer`'s, and it
+     * neither reads nor clears `taska.mockSession`.
+     */
+    options: { restoreSession?: boolean } = {},
+  ) {
     // The session has to survive a reload the way the REST tokens do, or the
     // route guard would bounce every full page load back to the login form.
+    if (options.restoreSession === false) return;
     const userId = window.localStorage.getItem(SESSION_KEY);
     if (userId && !this.store.restoreSession(userId)) {
       window.localStorage.removeItem(SESSION_KEY);
@@ -9335,8 +9525,49 @@ export class MockTaskaApi implements TaskaApi {
   // Implemented, never fired: the mock hands out tokens that never expire and
   // has no server to reject them, so there is no moment at which a session dies
   // on its own. Signing out is not an expiry and does not belong here either.
+  // (The companies build's mock does expire them — `createCompaniesMockApi`.)
   onSessionExpired(_listener: () => void): () => void {
     return () => {};
+  }
+
+  // Companies (TAS-500): today's build has none. The companies build's mock is
+  // `createCompaniesMockApi` (src/api/mock/mockCompanies.ts), which answers
+  // these through `MockTenantServer`.
+  getTenancy(): TenancyCapabilities {
+    return LEGACY_TENANCY;
+  }
+
+  async signIn(input: LoginInput): Promise<SignInResult> {
+    await this.login(input);
+    return { status: "SIGNED_IN", userId: null };
+  }
+
+  async listTenants(_params?: ListTenantsParams): Promise<TenantPage> {
+    throw new TenancyUnavailableError("listTenants");
+  }
+
+  async enterCompany(_tenantId: string): Promise<Workspace> {
+    throw new TenancyUnavailableError("enterCompany");
+  }
+
+  async leaveCompany(): Promise<void> {
+    throw new TenancyUnavailableError("leaveCompany");
+  }
+
+  currentWorkspace(): Workspace | null {
+    return null;
+  }
+
+  onWorkspaceChange(_listener: () => void): () => void {
+    return () => {};
+  }
+
+  onWorkspaceClosed(_listener: (event: WorkspaceClosedEvent) => void): () => void {
+    return () => {};
+  }
+
+  lastCompanyHint(): string | null {
+    return null;
   }
 
   async getMeta(): Promise<EnumDictionaries> {

@@ -28,6 +28,10 @@ import type {
   LoginInput,
   OAuthSignupInput,
   RetryableOutboxService,
+  SignInResult,
+  TenancyCapabilities,
+  Workspace,
+  WorkspaceClosedEvent,
   SearchIssuesParams,
   SearchUsersParams,
   SignupInput,
@@ -55,11 +59,21 @@ import {
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
   directoryQueryLength,
+  B2B_TENANCY,
+  LEGACY_TENANCY,
 } from "../TaskaApi";
 import { attachmentRefusal } from "../attachments";
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES, avatarRefusal } from "../avatars";
-import { IssueVersionConflictError, errorDetails, type ErrorDetails } from "../errors";
+import {
+  IssueVersionConflictError,
+  TenancyUnavailableError,
+  errorDetails,
+  toFieldViolations,
+  toReasons,
+  type ErrorDetails,
+  type FieldViolation,
+} from "../errors";
 import { toViewLinkType } from "../linkViewTypes";
 import { blankSummaryRefusal, ifMatch, issuePatchBody, issueTypePatchRefusal, issueVersionRefusal } from "../issuePatch";
 import {
@@ -86,6 +100,8 @@ import {
   resolvePlanningFields,
 } from "../planningFields";
 import { SessionExpiredSignal } from "../session";
+import type { ListTenantsParams, TenantPage } from "../tenants";
+import { WebSessionClient, type B2bTransport, type LockManagerLike } from "../webSession";
 import type {
   AccessToken,
   AccessTokenList,
@@ -190,9 +206,18 @@ interface RestInvitation {
 // the nested `error` shape is kept for older service responses. `details` is
 // read as `unknown` and narrowed by `errorDetails` (src/api/errors.ts): the
 // schema says `{string: string}` or null, and a body is not trusted to keep to it.
+//
+// `title`, `requestId`, `reasons` and `violations` are the B2B blueprint's
+// `Problem` (TAS-500, api-contract-guard B6): read in both builds, because the
+// reading is additive — no route the stand serves answers one, so nothing it
+// says changes — and read as `unknown`, narrowed in src/api/errors.ts.
 interface ApiErrorBody {
   code?: string;
   message?: string;
+  title?: unknown;
+  requestId?: unknown;
+  reasons?: unknown;
+  violations?: unknown;
   details?: unknown;
   error?: {
     code: string;
@@ -974,11 +999,47 @@ export class ApiError extends Error {
      * but the account lock carries.
      */
     public readonly details: ErrorDetails | null = null,
+    /**
+     * `Problem.reasons` (B2B blueprint, TAS-500): the restrictions behind a
+     * `READ_ONLY` or `CAPABILITY_DISABLED`, as they came. Empty for every
+     * answer that is not a `Problem` — every answer the stand serves.
+     */
+    public readonly reasons: readonly string[] = [],
+    /** `Problem.violations`, the fields a `VALIDATION_FAILED` refused. Empty otherwise. */
+    public readonly violations: readonly FieldViolation[] = [],
   ) {
     super(message);
     this.name = "ApiError";
   }
 }
+
+/** `RestTaskaApi`'s second argument. Everything is off by default, which is today's build. */
+export interface RestTaskaApiOptions {
+  /** The companies build (`tenantsEnabled`, src/lib/tenancy.ts). */
+  tenancy?: boolean;
+  /** For the companies build, injected by tests: the lock manager (default `navigator.locks`). */
+  locks?: LockManagerLike;
+  /** The shared storage (default `window.localStorage`). */
+  local?: Storage;
+  /** The tab's storage (default `window.sessionStorage`). */
+  session?: Storage;
+  /** How long a tab waits for its company session's ownership lock (default 1.5 s). */
+  ownershipWaitMs?: number;
+  /** Where `storage` events arrive (default `window`; `null` for none). */
+  events?: Pick<EventTarget, "addEventListener" | "removeEventListener"> | null;
+}
+
+/**
+ * Today's build's session routes. The companies build never sends one (B8):
+ * the methods that would are refused first, and this is the backstop if a
+ * future one forgets.
+ */
+const LEGACY_SESSION_PATHS: ReadonlySet<string> = new Set([
+  "/auth/login",
+  "/auth/refresh",
+  "/auth/oauth/exchange",
+  "/auth/oauth/signup",
+]);
 
 /**
  * One `AuditEntryDto`, field by field. The schema declares nothing `required`,
@@ -1024,19 +1085,40 @@ function toAuditEntry(wire: RestAuditEntry): AuditEntry {
 }
 
 export class RestTaskaApi implements TaskaApi {
-  private accessToken = window.localStorage.getItem("taska.accessToken");
-  private refreshTokenValue = window.localStorage.getItem("taska.refreshToken");
+  // Read once at construction, in today's build only: the companies build
+  // never reads the legacy pair (B8) — its sessions live in `WebSessionClient`.
+  private accessToken: string | null;
+  private refreshTokenValue: string | null;
   private refreshInFlight: { authVersion: number; promise: Promise<boolean> } | null = null;
   private authVersion = 0;
   private readonly sessionExpired = new SessionExpiredSignal();
 
   private readonly baseUrl: string;
+  /**
+   * The companies build's session layer (TAS-500), or `null` in today's build,
+   * where nothing below takes a branch on it and every request is the one it
+   * always was.
+   */
+  private readonly web: WebSessionClient | null;
 
-  constructor(baseUrl = "/api/v1") {
+  constructor(baseUrl = "/api/v1", options: RestTaskaApiOptions = {}) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.web = options.tenancy
+      ? new WebSessionClient({
+          transport: this.b2bTransport(),
+          local: options.local ?? window.localStorage,
+          session: options.session ?? window.sessionStorage,
+          locks: options.locks,
+          ownershipWaitMs: options.ownershipWaitMs,
+          events: options.events === undefined ? window : options.events,
+        })
+      : null;
+    this.accessToken = this.web ? null : window.localStorage.getItem("taska.accessToken");
+    this.refreshTokenValue = this.web ? null : window.localStorage.getItem("taska.refreshToken");
   }
 
   async login(input: LoginInput): Promise<AuthTokens> {
+    if (this.web) throw new TenancyUnavailableError("login");
     const authVersion = ++this.authVersion;
     const tokens = await this.request<AuthTokens>("/auth/login", {
       method: "POST",
@@ -1113,6 +1195,7 @@ export class RestTaskaApi implements TaskaApi {
    * session's, and must not start a refresh.
    */
   async exchangeOAuthCode(code: string): Promise<OAuthExchangeResult> {
+    if (this.web) throw new TenancyUnavailableError("exchangeOAuthCode");
     const authVersion = ++this.authVersion;
     const answer = toOAuthExchange(
       await this.request<unknown>("/auth/oauth/exchange", { method: "POST", body: { code }, skipAuth: true }),
@@ -1126,6 +1209,7 @@ export class RestTaskaApi implements TaskaApi {
 
   /** `POST /auth/oauth/signup`: the new account's session, taken as `login` takes one. */
   async completeOAuthSignup(input: OAuthSignupInput): Promise<AuthTokens> {
+    if (this.web) throw new TenancyUnavailableError("completeOAuthSignup");
     const authVersion = ++this.authVersion;
     const answer = await this.request<unknown>("/auth/oauth/signup", {
       method: "POST",
@@ -1139,6 +1223,7 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   async refresh(refreshToken = this.refreshTokenValue ?? ""): Promise<AuthTokens> {
+    if (this.web) throw new TenancyUnavailableError("refresh");
     const authVersion = this.authVersion;
     const tokens = await this.request<AuthTokens>("/auth/refresh", {
       method: "POST",
@@ -1152,6 +1237,7 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   async logout(): Promise<void> {
+    if (this.web) return this.web.signOut();
     this.authVersion += 1;
     // Deliberately clearTokens() and not expireSession(): signing out is the
     // user's own doing and already navigates. Announcing "your session expired"
@@ -1259,6 +1345,8 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   async createAccessToken(input: CreateAccessTokenInput): Promise<IssuedAccessToken> {
+    // An unbound token is what contracts §2 forbids after the rollout (TAS-509).
+    if (this.web) throw new TenancyUnavailableError("createAccessToken");
     const response = await this.request<{ token?: unknown; secret?: unknown }>("/users/me/access-tokens", {
       method: "POST",
       // No lifetime at all when the form had no policy to offer one from: the
@@ -1281,13 +1369,101 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   hasSession(): boolean {
+    if (this.web) return this.web.hasSession();
     // `||`, not `??`: an empty-string access token is not a credential, and with
     // `??` it would hide a refresh token that could still revive the session.
     return Boolean(this.accessToken || this.refreshTokenValue);
   }
 
   onSessionExpired(listener: () => void): () => void {
+    if (this.web) return this.web.onSessionExpired(listener);
     return this.sessionExpired.subscribe(listener);
+  }
+
+  /*
+   * Companies (TAS-500), on the B2B blueprint's routes — see `TaskaApi` and
+   * src/api/webSession.ts. In today's build: no companies, and no request.
+   */
+
+  getTenancy(): TenancyCapabilities {
+    return this.web ? B2B_TENANCY : LEGACY_TENANCY;
+  }
+
+  async signIn(input: LoginInput): Promise<SignInResult> {
+    if (this.web) return this.web.signIn(input);
+    await this.login(input);
+    return { status: "SIGNED_IN", userId: null };
+  }
+
+  async listTenants(params: ListTenantsParams = {}): Promise<TenantPage> {
+    return this.companies("listTenants").listTenants(params);
+  }
+
+  async enterCompany(tenantId: string): Promise<Workspace> {
+    return this.companies("enterCompany").enterCompany(tenantId);
+  }
+
+  async leaveCompany(): Promise<void> {
+    return this.companies("leaveCompany").leaveCompany();
+  }
+
+  currentWorkspace(): Workspace | null {
+    return this.web?.currentWorkspace() ?? null;
+  }
+
+  onWorkspaceChange(listener: () => void): () => void {
+    return this.web ? this.web.onWorkspaceChange(listener) : () => {};
+  }
+
+  onWorkspaceClosed(listener: (event: WorkspaceClosedEvent) => void): () => void {
+    return this.web ? this.web.onWorkspaceClosed(listener) : () => {};
+  }
+
+  lastCompanyHint(): string | null {
+    return this.web?.lastCompanyHint() ?? null;
+  }
+
+  /** The session layer, or the refusal today's build gives a company operation — without a request. */
+  private companies(operation: string): WebSessionClient {
+    if (this.web === null) throw new TenancyUnavailableError(operation);
+    return this.web;
+  }
+
+  /**
+   * The blueprint's five session routes (`docs/contract/b2b/b2b-openapi.yaml`
+   * at develop `758f8fc6`), sent bare: the session layer chooses each one's
+   * credential and decides what a refusal means, and the answers are narrowed
+   * there, once for both implementations.
+   */
+  private b2bTransport(): B2bTransport {
+    const send = async (path: string, options: RequestOptions, bearer: string | null, signal?: AbortSignal) =>
+      (await this.transmit<unknown>(path, options, bearer, signal)).data;
+    const key = (idempotencyKey: string) => ({ "Idempotency-Key": idempotencyKey });
+    return {
+      startWebSession: (input, idempotencyKey) =>
+        send(
+          "/auth/web-sessions",
+          { method: "POST", body: { email: input.email, password: input.password }, headers: key(idempotencyKey) },
+          null,
+        ),
+      refreshWebSession: (refreshToken, idempotencyKey) =>
+        send("/auth/web-sessions/refresh", { method: "POST", body: { refreshToken }, headers: key(idempotencyKey) }, null),
+      listTenants: (bearer, params, signal) => {
+        const search = new URLSearchParams();
+        if (params.cursor !== undefined) search.set("cursor", params.cursor);
+        if (params.limit !== undefined) search.set("limit", String(params.limit));
+        return send(`/tenants${this.query(search)}`, {}, bearer, signal);
+      },
+      createTenantSession: (bearer, tenantId, idempotencyKey) =>
+        send("/auth/tenant-sessions", { method: "POST", body: { tenantId }, headers: key(idempotencyKey) }, bearer),
+      revokeTenantSession: async (bearer, tenantSessionId, idempotencyKey) => {
+        await send(
+          `/auth/tenant-sessions/${this.segment(tenantSessionId)}`,
+          { method: "DELETE", headers: key(idempotencyKey) },
+          bearer,
+        );
+      },
+    };
   }
 
   /**
@@ -1347,6 +1523,7 @@ export class RestTaskaApi implements TaskaApi {
    * server's defaults are "the email's local part" and `false`.
    */
   async inviteUser(input: InviteUserInput): Promise<InvitationResult> {
+    if (this.web) throw new TenancyUnavailableError("inviteUser");
     const body: Record<string, unknown> = { email: input.email };
     if (input.displayName !== undefined && input.displayName.trim() !== "") body.displayName = input.displayName;
     if (input.resend) body.resend = true;
@@ -2712,6 +2889,7 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   async getAdminCatalog(): Promise<AdminCatalog> {
+    if (this.web) throw new TenancyUnavailableError("getAdminCatalog");
     const response = await this.request<RestAdminCatalog>("/readonly/catalog");
     // The contract marks nothing in this response required, and the gateway's
     // own mapper emits an empty object when it has no catalog. Screens read
@@ -2742,6 +2920,7 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   listAdminRows(query: AdminRowsQuery): Promise<AdminRows> {
+    if (this.web) return Promise.reject(new TenancyUnavailableError("listAdminRows"));
     const search = new URLSearchParams();
     // The one place in the app where the page basis changes. The wire is
     // 0-based (`minimum: 0, default: 0`) and so is `pagination.currentPage`;
@@ -2791,6 +2970,7 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   listAuditEntries(query: AuditEntriesQuery): Promise<AuditEntries> {
+    if (this.web) return Promise.reject(new TenancyUnavailableError("listAuditEntries"));
     const search = new URLSearchParams();
     // The same basis conversion as `listAdminRows`: 1-based in the domain,
     // 0-based on the wire.
@@ -2823,6 +3003,7 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   async getAdminRow(query: AdminRowQuery): Promise<AdminRow> {
+    if (this.web) throw new TenancyUnavailableError("getAdminRow");
     const response = await this.request<RestAdminRow>(
       `/readonly/${this.segment(query.service)}/${this.segment(query.table)}/${this.segment(query.id)}`,
     );
@@ -2838,6 +3019,7 @@ export class RestTaskaApi implements TaskaApi {
    * optional `serviceKey` therefore has no caller (see `TaskaApi`).
    */
   async getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary> {
+    if (this.web) throw new TenancyUnavailableError("getProblematicOutboxSummary");
     const response = await this.request<RestProblematicOutboxSummary>("/readonly/outbox/problematic-summary");
     return {
       // Oldest first, exactly as the server ordered them. Nothing here sorts:
@@ -2887,6 +3069,7 @@ export class RestTaskaApi implements TaskaApi {
    * quietly send one.
    */
   async blockUser(userId: string, reason: string): Promise<UserStatusChange> {
+    if (this.web) throw new TenancyUnavailableError("blockUser");
     return this.toUserStatusChange(
       await this.request<RestUserStatusChange>(`/admin/users/${this.segment(userId)}/block`, {
         method: "POST",
@@ -2897,6 +3080,7 @@ export class RestTaskaApi implements TaskaApi {
 
   /** `POST /admin/users/{userId}/unblock` — the same body and the same guard. */
   async unblockUser(userId: string, reason: string): Promise<UserStatusChange> {
+    if (this.web) throw new TenancyUnavailableError("unblockUser");
     return this.toUserStatusChange(
       await this.request<RestUserStatusChange>(`/admin/users/${this.segment(userId)}/unblock`, {
         method: "POST",
@@ -2912,6 +3096,7 @@ export class RestTaskaApi implements TaskaApi {
    * else is a 400 carrying `FAILED_PRECONDITION` (see `TaskaApi`).
    */
   async resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange> {
+    if (this.web) throw new TenancyUnavailableError("resetCredentialLockout");
     return this.toUserStatusChange(
       await this.request<RestUserStatusChange>(`/admin/users/${this.segment(userId)}/reset-lockout`, {
         method: "POST",
@@ -2922,6 +3107,7 @@ export class RestTaskaApi implements TaskaApi {
 
   /** `PATCH /admin/users/{userId}` — the name, and nothing else, in the body. */
   async updateUserDisplayName(userId: string, displayName: string): Promise<UserDisplayNameChange> {
+    if (this.web) throw new TenancyUnavailableError("updateUserDisplayName");
     const response = await this.request<RestUserDisplayNameChange>(`/admin/users/${this.segment(userId)}`, {
       method: "PATCH",
       body: { displayName },
@@ -2945,6 +3131,7 @@ export class RestTaskaApi implements TaskaApi {
     eventId: string,
     reason: string,
   ): Promise<OutboxRetryResult> {
+    if (this.web) throw new TenancyUnavailableError("retryOutboxEvent");
     const response = await this.request<RestOutboxRetryResult>(
       `/admin/outbox/${this.segment(service)}/${this.segment(eventId)}/retry`,
       { method: "POST", body: { reason: requireOutboxRetryReason(reason) } },
@@ -3546,6 +3733,15 @@ export class RestTaskaApi implements TaskaApi {
    * status says something the body does not (`inviteUser`: 201 against 200).
    */
   private async exchange<T>(path: string, options: RequestOptions = {}, isRetry = false): Promise<{ status: number; data: T }> {
+    // The companies build: the session layer picks the credential, renews it
+    // and discards an answer from a context the tab has left (TAS-500).
+    const web = this.web;
+    if (web) {
+      if (LEGACY_SESSION_PATHS.has(path)) throw new TenancyUnavailableError(path);
+      return web.call(options.skipAuth ? "none" : "session", (bearer, signal) =>
+        this.transmit<T>(path, options, bearer, signal),
+      );
+    }
     // Captured before the request leaves: whatever comes back answers *this*
     // session, not whichever one is current when the response finally lands.
     const authVersion = this.authVersion;
@@ -3575,6 +3771,45 @@ export class RestTaskaApi implements TaskaApi {
       this.expireSession(authVersion);
     }
 
+    return this.readAnswer<T>(response);
+  }
+
+  /**
+   * One request of the companies build, as the session layer hands it over:
+   * the bearer it chose (or none), the context's abort signal, and `Accept`
+   * naming `application/problem+json` beside `application/json` — the
+   * blueprint's refusals are Problems (contracts §6). Only here: today's build
+   * keeps the `Accept` the stand has always been sent. No 401 handling — that
+   * is the session layer's.
+   */
+  private async transmit<T>(
+    path: string,
+    options: RequestOptions,
+    bearer: string | null,
+    signal?: AbortSignal,
+  ): Promise<{ status: number; data: T }> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: options.method ?? "GET",
+      headers: {
+        Accept: "application/json, application/problem+json",
+        ...(options.body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+        ...options.headers,
+      },
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      ...(signal ? { signal } : {}),
+    });
+    return this.readAnswer<T>(response);
+  }
+
+  /**
+   * The body of an answer, or the `ApiError` of a refusal. Both envelopes are
+   * read (api-contract-guard B6): the gateway's `{code, message, details}`, its
+   * older nested `error`, and the blueprint's `Problem` — `message ?? title`,
+   * the request id from the header, then the body, then the nested `error`,
+   * and the Problem's `reasons` and `violations` when it carried them.
+   */
+  private async readAnswer<T>(response: Response): Promise<{ status: number; data: T }> {
     if (response.status === 204) {
       return { status: 204, data: undefined as T };
     }
@@ -3582,10 +3817,21 @@ export class RestTaskaApi implements TaskaApi {
     const data = (await response.json().catch(() => undefined)) as T | ApiErrorBody | undefined;
     if (!response.ok) {
       const body = data as ApiErrorBody | undefined;
-      const message = body?.message ?? body?.error?.message ?? `Request failed with ${response.status}`;
+      const title = typeof body?.title === "string" && body.title ? body.title : undefined;
+      const message = body?.message ?? title ?? body?.error?.message ?? `Request failed with ${response.status}`;
       const code = body?.code ?? body?.error?.code ?? "UNKNOWN";
-      const requestId = response.headers.get("X-Request-Id") ?? body?.error?.requestId;
-      throw new ApiError(message, code, response.status, requestId ?? undefined, data, errorDetails(body?.details));
+      const bodyRequestId = typeof body?.requestId === "string" && body.requestId ? body.requestId : undefined;
+      const requestId = response.headers.get("X-Request-Id") ?? bodyRequestId ?? body?.error?.requestId;
+      throw new ApiError(
+        message,
+        code,
+        response.status,
+        requestId ?? undefined,
+        data,
+        errorDetails(body?.details),
+        toReasons(body?.reasons),
+        toFieldViolations(body?.violations),
+      );
     }
     return { status: response.status, data: data as T };
   }

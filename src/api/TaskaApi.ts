@@ -1,4 +1,5 @@
 import type { AccessTokenScopes } from "./accessTokens";
+import type { ListTenantsParams, TenantPage } from "./tenants";
 import type {
   AccessTokenList,
   ConnectedApps,
@@ -999,6 +1000,111 @@ export interface ListNotificationsParams {
   offset?: number;
 }
 
+/**
+ * What this build offers around companies (TAS-500) — read by the screens to
+ * hide what is not there; the server stays authoritative either way.
+ *
+ * In today's build `companies` is `false` and every other field `true`. In the
+ * companies build (`VITE_TASKA_TENANTS`) `companies` is `true`, and three
+ * things are not offered until the blueprint describes them
+ * (api-contract-guard §2): the provider sign-in (ask A8), issuing an access
+ * token — list and revoke stay — (TAS-509), and the administration console with
+ * inviting by email (a GLOBAL_ADMIN session needs the emailed code, TAS-510).
+ * Calling one anyway is refused without a request (`TenancyUnavailableError`).
+ */
+export interface TenancyCapabilities {
+  companies: boolean;
+  providerSignIn: boolean;
+  accessTokenCreate: boolean;
+  adminConsole: boolean;
+}
+
+/** Today's build: no companies, everything else as it always was. */
+export const LEGACY_TENANCY: TenancyCapabilities = Object.freeze({
+  companies: false,
+  providerSignIn: true,
+  accessTokenCreate: true,
+  adminConsole: true,
+});
+
+/** The companies build. */
+export const B2B_TENANCY: TenancyCapabilities = Object.freeze({
+  companies: true,
+  providerSignIn: false,
+  accessTokenCreate: false,
+  adminConsole: false,
+});
+
+/**
+ * The methods the companies build refuses without a request (see
+ * `TenancyCapabilities`). One list for both implementations, so the parity
+ * test can hold them to it.
+ */
+export const TENANCY_WITHHELD_OPERATIONS = [
+  "login",
+  "refresh",
+  "exchangeOAuthCode",
+  "completeOAuthSignup",
+  "createAccessToken",
+  "inviteUser",
+  "getAdminCatalog",
+  "listAdminRows",
+  "getAdminRow",
+  "getProblematicOutboxSummary",
+  "listAuditEntries",
+  "retryOutboxEvent",
+  "blockUser",
+  "unblockUser",
+  "resetCredentialLockout",
+  "updateUserDisplayName",
+] as const satisfies readonly (keyof TaskaApi)[];
+
+/**
+ * How a sign-in ended (`TaskaApi.signIn`). `ADMIN_MFA_REQUIRED` is a dead end in
+ * the companies build: a GLOBAL_ADMIN gets only an emailed-code challenge after
+ * the password (blueprint: 200 `MfaChallenge`; backend PR #288: 403
+ * `MFA_REQUIRED` — both end here), this build has no screen to enter the code
+ * (TAS-510), and **no session is stored**. `requestId` is the refusal's, when it
+ * came as one.
+ */
+export type SignInResult =
+  | { status: "SIGNED_IN"; userId: string | null }
+  | { status: "ADMIN_MFA_REQUIRED"; requestId: string | null };
+
+/**
+ * The company this tab is working in (TAS-500): one active company session per
+ * tab, its credentials in `sessionStorage` and owned by this tab alone
+ * (api-contract-guard §3). `tenantSessionId` is what a screen keys its query
+ * cache by — a re-selected session after a role change is a new id, so nothing
+ * cached under the old one survives it (§4).
+ */
+export interface Workspace {
+  tenantId: string;
+  /** From the reader's list of companies, when the tab has read it; otherwise `null`. */
+  tenantName: string | null;
+  tenantSessionId: string;
+}
+
+/**
+ * Why the tab's company closed mid-work (`TaskaApi.onWorkspaceClosed`): the
+ * refusal's `code` — `MEMBERSHIP_INACTIVE`, `TENANT_NOT_FOUND`,
+ * `TENANT_REQUIRED`, `TENANT_MISMATCH`, or whatever a re-selection of the same
+ * company answered — or `TRANSPORT_FAILURE` when the company session could not
+ * be renewed for want of an answer. `reasons` is the refusal's `Problem.reasons`
+ * (DESIGN.md §4.35 reads the code, then the reasons). An account session that
+ * dies is not this — that is `onSessionExpired`.
+ */
+export interface WorkspaceClosedEvent {
+  reason: string;
+  tenantId: string;
+  tenantName: string | null;
+  requestId: string | null;
+  reasons: readonly string[];
+}
+
+/** The `reason` of a company closed because its session could not be renewed for want of an answer. */
+export const TRANSPORT_FAILURE_REASON = "TRANSPORT_FAILURE";
+
 export interface TaskaApi {
   login(input: LoginInput): Promise<AuthTokens>;
   /**
@@ -1208,6 +1314,63 @@ export interface TaskaApi {
    * Returns an unsubscribe.
    */
   onSessionExpired(listener: () => void): () => void;
+
+  /*
+   * Companies (TAS-500). In today's build these answer as "no companies" —
+   * `getTenancy()` says so, `currentWorkspace()` is `null`, the two listeners
+   * never fire, `lastCompanyHint()` is `null`, and `listTenants`, `enterCompany`
+   * and `leaveCompany` are refused without a request — while `signIn` signs in
+   * exactly as `login` does. In the companies build they run on the B2B
+   * blueprint's routes (docs/contract/b2b/), none of which the stand serves.
+   */
+
+  /** What this build offers around companies. Synchronous: a screen reads it while rendering. */
+  getTenancy(): TenancyCapabilities;
+  /**
+   * Signs the account in. Today's build: `login`, then `SIGNED_IN` with no
+   * `userId`. The companies build: `POST /auth/web-sessions` with an
+   * `Idempotency-Key`; an account session is stored as `taska.webSession`
+   * (shared by the tabs), the legacy `taska.accessToken` / `taska.refreshToken`
+   * are deleted, and a GLOBAL_ADMIN's challenge ends in `ADMIN_MFA_REQUIRED`
+   * with nothing stored. Every other refusal rejects as `login`'s does.
+   */
+  signIn(input: LoginInput): Promise<SignInResult>;
+  /**
+   * `GET /tenants` with the account session — one page, as sent, in the
+   * server's order (`createdAt`, then `id`). A caller wanting the whole list
+   * follows `nextCursor` (`readAllTenants` in src/api/tenants.ts).
+   */
+  listTenants(params?: ListTenantsParams): Promise<TenantPage>;
+  /**
+   * Makes `tenantId` this tab's company and answers the workspace — the one
+   * call a shell makes when the address names a company. Nothing is sent when
+   * the tab already holds that company's session; otherwise the context epoch
+   * moves (every answer of the previous company is discarded), the previous
+   * company session is revoked best-effort, and `POST /auth/tenant-sessions`
+   * creates this tab's own. Its refusal — `403 MEMBERSHIP_INACTIVE`, `404
+   * TENANT_NOT_FOUND`, a lifecycle's answer — rejects the call and leaves the
+   * tab with no company. **The server decides entry**, never the list's
+   * `lifecycle` (api-contract-guard B4).
+   *
+   * A duplicated tab (it inherited a copy of another tab's `sessionStorage`)
+   * never uses, renews or revokes the copied credentials: it waits briefly for
+   * the session's ownership lock, and failing that mints its own before this
+   * answers (§3).
+   */
+  enterCompany(tenantId: string): Promise<Workspace>;
+  /** "Choose a company": the epoch moves, the tab's company session is revoked best-effort, the tab has none. */
+  leaveCompany(): Promise<void>;
+  /** The tab's company once this tab owns its session; `null` before, between and after. Synchronous, for a guard. */
+  currentWorkspace(): Workspace | null;
+  /** Fires whenever `currentWorkspace()` may answer something else — for `useSyncExternalStore`. */
+  onWorkspaceChange(listener: () => void): () => void;
+  /** Fires when the tab's company closed mid-work (see `WorkspaceClosedEvent`). Returns an unsubscribe. */
+  onWorkspaceClosed(listener: (event: WorkspaceClosedEvent) => void): () => void;
+  /**
+   * `taska.lastCompany` for the signed-in account — the company to suggest to a
+   * tab that has none (DESIGN.md §5.1). A hint; it opens nothing.
+   */
+  lastCompanyHint(): string | null;
 
   /**
    * `GET /meta` — the enum dictionaries (backend TAS-217), read once per
