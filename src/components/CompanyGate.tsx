@@ -8,6 +8,7 @@ import { TRANSPORT_FAILURE_REASON } from "../api/TaskaApi";
 import type { Tenant } from "../api/tenants";
 import {
   COMPANIES_ROUTE,
+  TENANTS_QUERY_KEY,
   chooseCompanyRoute,
   companyRoute,
   documentTitleFor,
@@ -22,7 +23,8 @@ import { createQueryClient } from "../lib/queryClient";
 import { CompanyClosedScreen, CompanyUnavailableScreen } from "../screens/CompanyClosedScreen";
 import { CompanySetupScreen } from "../screens/CompanySetupScreen";
 import { NotFoundScreen } from "../screens/NotFoundScreen";
-import { useCompanyAddress } from "../lib/companyAddress";
+import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
+import type { CompaniesRouteState } from "../screens/CompaniesScreen";
 
 /*
  * The company session of a tab (TAS-500): the address names a company, this
@@ -72,6 +74,8 @@ export function CompanyGate({
   toggleTheme: () => void;
 }) {
   const address = useCompanyAddress();
+  const accountClient = useAccountQueryClient();
+  const go = address?.go;
   const companyId = address?.companyId ?? "";
   const workspace = useWorkspace();
   const name = useCompanyName(companyId);
@@ -127,6 +131,22 @@ export function CompanyGate({
         setEntry({ status: "closed", event });
       }),
     [companyId],
+  );
+
+  // A leave whose answer was lost, and then the server saying the reader is no
+  // longer a member (TAS-502, api-contract-guard B-1): the reader left — the
+  // picker with «You left {Company}.», as after an answered leave, never §4.35.
+  useEffect(
+    () =>
+      taskaApi.onWorkspaceLeft((event) => {
+        if (event.tenantId !== companyId) return;
+        void accountClient?.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
+        go?.(COMPANIES_ROUTE, {
+          replace: true,
+          state: { focusHeading: true, left: { name: event.tenantName } } satisfies CompaniesRouteState,
+        });
+      }),
+    [companyId, accountClient, go],
   );
 
   useEffect(

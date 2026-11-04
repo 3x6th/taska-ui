@@ -3416,8 +3416,10 @@ h1 {
   font-weight: 600;
 }
 
+/* A space stands before the count, so the heading reads «Members 4» (TAS-502);
+   with it, 3 makes §4.38's 6. */
 .company-group-count {
-  margin-left: 6px;
+  margin-left: 3px;
   font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
@@ -3645,12 +3647,14 @@ h1 {
   list-style: none;
 }
 
+/* 29, the role select's height: a row that is checked does not grow by 1
+   (art-director N-d); 44 at ≤820 below. */
 .company-invite-project {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 28px;
+  min-height: 29px;
 }
 
 .company-invite-project-label {

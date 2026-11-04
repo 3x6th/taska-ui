@@ -48,6 +48,7 @@ import type {
   Workspace,
   WorkspaceClosedEvent,
   WorkspacePendingEvent,
+  WorkspaceLeftEvent,
 } from "../TaskaApi";
 import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
@@ -9639,6 +9640,10 @@ export class MockTaskaApi implements TaskaApi {
   }
 
   onWorkspacePending(_listener: (event: WorkspacePendingEvent) => void): () => void {
+    return () => {};
+  }
+
+  onWorkspaceLeft(_listener: (event: WorkspaceLeftEvent) => void): () => void {
     return () => {};
   }
 

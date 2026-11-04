@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { apiErrorFacts } from "./errors";
 import {
+  COMPANY_PAGE_CAP,
+  UnendedListError,
   decimal,
   freeSeats,
   invitationEmailProblem,
@@ -151,6 +154,16 @@ describe("readAllPages", () => {
     });
     await expect(readAllPages(stale)).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
     expect(stale).toHaveBeenCalledTimes(4);
+    // A list that does not end is the read's error, never a list cut short (guard N2).
+    const endless = vi.fn(async (params: { cursor?: string }) => ({ items: [1], nextCursor: `c${(params.cursor ?? "c0").slice(1) + 1}` }));
+    const unended = await readAllPages(endless).catch((error: unknown) => error);
+    expect(unended).toBeInstanceOf(UnendedListError);
+    expect(endless).toHaveBeenCalledTimes(COMPANY_PAGE_CAP);
+    // Its message is empty: no client words go out as the server's.
+    expect(apiErrorFacts(unended)).toMatchObject({ message: null, status: null, code: null });
+    const repeating = vi.fn(async () => ({ items: [1], nextCursor: "same" }));
+    await expect(readAllPages(repeating)).rejects.toBeInstanceOf(UnendedListError);
+    expect(repeating).toHaveBeenCalledTimes(2);
     // The first page's own refusal is the read's error at once.
     const first = vi.fn(async () => {
       throw refusal("VALIDATION_FAILED");

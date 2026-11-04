@@ -13,7 +13,7 @@ import {
   type B2bTransport,
   type LockManagerLike,
 } from "./webSession";
-import type { WorkspaceClosedEvent, WorkspacePendingEvent } from "./TaskaApi";
+import type { WorkspaceClosedEvent, WorkspaceLeftEvent, WorkspacePendingEvent } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
 
 /*
@@ -902,6 +902,110 @@ describe("a company's members, invitations and seats (TAS-502)", () => {
     expect(closed).toEqual([]);
   });
 
+  it("a first leave refused 403 MEMBERSHIP_INACTIVE or 404 TENANT_NOT_FOUND is that refusal, never «left» (M3)", async () => {
+    for (const refused of [refusal(403, "MEMBERSHIP_INACTIVE"), refusal(404, "TENANT_NOT_FOUND")]) {
+      const { client, transport, closed } = await inNorthwind();
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw refused;
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-first")).rejects.toBe(refused);
+      expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+      expect(closed).toEqual([]);
+    }
+  });
+
+  it("a lost leave is any answer that never came — none, 408 or 5xx — and never a 429 (M4)", async () => {
+    for (const [lost, isLost] of [
+      [new TypeError("Failed to fetch"), true],
+      [refusal(408, "TIMEOUT"), true],
+      [refusal(503, "DEPENDENCY_UNAVAILABLE"), true],
+      [refusal(429, "RATE_LIMITED"), false],
+    ] as const) {
+      const { client, transport } = await inNorthwind();
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw lost;
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toBe(lost);
+      const gone = refusal(404, "TENANT_NOT_FOUND");
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw gone;
+      });
+      if (isLost) await expect(client.leaveTenant(NORTHWIND, "key-leave")).resolves.toBeNull();
+      else await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toBe(gone);
+    }
+  });
+
+  it("the retry of a lost leave is «left» by its code: another 403 or 404 is that refusal (ruling 2b)", async () => {
+    for (const other of [refusal(403, "SCOPE_DENIED"), refusal(404, "RESOURCE_NOT_FOUND")]) {
+      const { client, transport } = await inNorthwind();
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw new TypeError("Failed to fetch");
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toBeInstanceOf(TypeError);
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw other;
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toBe(other);
+      expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+    }
+    // 403 MEMBERSHIP_INACTIVE on the retry is «left».
+    const { client, transport } = await inNorthwind();
+    transport.leaveTenant.mockImplementationOnce(async () => {
+      throw refusal(502, "DEPENDENCY_UNAVAILABLE");
+    });
+    await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toMatchObject({ status: 502 });
+    transport.leaveTenant.mockImplementationOnce(async () => {
+      throw refusal(403, "MEMBERSHIP_INACTIVE");
+    });
+    await expect(client.leaveTenant(NORTHWIND, "key-leave")).resolves.toBeNull();
+    expect(client.currentWorkspace()).toBeNull();
+  });
+
+  it("with a lost leave open, another request's «no longer a member» is the leave applied: released, no closure (B-1)", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    const left: WorkspaceLeftEvent[] = [];
+    client.onWorkspaceLeft((event) => left.push(event));
+    transport.leaveTenant.mockImplementationOnce(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toBeInstanceOf(TypeError);
+    // A background re-read meets the server's answer first.
+    await expect(
+      client.call("session", async () => Promise.reject(refusal(403, "MEMBERSHIP_INACTIVE")), { read: true }),
+    ).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(closed).toEqual([]);
+    expect(left).toEqual([{ tenantId: NORTHWIND, tenantName: null }]);
+    expect(client.currentWorkspace()).toBeNull();
+    expect(transport.revokeTenantSession).toHaveBeenCalledWith("g0-access", "ts-1", expect.any(String));
+  });
+
+  it("…through renewal too: a refused refresh and a re-selection refused 404 TENANT_NOT_FOUND are «left»", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    const left: WorkspaceLeftEvent[] = [];
+    client.onWorkspaceLeft((event) => left.push(event));
+    transport.leaveTenant.mockImplementationOnce(async () => {
+      throw refusal(504, "DEPENDENCY_UNAVAILABLE");
+    });
+    await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toMatchObject({ status: 504 });
+    transport.refreshWebSession.mockImplementationOnce(async () => {
+      throw refusal(401, "TOKEN_REVOKED");
+    });
+    transport.createTenantSession.mockImplementationOnce(async () => {
+      throw refusal(404, "TENANT_NOT_FOUND");
+    });
+    await expect(
+      client.call("session", async () => Promise.reject(refusal(401, "TOKEN_REVOKED")), { read: true }),
+    ).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(closed).toEqual([]);
+    expect(left.map((event) => event.tenantId)).toEqual([NORTHWIND]);
+    // Without a lost leave the same refusal is a closure, as TAS-500 has it.
+    const second = await inNorthwind();
+    await expect(
+      second.client.call("session", async () => Promise.reject(refusal(403, "MEMBERSHIP_INACTIVE"))),
+    ).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(second.closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+  });
+
   it("a first leave refused LAST_ADMIN is that refusal: the session stays, nothing closes", async () => {
     const { client, transport, closed } = await inNorthwind();
     transport.leaveTenant.mockImplementationOnce(async () => {
@@ -916,7 +1020,13 @@ describe("a company's members, invitations and seats (TAS-502)", () => {
     const { client, transport } = await inNorthwind();
     const before = client.currentWorkspace();
     const old = client.call("session", () => new Promise(() => {}));
+    transport.createTenantSession.mockClear();
+    transport.revokeTenantSession.mockClear();
     await client.reenterCompany(NORTHWIND);
+    // The new session first, the old one revoked after it (release-reviewer L2).
+    expect(transport.createTenantSession.mock.invocationCallOrder[0]).toBeLessThan(
+      transport.revokeTenantSession.mock.invocationCallOrder[0],
+    );
     expect(client.currentWorkspace()).toMatchObject({ tenantId: NORTHWIND, tenantSessionId: "ts-2" });
     expect(client.currentWorkspace()?.tenantSessionId).not.toBe(before?.tenantSessionId);
     expect(transport.revokeTenantSession).toHaveBeenCalledWith("g0-access", "ts-1", expect.any(String));

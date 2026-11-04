@@ -70,6 +70,7 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   onWorkspaceChange: "session",
   onWorkspaceClosed: "session",
   onWorkspacePending: "session",
+  onWorkspaceLeft: "session",
   lastCompanyHint: "session",
   // TAS-501: the session layer picks their credentials, as for the REST leg —
   // none for the plans, the account's for creating, the company session for
@@ -208,6 +209,7 @@ type SessionMethods = Pick<
   | "onWorkspaceChange"
   | "onWorkspaceClosed"
   | "onWorkspacePending"
+  | "onWorkspaceLeft"
   | "lastCompanyHint"
   | "listBillingPlans"
   | "createTenant"
@@ -278,6 +280,7 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     onWorkspaceChange: (listener) => web.onWorkspaceChange(listener),
     onWorkspaceClosed: (listener) => web.onWorkspaceClosed(listener),
     onWorkspacePending: (listener) => web.onWorkspacePending(listener),
+    onWorkspaceLeft: (listener) => web.onWorkspaceLeft(listener),
     lastCompanyHint: () => web.lastCompanyHint(),
     listBillingPlans: (params) => web.listBillingPlans(params),
     createTenant: (input, key) => web.createTenant(input, key),

@@ -1,7 +1,14 @@
 import { clearLastCompany, readLastCompany, writeLastCompany } from "../lib/lastCompany";
 import { WorkspaceClosedError, apiErrorFacts, isWorkspaceClosed, refusalCode, refusalReasons } from "./errors";
 import { SessionExpiredSignal, WorkspaceClosedSignal } from "./session";
-import type { LoginInput, SignInResult, Workspace, WorkspaceClosedEvent, WorkspacePendingEvent } from "./TaskaApi";
+import type {
+  LoginInput,
+  SignInResult,
+  Workspace,
+  WorkspaceClosedEvent,
+  WorkspaceLeftEvent,
+  WorkspacePendingEvent,
+} from "./TaskaApi";
 import { TRANSPORT_FAILURE_REASON } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
 import {
@@ -413,12 +420,19 @@ export class WebSessionClient {
    * closes nothing and draws no §4.35; it rejects its own request.
    */
   private leaving: string | null = null;
-  /** Keys of leaves whose answer never came (no status, 408 or 5xx): their retry, refused 401/403/404, is the same success. */
-  private readonly lostLeaves = new Set<string>();
+  /**
+   * Leaves whose answer never came — no status, 408 or 5xx; never a 429, which
+   * says the leave was not taken (api-contract-guard M4) — by key, with their
+   * company. While one is open for the tab's company, a refusal that says the
+   * reader is no longer in it means the leave was applied: the company is
+   * released as left, never closed (B-1).
+   */
+  private readonly lostLeaves = new Map<string, string>();
   private readonly expired = new SessionExpiredSignal();
   private readonly changeListeners = new Set<() => void>();
   private readonly closed = new WorkspaceClosedSignal<WorkspaceClosedEvent>();
   private readonly pending = new WorkspaceClosedSignal<WorkspacePendingEvent>();
+  private readonly left = new WorkspaceClosedSignal<WorkspaceLeftEvent>();
 
   constructor(deps: WebSessionDeps) {
     this.transport = deps.transport;
@@ -649,6 +663,10 @@ export class WebSessionClient {
     return this.pending.subscribe(listener);
   }
 
+  onWorkspaceLeft(listener: (event: WorkspaceLeftEvent) => void): () => void {
+    return this.left.subscribe(listener);
+  }
+
   /* ------------------------------------------------ creating a company (TAS-501) */
 
   /** `GET /billing/plans`: public metadata, sent with no credential. */
@@ -779,11 +797,16 @@ export class WebSessionClient {
    * While it is out, a refusal that would close the company closes nothing
    * (`leaving`). Answered 202 with an operation that is not `FAILED`, the
    * tab's company session is released (`leaveCompany`) before this answers:
-   * nothing of the company can be sent after it. A retry with the key of a
-   * leave whose answer never came, refused 401, 403 or 404, means the first
-   * one was applied — the reader is no longer a member — and is the same
-   * success, answered `null`. An operation that is `FAILED` is answered as
-   * it came, with the session kept.
+   * nothing of the company can be sent after it. An operation that is
+   * `FAILED` is answered as it came, with the session kept.
+   *
+   * A leave whose answer never came is remembered by its key (`lostLeaves`).
+   * Its retry with that key is the same success, answered `null`, when it is
+   * refused in a way that says the reader is no longer a member (ruling 2b,
+   * by the code and never the status alone): any 401 — renewal and
+   * re-selection have already run — 403 `MEMBERSHIP_INACTIVE` or 404
+   * `TENANT_NOT_FOUND`. Any other refusal, of a first leave or of a retry, is
+   * that refusal; a definite one closes the lost leave.
    */
   async leaveTenant(tenantId: string, idempotencyKey: string): Promise<TenantOperation | null> {
     const retry = this.lostLeaves.has(idempotencyKey);
@@ -794,17 +817,20 @@ export class WebSessionClient {
     } catch (error) {
       if (!isWorkspaceClosed(error)) {
         const { status } = apiErrorFacts(error);
-        if (retry && (status === 401 || status === 403 || status === 404)) {
-          this.lostLeaves.delete(idempotencyKey);
+        const code = refusalCode(error);
+        const gone = status === 401 || code === "MEMBERSHIP_INACTIVE" || code === "TENANT_NOT_FOUND";
+        if (retry && gone) {
+          this.forgetLostLeaves(tenantId);
           await this.releaseLeft(tenantId);
           return null;
         }
-        if (status === null || status === 408 || status >= 500) this.lostLeaves.add(idempotencyKey);
+        if (status === null || status === 408 || status >= 500) this.lostLeaves.set(idempotencyKey, tenantId);
+        else this.lostLeaves.delete(idempotencyKey);
       }
       if (this.leaving === tenantId) this.leaving = null;
       throw error;
     }
-    this.lostLeaves.delete(idempotencyKey);
+    this.forgetLostLeaves(tenantId);
     let operation: TenantOperation;
     try {
       operation = this.operation(answer);
@@ -818,6 +844,10 @@ export class WebSessionClient {
     }
     await this.releaseLeft(tenantId);
     return operation;
+  }
+
+  private forgetLostLeaves(tenantId: string): void {
+    for (const [key, company] of this.lostLeaves) if (company === tenantId) this.lostLeaves.delete(key);
   }
 
   /** The company left: its session released, and only then the closing rule back on. */
@@ -1245,6 +1275,12 @@ export class WebSessionClient {
    * `WorkspaceClosedError` — `false` only while the tab is leaving this
    * company (TAS-502, B6): then nothing is closed, no §4.35 is drawn, and the
    * refusal stands as that request's answer.
+   *
+   * While a leave of this company whose answer never came is open, a refusal
+   * that says the reader is no longer in it (`MEMBERSHIP_INACTIVE`,
+   * `TENANT_NOT_FOUND`) is that leave applied (api-contract-guard B-1): the
+   * company is released all the same, with no `closed` event: `left` says it,
+   * and the shell goes to the picker, never to §4.35.
    */
   private closeWorkspace(
     owned: Owned,
@@ -1255,12 +1291,15 @@ export class WebSessionClient {
   ): boolean {
     if (owned !== this.owned) return true;
     if (this.leaving !== null && this.leaving === owned.record.tenantId) return false;
-    this.moveEpoch();
     const { tenantId, tenantName, tenantSessionId } = owned.record;
+    const left = (reason === "MEMBERSHIP_INACTIVE" || reason === "TENANT_NOT_FOUND") && [...this.lostLeaves.values()].includes(tenantId);
+    if (left) this.forgetLostLeaves(tenantId);
+    this.moveEpoch();
     this.dropOwned();
     void this.revokeQuietly(tenantSessionId);
     this.notifyChange();
-    this.closed.emit({ reason, tenantId, tenantName, requestId, reasons: [...reasons], message });
+    if (left) this.left.emit({ tenantId, tenantName });
+    else this.closed.emit({ reason, tenantId, tenantName, requestId, reasons: [...reasons], message });
     return true;
   }
 

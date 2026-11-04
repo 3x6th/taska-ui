@@ -33,6 +33,7 @@ import type {
   Workspace,
   WorkspaceClosedEvent,
   WorkspacePendingEvent,
+  WorkspaceLeftEvent,
   SearchIssuesParams,
   SearchUsersParams,
   SignupInput,
@@ -1451,6 +1452,10 @@ export class RestTaskaApi implements TaskaApi {
 
   onWorkspacePending(listener: (event: WorkspacePendingEvent) => void): () => void {
     return this.web ? this.web.onWorkspacePending(listener) : () => {};
+  }
+
+  onWorkspaceLeft(listener: (event: WorkspaceLeftEvent) => void): () => void {
+    return this.web ? this.web.onWorkspaceLeft(listener) : () => {};
   }
 
   lastCompanyHint(): string | null {

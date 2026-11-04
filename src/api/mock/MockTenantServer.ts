@@ -71,7 +71,8 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v3";
  *   the next call of that operation refused so — once, then forgotten (429,
  *   503, 422, 409 PAYMENT_PENDING…);
  * - `loseAnswer`: `["createTenant"]` — the next creation commits and then
- *   answers like a dropped connection, once (the reload replays it);
+ *   answers like a dropped connection, once (the reload replays it); since
+ *   TAS-502 `"leaveTenant"` too — the leave is applied, its answer lost;
  * - `firstPaymentConfirmed`: `[tenantId]` — an AWAITING_PAYMENT company opens
  *   (stands in for TAS-513);
  * - `latePaymentConfirmed`: `[tenantId]` — an AUTO_CLOSED company opens
@@ -1246,9 +1247,10 @@ export class MockTenantServer {
 
   /**
    * `PATCH …/members/{userId}/role`. A demotion revokes the person's pending
-   * invitations (L03, B03) and their company sessions (api-contract-guard §7)
-   * — a session is re-selected by the client, never a refusal that closes
-   * (ruling 2); the same role is a no-op 200 at the same version.
+   * invitations (L03, B03) and nothing else: their sessions stay, and the role
+   * is checked online on their next request (contracts §2, ruling 2 — only a
+   * suspension or a removal ends a person's access). The same role is a no-op
+   * 200 at the same version.
    */
   private async setTenantMemberRole(
     bearer: string | null,
@@ -1279,10 +1281,7 @@ export class MockTenantServer {
       target.role = role;
       target.version += 1;
       tenant.generation += 1;
-      if (role === "MEMBER") {
-        this.revokeInvitationsBy(state, tenant, userId);
-        this.revokeSessionsOf(state, tenant, userId);
-      }
+      if (role === "MEMBER") this.revokeInvitationsBy(state, tenant, userId);
       return receipt.keep(this.wireMembership(state, tenant, target));
     });
   }
@@ -1390,7 +1389,7 @@ export class MockTenantServer {
    */
   private async leaveTenant(bearer: string | null, tenantId: string, key: string): Promise<unknown> {
     await this.delay("leaveTenant");
-    return this.write((state) => {
+    const answer = this.write((state) => {
       const { session, tenant, actor } = this.authorizeMembers(state, bearer, tenantId, "leaveTenant", "LEAVE");
       const receipt = this.memberReceipt(state, session.userId, "leaveTenant", key, { confirmed: true });
       if (receipt.replay !== undefined) return receipt.replay;
@@ -1412,6 +1411,9 @@ export class MockTenantServer {
       state.operations.push(operation);
       return receipt.keep(this.wireOperation(operation, false));
     });
+    // Applied, and the answer never arrives (`loseAnswer: ["leaveTenant"]`, B-1).
+    if (this.takeLostAnswer("leaveTenant")) throw new TypeError("Failed to fetch");
+    return answer;
   }
 
   /** `GET …/invitations` (a company admin's): every state, `(issuedAt, id)`; the screen keeps PENDING and EXPIRED. */
@@ -1558,6 +1560,8 @@ export class MockTenantServer {
             used: seats.used.toString(),
             reserved: seats.reserved.toString(),
             ...(tenant.seatLimit === null ? { unlimited: true } : { limit: tenant.seatLimit, unlimited: false }),
+            // `QuotaUsage` requires `version` and `unlimited` (api-contract-guard N3).
+            version: String(tenant.quotaVersion),
           },
         ],
         asOf: new Date(this.now()).toISOString(),

@@ -1127,6 +1127,19 @@ export interface WorkspaceClosedEvent {
 export const TRANSPORT_FAILURE_REASON = "TRANSPORT_FAILURE";
 
 /**
+ * The tab's company turned out to have been left (TAS-502, api-contract-guard
+ * B-1): a leave whose answer never came, and then a refusal of another request
+ * saying the reader is no longer a member. Its session is already released.
+ * Not a closure — the shell goes to the picker with «You left {Company}.», as
+ * after an answered leave (DESIGN.md §4.38: §4.35 is never drawn for one's
+ * own leaving).
+ */
+export interface WorkspaceLeftEvent {
+  tenantId: string;
+  tenantName: string | null;
+}
+
+/**
  * A content read of the tab's company refused because the company has never
  * opened (TAS-501, api-contract-guard B4): `reasons` carry
  * `PENDING_FIRST_PAYMENT`, or the code is `PAYMENT_PENDING`. **The company is
@@ -1411,6 +1424,8 @@ export interface TaskaApi {
   onWorkspaceClosed(listener: (event: WorkspaceClosedEvent) => void): () => void;
   /** Fires when a content read met a company that has never opened (see `WorkspacePendingEvent`). Never in today's build. */
   onWorkspacePending(listener: (event: WorkspacePendingEvent) => void): () => void;
+  /** Fires when the tab's company turns out to have been left (see `WorkspaceLeftEvent`, TAS-502). Never in today's build. */
+  onWorkspaceLeft(listener: (event: WorkspaceLeftEvent) => void): () => void;
   /**
    * `taska.lastCompany` for the signed-in account — the company to suggest to a
    * tab that has none (DESIGN.md §5.1). A hint; it opens nothing.

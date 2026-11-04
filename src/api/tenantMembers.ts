@@ -296,13 +296,31 @@ export function invitationEmailProblem(value: string): "empty" | "too-long" | "i
 /* -------------------------------------------------------------- the lists */
 
 /**
+ * A company list that did not end: a cursor the server repeated, or more pages
+ * than any company has (api-contract-guard N2). The read fails rather than
+ * passing a part of the directory off as everyone. Its message is empty on
+ * purpose — the sentence is the screen's, and no client words are shown as
+ * the server's.
+ */
+export class UnendedListError extends Error {
+  constructor() {
+    super("");
+    this.name = "UnendedListError";
+  }
+}
+
+/** How many pages `readAllPages` follows before it fails — 5 000 rows at 100 a page. */
+export const COMPANY_PAGE_CAP = 50;
+
+/**
  * Every row of a company list, read the way DESIGN.md §4.38 asks: pages of
  * `COMPANY_PAGE_MAX`, following `nextCursor` until it is absent, before the
  * first draw. Develop binds the members cursor to the membership generation
  * (`TenantMembershipService.java:159-161`), so a change meanwhile makes a
  * later page a 400 `VALIDATION_FAILED`: the read starts again from the first
  * page **once**, and a second such refusal is the read's error. A repeated
- * cursor or a generous page cap ends the loop rather than spinning.
+ * cursor, or more than `COMPANY_PAGE_CAP` pages, is the read's error too
+ * (`UnendedListError`) — never a list cut short.
  */
 export async function readAllPages<T>(
   list: (params: ListCompanyPageParams) => Promise<{ items: T[]; nextCursor: string | null }>,
@@ -313,14 +331,15 @@ export async function readAllPages<T>(
     const seen = new Set<string>();
     let cursor: string | undefined;
     try {
-      for (let page = 0; page < 50; page += 1) {
+      for (let page = 0; page < COMPANY_PAGE_CAP; page += 1) {
         const answer = await list(cursor === undefined ? { limit: COMPANY_PAGE_MAX } : { cursor, limit: COMPANY_PAGE_MAX });
         rows.push(...answer.items);
-        if (answer.nextCursor === null || seen.has(answer.nextCursor)) return rows;
+        if (answer.nextCursor === null) return rows;
+        if (seen.has(answer.nextCursor)) throw new UnendedListError();
         seen.add(answer.nextCursor);
         cursor = answer.nextCursor;
       }
-      return rows;
+      throw new UnendedListError();
     } catch (error) {
       if (cursor !== undefined && !restarted && refusalCode(error) === "VALIDATION_FAILED") {
         restarted = true;

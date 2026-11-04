@@ -96,7 +96,11 @@ describe("the fixtures (§7)", () => {
       expect(item.version).toMatch(/^[0-9]+$/);
     }
     const quotas = (await transport.getTenantQuotas(company.accessToken, NW, signal)) as Record<string, unknown>;
-    expect(quotas).toMatchObject({ tenantId: NW, version: expect.stringMatching(/^[0-9]+$/), quotas: [{ kind: "SEAT", used: "4", reserved: "1", limit: "5", unlimited: false }] });
+    expect(quotas).toMatchObject({
+      tenantId: NW,
+      version: expect.stringMatching(/^[0-9]+$/),
+      quotas: [{ kind: "SEAT", used: "4", reserved: "1", limit: "5", unlimited: false, version: expect.stringMatching(/^[0-9]+$/) }],
+    });
     const tenants = (await transport.listTenants(account.accessToken, {}, signal)) as { items: Record<string, unknown>[] };
     for (const tenant of tenants.items) {
       expect(tenant).not.toHaveProperty("seatLimit");
@@ -206,6 +210,8 @@ describe("PR #287's order of checks, with the rulings", () => {
     expect(facts(await caught(api.removeTenantMember(NW, anna, "1", key())))).toEqual({ status: 409, code: "OWNER_MEMBERSHIP_PROTECTED" });
     expect(facts(await caught(api.setTenantMemberRole(NW, OMAR, "TENANT_ADMIN", "2", key())))).toEqual({ status: 409, code: "INVALID_STATE" });
     expect(facts(await caught(api.setTenantMemberState(NW, sofia, "ACTIVE", "1", key())))).toEqual({ status: 409, code: "INVALID_STATE" });
+    // Suspending a target that is not ACTIVE is 409 too, never 403 (M17).
+    expect(facts(await caught(api.setTenantMemberState(NW, OMAR, "SUSPENDED", "2", key())))).toEqual({ status: 409, code: "INVALID_STATE" });
     expect(facts(await caught(api.setTenantMemberRole(NW, "0c2e5a7b-1d3f-4b6a-8c9e-0f1a2b3c4d5e", "MEMBER", "1", key())))).toEqual({
       status: 404,
       code: "RESOURCE_NOT_FOUND",
@@ -265,6 +271,12 @@ describe("restriction policies (NORMAL, RECOVERY, LEAVE, DIRECTORY)", () => {
       code: "READ_ONLY",
     });
     await expect(api.revokeTenantInvitation(NW, MOCK_INVITATION_IDS.kai, "1", key())).resolves.toBeUndefined();
+    // RECOVERY lets a removal through too (M18); NORMAL's role change stays READ_ONLY.
+    await expect(api.removeTenantMember(NW, OMAR, "2", key())).resolves.toMatchObject({ state: "SUCCEEDED" });
+    expect(facts(await caught(api.setTenantMemberRole(NW, sofia, "TENANT_ADMIN", "1", key())))).toEqual({ status: 403, code: "READ_ONLY" });
+    // Under a pause RECOVERY is refused as well.
+    hooks(local, { restrict: { [NW]: ["OWNER_PAUSE"] } });
+    expect(facts(await caught(api.removeTenantMember(NW, tom, "1", key())))).toEqual({ status: 403, code: "READ_ONLY" });
   });
 
   it("leaving is never refused by a restriction: Anna leaves paused Initech", async () => {
@@ -290,14 +302,19 @@ describe("restriction policies (NORMAL, RECOVERY, LEAVE, DIRECTORY)", () => {
 });
 
 describe("what a suspension, a demotion, a removal and a leave take", () => {
-  it("a demotion revokes the person's pending invitations, frees their seats and ends their company sessions", async () => {
+  it("a demotion revokes the person's pending invitations and frees their seats; their session stays, its role checked online", async () => {
     const U = MOCK_TENANT_IDS.umbrella;
     const { api, local } = await inCompany("tom@example.com", U);
     const transport = new MockTenantServer({ storage: local, accountStore: new MockTaskaStore(), latencyMs: 0 }).transport();
     const priyaAccount = (await transport.startWebSession({ email: "priya@example.com", password: "x" }, key())) as { accessToken: string };
     const priyaCompany = (await transport.createTenantSession(priyaAccount.accessToken, U, key())) as { accessToken: string };
     await api.setTenantMemberRole(U, priya, "MEMBER", "1", key());
-    await expect(transport.getTenantQuotas(priyaCompany.accessToken, U, new AbortController().signal)).rejects.toMatchObject({ status: 401 });
+    // The old session still answers — the reader's next request is not refused (ruling 2) …
+    await expect(transport.getTenantQuotas(priyaCompany.accessToken, U, new AbortController().signal)).resolves.toBeTruthy();
+    // … and an admin write with it is the role's refusal, checked online (contracts §2).
+    await expect(
+      transport.createTenantInvitation(priyaCompany.accessToken, U, { email: "x@example.com", role: "MEMBER", projectGrants: [] }, key()),
+    ).rejects.toMatchObject({ status: 403, code: "SCOPE_DENIED" });
     expect((await invitations(api, U)).map((item: Invitation) => item.state)).toEqual(["REVOKED"]);
     expect((await seats(api, U))?.reserved).toBe(0n);
   });

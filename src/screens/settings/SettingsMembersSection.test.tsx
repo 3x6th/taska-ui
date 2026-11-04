@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { notifyManager } from "@tanstack/react-query";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
 import type { Invitation, Membership } from "../../api/tenantMembers";
 import { companiesHarness } from "../../test/companiesHarness";
@@ -25,9 +26,20 @@ const { fakeApi, state } = vi.hoisted(() => {
     role: null as null | ((...args: unknown[]) => Promise<unknown>),
     membersRead: null as null | (() => Promise<unknown>),
     reentered: 0,
+    meRead: null as null | (() => Promise<unknown>),
+    leave: [] as Array<() => Promise<unknown>>,
+    leaveKeys: [] as string[],
+    removal: null as null | (() => Promise<unknown>),
+    operation: [] as Array<() => Promise<unknown>>,
+    operationAt: [] as number[],
+    invitationsAt: [] as number[],
+    quotasAt: [] as number[],
   };
   const api = {
-    getCurrentUser: async () => ({ id: state.me, email: `${state.me}@example.com`, displayName: state.me, status: "ACTIVE" }),
+    getCurrentUser: async () =>
+      state.meRead
+        ? state.meRead()
+        : { id: state.me, email: `${state.me}@example.com`, displayName: state.me, status: "ACTIVE", color: "#f59e0b" },
     listTenants: async () => ({
       items: [{ id: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b04", name: "Umbrella", ownerId: "tom", lifecycle: "ACTIVE", restrictions: [], createdAt: null, creationDeadline: null, version: "1" }],
       nextCursor: null,
@@ -41,10 +53,12 @@ const { fakeApi, state } = vi.hoisted(() => {
     },
     listTenantInvitations: async () => {
       state.calls.push("invitations");
+      state.invitationsAt.push(Date.now());
       return { items: state.invitations, nextCursor: null };
     },
     getTenantQuotas: async () => {
       state.calls.push("quotas");
+      state.quotasAt.push(Date.now());
       return { tenantId: null, version: "1", quotas: [{ kind: "SEAT", used: "3", reserved: "1", limit: "50", unlimited: false }], asOf: null };
     },
     setTenantMemberRole: (...args: unknown[]) => {
@@ -57,6 +71,20 @@ const { fakeApi, state } = vi.hoisted(() => {
     },
     reenterCompany: async () => {
       state.reentered += 1;
+    },
+    leaveTenant: (_tenantId: string, key: string) => {
+      state.leaveKeys.push(key);
+      const next = state.leave.shift();
+      return next ? next() : Promise.resolve({ id: "op-leave", state: "SUCCEEDED" });
+    },
+    removeTenantMember: (...args: unknown[]) => {
+      state.writes.push(["remove", ...args]);
+      return state.removal ? state.removal() : Promise.resolve({ id: "op-1", state: "SUCCEEDED" });
+    },
+    getTenantOperation: () => {
+      state.operationAt.push(Date.now());
+      const next = state.operation.shift();
+      return next ? next() : Promise.resolve({ id: "op-1", state: "RUNNING" });
     },
     listProjects: async () => [],
   };
@@ -111,9 +139,18 @@ function gate<T>() {
   return { promise, resolve, reject };
 }
 
+/** The section under the area's heading, which several hand-overs put focus on. */
 function renderSection() {
   const harness = companiesHarness({ companyId: COMPANY, path: "/settings/members" });
-  render(<SettingsMembersSection />, { wrapper: harness.wrapper });
+  render(
+    <div className="settings-area">
+      <h1 className="area-section-title" tabIndex={-1}>
+        Members
+      </h1>
+      <SettingsMembersSection />
+    </div>,
+    { wrapper: harness.wrapper },
+  );
   return harness;
 }
 
@@ -130,6 +167,20 @@ beforeEach(() => {
   state.role = null;
   state.membersRead = null;
   state.reentered = 0;
+  state.meRead = null;
+  state.leave = [];
+  state.leaveKeys = [];
+  state.removal = null;
+  state.operation = [];
+  state.operationAt = [];
+  state.invitationsAt = [];
+  state.quotasAt = [];
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  notifyManager.setScheduler((callback) => setTimeout(callback, 0));
+  Reflect.deleteProperty(document, "hidden");
 });
 
 describe("gating by the reader's own row (B8)", () => {
@@ -293,5 +344,198 @@ describe("no optimism (B2): the row changes only after the server and the re-rea
     );
     fireEvent.click(screen.getByRole("button", { name: "Reactivate Anna Ivanova" }));
     await waitFor(() => expect(state.writes.map((write) => [write[0], write[3]])).toEqual([["state", "ACTIVE"]]));
+  });
+});
+
+describe("the page waits for the reader's own row (art-director X1)", () => {
+  it("with the profile still out and the members answered: the skeleton only — no lead, no groups, no Leave", async () => {
+    const me = gate<unknown>();
+    state.meRead = () => me.promise;
+    renderSection();
+    await waitFor(() => expect(state.calls).toContain("members"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByText("Loading members")).toBeInTheDocument();
+    expect(document.querySelectorAll(".company-member-skeleton")).toHaveLength(3);
+    expect(screen.queryByText(/^Everyone in/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/couldn’t check/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Leave company" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Tom Becker")).not.toBeInTheDocument();
+    me.resolve({ id: "tom", email: "tom@example.com", displayName: "tom", status: "ACTIVE", color: "#f59e0b" });
+    expect(await screen.findByText("Everyone in Umbrella, and the people invited to join.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading members")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Members 4" })).toBeInTheDocument();
+  });
+
+  it("the reader's own circle wears their colour from /users/me; everybody else's is from their id (X3)", async () => {
+    renderSection();
+    const own = (await screen.findByText("Tom Becker")).closest("li")?.querySelector(".avatar") as HTMLElement;
+    expect(own.style.backgroundColor).toBe("rgb(245, 158, 11)");
+    const other = rowOf("Priya Nair").querySelector(".avatar") as HTMLElement;
+    expect(other.style.backgroundColor).not.toBe("rgb(245, 158, 11)");
+  });
+
+  it("a failed read, then «Try again» that answers: focus to the heading (N-a)", async () => {
+    let first = true;
+    state.membersRead = () => {
+      if (first) {
+        first = false;
+        return Promise.reject(Object.assign(new Error("server words"), { status: 403, code: "SCOPE_DENIED", requestId: "rid", details: null, reasons: [] }));
+      }
+      return Promise.resolve({ items: state.members, nextCursor: null });
+    };
+    renderSection();
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    expect(screen.queryByRole("button", { name: "Leave company" })).not.toBeInTheDocument();
+    retry.focus();
+    fireEvent.click(retry);
+    await screen.findByText("Tom Becker");
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveFocus());
+  });
+});
+
+describe("leaving (api-contract-guard B-1, B6)", () => {
+  it("an answer that never came re-reads nothing and says so; the next press goes with the same key, and its «left» lands on the picker", async () => {
+    state.me = "sofia";
+    state.leave = [() => Promise.reject(new TypeError("Failed to fetch")), () => Promise.resolve(null)];
+    const { go } = renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Leave company" }));
+    const strip = document.querySelector(".company-leave-confirm") as HTMLElement;
+    const before = state.calls.length;
+    fireEvent.click(within(strip).getByRole("button", { name: "Leave company" }));
+    await waitFor(() =>
+      expect(document.querySelector(".company-leave .error-note")).toHaveTextContent(
+        "Taska couldn’t confirm that you left Umbrella. Press Leave company again to check.",
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(state.calls.slice(before)).toEqual([]);
+    expect(screen.getByRole("button", { name: "Leave company" })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Leave company" }));
+    fireEvent.click(within(document.querySelector(".company-leave-confirm") as HTMLElement).getByRole("button", { name: "Leave company" }));
+    // `null` is the session layer's «you already left» — the same success (M37).
+    await waitFor(() => expect(go).toHaveBeenCalled());
+    expect(state.leaveKeys).toHaveLength(2);
+    expect(state.leaveKeys[1]).toBe(state.leaveKeys[0]);
+    expect(go).toHaveBeenCalledWith("/companies", { replace: true, state: { focusHeading: true, left: { name: "Umbrella" } } });
+  });
+
+  it("a definite refusal re-reads and takes a new key next time", async () => {
+    state.me = "sofia";
+    state.leave = [
+      () => Promise.reject(Object.assign(new Error("w"), { status: 409, code: "LAST_ADMIN", requestId: "rid", details: null, reasons: [] })),
+    ];
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Leave company" }));
+    const before = state.calls.filter((call) => call === "members").length;
+    fireEvent.click(within(document.querySelector(".company-leave-confirm") as HTMLElement).getByRole("button", { name: "Leave company" }));
+    expect(await screen.findByText("You’re the only active admin, so you didn’t leave Umbrella.", { selector: ".error-note-sentence" })).toBeInTheDocument();
+    await waitFor(() => expect(state.calls.filter((call) => call === "members").length).toBeGreaterThan(before));
+    fireEvent.click(screen.getByRole("button", { name: "Leave company" }));
+    fireEvent.click(within(document.querySelector(".company-leave-confirm") as HTMLElement).getByRole("button", { name: "Leave company" }));
+    await waitFor(() => expect(state.leaveKeys).toHaveLength(2));
+    expect(state.leaveKeys[1]).not.toBe(state.leaveKeys[0]);
+  });
+});
+
+describe("a version If-Match cannot carry is re-read, never sent (M38)", () => {
+  it("re-reads the list instead of writing", async () => {
+    state.members = umbrella().map((row) => (row.userId === "sofia" ? { ...row, version: null } : row));
+    renderSection();
+    const select = await screen.findByRole("combobox", { name: "Role of Sofia Reyes" });
+    const before = state.calls.filter((call) => call === "members").length;
+    fireEvent.change(select, { target: { value: "TENANT_ADMIN" } });
+    await waitFor(() => expect(state.calls.filter((call) => call === "members").length).toBe(before + 1));
+    expect(state.writes).toEqual([]);
+  });
+});
+
+describe("a removal's operation (§4.38)", () => {
+  it("a MANUAL_REVIEW stop shows «Check again» with the operation id; a row that leaves after it hands focus on (X2)", async () => {
+    state.removal = () => Promise.resolve({ id: "op-1", state: "MANUAL_REVIEW" });
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Sofia Reyes from Umbrella" }));
+    fireEvent.click(within(document.querySelector(".company-member-confirm") as HTMLElement).getByRole("button", { name: "Remove" }));
+    const check = await screen.findByRole("button", { name: "Check again" });
+    expect(rowOf("Sofia Reyes")).toHaveTextContent("Being removed");
+    expect(rowOf("Sofia Reyes")).toHaveTextContent("MANUAL_REVIEW · operation op-1");
+    state.operation = [() => Promise.resolve({ id: "op-1", state: "SUCCEEDED" })];
+    state.members = umbrella().filter((row) => row.userId !== "sofia");
+    check.focus();
+    fireEvent.click(check);
+    await waitFor(() => expect(screen.queryByText("Sofia Reyes")).not.toBeInTheDocument());
+    // After Sofia comes Tom, the owner, with no control: the row before her, Priya's, takes focus.
+    expect(screen.getByRole("combobox", { name: "Role of Priya Nair" })).toHaveFocus();
+    expect(status()).toBe("Sofia Reyes was removed from Umbrella. Their seat is free.");
+  });
+
+  it("reads on 1, 2, 4, 8 s then every 10 s, one at a time, paused in a hidden tab, and stops at 2 minutes with «Check again»", async () => {
+    notifyManager.setScheduler((callback) => queueMicrotask(callback));
+    state.removal = () => Promise.resolve({ id: "op-1", state: "PENDING" });
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Sofia Reyes from Umbrella" }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const start = Date.now();
+    fireEvent.click(within(document.querySelector(".company-member-confirm") as HTMLElement).getByRole("button", { name: "Remove" }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(rowOf("Sofia Reyes")).toHaveTextContent("Being removed");
+    for (const total of [1000, 3000, 7000, 15_000, 25_000, 35_000]) {
+      await act(() => vi.advanceTimersByTimeAsync(total - (Date.now() - start)));
+    }
+    expect(state.operationAt.map((at) => at - start)).toEqual([1000, 3000, 7000, 15_000, 25_000, 35_000]);
+
+    // One read at a time: back in the tab while one is out asks nothing more.
+    const held = gate<unknown>();
+    state.operation = [() => held.promise];
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(state.operationAt).toHaveLength(7);
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(state.operationAt).toHaveLength(7);
+    held.resolve({ id: "op-1", state: "RUNNING" });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+
+    // Hidden: the tick asks nothing, and coming back asks at once.
+    let hidden = true;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(state.operationAt).toHaveLength(7);
+    hidden = false;
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(state.operationAt).toHaveLength(8);
+
+    await act(() => vi.advanceTimersByTimeAsync(2 * 60_000));
+    const reads = state.operationAt.length;
+    expect(Date.now() - start).toBeGreaterThanOrEqual(2 * 60_000);
+    expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(state.operationAt).toHaveLength(reads);
+  });
+});
+
+describe("an invitation's expiry on an open page (§4.38 «Истечение»)", () => {
+  it("re-reads the invitations and the seats once at expiresAt, once more 60 s later, then never", async () => {
+    notifyManager.setScheduler((callback) => queueMicrotask(callback));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const start = Date.now();
+    state.invitations = [{ ...lena, expiresAt: new Date(start + 5000).toISOString() }];
+    renderSection();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("lena@example.com")).toBeInTheDocument();
+    const first = { invitations: state.invitationsAt.length, quotas: state.quotasAt.length };
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(state.invitationsAt.length).toBe(first.invitations + 1);
+    expect(state.quotasAt.length).toBe(first.quotas + 1);
+    // Still PENDING by the server's word: the row says it is releasing its seat, and is never marked EXPIRED here.
+    expect(rowOf("lena@example.com")).toHaveTextContent("Expired · releasing its seat");
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(state.invitationsAt.length).toBe(first.invitations + 2);
+    expect(state.quotasAt.length).toBe(first.quotas + 2);
+    await act(() => vi.advanceTimersByTimeAsync(10 * 60_000));
+    expect(state.invitationsAt.length).toBe(first.invitations + 2);
   });
 });

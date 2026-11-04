@@ -156,8 +156,9 @@ describe("the refusal table, by Problem.code (§4.38 «Отказы»)", () => {
     );
   });
 
-  it("the server's words only for INVALID_STATE, a code outside the table and an answer that never came", () => {
-    expect(memberRefusalWords("suspend", refusal(409, "INVALID_STATE"), who)).toEqual({ text: "Priya Nair was not suspended.", words: "server words" });
+  it("the server's words only for a code outside the table and an answer that never came", () => {
+    // INVALID_STATE never prints the server's words (§4.33: they may say «tenant»; art-director N-c).
+    expect(memberRefusalWords("suspend", refusal(409, "INVALID_STATE"), who)).toEqual({ text: "Priya Nair was not suspended.", words: null });
     expect(memberRefusalWords("reactivate", refusal(409, "SOMETHING_NEW"), who)).toEqual({ text: "Priya Nair was not reactivated.", words: "server words" });
     expect(memberRefusalWords("role", refusal(503, "DEPENDENCY_UNAVAILABLE"), who)).toEqual({
       text: "Taska couldn’t confirm the change. The list shows what Taska has now.",
@@ -182,10 +183,27 @@ describe("the refusal table, by Problem.code (§4.38 «Отказы»)", () => {
       text: "Taska couldn’t confirm the invitation was created. Try again — it won’t create a second one.",
       words: "server words",
     });
-    expect(inviteRefusalWords(refusal(409, "INVALID_STATE"))).toEqual({ text: "This invitation was not created.", words: "server words" });
+    expect(inviteRefusalWords(refusal(409, "INVALID_STATE"))).toEqual({ text: "This invitation was not created.", words: null });
+    const known = { email: "sofia@example.com", company: "Northwind", member: true, pending: false };
+    expect(inviteRefusalWords(refusal(409, "INVALID_STATE"), known).text).toBe(
+      "sofia@example.com is already a member of Northwind, so no invitation was created.",
+    );
+    expect(inviteRefusalWords(refusal(409, "INVALID_STATE"), { ...known, email: "kai@example.com", member: false, pending: true }).text).toBe(
+      "kai@example.com already has a pending invitation to Northwind, so no new one was created.",
+    );
     expect(leaveRefusalWords(refusal(409, "LAST_ADMIN"), "Globex").text).toBe("You’re the only active admin, so you didn’t leave Globex.");
     expect(leaveRefusalWords(refusal(409, "OWNER_MEMBERSHIP_PROTECTED"), "Globex").text).toBe("You own Globex, so you didn’t leave it.");
-    expect(leaveRefusalWords(refusal(500, "X"), null)).toEqual({ text: "You didn’t leave this company.", words: "server words" });
+    // An answer that never came is not «you didn't leave»: the leave may have been applied (B-1).
+    expect(leaveRefusalWords(refusal(500, "X"), null)).toEqual({
+      text: "Taska couldn’t confirm that you left this company. Press Leave company again to check.",
+      words: "server words",
+    });
+    expect(leaveRefusalWords(new TypeError("Failed to fetch"), "Globex").text).toBe(
+      "Taska couldn’t confirm that you left Globex. Press Leave company again to check.",
+    );
+    expect(leaveRefusalWords(refusal(409, "INVALID_STATE"), "Globex")).toEqual({ text: "You didn’t leave Globex.", words: null });
+    expect(leaveRefusalWords(refusal(400, "SOMETHING_NEW"), "Globex")).toEqual({ text: "You didn’t leave Globex.", words: "server words" });
+    expect(leaveRefusalWords(null, "Globex").text).toBe("You didn’t leave Globex.");
   });
 
   it("resend's status keeps the expiry as sent", () => {

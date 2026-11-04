@@ -247,8 +247,10 @@ export function memberRefusalWords(
       return { text: invitation ? "Invitations can’t be changed right now." : "Members can’t be changed right now.", words: null };
     case "SCOPE_DENIED":
       return { text: invitation ? "Only company admins can change invitations." : "Only company admins can change members.", words: null };
+    // The action's own sentence only: the server's words for it may say
+    // «tenant» (§4.33; art-director N-c). The request id still goes under it.
     case "INVALID_STATE":
-      return { text: otherwise(action, name, email), words: message };
+      return { text: otherwise(action, name, email), words: null };
     case "RATE_LIMITED":
       if (invitation) {
         return { text: `An email to ${email} was queued moments ago. Try again in ${formatWait(refusalRetryAfter(error))}.`, words: null };
@@ -260,10 +262,25 @@ export function memberRefusalWords(
   return { text: otherwise(action, name, email), words: message };
 }
 
-/** The invite modal's refusals (§4.38 «Приглашение»). */
-export function inviteRefusalWords(error: unknown): RefusalWords {
+/**
+ * The invite modal's refusals (§4.38 «Приглашение»). An `INVALID_STATE` is
+ * said from what the page has read — the address is a member's, or already has
+ * a pending invitation — and otherwise as «not created»; never in the server's
+ * words, which may say «tenant» (§4.33, art-director N-c).
+ */
+export function inviteRefusalWords(
+  error: unknown,
+  known: { email: string; company: string | null; member: boolean; pending: boolean } | null = null,
+): RefusalWords {
   const code = refusalCode(error);
   const { status, message } = apiErrorFacts(error);
+  if (code === "INVALID_STATE") {
+    if (known?.member) return { text: `${known.email} is already a member of ${companyInside(known.company)}, so no invitation was created.`, words: null };
+    if (known?.pending) {
+      return { text: `${known.email} already has a pending invitation to ${companyInside(known.company)}, so no new one was created.`, words: null };
+    }
+    return { text: "This invitation was not created.", words: null };
+  }
   if (code === "QUOTA_EXCEEDED") {
     return {
       text: "All seats are in use, so this invitation was not created. Remove a member or revoke an invitation to free a seat.",
@@ -281,12 +298,21 @@ export function inviteRefusalWords(error: unknown): RefusalWords {
   return { text: "This invitation was not created.", words: message };
 }
 
-/** Leaving refused (§4.38 «Leave company»). */
+/**
+ * Leaving refused (§4.38 «Leave company»). An answer that never came is not a
+ * refusal: the leave may have been applied, and pressing again — with the
+ * same key — finds out (api-contract-guard B-1).
+ */
 export function leaveRefusalWords(error: unknown, company: string | null): RefusalWords {
   const code = refusalCode(error);
+  const { status, message } = apiErrorFacts(error);
   if (code === "LAST_ADMIN") return { text: `You’re the only active admin, so you didn’t leave ${companyInside(company)}.`, words: null };
   if (code === "OWNER_MEMBERSHIP_PROTECTED") return { text: `You own ${companyInside(company)}, so you didn’t leave it.`, words: null };
-  return { text: `You didn’t leave ${companyInside(company)}.`, words: apiErrorFacts(error).message };
+  if (error !== null && isUnanswered(status) && code !== "RATE_LIMITED") {
+    return { text: `Taska couldn’t confirm that you left ${companyInside(company)}. Press Leave company again to check.`, words: message };
+  }
+  // INVALID_STATE's words may say «tenant» (§4.33), as in the rows' table: the sentence and the id only.
+  return { text: `You didn’t leave ${companyInside(company)}.`, words: code === "INVALID_STATE" ? null : message };
 }
 
 /** «{failureCode} · operation {id}» — an operation's own detail line; it has no request id. */

@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trash2, UserPlus } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { taskaApi } from "../../api/client";
 import { apiErrorFacts, isWorkspaceClosed } from "../../api/errors";
 import {
@@ -131,6 +131,8 @@ interface Section {
   companyId: string;
   company: string | null;
   meId: string | null;
+  /** The reader's own colour from `/users/me`, for their own row's circle (art-director X3). */
+  meColor: string | undefined;
   access: ReaderAccess;
   invitations: Invitation[] | undefined;
   /** «you», the member's name, or `null` when `createdBy` is not in the list. */
@@ -325,13 +327,17 @@ function CompanyMembers({ companyId }: { companyId: string }) {
       });
     },
     onError: (error) => {
-      if (leaveIntent.current && isIndefinite(error)) leaveIntent.current = { ...leaveIntent.current, open: true };
+      const indefinite = isIndefinite(error);
+      if (leaveIntent.current && indefinite) leaveIntent.current = { ...leaveIntent.current, open: true };
       setAsking(null);
       const words = leaveRefusalWords(error, company);
       setLeaveRefusal({ ...words, requestId: apiErrorFacts(error).requestId, detail: null });
       say(words.text);
       leaveButton.current?.focus();
-      void reread({ members: true, quotas: true });
+      // Not after an answer that never came (api-contract-guard B-1): the leave
+      // may have been applied, and a re-read would meet the server's «no longer
+      // a member» first. The next press goes with the same key and finds out.
+      if (!indefinite) void reread({ members: true, quotas: true });
     },
   });
   const sendLeave = () => {
@@ -358,6 +364,7 @@ function CompanyMembers({ companyId }: { companyId: string }) {
     companyId,
     company,
     meId,
+    meColor: me.data?.color ?? undefined,
     access,
     invitations: invitations.data,
     inviterName,
@@ -377,9 +384,13 @@ function CompanyMembers({ companyId }: { companyId: string }) {
     now,
   };
 
-  const loading = members.isPending || (me.isPending && !me.isError);
+  // Nothing of the list is drawn until the reader's own row can be found in
+  // it (art-director X1): with the profile still out, the page would draw a
+  // member's lead, «couldn't check» and a Leave button, then change its mind.
+  const ready = members.data !== undefined && !(me.isPending && !me.isError);
   const failed = members.isError && !members.data;
-  const groups = members.data ? groupRows(members.data, admin ? invitations.data : undefined) : null;
+  const loading = !ready && !failed;
+  const groups = ready && members.data ? groupRows(members.data, admin ? invitations.data : undefined) : null;
   const ownerByList = companies.data?.find((tenant) => tenant.id === companyId)?.ownerId;
   const isOwner = access.row !== null ? access.owner : meId !== null && ownerByList === meId;
   const seatLine = seats ? seatLineText(seats) : null;
@@ -388,8 +399,8 @@ function CompanyMembers({ companyId }: { companyId: string }) {
     <>
       <div className="settings-plane">
         <div className="settings-column company-members" ref={section}>
-          {members.data ? <p className="settings-lead">{leadText(company, admin)}</p> : null}
-          {members.data && !access.known ? <p className="company-members-unchecked">{UNCHECKED_TEXT}</p> : null}
+          {ready ? <p className="settings-lead">{leadText(company, admin)}</p> : null}
+          {ready && !access.known ? <p className="company-members-unchecked">{UNCHECKED_TEXT}</p> : null}
 
           {admin ? (
             <div className="company-seats">
@@ -432,7 +443,11 @@ function CompanyMembers({ companyId }: { companyId: string }) {
                 aria-disabled={members.isFetching || undefined}
                 className="secondary-button company-members-retry"
                 onClick={() => {
-                  if (!members.isFetching) void members.refetch();
+                  if (members.isFetching) return;
+                  // The notice and its button go with a list that answered: focus to the heading (art-director N-a).
+                  void members.refetch().then((result) => {
+                    if (result.isSuccess) heading()?.focus();
+                  });
                 }}
                 type="button"
               >
@@ -440,7 +455,7 @@ function CompanyMembers({ companyId }: { companyId: string }) {
               </button>
             </div>
           ) : null}
-          {members.isError && members.data ? (
+          {ready && members.isError && members.data ? (
             <div className="company-members-refresh-failure">
               <ApiNotice error={members.error} live="off">
                 {MEMBERS_REFRESH_FAILED}
@@ -546,8 +561,7 @@ function Group({ title, count, children }: { title: string; count: number; child
   return (
     <section className="company-group">
       <h2 className="company-group-title" id={id}>
-        {title}
-        <span className="company-group-count">{count}</span>
+        {title} <span className="company-group-count">{count}</span>
       </h2>
       <ul aria-labelledby={id} className="company-member-list">
         {children}
@@ -557,6 +571,29 @@ function Group({ title, count, children }: { title: string; count: number; child
 }
 
 /* ----------------------------------------------------------------- rows */
+
+/**
+ * A row that leaves while focus is inside it — after «Check again», or any
+ * re-read that no longer lists it — hands focus on by the same rule as at the
+ * 202 (art-director X2), instead of dropping it to `<body>`. In the layout
+ * cleanup, while the row is still in the document, so its neighbours can be
+ * found.
+ */
+function useFocusOnLeave(rowKey: string, focusAfterLeaving: (rowKey: string) => void) {
+  const row = useRef<HTMLLIElement>(null);
+  const hand = useRef(focusAfterLeaving);
+  useEffect(() => {
+    hand.current = focusAfterLeaving;
+  });
+  useLayoutEffect(() => {
+    const node = row.current;
+    const handOn = hand;
+    return () => {
+      if (node !== null && node.isConnected && node.contains(document.activeElement)) handOn.current(rowKey);
+    };
+  }, [rowKey]);
+  return row;
+}
 
 /** The three right cells (§4.38 «Справа»); a reader without controls sees the role word only. */
 function Controls({
@@ -667,6 +704,7 @@ interface Removal {
 
 function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
   const rowKey = `member:${member.userId}`;
+  const rowRef = useFocusOnLeave(rowKey, ctx.focusAfterLeaving);
   const subject: MemberSubject = memberSubject(member, ctx.meId);
   const controls = memberControls(member, ctx.access, ctx.meId);
   const suspended = member.state === "SUSPENDED";
@@ -754,27 +792,32 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
   });
 
   // The removal's operation, read one request at a time on §4.37's cadence,
-  // paused while the tab is hidden, given up after 2 minutes (§4.38).
+  // paused while the tab is hidden, given up after 2 minutes (§4.38). One read
+  // at a time across the poll, a return to the tab and «Check again» (`reading`).
   const [checks, setChecks] = useState(0);
+  const reading = useRef(false);
   useEffect(() => {
     if (removal === null || removal.stopped || removal.operation.state === "SUCCEEDED") return;
     let current = true;
     let timer: number | undefined;
     let reads = 0;
     const tick = async () => {
-      if (!current) return;
+      if (!current || reading.current) return;
       if (document.hidden) return;
       if (Date.now() - removal.startedAt >= REMOVAL_POLL_LIMIT_MS) {
         setRemoval((value) => (value ? { ...value, stopped: true } : value));
         return;
       }
       let operation: TenantOperation;
+      reading.current = true;
       try {
         operation = await taskaApi.getTenantOperation(ctx.companyId, removal.operation.id);
       } catch (error) {
         if (!current || isWorkspaceClosed(error)) return;
         schedule();
         return;
+      } finally {
+        reading.current = false;
       }
       if (!current) return;
       if (operation.state === "SUCCEEDED") {
@@ -797,10 +840,10 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
       reads += 1;
     };
     const onVisible = () => {
-      if (!document.hidden) {
-        window.clearTimeout(timer);
-        void tick();
-      }
+      // Back in the tab: read now — unless a read is already out, whose answer schedules the next.
+      if (document.hidden || reading.current) return;
+      window.clearTimeout(timer);
+      void tick();
     };
     document.addEventListener("visibilitychange", onVisible);
     schedule();
@@ -812,9 +855,11 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
   }, [removal, ctx.companyId, checks]);
 
   const checkAgain = async () => {
-    if (removal === null) return;
+    if (removal === null || reading.current) return;
+    reading.current = true;
     try {
       const operation = await taskaApi.getTenantOperation(ctx.companyId, removal.operation.id);
+      reading.current = false;
       if (operation.state === "SUCCEEDED") {
         setRemoval({ ...removal, operation, stopped: true });
         await finishRemoval();
@@ -825,6 +870,8 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
       }
     } catch {
       // The button stays: nothing is known yet.
+    } finally {
+      reading.current = false;
     }
   };
 
@@ -923,6 +970,7 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
     <li
       className={`company-member-row${suspended ? " is-suspended" : ""}`}
       data-row-key={rowKey}
+      ref={rowRef}
       onKeyDown={(event) => {
         if (question !== null && event.key === "Escape") {
           event.preventDefault();
@@ -935,7 +983,12 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
         <Avatar
           hideInitials={!subject.named}
           label={subject.title}
-          user={subject.named ? { id: member.userId, displayName: subject.title, avatarUrl: null } : null}
+          user={
+            subject.named
+              ? // One's own circle in the colour the rest of the app draws it in (X3); others by the id.
+                { id: member.userId, displayName: subject.title, color: subject.self ? ctx.meColor : undefined, avatarUrl: null }
+              : null
+          }
         />
       </span>
       <div className="company-member-text">
@@ -1025,6 +1078,12 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
           <button className="company-member-ghost" onClick={() => void checkAgain()} type="button">
             Check again
           </button>
+          {/* A removal Taska is checking by hand: its operation id, for support, as FAILED shows it. */}
+          {removal.operation.state === "MANUAL_REVIEW" ? (
+            <p className="error-note-detail">
+              {operationDetail(removal.operation.state, removal.operation.id)}
+            </p>
+          ) : null}
         </div>
       ) : null}
       {refusalHere ? <RefusalNote refusal={refusalHere} /> : null}
@@ -1034,6 +1093,7 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
 
 function PendingRow({ invitation, ctx }: { invitation: Invitation; ctx: Section }) {
   const rowKey = `invitation:${invitation.id}`;
+  const rowRef = useFocusOnLeave(rowKey, ctx.focusAfterLeaving);
   const email = invitation.email ?? "";
   const confirmId = useId();
   const resendRef = useRef<HTMLButtonElement>(null);
@@ -1103,6 +1163,7 @@ function PendingRow({ invitation, ctx }: { invitation: Invitation; ctx: Section 
     <li
       className="company-member-row is-invitation"
       data-row-key={rowKey}
+      ref={rowRef}
       onKeyDown={(event) => {
         if (asking === "revoke" && event.key === "Escape") {
           event.preventDefault();
@@ -1163,11 +1224,12 @@ function PendingRow({ invitation, ctx }: { invitation: Invitation; ctx: Section 
 
 function ExpiredRow({ invitation, ctx }: { invitation: Invitation; ctx: Section }) {
   const rowKey = `invitation:${invitation.id}`;
+  const rowRef = useFocusOnLeave(rowKey, ctx.focusAfterLeaving);
   const email = invitation.email ?? "";
   const refusalHere = ctx.refusal?.rowKey === rowKey ? ctx.refusal : null;
   const role = isKnownMembershipRole(invitation.role) ? invitation.role : null;
   return (
-    <li className="company-member-row is-invitation is-expired" data-row-key={rowKey}>
+    <li className="company-member-row is-invitation is-expired" data-row-key={rowKey} ref={rowRef}>
       <span aria-hidden="true" className="company-member-avatar">
         <Avatar label={email} user={null} />
       </span>

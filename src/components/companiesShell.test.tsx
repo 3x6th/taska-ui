@@ -28,6 +28,7 @@ const { fakeApi, state } = vi.hoisted(() => {
       return state.enterError ? Promise.reject(state.enterError) : new Promise(() => {});
     },
     onWorkspaceClosed: () => () => {},
+    onWorkspaceLeft: () => () => {},
     onWorkspacePending: (listener: (event: WorkspacePendingEvent) => void) => {
       state.pending.add(listener);
       return () => state.pending.delete(listener);

@@ -83,6 +83,10 @@ describe("the reader's own row decides what is offered (B8)", () => {
     expect(readerAccess(list, "nobody")).toEqual({ known: false, admin: false, owner: false, row: null });
     expect(readerAccess(list, null).known).toBe(false);
     expect(readerAccess(list, "zed")).toMatchObject({ known: false, admin: false });
+    // An admin only by a known role that is ACTIVE (M42).
+    expect(readerAccess([member("me", { role: "TENANT_ADMIN", state: "SUSPENDED" })], "me")).toMatchObject({ known: true, admin: false });
+    expect(readerAccess([member("me", { role: "TENANT_ADMIN", state: "FROZEN" })], "me")).toMatchObject({ known: false, admin: false });
+    expect(readerAccess([member("me", { role: "TENANT_OWNER", state: "ACTIVE" })], "me")).toMatchObject({ known: false, admin: false });
   });
 
   it("an unnamed row (develop's empty profile) is the address, else the short id; one's own is «You»", () => {

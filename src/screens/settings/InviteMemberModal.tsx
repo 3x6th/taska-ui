@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { taskaApi } from "../../api/client";
 import { apiErrorFacts, refusalCode } from "../../api/errors";
@@ -6,9 +6,11 @@ import {
   INVITATION_EMAIL_MAX,
   PROJECT_GRANT_ROLES,
   invitationEmailProblem,
+  sameInvitationEmail,
   trimInvitationEmail,
   type CreateInvitationInput,
   type Invitation,
+  type Membership,
   type KnownMembershipRole,
   type KnownProjectGrantRole,
   type Seats,
@@ -18,6 +20,7 @@ import { Modal } from "../../components/Modal";
 import { useMutation } from "../../hooks/useMutation";
 import { keyBadgeStyle } from "../../lib/format";
 import { isIndefinite, keyFor, type SentIntent } from "./companyMembers";
+import { COMPANY_INVITATIONS_KEY, COMPANY_MEMBERS_KEY } from "./companyMembersQuery";
 import { inviteHeadText, inviteRefusalWords } from "./companyMembersText";
 
 /** What the modal opens with: empty for «Invite a member», the expired row's for «Invite again» (§4.38). */
@@ -65,6 +68,7 @@ export function InviteMemberModal({
   onSeatsChanged: () => void;
 }) {
   const formId = useId();
+  const queryClient = useQueryClient();
   const [email, setEmail] = useState(draft?.email ?? "");
   const [role, setRole] = useState<KnownMembershipRole>(draft?.role ?? "MEMBER");
   /** The chosen projects and their roles — remembered while the role is Admin, until the dialog closes. */
@@ -124,7 +128,20 @@ export function InviteMemberModal({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const refusal = write.isError ? inviteRefusalWords(write.error) : null;
+  // What the page has read about the address sent, to word an INVALID_STATE (art-director N-c).
+  const sentEmail = write.variables?.input.email ?? trimmed;
+  const refusal = write.isError
+    ? inviteRefusalWords(write.error, {
+        email: sentEmail,
+        company,
+        member: (queryClient.getQueryData<Membership[]>(COMPANY_MEMBERS_KEY) ?? []).some(
+          (row) => (row.state === "ACTIVE" || row.state === "SUSPENDED") && sameInvitationEmail(row.email, sentEmail),
+        ),
+        pending: (queryClient.getQueryData<Invitation[]>(COMPANY_INVITATIONS_KEY) ?? []).some(
+          (row) => row.state === "PENDING" && sameInvitationEmail(row.email, sentEmail),
+        ),
+      })
+    : null;
 
   return (
     <Modal busy={sending} onClose={onClose} title="Invite a member">
