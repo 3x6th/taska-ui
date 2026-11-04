@@ -130,6 +130,12 @@ export function InviteMemberModal({
 
   // What the page has read about the address sent, to word an INVALID_STATE (art-director N-c).
   const sentEmail = write.variables?.input.email ?? trimmed;
+  // A refusal that appears is brought into view (at 320 with a few projects it lands below the fold).
+  const refusalBox = useRef<HTMLDivElement>(null);
+  const refused = write.isError;
+  useEffect(() => {
+    if (refused) refusalBox.current?.scrollIntoView({ block: "nearest" });
+  }, [refused, attempt]);
   const refusal = write.isError
     ? inviteRefusalWords(write.error, {
         email: sentEmail,
@@ -272,7 +278,13 @@ export function InviteMemberModal({
         )}
 
         {refusal ? (
-          <ErrorNote key={attempt} live="alert" requestId={apiErrorFacts(write.error).requestId} serverWords={refusal.words}>
+          <ErrorNote
+            key={attempt}
+            live="alert"
+            ref={refusalBox}
+            requestId={apiErrorFacts(write.error).requestId}
+            serverWords={refusal.words}
+          >
             {refusal.text}
           </ErrorNote>
         ) : null}

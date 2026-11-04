@@ -1006,6 +1006,167 @@ describe("a company's members, invitations and seats (TAS-502)", () => {
     expect(second.closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
   });
 
+  describe("how long a lost leave is remembered (release-reviewer R2-M1, api-contract-guard P1/P2, L-a)", () => {
+    async function lostLeave() {
+      const tab = await inNorthwind();
+      const left: WorkspaceLeftEvent[] = [];
+      tab.client.onWorkspaceLeft((event) => left.push(event));
+      tab.transport.leaveTenant.mockImplementationOnce(async () => {
+        throw refusal(503, "DEPENDENCY_UNAVAILABLE");
+      });
+      await expect(tab.client.leaveTenant(NORTHWIND, "key-leave")).rejects.toMatchObject({ status: 503 });
+      return { ...tab, left };
+    }
+    const inactive = () => refusal(403, "MEMBERSHIP_INACTIVE");
+    const readRefused = (client: WebSessionClient, error: unknown) =>
+      client.call("session", async () => Promise.reject(error), { read: true });
+
+    it("A: a switch away and back is a new session — its «no longer a member» is a closure, not «left»", async () => {
+      const { client, closed, left } = await lostLeave();
+      await client.enterCompany(GLOBEX);
+      await client.enterCompany(NORTHWIND);
+      await expect(readRefused(client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(left).toEqual([]);
+      expect(closed.map((event) => [event.tenantId, event.reason])).toEqual([[NORTHWIND, "MEMBERSHIP_INACTIVE"]]);
+    });
+
+    it("B: signing out and in forgets it", async () => {
+      const { client, closed, left } = await lostLeave();
+      await client.signOut();
+      await client.signIn({ email: "a@example.com", password: "x" });
+      await client.enterCompany(NORTHWIND);
+      await expect(readRefused(client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(left).toEqual([]);
+      expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+    });
+
+    it("C: a successful re-selection is a new session — a later refusal is a closure", async () => {
+      const { client, transport, closed, left } = await lostLeave();
+      transport.refreshWebSession.mockImplementationOnce(async () => {
+        throw refusal(401, "TOKEN_REVOKED");
+      });
+      await expect(readRefused(client, refusal(401, "TOKEN_REVOKED"))).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(client.currentWorkspace()?.tenantSessionId).toBe("ts-2");
+      await expect(readRefused(client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(left).toEqual([]);
+      expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+    });
+
+    it("D: a 2xx of that session after the loss proves it still works — the leave did not apply", async () => {
+      const { client, closed, left } = await lostLeave();
+      await expect(client.call("session", async () => "an answer", { read: true })).resolves.toBe("an answer");
+      await expect(readRefused(client, refusal(404, "TENANT_NOT_FOUND"))).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(left).toEqual([]);
+      expect(closed.map((event) => event.reason)).toEqual(["TENANT_NOT_FOUND"]);
+    });
+
+    it("P1: a retry answered 429 keeps it — a later 404 retry is «left»", async () => {
+      const { client, transport } = await lostLeave();
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw refusal(429, "RATE_LIMITED");
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toMatchObject({ status: 429 });
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw refusal(404, "TENANT_NOT_FOUND");
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).resolves.toBeNull();
+    });
+
+    it("P2: a retry answered 429 keeps it — a background MEMBERSHIP_INACTIVE is «left»", async () => {
+      const { client, transport, closed, left } = await lostLeave();
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw refusal(429, "RATE_LIMITED");
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toMatchObject({ status: 429 });
+      await expect(readRefused(client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(closed).toEqual([]);
+      expect(left.map((event) => event.tenantId)).toEqual([NORTHWIND]);
+    });
+
+    it("N2: only MEMBERSHIP_INACTIVE and TENANT_NOT_FOUND say «left» — a pause's CAPABILITY_DISABLED still closes", async () => {
+      const { client, closed, left } = await lostLeave();
+      await expect(readRefused(client, refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE"]))).rejects.toBeInstanceOf(
+        WorkspaceClosedError,
+      );
+      expect(left).toEqual([]);
+      expect(closed.map((event) => event.reason)).toEqual(["CAPABILITY_DISABLED"]);
+    });
+
+    it("N3: another company's refusal closes that company", async () => {
+      const { client, closed, left } = await lostLeave();
+      await client.enterCompany(GLOBEX);
+      await expect(readRefused(client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(left).toEqual([]);
+      expect(closed.map((event) => [event.tenantId, event.reason])).toEqual([[GLOBEX, "MEMBERSHIP_INACTIVE"]]);
+    });
+
+    it("N6: a definite refusal of the retry closes the record — a later refusal is a closure", async () => {
+      const { client, transport, closed, left } = await lostLeave();
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw refusal(409, "LAST_ADMIN");
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toMatchObject({ code: "LAST_ADMIN" });
+      await expect(readRefused(client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(left).toEqual([]);
+      expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+    });
+
+    it("a 202 on the retry forgets it: a FAILED operation keeps the session, and a later refusal is a closure", async () => {
+      const { client, transport, closed, left } = await lostLeave();
+      transport.leaveTenant.mockImplementationOnce(async () => ({
+        id: "op", type: "leaveTenant", state: "FAILED", failureCode: "DEPENDENCY_UNAVAILABLE", createdAt: "x", updatedAt: "x",
+      }));
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).resolves.toMatchObject({ state: "FAILED" });
+      expect(client.currentWorkspace()?.tenantSessionId).toBe("ts-1");
+      await expect(readRefused(client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(left).toEqual([]);
+      expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+    });
+
+    it("a «left» release forgets it: the company entered again is closed by its refusal", async () => {
+      const { client, closed, left } = await lostLeave();
+      await expect(readRefused(client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(left).toHaveLength(1);
+      await client.enterCompany(NORTHWIND);
+      await expect(readRefused(client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(left).toHaveLength(1);
+      expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+    });
+
+    it("a 401 on the retry is «left» only when renewal was refused and re-selection said «no longer a member»", async () => {
+      const { client, transport, closed } = await lostLeave();
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw refusal(401, "TOKEN_REVOKED");
+      });
+      transport.refreshWebSession.mockImplementationOnce(async () => {
+        throw refusal(401, "TOKEN_REVOKED");
+      });
+      transport.createTenantSession.mockImplementationOnce(async () => {
+        throw refusal(404, "TENANT_NOT_FOUND");
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).resolves.toBeNull();
+      expect(client.currentWorkspace()).toBeNull();
+      expect(closed).toEqual([]);
+    });
+
+    it("L-a: a 401 whose refresh got no answer is no «left» — the record stays, and a later 404 retry is", async () => {
+      const { client, transport, closed } = await lostLeave();
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw refusal(401, "TOKEN_REVOKED");
+      });
+      transport.refreshWebSession.mockImplementationOnce(async () => {
+        throw new TypeError("Failed to fetch");
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).rejects.toMatchObject({ status: 401 });
+      expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+      expect(closed).toEqual([]);
+      transport.leaveTenant.mockImplementationOnce(async () => {
+        throw refusal(404, "TENANT_NOT_FOUND");
+      });
+      await expect(client.leaveTenant(NORTHWIND, "key-leave")).resolves.toBeNull();
+    });
+  });
+
   it("a first leave refused LAST_ADMIN is that refusal: the session stays, nothing closes", async () => {
     const { client, transport, closed } = await inNorthwind();
     transport.leaveTenant.mockImplementationOnce(async () => {

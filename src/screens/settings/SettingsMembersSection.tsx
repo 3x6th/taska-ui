@@ -861,10 +861,16 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
       const operation = await taskaApi.getTenantOperation(ctx.companyId, removal.operation.id);
       reading.current = false;
       if (operation.state === "SUCCEEDED") {
+        // «Check again» goes with the answer: focus by the 202's rule, while
+        // the row — with no controls of its own now — is still there (X2).
+        ctx.focusAfterLeaving(rowKey);
         setRemoval({ ...removal, operation, stopped: true });
         await finishRemoval();
-      } else if (operation.state === "FAILED") removalFailed(operation);
-      else {
+      } else if (operation.state === "FAILED") {
+        removalFailed(operation);
+        // The row's controls come back: focus to its Remove (X2).
+        focusRemove.current = true;
+      } else {
         setRemoval({ ...removal, operation, startedAt: Date.now(), stopped: operation.state === "MANUAL_REVIEW" });
         setChecks((value) => value + 1);
       }
@@ -877,6 +883,13 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
 
   const busy = roleWrite.isPending || stateWrite.isPending || removeWrite.isPending;
   const removing = removal !== null;
+  /** Set when a «Check again» answered FAILED: the restored Remove takes focus once it is drawn. */
+  const focusRemove = useRef(false);
+  useEffect(() => {
+    if (!focusRemove.current || removing) return;
+    focusRemove.current = false;
+    trashRef.current?.focus();
+  });
   const manage = ctx.access.admin && ctx.access.known;
 
   /** The row's version, or a re-read instead of a send when it is not one `If-Match` can carry (§4). */

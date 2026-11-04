@@ -451,22 +451,57 @@ describe("a version If-Match cannot carry is re-read, never sent (M38)", () => {
 });
 
 describe("a removal's operation (§4.38)", () => {
-  it("a MANUAL_REVIEW stop shows «Check again» with the operation id; a row that leaves after it hands focus on (X2)", async () => {
+  /** Sofia's removal, stopped on MANUAL_REVIEW with «Check again» — focused, as a reader leaves it before pressing. */
+  async function stoppedRemoval() {
     state.removal = () => Promise.resolve({ id: "op-1", state: "MANUAL_REVIEW" });
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: "Remove Sofia Reyes from Umbrella" }));
     fireEvent.click(within(document.querySelector(".company-member-confirm") as HTMLElement).getByRole("button", { name: "Remove" }));
     const check = await screen.findByRole("button", { name: "Check again" });
+    check.focus();
+    return check;
+  }
+
+  it("a MANUAL_REVIEW stop shows «Check again» with the operation id; SUCCEEDED on it hands focus on before the row goes (X2)", async () => {
+    const check = await stoppedRemoval();
     expect(rowOf("Sofia Reyes")).toHaveTextContent("Being removed");
     expect(rowOf("Sofia Reyes")).toHaveTextContent("MANUAL_REVIEW · operation op-1");
     state.operation = [() => Promise.resolve({ id: "op-1", state: "SUCCEEDED" })];
-    state.members = umbrella().filter((row) => row.userId !== "sofia");
-    check.focus();
+    // The re-read is held: the row is still drawn, «Check again» gone, and focus already handed on.
+    const reread = gate<unknown>();
+    state.membersRead = () => reread.promise;
     fireEvent.click(check);
-    await waitFor(() => expect(screen.queryByText("Sofia Reyes")).not.toBeInTheDocument());
     // After Sofia comes Tom, the owner, with no control: the row before her, Priya's, takes focus.
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Role of Priya Nair" })).toHaveFocus());
+    expect(screen.getByText("Sofia Reyes")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check again" })).not.toBeInTheDocument();
+    state.members = umbrella().filter((row) => row.userId !== "sofia");
+    reread.resolve({ items: state.members, nextCursor: null });
+    await waitFor(() => expect(screen.queryByText("Sofia Reyes")).not.toBeInTheDocument());
     expect(screen.getByRole("combobox", { name: "Role of Priya Nair" })).toHaveFocus();
     expect(status()).toBe("Sofia Reyes was removed from Umbrella. Their seat is free.");
+  });
+
+  it("FAILED on «Check again» brings the row's controls back with focus on its Remove (X2)", async () => {
+    const check = await stoppedRemoval();
+    state.operation = [() => Promise.resolve({ id: "op-1", state: "FAILED", failureCode: "DEPENDENCY_UNAVAILABLE" })];
+    fireEvent.click(check);
+    const remove = await screen.findByRole("button", { name: "Remove Sofia Reyes from Umbrella" });
+    await waitFor(() => expect(remove).toHaveFocus());
+    expect(rowOf("Sofia Reyes").querySelector(".error-note")).toHaveTextContent("Sofia Reyes was not removed.");
+    expect(rowOf("Sofia Reyes").querySelector(".error-note")).toHaveTextContent("DEPENDENCY_UNAVAILABLE · operation op-1");
+  });
+
+  it("pressing «Check again» twice sends one read (release-reviewer L-c)", async () => {
+    const check = await stoppedRemoval();
+    const held = gate<unknown>();
+    state.operation = [() => held.promise];
+    fireEvent.click(check);
+    fireEvent.click(check);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(state.operationAt).toHaveLength(1);
+    held.resolve({ id: "op-1", state: "MANUAL_REVIEW" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument());
   });
 
   it("reads on 1, 2, 4, 8 s then every 10 s, one at a time, paused in a hidden tab, and stops at 2 minutes with «Check again»", async () => {
@@ -537,5 +572,34 @@ describe("an invitation's expiry on an open page (§4.38 «Истечение»)
     expect(state.quotasAt.length).toBe(first.quotas + 2);
     await act(() => vi.advanceTimersByTimeAsync(10 * 60_000));
     expect(state.invitationsAt.length).toBe(first.invitations + 2);
+  });
+});
+
+describe("small rules (fix round 2)", () => {
+  it("a list that did not end is not read again (api-contract-guard note 4)", async () => {
+    const { retryUnanswered } = await import("./companyMembersQuery");
+    const { UnendedListError } = await import("../../api/tenantMembers");
+    expect(retryUnanswered(0, new UnendedListError())).toBe(false);
+    expect(retryUnanswered(0, new TypeError("Failed to fetch"))).toBe(true);
+    expect(retryUnanswered(1, new TypeError("Failed to fetch"))).toBe(false);
+  });
+
+  it("the invite modal brings a refusal that appears into view", async () => {
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    Object.assign(fakeApi, {
+      createTenantInvitation: () =>
+        Promise.reject(Object.assign(new Error("w"), { status: 409, code: "INVALID_STATE", requestId: "rid", details: null, reasons: [] })),
+    });
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Invite a member" }));
+    const dialog = screen.getByRole("dialog", { name: "Invite a member" });
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "sofia@example.com" } });
+    scroll.mockClear();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent("sofia@example.com is already a member of Umbrella, so no invitation was created.");
+    await waitFor(() => expect(scroll).toHaveBeenCalledWith({ block: "nearest" }));
+    expect(scroll.mock.contexts.some((node) => (node as Element).classList.contains("error-note"))).toBe(true);
+    scroll.mockRestore();
   });
 });

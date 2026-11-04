@@ -220,3 +220,22 @@ test("a leave whose answer was lost says so, and pressing again finds the leave 
   await expect(page.getByText("You no longer have access")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Page not found" })).toHaveCount(0);
 });
+
+test("after a leave whose answer was lost, the next page's read finds it applied: the picker with «You left», no §4.35", async ({
+  page,
+}) => {
+  await inCompany(page, "Globex", COMPANY.globex);
+  await openMembers(page, COMPANY.globex);
+  await setHooks(page, { loseAnswer: ["leaveTenant"] });
+  await page.getByRole("button", { name: "Leave company" }).click();
+  await page.locator(".company-leave-confirm").getByRole("button", { name: "Leave company" }).click();
+  await expect(page.locator(".company-leave .error-note-sentence")).toContainText("Taska couldn’t confirm that you left Globex.");
+  // Not pressed again: the reader goes on to Projects, whose reads meet the server's «no longer a member».
+  await page.getByRole("link", { name: "Back to projects" }).click();
+  await expect(page).toHaveURL(`${B2B}/companies`);
+  await expect(page.getByRole("heading", { level: 1, name: "Choose a company" })).toBeFocused();
+  await expect(page.locator('.companies-card [role="status"]')).toHaveText("You left Globex.");
+  await expect(companyRow(page, /^Globex/)).toHaveCount(0);
+  await expect(page.getByText("You no longer have access")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Page not found" })).toHaveCount(0);
+});

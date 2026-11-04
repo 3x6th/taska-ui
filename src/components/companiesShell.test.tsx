@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TaskaApi, Workspace, WorkspacePendingEvent } from "../api/TaskaApi";
+import type { TaskaApi, Workspace, WorkspaceLeftEvent, WorkspacePendingEvent } from "../api/TaskaApi";
 import type { User } from "../domain/types";
 import { Route, Routes } from "react-router-dom";
 import { NotFoundScreen } from "../screens/NotFoundScreen";
@@ -19,6 +19,7 @@ const { fakeApi, state } = vi.hoisted(() => {
     workspace: null as Workspace | null,
     order: [] as string[],
     pending: new Set<(event: WorkspacePendingEvent) => void>(),
+    left: new Set<(event: WorkspaceLeftEvent) => void>(),
     closed: [] as unknown[],
     enterError: null as Error | null,
   };
@@ -28,7 +29,10 @@ const { fakeApi, state } = vi.hoisted(() => {
       return state.enterError ? Promise.reject(state.enterError) : new Promise(() => {});
     },
     onWorkspaceClosed: () => () => {},
-    onWorkspaceLeft: () => () => {},
+    onWorkspaceLeft: (listener: (event: WorkspaceLeftEvent) => void) => {
+      state.left.add(listener);
+      return () => state.left.delete(listener);
+    },
     onWorkspacePending: (listener: (event: WorkspacePendingEvent) => void) => {
       state.pending.add(listener);
       return () => state.pending.delete(listener);
@@ -69,7 +73,35 @@ beforeEach(() => {
   state.workspace = null;
   state.order = [];
   state.pending.clear();
+  state.left.clear();
   state.enterError = null;
+});
+
+describe("a company the reader turns out to have left (TAS-502, api-contract-guard B-1)", () => {
+  it("goes to the picker with «You left {Company}» and refreshes the list; another company's word is not this tab's", async () => {
+    const { wrapper, go, client } = companiesHarness({ companyId: "n", path: "/projects" });
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    render(
+      <Routes>
+        <Route element={<CompanyGate logoutPending={false} onLogout={() => {}} theme="light" toggleTheme={() => {}} />}>
+          <Route path="/projects" element={<p>page</p>} />
+        </Route>
+      </Routes>,
+      { wrapper },
+    );
+    await screen.findByText("page");
+    act(() => {
+      for (const listener of state.left) listener({ tenantId: "g", tenantName: "Globex" });
+    });
+    expect(go).not.toHaveBeenCalled();
+    act(() => {
+      for (const listener of state.left) listener({ tenantId: "n", tenantName: "Northwind" });
+    });
+    expect(go).toHaveBeenCalledWith("/companies", { replace: true, state: { focusHeading: true, left: { name: "Northwind" } } });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["tenants"] });
+    // Nothing of §4.35 or §4.18 is drawn for it.
+    expect(screen.queryByRole("heading", { name: /no longer have access|Page not found/ })).not.toBeInTheDocument();
+  });
 });
 
 describe("the company gate (release-reviewer H1)", () => {
