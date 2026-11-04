@@ -173,6 +173,33 @@ test("AC3: a lost answer and a reload return the same company — never a second
   await expect(page.getByRole("list", { name: "Companies" }).getByRole("link", { name: /^Twice Co/ })).toHaveCount(1);
 });
 
+test("AC3: Cancel while the creation is out — the answer still lands: the company is in the list, and the next form is a new attempt", async ({
+  page,
+}) => {
+  await signIn(page, "tom@example.com");
+  await expect(page).toHaveURL(`${B2B}/companies`);
+  // The creation's answer is held 2.5 s (release-reviewer's probe).
+  await setHooks(page, { delayMs: { createTenant: 2500 } });
+  await page.getByRole("link", { name: "Create a company" }).click();
+  await nameField(page).fill("Raced Co");
+  await teamPlan(page).check();
+  await page.getByRole("button", { name: "Create company" }).click();
+  await expect(page.getByRole("button", { name: "Creating company" })).toBeVisible();
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page).toHaveURL(`${B2B}/companies`);
+  // The answer arrives on the picker: the company is listed, and the tab stays where the reader went.
+  await expect(companyRow(page, /^Raced Co/)).toHaveText("Raced CoAwaiting first paymentOwner", { timeout: 6000 });
+  await expect(page).toHaveURL(`${B2B}/companies`);
+  expect(await tabRecord(page)).toMatchObject({ name: "Raced Co", tenantId: expect.any(String) });
+  // Reopening the form starts a new attempt — nothing replays into Raced Co.
+  await page.getByRole("link", { name: "Create a company" }).click();
+  await expect(nameField(page)).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Create company" })).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(page).toHaveURL(`${B2B}/companies/new`);
+});
+
 test("AC3: cancelling is the owner's, behind its question; then «Cancelled», and «Create a company» opens an empty form", async ({
   page,
 }) => {

@@ -6,7 +6,6 @@ import { apiErrorFacts, isWorkspaceClosed } from "../api/errors";
 import {
   clearTenantCreation,
   newIdempotencyKey,
-  openTenantCreation,
   readTenantCreation,
   writeTenantCreation,
   type TenantCreationRecord,
@@ -84,14 +83,26 @@ export function CreateCompanyScreen({ theme, toggleTheme }: ScreenProps) {
   const nameRef = useRef<HTMLInputElement>(null);
   const groupRef = useRef<HTMLFieldSetElement>(null);
 
-  // A sent attempt this tab has no definitive answer for — restored from the
-  // first frame on a reload, so the form is drawn in flight and replays it.
-  const [attempt, setAttempt] = useState<TenantCreationRecord | null>(() => {
+  // A sent attempt this tab has no definitive answer for, restored on a
+  // reload. Read on the first frame, but **shown only once it is known to be
+  // this account's**: with the account already cached, at once — the form is
+  // drawn in flight with its values; otherwise it waits, in flight and empty,
+  // for the account (release-reviewer, TAS-501), so another account's name is
+  // never on screen for a frame.
+  const [stored] = useState<TenantCreationRecord | null>(() => {
     const storage = tabStorage();
     const record = storage ? readTenantCreation(storage) : null;
     return record !== null && record.tenantId === undefined ? record : null;
   });
-  const [sending, setSending] = useState(attempt !== null);
+  const firstUserId = userId;
+  const [attempt, setAttempt] = useState<TenantCreationRecord | null>(() =>
+    stored !== null && firstUserId === stored.userId ? stored : null,
+  );
+  /** The stored attempt not adopted on the first frame: its account is not known yet, or is another one (dropped). */
+  const [unverified, setUnverified] = useState<TenantCreationRecord | null>(() =>
+    stored !== null && firstUserId !== stored.userId ? stored : null,
+  );
+  const [sending, setSending] = useState(attempt !== null || (unverified !== null && firstUserId === null));
   const [name, setName] = useState(attempt?.name ?? "");
   const [nameTouched, setNameTouched] = useState(false);
   /** The reader's own choice; `null` — the default, which is the free plan unless it is known to be used. */
@@ -118,10 +129,19 @@ export function CreateCompanyScreen({ theme, toggleTheme }: ScreenProps) {
   const chosenId = attempt?.planVersionId ?? planId ?? (cleared ? null : (defaultPlan?.id ?? null));
   const chosen = offered?.find((plan) => plan.id === chosenId) ?? null;
   const chosenUsable = attempt !== null || (chosen !== null && !(isFreePlan(chosen) && freeUsed));
-  const locked = attempt !== null;
+  // An attempt in flight or of unknown outcome — or one still waiting for its account — keeps its values.
+  const locked = attempt !== null || unverified !== null;
   const nameProblem = nameTouched && !locked && trimTenantName(name) === "" ? "Enter a company name." : null;
 
-  const finish = (record: TenantCreationRecord, result: CreateTenantResult) => {
+  /**
+   * The answer's consequences that are not this screen's (release-reviewer
+   * B1): the attempt's record and the reader's list. Done whether or not the
+   * form is still on screen — Cancel and Back stay live in flight, and an
+   * answer landing after them must still close the attempt and put the company
+   * in the list, or the next visit would replay into a company the client
+   * never learnt of. Only navigation and the form's own state wait on `mounted`.
+   */
+  const settleCreated = (record: TenantCreationRecord, result: CreateTenantResult) => {
     const storage = tabStorage();
     const { tenant, operation } = result;
     // Still being set up or awaiting payment: the card polls by these ids
@@ -133,26 +153,29 @@ export function CreateCompanyScreen({ theme, toggleTheme }: ScreenProps) {
         clearTenantCreation(storage);
       }
     }
-    // In this frame, from the answer: the switcher and the picker know it
-    // before the list is read again.
+    // In this frame, from the answer, on the root client that outlives this
+    // screen: the switcher and the picker know it before the list is read again.
     queryClient.setQueryData<Tenant[]>(TENANTS_QUERY_KEY, (list) => upsertTenant(list, tenant));
     void queryClient.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
+  };
+
+  const settleRefused = (record: TenantCreationRecord, outcome: CreationRefusal) => {
+    if (!outcome.closesAttempt) return;
+    const storage = tabStorage();
+    if (storage) clearTenantCreation(storage);
+    if (outcome.kind === "free-used") markFreeUsed(record.userId);
+  };
+
+  const finish = (result: CreateTenantResult) => {
+    const { tenant } = result;
     const next: CompanyReadyState = { continuedShell: true, ...(tenant.lifecycle === "ACTIVE" ? { companyReady: true } : {}) };
     if (address) address.go(companyRoute(tenant.id), { replace: true, state: next });
   };
 
-  const fail = (record: TenantCreationRecord, error: unknown) => {
-    if (isWorkspaceClosed(error)) {
-      setSending(false);
-      return;
-    }
-    const outcome = creationRefusal(error);
+  const fail = (record: TenantCreationRecord, outcome: CreationRefusal) => {
     if (outcome.closesAttempt) {
-      const storage = tabStorage();
-      if (storage) clearTenantCreation(storage);
       setAttempt(null);
       if (outcome.kind === "free-used") {
-        markFreeUsed(record.userId);
         setPlanId(null);
         setCleared(true);
       } else {
@@ -169,35 +192,49 @@ export function CreateCompanyScreen({ theme, toggleTheme }: ScreenProps) {
     setSending(true);
     taskaApi.createTenant({ name: record.name, planVersionId: record.planVersionId }, record.key).then(
       (result) => {
-        if (mounted.current) finish(record, result);
+        settleCreated(record, result);
+        if (mounted.current) finish(result);
       },
       (error: unknown) => {
-        if (mounted.current) fail(record, error);
+        if (isWorkspaceClosed(error)) {
+          if (mounted.current) setSending(false);
+          return;
+        }
+        const outcome = creationRefusal(error);
+        settleRefused(record, outcome);
+        if (mounted.current) fail(record, outcome);
       },
     );
   };
 
-  // The reload's replay, once the account is known: the same key, the same
-  // body. A record of another account is dropped unread.
+  /** The stored attempt, once its account is known: shown and replayed if it is this one's, dropped unread if not. */
+  const adopt = (record: TenantCreationRecord, accountId: string) => {
+    setUnverified(null);
+    if (record.userId !== accountId) {
+      const storage = tabStorage();
+      if (storage) clearTenantCreation(storage);
+      setAttempt(null);
+      setSending(false);
+      return;
+    }
+    setAttempt(record);
+    setName(record.name);
+    send(record);
+  };
+
+  // The reload's replay, once the account is known: the same key, the same body.
   useEffect(() => {
-    if (replayed.current || attempt === null) return;
+    const record = attempt ?? unverified;
+    if (replayed.current || record === null) return;
     if (me.isError) {
-      // The account could not be read: the press retries.
+      // The account could not be read: nothing is shown or sent; a press asks again.
       replayed.current = true;
       setSending(false);
       return;
     }
     if (userId === null) return;
     replayed.current = true;
-    const storage = tabStorage();
-    const record = storage ? openTenantCreation(storage, userId) : attempt;
-    if (record === null || record.key !== attempt.key) {
-      setAttempt(null);
-      setName("");
-      setSending(false);
-      return;
-    }
-    send(record);
+    adopt(record, userId);
     // Once, on arrival: later presses go through `submit`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, me.isError]);
@@ -210,11 +247,30 @@ export function CreateCompanyScreen({ theme, toggleTheme }: ScreenProps) {
     target?.focus();
   };
 
+  const fetchAccountId = async (): Promise<string | null> => {
+    try {
+      return (await queryClient.fetchQuery({ queryKey: ["me"], queryFn: () => taskaApi.getCurrentUser() })).id;
+    } catch (error) {
+      if (mounted.current) {
+        setRefusal((previous) => ({ outcome: creationRefusal(error), key: (previous?.key ?? 0) + 1 }));
+        setSending(false);
+      }
+      return null;
+    }
+  };
+
   const submit = async () => {
     if (sending) return;
     if (attempt !== null) {
       // The outcome is unknown: the same key and the same body, whatever is on screen.
       send(attempt);
+      return;
+    }
+    if (unverified !== null) {
+      // The stored attempt still waits for its account: settle that first.
+      setSending(true);
+      const accountId = await fetchAccountId();
+      if (accountId !== null && mounted.current) adopt(unverified, accountId);
       return;
     }
     const trimmed = trimTenantName(name);
@@ -228,18 +284,8 @@ export function CreateCompanyScreen({ theme, toggleTheme }: ScreenProps) {
       return;
     }
     setSending(true);
-    let accountId = userId;
-    if (accountId === null) {
-      try {
-        accountId = (await queryClient.fetchQuery({ queryKey: ["me"], queryFn: () => taskaApi.getCurrentUser() })).id;
-      } catch (error) {
-        if (mounted.current) {
-          setRefusal((previous) => ({ outcome: creationRefusal(error), key: (previous?.key ?? 0) + 1 }));
-          setSending(false);
-        }
-        return;
-      }
-    }
+    const accountId = userId ?? (await fetchAccountId());
+    if (accountId === null) return;
     const record: TenantCreationRecord = {
       v: 1,
       userId: accountId,
@@ -265,7 +311,7 @@ export function CreateCompanyScreen({ theme, toggleTheme }: ScreenProps) {
   };
 
   const planFailure = plans.isError && !plans.data ? apiErrorFacts(plans.error) : null;
-  const showCreate = attempt !== null || (offered !== null && offered.length > 0);
+  const showCreate = attempt !== null || (unverified !== null && sending) || (offered !== null && offered.length > 0);
 
   return (
     <AuthShell entrance="app" theme={theme} toggleTheme={toggleTheme}>

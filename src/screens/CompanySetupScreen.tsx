@@ -124,7 +124,12 @@ export function CompanySetupScreen({
   const listedName = useCompanyName(companyId);
   const heading = useRef<HTMLHeadingElement>(null);
   const cancelTrigger = useRef<HTMLButtonElement>(null);
-  const cancelKey = useRef<string | null>(null);
+  /**
+   * The cancel request as first sent — its key and the version it carried. Kept
+   * across an outcome that is not known (no answer, 5xx, 408, 429), so the next
+   * press repeats exactly that request; a definitive answer ends it.
+   */
+  const cancelAttempt = useRef<{ key: string; version: string } | null>(null);
   const stripId = useId();
   const [continued] = useState(() => isContinuedShell(location.state));
   const [arrivedFromApp] = useState(
@@ -233,11 +238,13 @@ export function CompanySetupScreen({
 
   // Without the company's session (closed ones are refused it): the reader's
   // list is read again on arrival and on every return to the tab.
+  // `cancelRefetch: false`: a return fires both visibilitychange and focus, and
+  // the second joins the read the first started — one request, not two.
   useEffect(() => {
     if (canRead) return;
-    void companies.refetch();
+    void companies.refetch({ cancelRefetch: false });
     const onReturn = () => {
-      if (document.visibilityState === "visible") void companies.refetch();
+      if (document.visibilityState === "visible") void companies.refetch({ cancelRefetch: false });
     };
     document.addEventListener("visibilitychange", onReturn);
     window.addEventListener("focus", onReturn);
@@ -283,15 +290,11 @@ export function CompanySetupScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [answered, tenantQuery.dataUpdatedAt]);
 
-  // A terminal operation closes the record even before the company is read again.
-  useEffect(() => {
-    if (!operationEnded) return;
-    try {
-      if (creationOf(window.sessionStorage, companyId)) clearTenantCreation(window.sessionStorage);
-    } catch {
-      // Nothing was kept.
-    }
-  }, [operationEnded, companyId]);
+  // The record outlives a terminal operation: a FAILED or MANUAL_REVIEW setup
+  // leaves the company PROVISIONING, and `Tenant` carries no operation id
+  // (ask A11) — so only the record lets a reload read the operation again
+  // rather than poll a company that will not open (release-reviewer N2). It
+  // goes when the company leaves PROVISIONING and awaiting payment, above.
 
   // Focus: the heading on arrival from inside the app, and whenever the state
   // changes on the spot (§7 exception 4); the first screen of a tab takes none.
@@ -312,15 +315,17 @@ export function CompanySetupScreen({
   const [asking, setAsking] = useState(false);
   const [cancelRefusal, setCancelRefusal] = useState<{ error: unknown; lifecycle: string | null; key: number } | null>(null);
   const cancel = useMutation({
-    mutationFn: () => taskaApi.cancelTenantCreation(companyId, tenant?.version ?? "", cancelKey.current as string),
+    mutationFn: (sent: { key: string; version: string }) => taskaApi.cancelTenantCreation(companyId, sent.version, sent.key),
     onSuccess: (answer) => {
-      cancelKey.current = null;
+      cancelAttempt.current = null;
       setAsking(false);
       setCancelRefusal(null);
       sessionClient.setQueryData(["tenant", companyId], answer);
     },
     onError: (error) => {
-      cancelKey.current = null;
+      const { status } = apiErrorFacts(error);
+      const unknown = status === null || status >= 500 || status === 408 || status === 429;
+      if (!unknown) cancelAttempt.current = null;
       setAsking(false);
       setCancelRefusal((previous) => ({ error, lifecycle, key: (previous?.key ?? 0) + 1 }));
       cancelTrigger.current?.focus();
@@ -412,7 +417,9 @@ export function CompanySetupScreen({
           sentence={awaitingPaymentText(deadline, now)}
         />
         <p className="company-setup-pay">{PAY_SLOT_TEXT}</p>
-        {owner && tenant?.version ? (
+        {/* The owner's, and only with this company's session: without one the
+            request would go with the account's and be refused (release-reviewer N1). */}
+        {owner && canRead && tenant?.version ? (
           <section aria-label="Cancel creation" className="company-cancel">
             <div className="company-cancel-row">
               <p className="company-cancel-note">{CANCEL_ZONE_TEXT}</p>
@@ -461,8 +468,8 @@ export function CompanySetupScreen({
                     className="secondary-button compact-button member-confirm-accept"
                     onClick={() => {
                       if (cancelling) return;
-                      cancelKey.current ??= newIdempotencyKey();
-                      cancel.mutate();
+                      cancelAttempt.current ??= { key: newIdempotencyKey(), version: tenant?.version ?? "" };
+                      cancel.mutate(cancelAttempt.current);
                     }}
                     type="button"
                   >

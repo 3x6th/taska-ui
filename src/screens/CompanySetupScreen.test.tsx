@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import type { Tenant } from "../api/tenants";
@@ -77,12 +77,15 @@ beforeEach(() => {
   state.me = "tom";
 });
 
-function renderCard(options: { row?: Tenant | null; session?: "open" | "entering" | "none"; routeState?: unknown } = {}) {
+function renderCard(
+  options: { row?: Tenant | null; session?: "open" | "entering" | "none"; routeState?: unknown; mayOpen?: boolean } = {},
+) {
   const harness = companiesHarness({ companyId: ID, path: "/projects", state: options.routeState });
   const onOpened = vi.fn();
-  render(
+  const view = render(
     <CompanySetupScreen
       companyId={ID}
+      mayOpen={options.mayOpen}
       onOpened={onOpened}
       pending={null}
       row={options.row === undefined ? tenant() : options.row}
@@ -92,8 +95,10 @@ function renderCard(options: { row?: Tenant | null; session?: "open" | "entering
     />,
     { wrapper: harness.wrapper },
   );
-  return { ...harness, onOpened };
+  return { ...harness, onOpened, unmount: view.unmount };
 }
+
+const RECORD = { v: 1, userId: "tom", key: "k", name: "Acme", planVersionId: "p", sentAt: "x", tenantId: ID, operationId: "op-1" };
 
 describe("awaiting the first payment", () => {
   it("reads the company on arrival, dates the deadline as sent, and opens nothing", async () => {
@@ -158,6 +163,39 @@ describe("awaiting the first payment", () => {
     await waitFor(() => expect(state.reads.length).toBeGreaterThan(reads));
   });
 
+  it("offers Cancel creation only with the company's session — without it the request would be refused (release-reviewer N1)", async () => {
+    renderCard({ session: "none" });
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Stark IndustriesAwaiting first payment");
+    await waitFor(() => expect(state.reads).toContain("list"));
+    expect(screen.queryByRole("button", { name: "Cancel creation" })).not.toBeInTheDocument();
+    expect(state.reads).not.toContain("tenant");
+  });
+
+  it("an unknown cancel outcome keeps the request: the next press repeats its key and version; a definitive one ends it", async () => {
+    let answers = [() => Promise.reject(new TypeError("Failed to fetch")), () => Promise.reject(refusal(409, "PAYMENT_PENDING"))];
+    state.cancel = () => (answers.shift() ?? (() => new Promise(() => {})))();
+    renderCard();
+    const press = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Cancel creation" }));
+      fireEvent.click(within(document.querySelector(".company-cancel-confirm") as HTMLElement).getByRole("button", { name: "Cancel creation" }));
+    };
+    await press();
+    expect(await screen.findByRole("alert")).toHaveTextContent("This company was not cancelled.");
+    // Meanwhile the company moved on a version; the repeat is the request first sent.
+    state.tenant = tenant({ version: "4" });
+    await waitFor(() => expect(state.reads.filter((read) => read === "tenant").length).toBeGreaterThan(1));
+    await press();
+    expect(await screen.findByRole("alert")).toHaveTextContent("This company can’t be cancelled while a payment is being processed.");
+    await press();
+    await waitFor(() => expect(state.cancels).toHaveLength(3));
+    const [first, second, third] = state.cancels as string[][];
+    expect(second).toEqual(first);
+    expect(first[1]).toBe("3");
+    expect(third[2]).not.toBe(first[2]);
+    expect(third[1]).toBe("4");
+    answers = [];
+  });
+
   it("is the owner's alone: a member sees no Cancel creation", async () => {
     state.me = "sofia";
     renderCard();
@@ -201,6 +239,34 @@ describe("being set up", () => {
     expect(screen.getByText("DEPENDENCY_UNAVAILABLE · operation op-1")).toBeInTheDocument();
     expect(onOpened).not.toHaveBeenCalled();
   });
+
+  it("a failed setup is not forgotten: the record stays while it is PROVISIONING, and a reload reads the operation again (release-reviewer N2)", async () => {
+    window.sessionStorage.setItem(TENANT_CREATION_KEY, JSON.stringify(RECORD));
+    const provisioning = tenant({ name: "Acme", lifecycle: "PROVISIONING", restrictions: [], creationDeadline: null });
+    state.tenant = provisioning;
+    state.operation = { id: "op-1", type: "TENANT_PROVISION", state: "FAILED", createdAt: "x", updatedAt: "y", failureCode: "DEPENDENCY_UNAVAILABLE" };
+    const first = renderCard({ row: provisioning });
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("AcmeSetup failed"), { timeout: 3000 });
+    // The company was read again after the end of the operation, and is still PROVISIONING.
+    await waitFor(() => expect(state.reads.filter((read) => read === "tenant").length).toBeGreaterThan(1));
+    expect(JSON.parse(window.sessionStorage.getItem(TENANT_CREATION_KEY) as string)).toMatchObject({ operationId: "op-1" });
+    first.unmount();
+    // A reload: the operation is read again, and the card says what it said.
+    state.reads = [];
+    renderCard({ row: provisioning });
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("AcmeSetup failed"), { timeout: 3000 });
+    expect(state.reads).toContain("operation");
+  });
+});
+
+describe("after a hand-over that bounced", () => {
+  it("never prints a raw state such as «ACTIVE» on the card (release-reviewer)", async () => {
+    state.tenant = tenant({ lifecycle: "ACTIVE", restrictions: [], creationDeadline: null });
+    const { onOpened } = renderCard({ mayOpen: false });
+    await waitFor(() => expect(state.reads).toContain("tenant"));
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(/^Stark Industries$/));
+    expect(onOpened).not.toHaveBeenCalled();
+  });
 });
 
 describe("a closed creation", () => {
@@ -216,6 +282,15 @@ describe("a closed creation", () => {
     expect(screen.queryByText(/can no longer/)).not.toBeInTheDocument();
     await waitFor(() => expect(state.reads).toContain("list"));
     expect(state.reads).not.toContain("tenant");
+    // A return to the tab fires visibilitychange and focus: one read of the list, not two.
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+    const before = state.reads.filter((read) => read === "list").length;
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("focus"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(state.reads.filter((read) => read === "list").length).toBe(before + 1);
     const create = screen.getByRole("link", { name: "Create a company" });
     expect(create).toHaveClass("primary-button");
     fireEvent.click(create);

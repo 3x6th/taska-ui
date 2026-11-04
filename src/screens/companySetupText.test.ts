@@ -21,6 +21,12 @@ describe("the never-opened card's words", () => {
     expect(setupStateLine("AWAITING_PAYMENT", false)).toBe("Awaiting first payment");
     expect(setupStateLine("OWNER_CANCELLED", false)).toBe("Cancelled");
     expect(setupStateLine("AUTO_CLOSED", false)).toBe("Closed");
+    // A working company has no state line — never the code (release-reviewer); a code this build does not know is printed as it came (§6).
+    expect(setupStateLine("ACTIVE", false)).toBeNull();
+    expect(setupStateLine(null, false)).toBeNull();
+    expect(setupStateLine("DELETING", false)).toBe("Being deleted");
+    expect(setupStateLine("DELETED", false)).toBe("Deleted");
+    expect(setupStateLine("HIBERNATING", false)).toBe("HIBERNATING");
   });
 
   it("dates the deadline in local time, with the year only when it is another one", () => {

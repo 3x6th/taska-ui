@@ -20,11 +20,12 @@ const { fakeApi, state } = vi.hoisted(() => {
     order: [] as string[],
     pending: new Set<(event: WorkspacePendingEvent) => void>(),
     closed: [] as unknown[],
+    enterError: null as Error | null,
   };
   const api = {
     enterCompany: (tenantId: string) => {
       state.order.push(`enter ${tenantId}`);
-      return new Promise(() => {});
+      return state.enterError ? Promise.reject(state.enterError) : new Promise(() => {});
     },
     onWorkspaceClosed: () => () => {},
     onWorkspacePending: (listener: (event: WorkspacePendingEvent) => void) => {
@@ -67,6 +68,7 @@ beforeEach(() => {
   state.workspace = null;
   state.order = [];
   state.pending.clear();
+  state.enterError = null;
 });
 
 describe("the company gate (release-reviewer H1)", () => {
@@ -108,6 +110,29 @@ describe("a company that has never opened (TAS-501, DESIGN.md §4.37)", () => {
     expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Stark IndustriesAwaiting first payment");
     expect(screen.queryByText("settings")).not.toBeInTheDocument();
     expect(state.order).toEqual(["enter s"]);
+  });
+
+  it("an entry that got no answer (or a 5xx, 408, 429) is «could not be opened» with Try again — not the card without a session (release-reviewer N1)", async () => {
+    for (const failure of [
+      new TypeError("Failed to fetch"),
+      Object.assign(new Error("Unavailable"), { status: 503, code: "DEPENDENCY_UNAVAILABLE", requestId: "rid-503", details: null }),
+      Object.assign(new Error("Slow down"), { status: 429, code: "RATE_LIMITED", requestId: "rid-429", details: null }),
+    ]) {
+      state.enterError = failure;
+      state.tenants = [tenant("s", "Stark Industries", "AWAITING_PAYMENT")];
+      const { wrapper } = companiesHarness({ companyId: "s", path: "/projects" });
+      const view = render(gate(), { wrapper });
+      expect(await screen.findByRole("heading", { level: 1, name: "Stark Industries could not be opened" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Cancel creation" })).not.toBeInTheDocument();
+      view.unmount();
+    }
+    // A refusal that is an answer about the company — a closed creation's 409 — is the card, without a session.
+    state.enterError = Object.assign(new Error("The company is closed"), { status: 409, code: "INVALID_STATE", requestId: "rid-409", details: null });
+    state.tenants = [tenant("m", "Massive Dynamic", "AUTO_CLOSED")];
+    const { wrapper } = companiesHarness({ companyId: "m", path: "/projects" });
+    render(gate(), { wrapper });
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Massive DynamicClosed");
   });
 
   it("a content read refused for the first payment swaps the page for the card, without closing the company", async () => {

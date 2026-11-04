@@ -236,6 +236,14 @@ export function CompanyGate({
     const { error } = entry;
     const { status, code, message, requestId } = apiErrorFacts(error);
     const b2bCode = refusalCode(error);
+    // No answer, or one that says nothing about the company (5xx, 408, 429):
+    // «could not be opened» with «Try again» — never-opened or not, since the
+    // card without a session could only offer what would be refused
+    // (release-reviewer N1).
+    const transient = status === null || status >= 500 || status === 408 || status === 429;
+    if (transient) {
+      return <CompanyUnavailableScreen error={error} name={name} onRetry={retry} retrying={entry.retrying ?? false} />;
+    }
     // Never opened (§4.37): the list row says so, or the refusal does — and
     // not a lapsed membership, which is §4.35's.
     const refusedPending = b2bCode === "PAYMENT_PENDING" || refusalReasons(error).includes("PENDING_FIRST_PAYMENT");
@@ -245,9 +253,6 @@ export function CompanyGate({
     // server's words about a «tenantId» never reach the screen (§4.35).
     if (b2bCode === "TENANT_NOT_FOUND" || b2bCode === "RESOURCE_NOT_FOUND" || b2bCode === "VALIDATION_FAILED" || status === 404) {
       return <NotFoundScreen />;
-    }
-    if (status === null || status >= 500 || status === 408 || status === 429) {
-      return <CompanyUnavailableScreen error={error} name={name} onRetry={retry} retrying={entry.retrying ?? false} />;
     }
     return (
       <CompanyClosedScreen

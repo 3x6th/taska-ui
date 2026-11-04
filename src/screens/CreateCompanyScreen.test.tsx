@@ -3,7 +3,7 @@ import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import { TENANT_CREATION_KEY } from "../api/tenantCreation";
-import { forgetFreeUsed, TENANTS_QUERY_KEY } from "../lib/companies";
+import { forgetFreeUsed, freeUsedKnown, TENANTS_QUERY_KEY } from "../lib/companies";
 import { companiesHarness } from "../test/companiesHarness";
 import { CreateCompanyScreen } from "./CreateCompanyScreen";
 
@@ -71,11 +71,27 @@ beforeEach(() => {
   state.plans = [plan(TEAM, "Team", "2000"), plan(FREE, "Free", "0"), plan("old", "Team", "1500", "RETIRED")];
 });
 
-function renderForm(options: { state?: unknown; strict?: boolean } = {}) {
+const NINA = { id: "nina", email: "nina@example.com", displayName: "Nina", status: "ACTIVE" };
+
+/** `me`: the account already in the root client's cache, as after the picker. */
+function renderForm(options: { state?: unknown; strict?: boolean; me?: typeof NINA } = {}) {
   const harness = companiesHarness({ path: "/companies/new", state: options.state });
+  if (options.me) harness.client.setQueryData(["me"], options.me);
   const ui = <CreateCompanyScreen {...props} />;
-  render(options.strict ? <StrictMode>{ui}</StrictMode> : ui, { wrapper: harness.wrapper });
-  return harness;
+  const view = render(options.strict ? <StrictMode>{ui}</StrictMode> : ui, { wrapper: harness.wrapper });
+  return { ...harness, unmount: view.unmount };
+}
+
+/** A creation answer the test hands over when it chooses — after the form has gone, say. */
+function heldAnswer() {
+  let resolve!: (value: unknown) => void;
+  let reject!: (error: unknown) => void;
+  state.answer = () =>
+    new Promise((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+  return { resolve: (value: unknown) => resolve(value), reject: (error: unknown) => reject(error) };
 }
 
 const radios = () => screen.getAllByRole("radio") as HTMLInputElement[];
@@ -185,13 +201,38 @@ describe("Create a company", () => {
       JSON.stringify({ v: 1, userId: "nina", key: "1b4e28ba-2fa1-41d2-883f-0016d3cca427", name: "Acme", planVersionId: TEAM, sentAt: "x" }),
     );
     renderForm({ strict: true });
-    // In flight from the first frame, the values restored.
+    // In flight from the first frame; the values wait for the account to be known.
     expect(screen.getByRole("button", { name: "Creating company" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Company name")).toHaveValue("Acme");
+    expect(screen.getByLabelText("Company name")).toHaveValue("");
+    expect(screen.getByLabelText("Company name")).toHaveAttribute("readonly");
+    await waitFor(() => expect(screen.getByLabelText("Company name")).toHaveValue("Acme"));
     await waitFor(() => expect(state.calls).toHaveLength(1));
     expect(state.calls[0]).toMatchObject({ key: "1b4e28ba-2fa1-41d2-883f-0016d3cca427", input: { name: "Acme", planVersionId: TEAM } });
     await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
     expect(state.calls).toHaveLength(1);
+  });
+
+  it("with the account already known, the restored values are on the first frame", () => {
+    window.sessionStorage.setItem(
+      TENANT_CREATION_KEY,
+      JSON.stringify({ v: 1, userId: "nina", key: "1b4e28ba-2fa1-41d2-883f-0016d3cca427", name: "Acme", planVersionId: TEAM, sentAt: "x" }),
+    );
+    renderForm({ me: NINA });
+    expect(screen.getByLabelText("Company name")).toHaveValue("Acme");
+    expect(screen.getByRole("button", { name: "Creating company" })).toBeInTheDocument();
+  });
+
+  it("another account's record never fills the name, not even for a frame (release-reviewer, 4d)", async () => {
+    window.sessionStorage.setItem(
+      TENANT_CREATION_KEY,
+      JSON.stringify({ v: 1, userId: "anna", key: "1b4e28ba-2fa1-41d2-883f-0016d3cca427", name: "Hers", planVersionId: TEAM, sentAt: "x" }),
+    );
+    const first = renderForm({ me: NINA });
+    expect(screen.getByLabelText("Company name")).toHaveValue("");
+    expect(screen.queryByDisplayValue("Hers")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create company" })).toBeInTheDocument());
+    expect(window.sessionStorage.getItem(TENANT_CREATION_KEY)).toBeNull();
+    first.unmount();
   });
 
   it("another account's record is dropped unread, and nothing is sent", async () => {
@@ -200,6 +241,7 @@ describe("Create a company", () => {
       JSON.stringify({ v: 1, userId: "anna", key: "1b4e28ba-2fa1-41d2-883f-0016d3cca427", name: "Hers", planVersionId: TEAM, sentAt: "x" }),
     );
     renderForm();
+    expect(screen.queryByDisplayValue("Hers")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("button", { name: "Create company" })).toBeInTheDocument());
     expect(screen.getByLabelText("Company name")).toHaveValue("");
     expect(state.calls).toEqual([]);
@@ -249,5 +291,54 @@ describe("Create a company", () => {
     const fromCompany = renderForm({ state: { from: "/c/n/projects/p1/board" } });
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(fromCompany.go).toHaveBeenCalledWith("/c/n/projects/p1/board", { replace: true, state: { continuedShell: true } });
+  });
+
+  it("an answer after the form has gone (Cancel or Back in flight) still names the company and puts it in the list (release-reviewer B1)", async () => {
+    const answer = heldAnswer();
+    const { client, go, unmount } = renderForm();
+    await waitFor(() => expect(radios()).toHaveLength(2));
+    fireEvent.change(screen.getByLabelText("Company name"), { target: { value: "Raced Co" } });
+    fireEvent.click(screen.getByRole("radio", { name: "Team €20 a month" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create company" }));
+    await waitFor(() => expect(state.calls).toHaveLength(1));
+    unmount();
+    await act(async () => answer.resolve(created("AWAITING_PAYMENT")));
+    expect(client.getQueryData<{ id: string }[]>(TENANTS_QUERY_KEY)?.map((tenant) => tenant.id)).toEqual([NEW]);
+    expect(JSON.parse(window.sessionStorage.getItem(TENANT_CREATION_KEY) as string)).toMatchObject({
+      key: state.calls[0].key,
+      tenantId: NEW,
+      operationId: "op-1",
+    });
+    // The tab is somewhere else now: it is not moved.
+    expect(go).not.toHaveBeenCalled();
+    // So the next visit starts a new attempt rather than replaying into it.
+    renderForm({ me: NINA });
+    expect(screen.getByLabelText("Company name")).toHaveValue("");
+    expect(state.calls).toHaveLength(1);
+  });
+
+  it("a refusal after the form has gone still closes the attempt, and remembers FREE used (release-reviewer B1)", async () => {
+    const answer = heldAnswer();
+    const { unmount } = renderForm();
+    await waitFor(() => expect(radios()).toHaveLength(2));
+    fireEvent.change(screen.getByLabelText("Company name"), { target: { value: "Acme" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create company" }));
+    await waitFor(() => expect(state.calls).toHaveLength(1));
+    expect(window.sessionStorage.getItem(TENANT_CREATION_KEY)).not.toBeNull();
+    unmount();
+    await act(async () => answer.reject(refusal(409, "FREE_ELIGIBILITY_USED")));
+    expect(window.sessionStorage.getItem(TENANT_CREATION_KEY)).toBeNull();
+    expect(freeUsedKnown("nina")).toBe(true);
+    // An unknown outcome after it has gone keeps the attempt for the next visit.
+    const lost = heldAnswer();
+    forgetFreeUsed();
+    const again = renderForm();
+    await waitFor(() => expect(radios()).toHaveLength(2));
+    fireEvent.change(screen.getByLabelText("Company name"), { target: { value: "Acme" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create company" }));
+    await waitFor(() => expect(state.calls).toHaveLength(2));
+    again.unmount();
+    await act(async () => lost.reject(new TypeError("Failed to fetch")));
+    expect(JSON.parse(window.sessionStorage.getItem(TENANT_CREATION_KEY) as string)).toMatchObject({ key: state.calls[1].key });
   });
 });

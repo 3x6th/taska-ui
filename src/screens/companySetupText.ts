@@ -1,3 +1,5 @@
+import { isKnownTenantLifecycle } from "../api/tenants";
+
 /*
  * The words and the re-read cadence of a company that has never opened
  * (TAS-501, DESIGN.md §4.37), as pure values and functions so they are pinned
@@ -6,7 +8,13 @@
  * B6) — and the card never decides on its own that a company closed or opened.
  */
 
-/** The state line under the name — the picker's words (§4.33), «Setup failed» for a failed operation. */
+/**
+ * The state line under the name — the picker's words (§4.33), «Setup failed»
+ * for a failed operation. A working company has none (§4.33: «ACTIVE — —»):
+ * after a hand-over that bounced, the card is on screen over an ACTIVE answer
+ * and must not print the code (release-reviewer). Only a lifecycle this build
+ * does not know is printed as it came (§6).
+ */
 export function setupStateLine(lifecycle: string | null, operationFailed: boolean): string | null {
   switch (lifecycle) {
     case "PROVISIONING":
@@ -17,8 +25,15 @@ export function setupStateLine(lifecycle: string | null, operationFailed: boolea
       return "Cancelled";
     case "AUTO_CLOSED":
       return "Closed";
+    case "DELETING":
+      return "Being deleted";
+    case "DELETED":
+      return "Deleted";
+    case "ACTIVE":
+    case null:
+      return null;
     default:
-      return lifecycle;
+      return isKnownTenantLifecycle(lifecycle) ? null : lifecycle;
   }
 }
 
