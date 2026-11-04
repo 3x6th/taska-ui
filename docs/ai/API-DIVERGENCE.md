@@ -2121,8 +2121,16 @@ Everything below is the entry as it stood, in the past tense.
   - A failed tenant refresh with a live global session is re-selected once; 403 `MEMBERSHIP_INACTIVE` / 404
     `TENANT_NOT_FOUND` close the workspace, 401 signs out (PR #288 answers every refresh refusal 401 "Invalid
     session"). Removal: ask A3 on TAS-315.
-  - The list is companies the reader may enter; no role or membership state shown; lifecycle and restrictions
+  - The list is the reader's active memberships, and entering one may still be refused (a closed company, a
+    pause or block the server enforces at entry); no role or membership state shown; lifecycle and restrictions
     are a state line and an order only; opening always asks the server. Removal: ask A1 on TAS-338, A2 on TAS-315.
+  - A revoke of the tab's company session (switch, leave, close) is fire-and-forget, and its own 401 never signs the
+    account out: backend PR #288 answers 401 for an unknown session id where contracts §6 says 404, so a 401 there is
+    not evidence the account session died (the client renews the account once and retries). Removal: the PR #288
+    point on TAS-315.
+  - `TENANT_REQUIRED` and `TENANT_MISMATCH` on a company session close the company (the epoch moves, the session is
+    revoked best effort, never an automatic switch) — both mean the tab sent the wrong credential, and nothing it
+    holds can be trusted after that. Removal: none needed; it is the client's own rule.
   - Sign-out revokes the tab's tenant session and drops the global record locally; the global family and sibling
     tabs' families stay live until expiry. Removal: ask A4 on TAS-315.
   - Provider sign-in hidden under the flag. Removal: ask A8 on TAS-315.
@@ -2142,6 +2150,25 @@ Everything below is the entry as it stood, in the past tense.
   company's tab, and the UI cannot tell.
 - **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v1`); this
   narrows "The mock has a session flag but no session enforcement" for the flag-on build only.
+- **Mock answers where the blueprint is silent** (`src/api/mock/MockTenantServer.ts`, `mockCompanies.ts`) — the
+  mock's choices, not the blueprint's behaviour; each falls away with the ask named:
+  - Entry to a closed company (`AUTO_CLOSED`, `OWNER_CANCELLED`, `DELETING`) answers 409 `INVALID_STATE`; `DELETED`
+    answers 404. Ask A2 on TAS-315.
+  - The company list is every ACTIVE membership whatever the lifecycle; SUSPENDED and REMOVED are not listed. Ask A1
+    on TAS-338.
+  - Any restriction makes every company write 403 `READ_ONLY` with all restrictions as `reasons` — stricter than
+    contracts §5, where a financial READ_ONLY still allows some admin actions; the reader's own notifications,
+    notification settings and Telegram are not stopped (TAS-325). Content reads under a restriction are allowed:
+    `MOCK_PROJECT_CONTENT_READ_UNDER_RESTRICTION = true`, the "separate global flag" of contracts §5. Ask A2c.
+  - The people directory (`searchUsers`) is the company's active members — the TENANT_DIRECTORY target (TAS-321).
+  - Data routes keep today's error envelope: a foreign project id answers the store's `NOT_FOUND`, a project the
+    reader is not on `PERMISSION_DENIED` — the statuses the blueprint names, the legacy codes. Ask A6 on TAS-316.
+  - A TENANT_ADMIN sees every project because the fixtures seed explicit ADMIN project rows, not because the mock
+    derives it from the company role. Ask A7 on TAS-340.
+- **Found on PR #288 at `8d480b3b` (api-contract-guard, 2026-11-04):** `WebSessionStore.openTenant` answers 403
+  `MEMBERSHIP_INACTIVE` for a company that does not exist or that the reader was never in, where the blueprint hides
+  it as 404 `TENANT_NOT_FOUND`; once wired, a foreign company link would read «You no longer have access to This
+  company» instead of §4.18. No compensation in the code. Ask A2b on TAS-315.
 - **Removal:** delete with the flag, after the probe.
 
 ### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log

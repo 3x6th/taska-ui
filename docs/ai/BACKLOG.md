@@ -4426,7 +4426,24 @@ From the api-contract-guard design and the art-director ruling before the build
   "Request failed with N". Only undeployed routes are affected.
 - **The mock's per-page stores and random ids** make cold-tab issue-URL tests impossible; stable seed ids would let
   the cold-tab case of TAS-500's H1 be pinned.
-- **Raw `error.message` ErrorNotes for mutations** (`ProjectsScreen.tsx`, `BoardScreen.tsx`) are unpinned against
-  `WorkspaceClosedError`; the builder's argument is that the company subtree is replaced before any can show it.
+- **The ErrorNotes that print a mutation's message** (`ProjectsScreen.tsx`, `BoardScreen.tsx`) go through
+  `reportable()` since `8b5c35f`, so a `WorkspaceClosedError` prints nothing; no test pins that at those sites.
+- **The §4.35 row fallback can misattribute a refusal whose code is outside the table** (release-reviewer, wave 2):
+  a paused company closed for `TENANT_MISMATCH` reads «X is paused». It is what DESIGN.md says; revisit when ask A2
+  names the entry codes.
 - **A suspended company reads «This company» on a later visit** (builder): the list omits it, so its name is gone.
   Falls away with ask A1 (membership in the list) if the backend lists inactive memberships.
+- **From the build reviews (api-contract-guard, art-director, 2026-11-04):**
+  - A "session" call with no owned company session falls back to WEB_GLOBAL in the re-select window
+    (`webSession.ts`) or after a close before unmount, and the server answers 400 `TENANT_REQUIRED`; make the rule
+    structural (refuse while renewing or closed).
+  - A revoke hitting backend PR #288's 401 rotates the shared account family every time; goes away when PR #288
+    answers 404 for an unknown session id.
+  - The company list is not invalidated after a company closes; the picker shows the old list for up to 20 s.
+  - A duplicated tab always waits the full 1.5 s ownership wait before its first paint.
+  - The mock's `MockApiError` has no `status` (old); `isTransportFailure` would misread one if it ever reached a
+    transport catch.
+  - Pre-existing, both builds: the Projects subtitle reads «1 projects», and «0 projects» while it loads.
+  - Reloading `/companies` after arriving from inside the app focuses its heading again (the router state survives).
+  - An unknown route under the company prefix (`/c/{id}/nope`) gets the title «Taska» and only «Choose a company»,
+    not «Go to projects» in that company.

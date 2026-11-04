@@ -1145,7 +1145,8 @@ height 32, width 220, radius 9, `border:1px var(--border-strong)`, фон `--sur
 - **Сборка B2B** (TAS-500):
   - **Company** — первая пара `<dl>`: `dt` «Company», `dd` — имя компании вкладки 11.5 `--fg`,
     перенос где угодно (`overflow-wrap:anywhere`), без многоточия — обрезанное имя это другое имя
-    (довод почты). У вкладки без компании пары нет.
+    (довод почты); подпись стоит по первой строке имени (`align-items: first baseline`), а не по
+    середине. У вкладки без компании пары нет.
   - «Role» называется «Taska role»: рядом с «Company» прежняя подпись читалась бы как роль в
     компании.
   - **Switch company** — первая строка блока действий, над Settings: класс строки Settings, иконка
@@ -2995,7 +2996,8 @@ recognize»; `?logout` — своя карточка «You’re signed out of Ta
 Список `ul`, `aria-label="Companies"`, `margin-top:14; gap:2`. Подвал — линия `1px --border`,
 `margin-top:16; padding-top:14` (рецепт §4.11, без второй поверхности); по центру `.auth-hint` 11.5
 `--fg-2` «Signed in as {email}» (адрес целиком, `overflow-wrap:anywhere`) и ghost «Log out» (32,
-12.5/550 `--fg-2` — рецепт «Use a different email» §4.31), `gap:8`.
+12.5/550 `--fg-2` — рецепт «Use a different email» §4.31), `gap:8`. Строка «Signed in as» занимает своё
+место с первого кадра (пустая, пока адрес не известен), чтобы карточка не подпрыгивала после входа.
 
 **Строка** — `<a href="/c/{companyId}/projects">` у **каждой** компании списка: входить или нет,
 решает сервер (ответ на создание сессии компании, `docs/contract/b2b/contracts.md` §2), а не клиент
@@ -3050,8 +3052,8 @@ inside a company. Ask a company admin to invite you.» Подвал тот же.
 
 **Что ещё меняет сборка B2B** (api-contract-guard §2, B8): на `/login` нет кнопок провайдеров (§4.31)
 — вход через провайдера в B2B контракт ещё не описал; в Settings → Access tokens (§5.9) нет выпуска
-токена — список и отзыв остаются (выпуск на компанию — TAS-509); Administration и `/admin` нет
-(§4.16).
+токена — список и отзыв остаются (выпуск на компанию — TAS-509), а на месте кнопки одна строка 12.5/400
+`--fg-2`: «This version of Taska can’t create tokens yet.»; Administration и `/admin` нет (§4.16).
 
 **Вход администратора (до TAS-510).** Аккаунт `GLOBAL_ADMIN` по контракту получает после пароля
 только запрос кода из почты. Экрана кода в этой сборке нет, поэтому форма входа показывает в слоте
@@ -3085,7 +3087,7 @@ Platform access (вход в компанию без членства) — не 
     `cursor:progress`, без подписи: запись компании A не должна доехать, когда на экране уже B
     (api-contract-guard §4). Текущая строка и «All companies» не меняются.
   - *Подвал* — `border-top:1px solid var(--border); margin-top:6; padding-top:6`; «All companies» —
-    класс строки Settings §4.16, `Building2` 15, на `/companies`. TAS-501 ставит под ним «Create a
+    класс строки Settings §4.16, `Building2` 15, на `/companies`; при ≤ 820 — 44 в высоту, как строки. TAS-501 ставит под ним «Create a
     company» (`Plus` 15).
   - Список не прочитан — `ErrorNote` «Your companies could not be loaded.» с id на месте строк;
     подвал на месте. Пустым не бывает.
@@ -3095,8 +3097,8 @@ Platform access (вход в компанию без членства) — не 
   полной навигации документа — плоскость `--bg` до первой отрисовки. Ни спиннера, ни оверлея, ни
   тоста; содержимого, точки непрочитанного и поиска прежней компании под новым именем нет ни на
   кадр. Без перезагрузки фокус — на триггер: его имя и есть объявление.
-- **Заголовок документа** — «{Company} — Taska» на всём под адресом компании; `/companies` —
-  «Choose a company — Taska»; прочее — «Taska».
+- **Заголовок документа** — «{Company} — Taska» на всём под адресом компании; имя неизвестно (компании
+  нет в списке читателя) — «Taska»; `/companies` — «Choose a company — Taska»; прочее — «Taska».
 - **Platform access** (для TAS-510, в TAS-500 не строится): маркер по рецепту `read-only` §5.8
   (10.5 моно `--fg-2`, `1px --border`, radius 6, padding 2 7), текст `platform access` — в триггере
   после имени, в баре доски после «Board», в меню профиля после имени в «Company». Имя триггера —
@@ -3112,13 +3114,16 @@ Platform access (вход в компанию без членства) — не 
 **Когда.** На входе (сессия компании не создалась) и посреди работы (чтение или продление сессии
 компании отказали по членству или жизненному циклу). Посреди работы экран заменяет всё, кэш
 компании чистится, набранное не сохраняется — некуда. Фокус — на `h1` (`tabIndex=-1`, исключение 4
-§7). **Отказ записи** (`READ_ONLY`, `CAPABILITY_DISABLED` с `reasons`) компанию не закрывает: он
+§7). **Отказ чтения** с `CAPABILITY_DISABLED` и `reasons` (`OWNER_PAUSE`, `PLATFORM_BLOCK`) — этот экран со
+строкой по причине, не §4.18: это ответ о компании, а не «нет такой страницы» (api-contract-guard N2,
+ask A2c). **Отказ записи** (`READ_ONLY`, `CAPABILITY_DISABLED` с `reasons`) компанию не закрывает: он
 показывается на этом действии его обычным отказом (§5.6), со словами сервера и id; объяснение
 ограничений — слот TAS-512 (api-contract-guard §5).
 
 **Анатомия.** `h1` 22/700 `--fg`; текст 13/400 `--fg-2`, `max-width:340`, `text-wrap:pretty`; ряд
 `gap:8; margin-top:14`: primary-ссылка «Choose a company» (`/companies`) и secondary «Log out».
-Request id нет: это ответ, не сбой. {Company} — из списка компаний читателя, иначе «This company».
+Request id нет: это ответ, не сбой (кроме последней строки таблицы). {Company} — из списка компаний
+читателя, иначе «This company» в начале фразы и «this company» в середине.
 Причина — из отказа (`code`, затем `reasons`); код отказа вне таблицы или отказа нет — из
 `lifecycle`/`restrictions` строки списка (у закрытой компании сервер может ответить и общим
 `INVALID_STATE`, контракт код не назвал — ask A2 в TAS-315); строки нет — последняя строка таблицы.
@@ -3131,13 +3136,18 @@ Request id нет: это ответ, не сбой. {Company} — из спис
 | `PROVISIONING` | «{Company} is still being set up» | «Its projects can be opened once setup finishes.» |
 | `AUTO_CLOSED`, `OWNER_CANCELLED` | «{Company} is closed» | «Its projects can no longer be opened.» |
 | `DELETING` / `DELETED` | «{Company} is being deleted» / «{Company} has been deleted» | «Its projects can no longer be opened.» |
-| код вне таблицы | «{Company} could not be opened» | слова сервера как есть |
+| код вне таблицы и строки списка нет | «{Company} could not be opened» | слова сервера как есть и `X-Request-Id` (§4.18 «Request id»): это уже не ответ о компании, а сбой, который читатель перешлёт |
 
-**Не этот экран.** Компании нет в списке читателя или 404 (`TENANT_NOT_FOUND`,
-`RESOURCE_NOT_FOUND`) — §4.18 без изменений, чужая компания не называется. Транспорт, 5xx, 408, 429
-— вариант отказа §4.18: `h1` «{Company} could not be opened», `ApiNotice` со словами сервера и id,
-«Try again» (secondary) и «Choose a company» (primary). Не продлилась сессия аккаунта — `/login`,
-§5.1.
+**Не этот экран.** 404 (`TENANT_NOT_FOUND`, `RESOURCE_NOT_FOUND`) и `VALIDATION_FAILED` на id
+компании из адреса (`/c/not-a-uuid/…` — слова сервера про «tenantId» на экран не попадают, §4.33
+«Слово») — §4.18 без изменений, чужая компания не называется. Бывший участник получает
+`MEMBERSHIP_INACTIVE` и этот экран, посторонний — 404 и §4.18; так ничего не раскрывается. Транспорт,
+5xx, 408, 429 — вариант отказа §4.18: `h1` «{Company} could not be opened», `ApiNotice` «Taska could
+not open this company right now. Nothing in it is known yet.» со словами сервера и id, «Try again»
+(secondary) и «Choose a company» (primary). Не продлилась сессия аккаунта — `/login`, §5.1.
+
+**Отказ, пришедший посреди работы,** несёт слова сервера и `X-Request-Id` до экрана: событие закрытия
+компании их не теряет (api-contract-guard N1), даже когда строка таблицы их не показывает.
 
 **Чужая задача по ссылке.** Адрес называет компанию: читатель в ней `ACTIVE` — вкладка входит и
 открывает задачу без вопроса; закрыта — таблица выше; не его — §4.18. Адрес без компании — §5.1 и
