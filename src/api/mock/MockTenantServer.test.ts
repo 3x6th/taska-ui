@@ -252,6 +252,21 @@ describe("the session check in front of every data call (B7)", () => {
     await expect(api.markAllNotificationsRead()).resolves.toEqual(expect.objectContaining({ updatedCount: expect.any(Number) }));
   });
 
+  it("with the content-read flag off, a paused company's read closes it with its restriction (ask A2c)", async () => {
+    const { open, local } = browser();
+    const { api } = open();
+    await signedIn(api, "anna@example.com");
+    local.setItem(MOCK_TENANT_HOOKS_KEY, JSON.stringify({ contentReadUnderRestriction: false }));
+    const closed: WorkspaceClosedEvent[] = [];
+    api.onWorkspaceClosed((event) => closed.push(event));
+    await api.enterCompany(MOCK_TENANT_IDS.initech);
+    await expect(api.listProjects()).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(closed.map((event) => [event.reason, event.reasons])).toEqual([["CAPABILITY_DISABLED", ["OWNER_PAUSE"]]]);
+    // Northwind, with no restriction, reads as ever.
+    await api.enterCompany(MOCK_TENANT_IDS.northwind);
+    expect(await projectKeys(api)).toEqual(["MOB", "TAS", "WEB"]);
+  });
+
   it("a suspended membership is refused at entry and not listed", async () => {
     const { open } = browser();
     const { api } = open();
@@ -280,6 +295,7 @@ describe("the session check in front of every data call (B7)", () => {
         tenantName: null,
         requestId: expect.any(String),
         reasons: [],
+        message: "Membership is not active",
       },
     ]);
     expect(globex.currentWorkspace()).toBeNull();

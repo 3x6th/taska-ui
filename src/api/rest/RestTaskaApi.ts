@@ -3742,8 +3742,11 @@ export class RestTaskaApi implements TaskaApi {
     const web = this.web;
     if (web) {
       if (LEGACY_SESSION_PATHS.has(path)) throw new TenancyUnavailableError(path);
-      return web.call(options.skipAuth ? "none" : "session", (bearer, signal) =>
-        this.transmit<T>(path, options, bearer, signal),
+      return web.call(
+        options.skipAuth ? "none" : "session",
+        (bearer, signal) => this.transmit<T>(path, options, bearer, signal),
+        // A read: a refusal of the company's content closes the company (§4.35).
+        { read: (options.method ?? "GET") === "GET" },
       );
     }
     // Captured before the request leaves: whatever comes back answers *this*

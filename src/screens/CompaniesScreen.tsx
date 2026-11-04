@@ -132,7 +132,11 @@ export function CompaniesScreen({ theme, toggleTheme, onLogout, logoutPending }:
         )}
 
         <footer className="companies-footer">
-          {me.data ? <p className="auth-hint companies-signed-in">Signed in as {me.data.email}</p> : null}
+          {/* Its place is kept from the first frame, empty until the address is
+              known, so the card does not jump when it arrives (§4.33). */}
+          <p aria-hidden={me.data ? undefined : true} className="auth-hint companies-signed-in">
+            {me.data ? `Signed in as ${me.data.email}` : "\u00a0"}
+          </p>
           <button className="auth-ghost" disabled={logoutPending} onClick={onLogout} type="button">
             {logoutPending ? "Logging out…" : "Log out"}
           </button>

@@ -2836,6 +2836,14 @@ h1 {
   margin-top: 14px;
 }
 
+/* The companies build, where Create token would be (§4.33 «Что ещё меняет сборка B2B»). */
+.tokens-unoffered {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
 .token-list {
   margin: 14px 0 0;
   padding: 0;
@@ -11220,6 +11228,16 @@ button.attachment-open:hover:not(:disabled) {
   .company-switcher-row {
     height: 44px;
   }
+
+  /* «All companies», 44 like the rows above it (§4.34). */
+  .company-switcher-footer .user-profile-link {
+    min-height: 44px;
+  }
+}
+
+/* §4.16: the label stands at the name's first line, not the middle of a long one. */
+.user-profile-details > div.user-profile-company-row {
+  align-items: first baseline;
 }
 
 /* §4.16: the company's name whole, never cut — a cut name is another name. */
@@ -11244,6 +11262,19 @@ button.attachment-open:hover:not(:disabled) {
 
 .company-closed .notfound-title:focus {
   outline: 0;
+}
+
+/* §7 exception 4: the heading focused on arrival shows the ring a keyboard
+   reader needs — the by-key failure's treatment. */
+.company-closed .notfound-title:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+/* The table's last row: the request id under the server's words (§4.35). */
+.company-closed-request {
+  font-size: 11px;
 }
 
 /* Where an address without a company is being placed in one (§5.1). */

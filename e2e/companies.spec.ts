@@ -134,6 +134,24 @@ test("the 120-character name is cut on the switcher and whole in the profile men
   expect(await company.evaluate((node) => node.scrollWidth <= node.clientWidth && node.getBoundingClientRect().height > 20)).toBe(
     true,
   );
+  // The label stands at the name's first line, not the middle of four (§4.16).
+  const offset = await page.locator(".user-profile-company-row").evaluate((row) => {
+    const label = row.querySelector("dt")!.getBoundingClientRect();
+    const name = row.querySelector("dd")!.getBoundingClientRect();
+    return Math.abs(label.top - name.top);
+  });
+  expect(offset).toBeLessThan(6);
+});
+
+test("«All companies» is 44 high at 820 and narrower, like the rows above it", async ({ page, isMobile }) => {
+  test.skip(isMobile, "the switcher is not in the bar below 768");
+  await page.setViewportSize({ width: 800, height: 900 });
+  await inCompany(page, "Northwind", COMPANY.northwind);
+  await page.locator(".company-switcher-trigger").click();
+  const dialog = page.getByRole("dialog", { name: "Companies" });
+  const heights = await dialog.getByRole("link").evaluateAll((links) => links.map((link) => link.getBoundingClientRect().height));
+  expect(heights.length).toBeGreaterThan(1);
+  for (const height of heights) expect(height).toBeGreaterThanOrEqual(44);
 });
 
 test("a paused company opens, reads, and refuses a write on that write alone", async ({ page }) => {
@@ -157,6 +175,7 @@ test("Access tokens offers no Create token here, and focus goes to the heading o
   const list = page.getByRole("list", { name: "Your access tokens" });
   await expect(list.getByRole("listitem")).toHaveCount(2);
   await expect(page.getByRole("button", { name: "Create token" })).toHaveCount(0);
+  await expect(page.getByText("This version of Taska can’t create tokens yet.")).toBeVisible();
   for (let left = 2; left > 0; left -= 1) {
     const row = list.getByRole("listitem").first();
     await row.getByRole("button", { name: /^Revoke / }).click();

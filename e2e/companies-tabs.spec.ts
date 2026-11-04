@@ -121,7 +121,7 @@ test("AC3: a suspended membership closes the Globex tab with §4.35; the Northwi
   // A direct link back asks the server again and is refused again. Globex has
   // left the reader's list by now, so it is «This company» (§4.35).
   await globex.goto(companyPath(COMPANY.globex, `/projects/${PROJECT.ops}/board`));
-  await expect(globex.getByRole("heading", { level: 1, name: "You no longer have access to This company" })).toBeVisible();
+  await expect(globex.getByRole("heading", { level: 1, name: "You no longer have access to this company" })).toBeVisible();
   await expect(globex.locator(".board-topbar, .project-card")).toHaveCount(0);
 });
 
@@ -129,11 +129,42 @@ test("AC3: a direct link into a company the reader cannot enter shows §4.35 or 
   await signIn(page);
   await expect(page).toHaveURL(`${B2B}/companies`);
   await page.goto(companyPath(COMPANY.umbrella, `/projects/${PROJECT.taska}/board`));
-  await expect(page.getByRole("heading", { level: 1, name: "You no longer have access to This company" })).toBeVisible();
+  const closed = page.getByRole("heading", { level: 1, name: "You no longer have access to this company" });
+  await expect(closed).toBeVisible();
   await expect(page.locator(".board-topbar, .project-card")).toHaveCount(0);
+  // §7 exception 4: the heading focused on arrival shows the ring to a keyboard reader.
+  await page.keyboard.press("Shift");
+  await closed.evaluate((heading: HTMLElement) => {
+    heading.blur();
+    heading.focus();
+  });
+  expect(
+    await closed.evaluate((heading) => {
+      const style = getComputedStyle(heading);
+      return [heading.matches(":focus-visible"), style.outlineStyle, style.outlineWidth, style.outlineOffset];
+    }),
+  ).toEqual([true, "solid", "2px", "4px"]);
   // A company that is not the reader's at all: §4.18, which does not name it.
   await page.goto(companyPath("9e0e2a4c-1b3d-4e5f-8a7b-9c0d1e2f3a4b", "/projects"));
   await expect(page.getByRole("heading", { level: 1, name: "Page not found" })).toBeVisible();
+  await expect(page.locator(".project-card")).toHaveCount(0);
+  // An address whose company id is no id at all: §4.18 too, and the server's
+  // words about a «tenantId» never reach the screen (§4.35).
+  await page.goto(companyPath("not-a-uuid", "/projects"));
+  await expect(page.getByRole("heading", { level: 1, name: "Page not found" })).toBeVisible();
+  await expect(page.getByText(/tenant/i)).toHaveCount(0);
+});
+
+test("§4.35: with content reads refused for a pause, the paused company's address shows why — not «Page not found»", async ({
+  page,
+}) => {
+  await signIn(page);
+  await expect(page).toHaveURL(`${B2B}/companies`);
+  await setHooks(page, { contentReadUnderRestriction: false });
+  await page.goto(companyPath(COMPANY.initech));
+  await expect(page.getByRole("heading", { level: 1, name: "Initech is paused" })).toBeVisible();
+  await expect(page.getByText("Its owner has paused it, so its projects can’t be opened right now.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Page not found" })).toHaveCount(0);
   await expect(page.locator(".project-card")).toHaveCount(0);
 });
 

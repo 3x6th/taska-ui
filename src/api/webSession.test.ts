@@ -419,7 +419,15 @@ describe("refusals (§5)", () => {
       }),
     ).rejects.toBeInstanceOf(WorkspaceClosedError);
     expect(closed).toEqual([
-      { reason: "MEMBERSHIP_INACTIVE", tenantId: NORTHWIND, tenantName: null, requestId: "rid-MEMBERSHIP_INACTIVE", reasons: [] },
+      {
+        reason: "MEMBERSHIP_INACTIVE",
+        tenantId: NORTHWIND,
+        tenantName: null,
+        requestId: "rid-MEMBERSHIP_INACTIVE",
+        reasons: [],
+        // The server's own words travel to the screen (api-contract-guard N1).
+        message: "MEMBERSHIP_INACTIVE",
+      },
     ]);
     expect(client.currentWorkspace()).toBeNull();
     expect(session.getItem(TAB_KEY)).toBeNull();
@@ -435,6 +443,34 @@ describe("refusals (§5)", () => {
     });
     await expect(client.call("session", async () => Promise.reject(legacy))).rejects.toBeInstanceOf(WorkspaceClosedError);
     expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+  });
+
+  it("403 TENANT_MISMATCH closes the company with its words and request id, and never switches it", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    await expect(
+      client.call("session", async () => {
+        throw refusal(403, "TENANT_MISMATCH");
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(closed).toEqual([
+      { reason: "TENANT_MISMATCH", tenantId: NORTHWIND, tenantName: null, requestId: "rid-TENANT_MISMATCH", reasons: [], message: "TENANT_MISMATCH" },
+    ]);
+    expect(client.currentWorkspace()).toBeNull();
+    // Never an automatic switch to some other company: one session was made, the first.
+    expect(transport.createTenantSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("a read refused CAPABILITY_DISABLED with reasons closes the company with them; the same refusal of a write does not", async () => {
+    const { client, closed } = await inNorthwind();
+    const paused = () => refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE"]);
+    const write = client.call("session", async () => Promise.reject(paused()));
+    await expect(write).rejects.toMatchObject({ code: "CAPABILITY_DISABLED" });
+    expect(closed).toEqual([]);
+    await expect(client.call("session", async () => Promise.reject(paused()), { read: true })).rejects.toBeInstanceOf(
+      WorkspaceClosedError,
+    );
+    expect(closed.map((event) => [event.reason, event.reasons])).toEqual([["CAPABILITY_DISABLED", ["OWNER_PAUSE"]]]);
+    expect(client.currentWorkspace()).toBeNull();
   });
 
   it("403 READ_ONLY refuses that one action with its reasons; the company stays open", async () => {

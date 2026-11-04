@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { ApiNotice } from "../components/ApiNotice";
 import { AddressLink } from "../components/CompanyRouter";
+import { RequestId } from "../components/RequestId";
 import type { Tenant } from "../api/tenants";
 import { COMPANIES_ROUTE, closedCompanyWords } from "../lib/companies";
 
@@ -11,8 +12,10 @@ import { COMPANIES_ROUTE, closedCompanyWords } from "../lib/companies";
  * redirect: a reload asks the server again, and a direct link does not get
  * past the refusal. §4.18's column without the mascot; focus on the heading.
  *
- * No request id: this is an answer, not a failure (§4.35). A code outside the
- * table is said in the server's words.
+ * No request id: this is an answer, not a failure (§4.35) — except on the
+ * table's last row, a code outside it with no list row to read a reason from,
+ * which is said in the server's words with the request id beside them: that is
+ * a failure the reader will pass on (§4.18 «Request id»).
  */
 export function CompanyClosedScreen({
   name,
@@ -22,7 +25,7 @@ export function CompanyClosedScreen({
   logoutPending = false,
 }: {
   name: string | null;
-  refusal: { code: string | null; reasons: readonly string[]; message: string | null };
+  refusal: { code: string | null; reasons: readonly string[]; message: string | null; requestId: string | null };
   /** The company's row in the reader's list, when it has one — the reason when the refusal's code says none (§4.35). */
   tenant?: Tenant | null;
   onLogout: () => void;
@@ -32,6 +35,7 @@ export function CompanyClosedScreen({
   useEffect(() => heading.current?.focus(), []);
   const words = closedCompanyWords(name, refusal, tenant);
   const text = words.text ?? refusal.message;
+  const requestId = words.text === null ? refusal.requestId : null;
 
   return (
     <main className="notfound-screen" data-reason={refusal.code ?? undefined}>
@@ -40,6 +44,11 @@ export function CompanyClosedScreen({
           {words.title}
         </h1>
         {text ? <p className="notfound-text">{text}</p> : null}
+        {requestId ? (
+          <p className="notfound-text company-closed-request">
+            <RequestId value={requestId} />
+          </p>
+        ) : null}
         <div className="issue-key-actions">
           <AddressLink className="primary-button notfound-action" path={COMPANIES_ROUTE} state={{ focusHeading: true }}>
             Choose a company
@@ -81,7 +90,7 @@ export function CompanyUnavailableScreen({
         <h1 className="notfound-title" ref={heading} tabIndex={-1}>
           {company} could not be opened
         </h1>
-        <ApiNotice error={error}>Taska could not reach this company. Nothing in it is known yet.</ApiNotice>
+        <ApiNotice error={error}>Taska could not open this company right now. Nothing in it is known yet.</ApiNotice>
         <div className="issue-key-actions">
           <button
             aria-disabled={retrying || undefined}

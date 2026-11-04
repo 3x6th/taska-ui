@@ -154,16 +154,21 @@ export function CompanyGate({ onLogout, logoutPending }: { onLogout: () => void;
         logoutPending={logoutPending}
         name={name}
         onLogout={onLogout}
-        refusal={{ code: event.reason, reasons: event.reasons, message: null }}
+        refusal={{ code: event.reason, reasons: event.reasons, message: event.message, requestId: event.requestId }}
         tenant={row}
       />
     );
   }
   if (entry.status === "refused") {
     const { error } = entry;
-    const { status, code, message } = apiErrorFacts(error);
+    const { status, code, message, requestId } = apiErrorFacts(error);
     const b2bCode = refusalCode(error);
-    if (b2bCode === "TENANT_NOT_FOUND" || b2bCode === "RESOURCE_NOT_FOUND" || status === 404) return <NotFoundScreen />;
+    // The only thing an entry sends is the company id from the address, so a
+    // `VALIDATION_FAILED` is about that id (`/c/not-a-uuid/…`): §4.18, and the
+    // server's words about a «tenantId» never reach the screen (§4.35).
+    if (b2bCode === "TENANT_NOT_FOUND" || b2bCode === "RESOURCE_NOT_FOUND" || b2bCode === "VALIDATION_FAILED" || status === 404) {
+      return <NotFoundScreen />;
+    }
     if (status === null || status >= 500 || status === 408 || status === 429) {
       return <CompanyUnavailableScreen error={error} name={name} onRetry={retry} retrying={entry.retrying ?? false} />;
     }
@@ -172,7 +177,7 @@ export function CompanyGate({ onLogout, logoutPending }: { onLogout: () => void;
         logoutPending={logoutPending}
         name={name}
         onLogout={onLogout}
-        refusal={{ code: b2bCode ?? code, reasons: refusalReasons(error), message }}
+        refusal={{ code: b2bCode ?? code, reasons: refusalReasons(error), message, requestId }}
         tenant={row}
       />
     );

@@ -107,7 +107,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
               </header>
               <dl className="user-profile-details">
                 {companies && address?.companyId ? (
-                  <div>
+                  <div className="user-profile-company-row">
                     <dt>Company</dt>
                     <dd className="user-profile-company">{companyName ?? "This company"}</dd>
                   </div>

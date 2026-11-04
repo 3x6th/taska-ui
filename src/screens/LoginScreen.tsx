@@ -443,11 +443,18 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
         // account session, and a GLOBAL_ADMIN's emailed-code dead end (§4.33).
         const signedIn = await taskaApi.signIn({ email, password });
         if (signedIn.status === "ADMIN_MFA_REQUIRED") return "adminCode";
-        queryClient.setQueryData(["me"], await taskaApi.getCurrentUser());
-        if (!companies) return "signedIn";
-        // The list, while the button still says «Signing in» — no screen in
-        // between; a failed read is the picker's to say (§4.33).
-        const tenants = await queryClient.fetchQuery(tenantsQueryOptions(taskaApi)).catch(() => null);
+        if (!companies) {
+          queryClient.setQueryData(["me"], await taskaApi.getCurrentUser());
+          return "signedIn";
+        }
+        // The account and the list side by side — two rounds after the
+        // password, not three (api-contract-guard N3) — while the button still
+        // says «Signing in»; a failed list is the picker's to say (§4.33).
+        const [me, tenants] = await Promise.all([
+          taskaApi.getCurrentUser(),
+          queryClient.fetchQuery(tenantsQueryOptions(taskaApi)).catch(() => null),
+        ]);
+        queryClient.setQueryData(["me"], me);
         if (tenants === null) return { picker: from ?? null };
         const choice = chooseCompanyRoute({
           remembered: from ?? null,

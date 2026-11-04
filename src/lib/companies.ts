@@ -176,12 +176,14 @@ export function closedCompanyWords(
   refusal: { code: string | null; reasons: readonly string[] } | null,
   tenant: Tenant | null,
 ): ClosedWords {
+  // «This company» at the start of a sentence, «this company» inside one (§4.35).
   const company = name ?? "This company";
+  const companyInside = name ?? "this company";
   const by = (key: string | null): ClosedWords | null => {
     switch (key) {
       case "MEMBERSHIP_INACTIVE":
         return {
-          title: `You no longer have access to ${company}`,
+          title: `You no longer have access to ${companyInside}`,
           text: "Your membership was suspended or removed. If that’s a mistake, ask one of the company’s admins.",
         };
       case "PLATFORM_BLOCK":

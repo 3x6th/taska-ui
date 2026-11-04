@@ -135,6 +135,10 @@ describe("where a tab goes (§4.33 «Когда», §5.1)", () => {
 
 describe("the closed company's words (§4.35)", () => {
   it("reads the code, then the reasons, and without a refusal the list row", () => {
+    expect(closedCompanyWords(null, { code: "MEMBERSHIP_INACTIVE", reasons: [] }, null).title).toBe(
+      "You no longer have access to this company",
+    );
+    expect(closedCompanyWords(null, { code: "PLATFORM_BLOCK", reasons: [] }, null).title).toBe("This company is blocked");
     expect(closedCompanyWords("Globex", { code: "MEMBERSHIP_INACTIVE", reasons: [] }, null)).toEqual({
       title: "You no longer have access to Globex",
       text: "Your membership was suspended or removed. If that’s a mistake, ask one of the company’s admins.",

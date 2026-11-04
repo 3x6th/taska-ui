@@ -262,8 +262,10 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
         break;
       default:
         api[name] = (...args: unknown[]) =>
-          web.call("session", (bearer) =>
-            server.serve(bearer, route, name, (store) => Promise.resolve(methodOf(apiFor(store), name)(...args))),
+          web.call(
+            "session",
+            (bearer) => server.serve(bearer, route, name, (store) => Promise.resolve(methodOf(apiFor(store), name)(...args))),
+            { read: route === "tenant-read" },
           );
     }
   }

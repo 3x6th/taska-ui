@@ -1100,6 +1100,8 @@ export interface WorkspaceClosedEvent {
   tenantName: string | null;
   requestId: string | null;
   reasons: readonly string[];
+  /** The refusal's own words, kept to the screen (api-contract-guard N1); `null` when there was no answer. */
+  message: string | null;
 }
 
 /** The `reason` of a company closed because its session could not be renewed for want of an answer. */

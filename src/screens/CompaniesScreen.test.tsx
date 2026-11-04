@@ -15,13 +15,17 @@ const { fakeApi, state } = vi.hoisted(() => {
     tenants: [] as unknown[],
     refusal: null as Error | null,
     workspace: null as Workspace | null,
+    holdMe: false,
   };
   const api = {
     listTenants: async () => {
       if (state.refusal) throw state.refusal;
       return { items: state.tenants, nextCursor: null };
     },
-    getCurrentUser: async () => ({ id: "anna", email: "anna@example.com", displayName: "Anna", status: "ACTIVE" }),
+    getCurrentUser: async () => {
+      if (state.holdMe) await new Promise(() => {});
+      return { id: "anna", email: "anna@example.com", displayName: "Anna", status: "ACTIVE" };
+    },
     currentWorkspace: () => state.workspace,
     onWorkspaceChange: () => () => {},
   };
@@ -46,6 +50,7 @@ beforeEach(() => {
   state.tenants = [];
   state.refusal = null;
   state.workspace = null;
+  state.holdMe = false;
 });
 
 describe("Choose a company", () => {
@@ -82,6 +87,18 @@ describe("Choose a company", () => {
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
     // First screen of the tab: focus is not moved.
     expect(screen.getByRole("heading", { level: 1 })).not.toHaveFocus();
+  });
+
+  it("keeps the «Signed in as» line's place from the first frame, so the card does not jump", async () => {
+    state.holdMe = true;
+    state.tenants = [tenant("n", "Northwind")];
+    const { wrapper } = companiesHarness({ path: "/companies" });
+    const { container } = render(<CompaniesScreen {...props} />, { wrapper });
+    await screen.findByRole("list", { name: "Companies" });
+    const line = container.querySelector(".companies-signed-in");
+    expect(line).not.toBeNull();
+    expect(line).toHaveAttribute("aria-hidden", "true");
+    expect(line?.textContent).toBe("\u00a0");
   });
 
   it("opens a remembered address in the chosen company, and says so", async () => {

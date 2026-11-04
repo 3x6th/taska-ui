@@ -560,21 +560,30 @@ export class WebSessionClient {
    * a new context. A 401 on WEB_GLOBAL rotates the account family under its
    * lock and retries once; a refused rotation signs every tab out.
    * `MEMBERSHIP_INACTIVE`, `TENANT_NOT_FOUND`, `TENANT_REQUIRED` and
-   * `TENANT_MISMATCH` close the company. `READ_ONLY` and `CAPABILITY_DISABLED`
-   * do not: they reject this one request with their `reasons`.
+   * `TENANT_MISMATCH` close the company. So does a **read** refused
+   * `CAPABILITY_DISABLED` with `reasons` — a paused or blocked company whose
+   * content cannot be read is an answer about the company, not a missing page
+   * (DESIGN.md §4.35, api-contract-guard N2, ask A2c). `READ_ONLY`, and
+   * `CAPABILITY_DISABLED` on a write, do not: they reject that one request
+   * with their `reasons`.
    */
-  async call<T>(credential: RequestCredential, send: (bearer: string | null, signal: AbortSignal) => Promise<T>): Promise<T> {
+  async call<T>(
+    credential: RequestCredential,
+    send: (bearer: string | null, signal: AbortSignal) => Promise<T>,
+    options: { read?: boolean } = {},
+  ): Promise<T> {
     const epoch = this.epoch;
     await this.settled();
     if (epoch !== this.epoch) throw new WorkspaceClosedError();
     if (credential === "none") return this.answerFor(epoch, () => send(null, epoch.controller.signal));
-    return this.withCredential(epoch, send, false);
+    return this.withCredential(epoch, send, false, options.read === true);
   }
 
   private async withCredential<T>(
     epoch: Epoch,
     send: (bearer: string | null, signal: AbortSignal) => Promise<T>,
     isRetry: boolean,
+    read: boolean,
   ): Promise<T> {
     const owned = this.owned;
     if (owned) {
@@ -583,16 +592,18 @@ export class WebSessionClient {
         return await this.answerFor(epoch, () => send(sent, epoch.controller.signal));
       } catch (error) {
         if (isWorkspaceClosed(error)) throw error;
-        const { status, requestId } = apiErrorFacts(error);
+        const { status, requestId, message } = apiErrorFacts(error);
         if (status === 401 && !isRetry) {
           const outcome = await this.renewCompany(owned, sent);
           if (epoch !== this.epoch) throw new WorkspaceClosedError();
-          if (outcome === "renewed") return this.withCredential(epoch, send, true);
+          if (outcome === "renewed") return this.withCredential(epoch, send, true, read);
           throw error;
         }
         const code = refusalCode(error);
-        if (code !== null && CLOSING_CODES.has(code)) {
-          this.closeWorkspace(owned, code, requestId, refusalReasons(error));
+        const reasons = refusalReasons(error);
+        const contentClosed = read && code === "CAPABILITY_DISABLED" && reasons.length > 0;
+        if (code !== null && (CLOSING_CODES.has(code) || contentClosed)) {
+          this.closeWorkspace(owned, code, requestId, reasons, message);
           throw new WorkspaceClosedError();
         }
         throw error;
@@ -606,7 +617,7 @@ export class WebSessionClient {
       if (isWorkspaceClosed(error) || account === null || apiErrorFacts(error).status !== 401) throw error;
       const outcome: RotateOutcome = isRetry ? "refused" : await this.rotateAccount(account);
       if (epoch !== this.epoch) throw new WorkspaceClosedError();
-      if (outcome === "rotated") return this.withCredential(epoch, send, true);
+      if (outcome === "rotated") return this.withCredential(epoch, send, true, read);
       if (outcome === "unreachable") throw error;
       if (outcome === "refused") this.expireAccount();
       throw new WorkspaceClosedError();
@@ -711,9 +722,10 @@ export class WebSessionClient {
         }
         return "closed";
       }
-      const { code, requestId } = apiErrorFacts(error);
-      const reason = isTransportFailure(error) ? TRANSPORT_FAILURE_REASON : (refusalCode(error) ?? code ?? "UNKNOWN");
-      this.closeWorkspace(owned, reason, requestId, refusalReasons(error));
+      const { code, requestId, message } = apiErrorFacts(error);
+      const transport = isTransportFailure(error);
+      const reason = transport ? TRANSPORT_FAILURE_REASON : (refusalCode(error) ?? code ?? "UNKNOWN");
+      this.closeWorkspace(owned, reason, requestId, refusalReasons(error), transport ? null : message);
       return "closed";
     }
   }
@@ -812,14 +824,20 @@ export class WebSessionClient {
   }
 
   /** Closes the tab's company with a reason the shell can word (DESIGN.md §4.35). */
-  private closeWorkspace(owned: Owned, reason: string, requestId: string | null, reasons: readonly string[]): void {
+  private closeWorkspace(
+    owned: Owned,
+    reason: string,
+    requestId: string | null,
+    reasons: readonly string[],
+    message: string | null,
+  ): void {
     if (owned !== this.owned) return;
     this.moveEpoch();
     const { tenantId, tenantName, tenantSessionId } = owned.record;
     this.dropOwned();
     void this.revokeQuietly(tenantSessionId);
     this.notifyChange();
-    this.closed.emit({ reason, tenantId, tenantName, requestId, reasons: [...reasons] });
+    this.closed.emit({ reason, tenantId, tenantName, requestId, reasons: [...reasons], message });
   }
 
   /* ------------------------------------------------------- the account family */

@@ -38,7 +38,10 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v1";
  *   (the blueprint's is 60–900; default 900), to make renewal happen;
  * - `delayMs`: extra latency per operation, keyed by a blueprint operation id
  *   (`startWebSession`, `refreshWebSession`, `listTenants`,
- *   `createTenantSession`, `revokeTenantSession`) or a `TaskaApi` method name.
+ *   `createTenantSession`, `revokeTenantSession`) or a `TaskaApi` method name;
+ * - `contentReadUnderRestriction`: the global flag below for this browser —
+ *   `false` refuses every content read of a paused or blocked company with 403
+ *   `CAPABILITY_DISABLED` and its restrictions (ask A2c).
  */
 export const MOCK_TENANT_HOOKS_KEY = "taska.mockTenantHooks";
 
@@ -46,6 +49,7 @@ export interface MockTenantHooks {
   suspend?: Array<{ tenantId: string; userId: string }>;
   accessTtlSeconds?: number;
   delayMs?: Record<string, number>;
+  contentReadUnderRestriction?: boolean;
 }
 
 /** The fixture companies' ids (fixed, `createdAt` ascending in this order). */
@@ -676,7 +680,7 @@ export class MockTenantServer {
     if (kind === "tenant-write" && tenant.restrictions.length > 0) {
       throw problem(403, "READ_ONLY", "The company is read-only", tenant.restrictions);
     }
-    if (kind === "tenant-read" && tenant.restrictions.length > 0 && !MOCK_PROJECT_CONTENT_READ_UNDER_RESTRICTION) {
+    if (kind === "tenant-read" && tenant.restrictions.length > 0 && !this.contentReadUnderRestriction()) {
       throw problem(403, "CAPABILITY_DISABLED", "Project content is not available", tenant.restrictions);
     }
     return { userId: session.userId, tenantId };
@@ -822,6 +826,11 @@ export class MockTenantServer {
     } catch {
       return {};
     }
+  }
+
+  private contentReadUnderRestriction(): boolean {
+    const flag = this.hooks().contentReadUnderRestriction;
+    return typeof flag === "boolean" ? flag : MOCK_PROJECT_CONTENT_READ_UNDER_RESTRICTION;
   }
 
   private accessTtlSeconds(): number {

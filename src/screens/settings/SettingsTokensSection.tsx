@@ -327,13 +327,17 @@ function AccessTokens({
 
   return (
     <>
-      {canCreate ? (
-        <div className="tokens-actions">
+      <div className="tokens-actions">
+        {canCreate ? (
           <button className="primary-button" onClick={onCreate} ref={createButton} type="button">
             Create token
           </button>
-        </div>
-      ) : null}
+        ) : (
+          // Where Create token stands (§4.33 «Что ещё меняет сборка B2B»): a
+          // token for one company is TAS-509's; until then the list and revoke.
+          <p className="tokens-unoffered">This version of Taska can’t create tokens yet.</p>
+        )}
+      </div>
 
       {query.isError && !query.data ? (
         <ReadFailure error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />
