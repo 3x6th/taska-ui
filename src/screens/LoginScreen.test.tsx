@@ -71,6 +71,11 @@ const { fakeApi, refuseWith, inviteState, loginState, previewState, methodsState
       if (state.refusal) throw state.refusal;
       return { accessToken: "a", refreshToken: "r" };
     },
+    // `signIn` is `login` in today's build (TAS-500), and the screen calls it.
+    signIn: async () => {
+      await api.login();
+      return { status: "SIGNED_IN" as const, userId: null };
+    },
     getCurrentUser: async () => {
       inviteState.calls.push("getCurrentUser");
       if (loginState.me) return loginState.me;

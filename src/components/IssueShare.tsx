@@ -3,6 +3,8 @@ import { useCallback, useEffect, useId, useRef, useState, type FocusEvent, type 
 import { writeClipboard } from "../hooks/useCopied";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { appUrl, issueKeyRoute, issueRoute } from "../lib/appLinks";
+import { companyRoute } from "../lib/companies";
+import { useCompanyAddress } from "../lib/companyAddress";
 
 type LinkKind = "short" | "full";
 
@@ -55,6 +57,11 @@ export function IssueShare({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
+  // The companies build (TAS-500, §4.23): both links carry the company — a key
+  // is unique only inside one, and a short link without it would open the
+  // recipient's issue of the same key in another of theirs.
+  const companyId = useCompanyAddress()?.companyId ?? null;
+  const inCompany = (route: string) => (companyId === null ? route : companyRoute(companyId, route));
   const [ownOpen, setOwnOpen] = useState(false);
   const open = heldOpen ?? ownOpen;
   const onOpenChangeRef = useRef(onOpenChange);
@@ -105,7 +112,7 @@ export function IssueShare({
         <IssueSharePopover
           id={popoverId}
           issueKey={issueKey}
-          links={{ short: appUrl(issueKeyRoute(issueKey)), full: appUrl(issueRoute(projectId, issueId)) }}
+          links={{ short: appUrl(inCompany(issueKeyRoute(issueKey))), full: appUrl(inCompany(issueRoute(projectId, issueId))) }}
         />
       ) : null}
     </div>

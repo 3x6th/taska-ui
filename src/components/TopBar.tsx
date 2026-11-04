@@ -1,6 +1,8 @@
 import { useRef, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { DEFAULT_SIGNED_IN_ROUTE } from "./RequireSession";
+import { useCompanyAddress } from "../lib/companyAddress";
+import { CompanySwitcher } from "./CompanySwitcher";
 import type { User } from "../domain/types";
 import { GlobalSearch } from "./GlobalSearch";
 import { NotificationsBell } from "./NotificationsBell";
@@ -53,12 +55,22 @@ export function TopBar({
   // the prop states, and a bar that opted out would be a bar that has to
   // remember to opt back in the day §2.7 stops holding.
   const barRef = useRef<HTMLElement>(null);
+  // The companies build (TAS-500): the switcher after the logo, at 768 and
+  // wider (§4.13, §4.34); the logo is the tab's company's Projects — the
+  // router's prefix keeps `to="/projects"` inside it.
+  const inCompany = Boolean(useCompanyAddress()?.companyId);
 
   return (
     <header className="topbar" ref={barRef}>
       <Link aria-label="Taska — all projects" className="topbar-home" to={DEFAULT_SIGNED_IN_ROUTE}>
         <TaskaLogo compact />
       </Link>
+      {inCompany ? (
+        <div className="topbar-company">
+          <span aria-hidden="true" className="topbar-divider" />
+          <CompanySwitcher />
+        </div>
+      ) : null}
       <div className="topbar-spacer" />
       {/* §4.13 fixes the order after the spacer: search, then notifications,
           then the theme toggle — the last two inside the pinned group below,

@@ -2,10 +2,12 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, HashRouter } from "react-router-dom";
+import { AccountClientProvider, CompanyRouter } from "./components/CompanyRouter";
 import { ROUTER_MODE } from "./lib/appLinks";
 import { captureInviteLink } from "./lib/inviteLink";
 import { captureOAuthCallback } from "./lib/oauthCallback";
 import { createQueryClient } from "./lib/queryClient";
+import { tenantsEnabled } from "./lib/tenancy";
 import { App } from "./screens/App";
 import "./styles.css";
 
@@ -35,12 +37,25 @@ captureInviteLink(window, import.meta.env.BASE_URL, ROUTER_MODE);
 // React had not yet committed. Seven redirects of that kind share the window
 // (the admin sections and `/browse/:issueKey`); nothing in the app suspends, so
 // there is no pending UI for a transition to keep on screen.
+//
+// The companies build (TAS-500, `VITE_TASKA_TENANTS`) puts the company in the
+// address: `CompanyRouter` is the same router under the prefix `/c/{companyId}`,
+// remounted per company, and this client becomes the account's — each company
+// session gets its own below it (DESIGN.md §5.1, §6).
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <Router useTransitions={false}>
-        <App />
-      </Router>
+      {tenantsEnabled ? (
+        <AccountClientProvider client={queryClient}>
+          <CompanyRouter>
+            <App />
+          </CompanyRouter>
+        </AccountClientProvider>
+      ) : (
+        <Router useTransitions={false}>
+          <App />
+        </Router>
+      )}
     </QueryClientProvider>
   </StrictMode>,
 );

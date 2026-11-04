@@ -2098,6 +2098,84 @@ Everything below is the entry as it stood, in the past tense.
   acceptance) has an older separate mock validator. It is outside the shared five-form helper;
   recorded in BACKLOG.md for separate frontend alignment. This entry does not claim parity there.
 
+### TAS-500: companies and per-tab workspaces ship ahead of the gateway, on the B2B blueprint
+
+- **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`; none in `openapi.yml`):
+  `POST /api/v1/auth/web-sessions` (startWebSession), `POST /api/v1/auth/web-sessions/refresh`
+  (refreshWebSession, both families), `GET /api/v1/tenants` (listTenants), `POST /api/v1/auth/tenant-sessions`
+  (createTenantSession), `DELETE /api/v1/auth/tenant-sessions/{sessionId}` (revokeTenantSession). Backend:
+  TAS-315 (PR #288 open — auth-service gRPC only, off by default, no REST route), TAS-338 (list, not started),
+  TAS-316, TAS-340, TAS-328.
+- **Observed (2026-11-04, no token, api-contract-guard):** `GET /api/v1/tenants` 404 "No static resource
+  api/v1/tenants…" (rid `2d5fd14c-9308-426a-a9c6-1295131050f4`); `GET /api/v1/auth/web-sessions/refresh` the
+  same (rid `75884062-3998-40a0-bbc9-c33a1aedd6a7`); control `GET /api/v1/projects` 401 (rid
+  `14e4b0ad-f4d0-4841-bc4a-d7b88134f5f4`). POST/DELETE inferred as in the TAS-412 entry.
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. Off (the stand): unchanged, none of these routes is
+  called. On: `RestTaskaApi` calls exactly the blueprint routes; on the stand sign-in fails closed with the 404.
+- **Where credentials live:** `taska.webSession` (localStorage, shared; rotated under a Web Lock with a recorded
+  `Idempotency-Key`) and `taska.tab` (sessionStorage; refreshed only by the tab holding the session's ownership
+  lock; a duplicated tab mints its own session and never touches the copied one).
+- **What the UI assumes where the blueprint is silent — each removable:**
+  - Tenant commands and the list go out with WEB_GLOBAL; every other route in a workspace with the tab's
+    WEB_TENANT (PR #288 scopes). Removal: ask A2 on TAS-315.
+  - A failed tenant refresh with a live global session is re-selected once; 403 `MEMBERSHIP_INACTIVE` / 404
+    `TENANT_NOT_FOUND` close the workspace, 401 signs out (PR #288 answers every refresh refusal 401 "Invalid
+    session"). Removal: ask A3 on TAS-315.
+  - The list is the reader's active memberships, and entering one may still be refused (a closed company, a
+    pause or block the server enforces at entry); no role or membership state shown; lifecycle and restrictions
+    are a state line and an order only; opening always asks the server. Removal: ask A1 on TAS-338, A2 on TAS-315.
+  - A revoke of the tab's company session (switch, leave, close) is fire-and-forget, and its own 401 never signs the
+    account out: backend PR #288 answers 401 for an unknown session id where contracts §6 says 404, so a 401 there is
+    not evidence the account session died (the client renews the account once and retries). Removal: the PR #288
+    point on TAS-315.
+  - `TENANT_REQUIRED` and `TENANT_MISMATCH` on a company session close the company (the epoch moves, the session is
+    revoked best effort, never an automatic switch) — both mean the tab sent the wrong credential, and nothing it
+    holds can be trusted after that. Removal: none needed; it is the client's own rule.
+  - A content read refused 403 `CAPABILITY_DISABLED` with `reasons` closes the company with those reasons (DESIGN.md
+    §4.35 «Initech is paused»); a write so refused only rejects that action. REST counts every GET as a read, the
+    mock its company content routes. The rule is broader than the two content-blocking reasons (`OWNER_PAUSE`,
+    `PLATFORM_BLOCK`) because contracts §5 does not say which reasons a read can carry. Removal: ask A2c on TAS-316.
+    The mock reaches it through the hook `contentReadUnderRestriction: false` in `taska.mockTenantHooks`.
+  - Sign-out revokes the tab's tenant session and drops the global record locally; the global family and sibling
+    tabs' families stay live until expiry. Removal: ask A4 on TAS-315.
+  - Provider sign-in hidden under the flag. Removal: ask A8 on TAS-315.
+  - Access-token create hidden under the flag; list and revoke kept. Removal: TAS-509 (createTenantPersonalToken,
+    TAS-463).
+  - Refusals read from Problem (`code`, `requestId`, `reasons`) and from the legacy envelope's `details.reason`.
+    Removal: ask A6 on TAS-316.
+  - GLOBAL_ADMIN: either sign-in answer (200 `MfaChallenge`, 403 `MFA_REQUIRED`) ends in a "not in this version"
+    note; the admin console is flag-off only; platform mode is not built. Removal: TAS-510 + ask A5 on TAS-345,
+    then the frontend in [TAS-521](https://jira.ozero.dev/browse/TAS-521).
+  - "TENANT_ADMIN sees all projects" is whatever the project reads answer; the UI takes the role from
+    `currentUserRole` and synthesises nothing. Removal: ask A7 on TAS-340.
+- **Turning the flag on** needs TAS-315, TAS-338, TAS-316 and TAS-340 deployed, and the enabling PR carries the
+  stand probe: two companies, a project in each, two tabs; each lists only its own, a foreign project id answers
+  404, a suspended membership closes its tab. Before TAS-316 and TAS-340 the flag is **unsafe**, not merely early:
+  a gateway that issues tenant sessions but does not scope data routes would show the same projects in every
+  company's tab, and the UI cannot tell.
+- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v1`); this
+  narrows "The mock has a session flag but no session enforcement" for the flag-on build only.
+- **Mock answers where the blueprint is silent** (`src/api/mock/MockTenantServer.ts`, `mockCompanies.ts`) — the
+  mock's choices, not the blueprint's behaviour; each falls away with the ask named:
+  - Entry to a closed company (`AUTO_CLOSED`, `OWNER_CANCELLED`, `DELETING`) answers 409 `INVALID_STATE`; `DELETED`
+    answers 404. Ask A2 on TAS-315.
+  - The company list is every ACTIVE membership whatever the lifecycle; SUSPENDED and REMOVED are not listed. Ask A1
+    on TAS-338.
+  - Any restriction makes every company write 403 `READ_ONLY` with all restrictions as `reasons` — stricter than
+    contracts §5, where a financial READ_ONLY still allows some admin actions; the reader's own notifications,
+    notification settings and Telegram are not stopped (TAS-325). Content reads under a restriction are allowed:
+    `MOCK_PROJECT_CONTENT_READ_UNDER_RESTRICTION = true`, the "separate global flag" of contracts §5. Ask A2c.
+  - The people directory (`searchUsers`) is the company's active members — the TENANT_DIRECTORY target (TAS-321).
+  - Data routes keep today's error envelope: a foreign project id answers the store's `NOT_FOUND`, a project the
+    reader is not on `PERMISSION_DENIED` — the statuses the blueprint names, the legacy codes. Ask A6 on TAS-316.
+  - A TENANT_ADMIN sees every project because the fixtures seed explicit ADMIN project rows, not because the mock
+    derives it from the company role. Ask A7 on TAS-340.
+- **Found on PR #288 at `8d480b3b` (api-contract-guard, 2026-11-04):** `WebSessionStore.openTenant` answers 403
+  `MEMBERSHIP_INACTIVE` for a company that does not exist or that the reader was never in, where the blueprint hides
+  it as 404 `TENANT_NOT_FOUND`; once wired, a foreign company link would read «You no longer have access to This
+  company» instead of §4.18. No compensation in the code. Ask A2b on TAS-315.
+- **Removal:** delete with the flag, after the probe.
+
 ### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log
 
 - **Endpoints:** `GET /api/v1/users/me` (`ValidateAccessTokenResponseDto`);

@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { Navigate, useLocation } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { metaQueryOptions } from "../hooks/useMeta";
 import type { ProviderRefusal } from "../screens/authText";
+import { useAppPath } from "../lib/companyAddress";
 
 /** What the login screen is told about the navigation that sent the user there. */
 export interface LoginRedirectState {
@@ -39,7 +40,9 @@ export const DEFAULT_SIGNED_IN_ROUTE = "/projects";
  * whether it is worth asking.
  */
 export function RequireSession({ children }: { children: ReactNode }) {
-  const location = useLocation();
+  // The path with its company prefix in the companies build (TAS-500), so the
+  // sign-in returns to the same company; today's build has none to add.
+  const appPath = useAppPath();
   const signedIn = taskaApi.hasSession();
   // `GET /meta`, started here so it leaves in the same round as the page's own
   // first reads and nothing waits on it (TAS-173). Never without a session: a
@@ -52,7 +55,7 @@ export function RequireSession({ children }: { children: ReactNode }) {
     // and needs no special case: /projects is where a visitor with nothing
     // specific in mind goes anyway, so returning them there is the same
     // destination under a different name.
-    const from = location.pathname + location.search;
+    const from = appPath;
     return <Navigate to="/login" replace state={{ from } satisfies LoginRedirectState} />;
   }
 

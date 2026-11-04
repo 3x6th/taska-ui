@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { isWorkspaceClosed } from "../api/errors";
 
 /** The three fields of a react-query result this reads. Narrowed by hand so the
  *  hook does not have to be generic over `UseQueryResult`'s status union. */
@@ -57,7 +58,10 @@ export function useUnanswered(query: QueryFacts): Unanswered {
   const [lastError, setLastError] = useState<Error | null>(null);
   if (query.error && query.error !== lastError) setLastError(query.error);
 
-  const unanswered = query.data === undefined && query.errorUpdateCount > 0;
+  // An answer of a company session the tab has left (TAS-500) is not a failed
+  // read: the shell replaces the screen, and nothing here may say otherwise.
+  const unanswered =
+    query.data === undefined && query.errorUpdateCount > 0 && !isWorkspaceClosed(query.error ?? lastError);
   return {
     unanswered,
     error: unanswered ? (query.error ?? lastError) : null,

@@ -1,4 +1,5 @@
-import { useMutation, useQueries, useQueryClient, type UseQueryOptions, type UseQueryResult } from "@tanstack/react-query";
+import { useQueries, useQueryClient, type UseQueryOptions, type UseQueryResult } from "@tanstack/react-query";
+import { useMutation } from "../hooks/useMutation";
 import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -8,10 +9,13 @@ import type { InvitationPreview } from "../domain/types";
 import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
 import { AuthShell } from "../components/AuthShell";
+import { useCompanyAddress } from "../lib/companyAddress";
 import { ErrorNote } from "../components/ErrorNote";
 import { ProviderChoices } from "../components/ProviderChoices";
 import { useAuthMethods } from "../hooks/useAuthMethods";
 import { formatLockDeadline, lockedUntilOf } from "../lib/accountLock";
+import { COMPANIES_ROUTE, chooseCompanyRoute, refusedThisVisit, tenantsQueryOptions } from "../lib/companies";
+import type { Tenant } from "../api/tenants";
 import { displayNameProblem, trimDisplayName } from "../lib/displayName";
 import {
   forgetInviteToken,
@@ -136,6 +140,11 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const redirect = (location.state ?? null) as LoginRedirectState | null;
   const from = inAppPath(redirect?.from);
   const methods = useAuthMethods();
+  // The companies build (TAS-500): no provider buttons — the blueprint has not
+  // described a provider sign-in yet (§4.33, api-contract-guard §2) — and a
+  // company to go to once signed in (§4.33 «Когда»).
+  const companies = useCompanyAddress();
+  const providers = companies ? [] : methods.providers;
   const signup = useSignup();
   const capturedToken = useSyncExternalStore(subscribeInviteToken, heldInviteToken);
   // The refusal a provider sign-in came back with (§4.31): read once from the
@@ -428,11 +437,32 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   };
 
   const submit = useMutation({
-    mutationFn: async (): Promise<"signedIn" | "activated"> => {
+    mutationFn: async (): Promise<"signedIn" | "activated" | "adminCode" | { route: string } | { picker: string | null }> => {
       if (active === "signin") {
-        await taskaApi.login({ email, password });
-        queryClient.setQueryData(["me"], await taskaApi.getCurrentUser());
-        return "signedIn";
+        // Today's build: `login` itself, as before. The companies build: the
+        // account session, and a GLOBAL_ADMIN's emailed-code dead end (§4.33).
+        const signedIn = await taskaApi.signIn({ email, password });
+        if (signedIn.status === "ADMIN_MFA_REQUIRED") return "adminCode";
+        if (!companies) {
+          queryClient.setQueryData(["me"], await taskaApi.getCurrentUser());
+          return "signedIn";
+        }
+        // The account and the list side by side — two rounds after the
+        // password, not three (api-contract-guard N3) — while the button still
+        // says «Signing in»; a failed list is the picker's to say (§4.33).
+        const [me, tenants] = await Promise.all([
+          taskaApi.getCurrentUser(),
+          queryClient.fetchQuery(tenantsQueryOptions(taskaApi)).catch(() => null),
+        ]);
+        queryClient.setQueryData(["me"], me);
+        if (tenants === null) return { picker: from ?? null };
+        const choice = chooseCompanyRoute({
+          remembered: from ?? null,
+          hint: taskaApi.lastCompanyHint(),
+          tenants: tenants as Tenant[],
+          refusedThisVisit: refusedThisVisit(),
+        });
+        return "route" in choice ? { route: choice.route } : { picker: choice.from };
       }
       // Out of somebody else's session first, and before the request rather
       // than after it: a 401 from the activation must not read as that
@@ -469,6 +499,12 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
         forgetInviteToken();
         queryClient.removeQueries({ queryKey: [INVITATION_PREVIEW_KEY] });
         navigate("/login", { replace: true, state: { activated: true } satisfies LoginRedirectState });
+        return;
+      }
+      if (outcome === "adminCode") return;
+      if (typeof outcome === "object") {
+        if ("route" in outcome) companies?.go(outcome.route, { replace: true });
+        else navigate(COMPANIES_ROUTE, { replace: true, state: { from: outcome.picker, afterSignIn: true } });
         return;
       }
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
@@ -567,7 +603,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
           <SignupPanel
             onProviderStart={dropNotices}
             onSubmit={dropNotices}
-            providers={methods.providers}
+            providers={providers}
             returnTo={returnTo}
             signup={signup}
           />
@@ -634,6 +670,14 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                   {submit.isPending ? "Signing in" : "Sign in"}
                 </button>
                 {submit.isError ? <LoginFailure error={submit.error} key={submit.submittedAt} /> : null}
+                {submit.isSuccess && submit.data === "adminCode" ? (
+                  // Not a refusal (§4.33 «Вход администратора»): the account is
+                  // right and the code it needs has no screen in this build.
+                  // Nothing is stored; the fields stay as they are.
+                  <p className="auth-admin-note" key={submit.submittedAt} role="status">
+                    Administrator accounts sign in with a code sent by email. This version of Taska can’t ask for it yet.
+                  </p>
+                ) : null}
                 <p className="auth-hint">Forgot your password? Taska has no password reset yet.</p>
               </>
             ) : capturedToken === null ? (
@@ -828,7 +872,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
         {/* Not on `/invite` (§4.31): a link from an email is about that
             invitation, and its Sign in tab is the password form alone. */}
         {active === "signin" && initialMode !== "invite" ? (
-          <ProviderChoices onStart={dropNotices} providers={methods.providers} returnTo={returnTo} tab="signin" />
+          <ProviderChoices onStart={dropNotices} providers={providers} returnTo={returnTo} tab="signin" />
         ) : null}
       </div>
     </AuthShell>

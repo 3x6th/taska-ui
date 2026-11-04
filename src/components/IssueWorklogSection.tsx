@@ -1,6 +1,7 @@
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../hooks/useMutation";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
+import { apiErrorFacts, isUndeployedRoute, isWorkspaceClosed } from "../api/errors";
 import { refusalWords } from "../lib/projectArchive";
 import type { AddIssueWorklogInput, UpdateIssueWorklogInput } from "../api/TaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE, WORKLOG_COMMENT_MAX_LENGTH } from "../api/TaskaApi";
@@ -118,10 +119,15 @@ export function IssueWorklogSection({
   const today = localDateOnly();
 
   const read = issueWorklogsOptions(projectId, issueId);
-  const worklogsQuery = useInfiniteQuery({ ...read, retryOnMount: !prefetched });
+  // Asked again on mount when the prefetch's answer belonged to a company
+  // session the tab has since left (TAS-500) — and that answer is never shown.
+  const worklogsQuery = useInfiniteQuery({
+    ...read,
+    retryOnMount: !prefetched || isWorkspaceClosed(queryClient.getQueryState(read.queryKey)?.error),
+  });
   // A failed "Show more" is not a failed read: the pages already drawn stay,
   // and the foot says what did not load (§4.9).
-  const loadFailed = worklogsQuery.isError && !worklogsQuery.isFetchNextPageError;
+  const loadFailed = worklogsQuery.isError && !worklogsQuery.isFetchNextPageError && !isWorkspaceClosed(worklogsQuery.error);
   const undeployed = loadFailed && isUndeployedRoute(worklogsQuery.error, UNDEPLOYED_ROUTE_MESSAGE);
   const pages = useMemo(() => worklogsQuery.data?.pages ?? [], [worklogsQuery.data]);
   const worklogs = useMemo(() => drawnWorklogs(pages), [pages]);

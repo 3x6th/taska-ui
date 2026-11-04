@@ -1,4 +1,5 @@
-import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../../hooks/useMutation";
 import { Check, Copy } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import {
@@ -11,6 +12,7 @@ import { taskaApi } from "../../api/client";
 import { apiErrorFacts, isUndeployedRoute } from "../../api/errors";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../../api/TaskaApi";
 import { ApiNotice } from "../../components/ApiNotice";
+import { useCompanyAddress } from "../../lib/companyAddress";
 import { ErrorNote } from "../../components/ErrorNote";
 import { Modal } from "../../components/Modal";
 import type { AccessToken, AccessTokenList, IssuedAccessToken } from "../../domain/types";
@@ -217,6 +219,9 @@ function AccessTokens({
   const confirmPrefix = useId();
   const revokeKey = ["access-tokens", "revoke", userId] as const;
   const revoking = useIsMutating({ mutationKey: revokeKey }) > 0;
+  // The companies build issues no token — the list and revoke stay (TAS-500,
+  // DESIGN.md §4.33; a token for a company is TAS-509's).
+  const canCreate = useCompanyAddress() === null;
 
   /**
    * An unseen token's id goes once its token has left the list: revoked, or
@@ -251,7 +256,12 @@ function AccessTokens({
     const target = pendingFocus.current;
     if (!target) return;
     pendingFocus.current = null;
-    (target === "create" ? createButton.current : revokeButtons.current.get(target))?.focus();
+    // Create token is not offered in the companies build (TAS-500): with the
+    // last row gone, focus goes to the section's heading (`tabIndex=-1`, §7
+    // exception 4) rather than to <body>.
+    const fallback =
+      createButton.current ?? document.querySelector<HTMLElement>(".settings-area .area-section-title");
+    (target === "create" ? fallback : revokeButtons.current.get(target))?.focus();
   });
 
   const revoke = useMutation({
@@ -318,9 +328,15 @@ function AccessTokens({
   return (
     <>
       <div className="tokens-actions">
-        <button className="primary-button" onClick={onCreate} ref={createButton} type="button">
-          Create token
-        </button>
+        {canCreate ? (
+          <button className="primary-button" onClick={onCreate} ref={createButton} type="button">
+            Create token
+          </button>
+        ) : (
+          // Where Create token stands (§4.33 «Что ещё меняет сборка B2B»): a
+          // token for one company is TAS-509's; until then the list and revoke.
+          <p className="tokens-unoffered">This version of Taska can’t create tokens yet.</p>
+        )}
       </div>
 
       {query.isError && !query.data ? (

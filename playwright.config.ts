@@ -7,10 +7,10 @@ import { defineConfig } from "@playwright/test";
 // `TASKA_E2E_PORT` moves it, for a second worktree running the gate while
 // another checkout runs its own: with `strictPort` and no server reuse, two
 // suites on one port do not share a server, the second one simply fails to
-// start. Moving the port keeps both properties. The suite takes **two** ports,
-// `TASKA_E2E_PORT` and the one above it (the hash-routed server below), so a
-// second run has to sit at least two away from the first — 5185 beside the
-// default 5183, not 5184.
+// start. Moving the port keeps both properties. The suite takes **three** ports,
+// `TASKA_E2E_PORT` and the two above it (the hash-routed server and the B2B
+// server below), so a second run has to sit at least three away from the first —
+// 5186 beside the default 5183.
 const PORT = Number(process.env.TASKA_E2E_PORT) || 5183;
 // A second server one port up, built the way the Pages build routes: by the
 // hash. It exists for the specs that are *about* that — the invitation link
@@ -22,6 +22,12 @@ const PORT = Number(process.env.TASKA_E2E_PORT) || 5183;
 // under `/taska-ui/` could not host.
 const HASH_PORT = PORT + 1;
 const HASH_BASE = "/";
+// A third server two ports up, the B2B build (TAS-500): `VITE_TASKA_TENANTS`
+// on, so sign-in leads to the company step and every route lives under
+// `/c/{companyId}`. Only the company specs (`e2e/companies*.spec.ts`) address it,
+// by absolute URL like the hash server; every other spec stays on the first
+// server and keeps proving the flag-off build the stand runs.
+const B2B_PORT = PORT + 2;
 
 // CI runs this suite as shards, each on a runner of its own, so a shard takes
 // one worker per vCPU ("100%") rather than Playwright's default half. Each
@@ -87,6 +93,19 @@ export default defineConfig({
         VITE_BASE_PATH: HASH_BASE,
         VITE_ROUTER_MODE: "hash",
         VITE_TASKA_MCP_URL: "http://localhost:8087/mcp",
+      },
+    },
+    {
+      command: `npm run dev -- --port ${B2B_PORT} --strictPort`,
+      url: `http://localhost:${B2B_PORT}`,
+      reuseExistingServer: false,
+      env: {
+        VITE_TASKA_API_MODE: "mock",
+        VITE_TASKA_API_PROXY_TARGET: "",
+        VITE_BASE_PATH: "/",
+        VITE_ROUTER_MODE: "browser",
+        VITE_TASKA_MCP_URL: "http://localhost:8087/mcp",
+        VITE_TASKA_TENANTS: "true",
       },
     },
   ],

@@ -1,5 +1,7 @@
+import { tenantsEnabled } from "../lib/tenancy";
 import type { TaskaApi } from "./TaskaApi";
 import { MockTaskaApi } from "./mock/MockTaskaApi";
+import { createCompaniesMockApi } from "./mock/mockCompanies";
 import { RestTaskaApi } from "./rest/RestTaskaApi";
 
 // `||` instead of `??`: CI may pass unset repository variables as empty strings.
@@ -11,8 +13,11 @@ const mode = import.meta.env.VITE_TASKA_API_MODE || "rest";
 // deployed builds point directly at the gateway via VITE_TASKA_API_BASE_URL.
 const baseUrl = import.meta.env.VITE_TASKA_API_BASE_URL || "/api/v1";
 
+// `VITE_TASKA_TENANTS` (src/lib/tenancy.ts) picks today's build or the companies
+// build (TAS-500); off, both constructors are the ones they always were.
 function createApi(): TaskaApi {
-  return mode === "mock" ? new MockTaskaApi() : new RestTaskaApi(baseUrl);
+  if (mode === "mock") return tenantsEnabled ? createCompaniesMockApi() : new MockTaskaApi();
+  return new RestTaskaApi(baseUrl, { tenancy: tenantsEnabled });
 }
 
 export const taskaApi: TaskaApi = createApi();

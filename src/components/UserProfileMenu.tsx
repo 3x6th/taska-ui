@@ -1,5 +1,9 @@
 import { useId, useRef, useState, type MouseEvent } from "react";
-import { LogOut, Settings, ShieldCheck } from "lucide-react";
+import { ArrowLeftRight, LogOut, Settings, ShieldCheck } from "lucide-react";
+import { COMPANIES_ROUTE } from "../lib/companies";
+import { useCompanyName } from "../hooks/useCompanies";
+import { AddressLink } from "./CompanyRouter";
+import { useCompanyAddress } from "../lib/companyAddress";
 import { Link, useLocation } from "react-router-dom";
 import type { User } from "../domain/types";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
@@ -28,6 +32,15 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
   // gateway that states no role counts as not an admin, which is lossy in the
   // safe direction (docs/ai/API-DIVERGENCE.md).
   const isGlobalAdmin = user?.globalRole === "GLOBAL_ADMIN";
+  // The companies build (TAS-500, §4.16): the tab's company first in the list,
+  // «Taska role» for the account's role beside it, «Switch company» on top of
+  // the actions, and no Administration for anyone (TAS-510).
+  const address = useCompanyAddress();
+  const companies = address !== null;
+  const companyName = useCompanyName(address?.companyId ?? null);
+  // Read off the address rather than `getTenancy()`: only the companies build
+  // has one, and so this component asks nothing of an API it does not need.
+  const adminConsole = !companies;
 
   // Escape and a press outside, from the hook the notifications popover and the
   // global search dropdown share (§4.16, §7). This used to be the only copy in
@@ -93,6 +106,12 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                 </div>
               </header>
               <dl className="user-profile-details">
+                {companies && address?.companyId ? (
+                  <div className="user-profile-company-row">
+                    <dt>Company</dt>
+                    <dd className="user-profile-company">{companyName ?? "This company"}</dd>
+                  </div>
+                ) : null}
                 <div>
                   <dt>Status</dt>
                   <dd>
@@ -114,7 +133,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                     about the response. */}
                 {person.globalRole ? (
                   <div>
-                    <dt>Role</dt>
+                    <dt>{companies ? "Taska role" : "Role"}</dt>
                     <dd>{globalRoleLabel(person.globalRole)}</dd>
                   </div>
                 ) : null}
@@ -129,6 +148,17 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
               and none between them: Log out is already set apart by
               `--danger` (§4.16, art-director's ruling 6 on TAS-380). */}
           <div className="user-profile-actions">
+            {companies ? (
+              <AddressLink
+                className="user-profile-link"
+                onFollow={() => setOpen(false)}
+                path={COMPANIES_ROUTE}
+                state={{ focusHeading: true }}
+              >
+                <ArrowLeftRight aria-hidden="true" size={15} />
+                Switch company
+              </AddressLink>
+            ) : null}
             {/* Every reader, and even when the profile did not load: Appearance
                 needs no profile, and My profile says for itself that it could
                 not read one. A link, as Administration is: it navigates, so it
@@ -142,7 +172,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
               <Settings aria-hidden="true" size={15} />
               Settings
             </Link>
-            {isGlobalAdmin ? (
+            {isGlobalAdmin && adminConsole ? (
               // Absent — not disabled, not hidden — for everyone else; hiding it
               // is not the permission control, the server is
               // (`/api/v1/readonly/*` is GLOBAL_ADMIN-only and enumerates

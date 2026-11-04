@@ -1,4 +1,5 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../hooks/useMutation";
 import { useEffect, useId, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";

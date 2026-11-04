@@ -1,13 +1,19 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../hooks/useMutation";
 import { useEffect } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
+import { AuthShellFrame } from "../components/AuthShell";
+import { CompanyGate, ResolveCompanyAddress } from "../components/CompanyGate";
+import { LeaveCompanyPrefix } from "../components/CompanyRouter";
+import { useAppPath, useCompanyAddress } from "../lib/companyAddress";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { RedirectSignedIn } from "../components/RedirectSignedIn";
 import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE, RequireSession } from "../components/RequireSession";
 import type { Theme } from "../hooks/useTheme";
 import { useTheme } from "../hooks/useTheme";
+import { OUTSIDE_COMPANY_ROUTES } from "../lib/companies";
 import { holdInviteToken, inviteTokenIn } from "../lib/inviteLink";
 import { AdminAuditSection } from "./admin/AdminAuditSection";
 import { AdminDataSection } from "./admin/AdminDataSection";
@@ -21,6 +27,7 @@ import { adminSections } from "./admin/sections";
 import { AppFailureScreen } from "./AppFailureScreen";
 import { AuthCallbackScreen } from "./AuthCallbackScreen";
 import { BoardScreen } from "./BoardScreen";
+import { CompaniesScreen } from "./CompaniesScreen";
 import { IssueKeyScreen } from "./IssueKeyScreen";
 import { LoginScreen } from "./LoginScreen";
 import { NotFoundScreen } from "./NotFoundScreen";
@@ -43,6 +50,10 @@ export function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
+  // The companies build (TAS-500): the address names the company (§5.1).
+  // `null` in today's build, which renders the routes below it as it always has.
+  const companies = useCompanyAddress();
+  const appPath = useAppPath();
   const logout = useMutation({
     mutationFn: () => taskaApi.logout(),
     onSuccess: () => {
@@ -57,7 +68,9 @@ export function App() {
     logoutPending: logout.isPending,
   };
 
-  const from = location.pathname + location.search;
+  // With the company prefix in the companies build, so the sign-in after an
+  // expiry returns to the same company; identical to the router path in today's.
+  const from = appPath;
   // The public auth routes, where no session is there to die: `/auth/callback`
   // (TAS-426) exchanges a code without the session and then replaces it.
   const onAuthRoute =
@@ -88,6 +101,92 @@ export function App() {
       navigate("/login", { replace: true, state: { from, expired: true } satisfies LoginRedirectState });
     });
   }, [from, onAuthRoute, navigate, queryClient]);
+
+  if (companies !== null) {
+    return (
+      <ErrorBoundary fallback={(error) => <AppFailureScreen error={error} />} resetKey={location.pathname}>
+        {companies.companyId === null ? (
+          // Outside every company (§5.1): the sign-in and the picker share
+          // one card (§4.33), and an in-company page asked for without a
+          // company opens in the tab's — or in the one chosen for it.
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <RequireSession>
+                  <ResolveCompanyAddress />
+                </RequireSession>
+              }
+            />
+            <Route element={<AuthShellFrame theme={theme} toggleTheme={toggleTheme} />}>
+              <Route
+                path="/login"
+                element={
+                  <RedirectSignedIn>
+                    <LoginScreen {...screenProps} initialMode="signin" />
+                  </RedirectSignedIn>
+                }
+              />
+              <Route
+                path="/companies"
+                element={
+                  <RequireSession>
+                    <CompaniesScreen {...screenProps} />
+                  </RequireSession>
+                }
+              />
+            </Route>
+            <Route path="/invite" element={<LoginScreen {...screenProps} initialMode="invite" />} />
+            <Route path="/auth/callback" element={<AuthCallbackScreen theme={theme} toggleTheme={toggleTheme} />} />
+            {["/projects/*", "/browse/*", "/settings/*"].map((path) => (
+              <Route
+                key={path}
+                path={path}
+                element={
+                  <RequireSession>
+                    <ResolveCompanyAddress />
+                  </RequireSession>
+                }
+              />
+            ))}
+            {/* No /admin in the companies build (§4.16): the console needs the
+                administrator's emailed code (TAS-510). */}
+            <Route path="*" element={<NotFoundScreen />} />
+          </Routes>
+        ) : (
+          // Inside `/c/{companyId}` — the router's basename, so every path
+          // here is the one today's build has. The gate makes the company the
+          // tab's and gives the pages a query client of its session's own.
+          <Routes>
+            <Route path="/" element={<Navigate to={DEFAULT_SIGNED_IN_ROUTE} replace />} />
+            {OUTSIDE_COMPANY_ROUTES.map((path) => (
+              <Route key={path} path={`${path}/*`} element={<LeaveCompanyPrefix />} />
+            ))}
+            <Route
+              element={
+                <RequireSession>
+                  <CompanyGate logoutPending={logout.isPending} onLogout={() => logout.mutate()} />
+                </RequireSession>
+              }
+            >
+              <Route path="/projects" element={<ProjectsScreen {...screenProps} />} />
+              <Route path="/projects/:projectId/board" element={<BoardScreen {...screenProps} />} />
+              <Route path="/projects/:projectId/issues/:issueId" element={<BoardScreen {...screenProps} />} />
+              <Route path="/browse/:issueKey" element={<IssueKeyScreen />} />
+              <Route path="/settings" element={<SettingsScreen {...screenProps} setTheme={setTheme} />}>
+                <Route index element={<Navigate to="/settings/profile" replace />} />
+                <Route path="/settings/profile" element={<SettingsProfileSection />} />
+                <Route path="/settings/tokens" element={<SettingsTokensSection />} />
+                <Route path="/settings/connected-apps" element={<SettingsConnectedAppsSection />} />
+                <Route path="/settings/appearance" element={<SettingsAppearanceSection />} />
+              </Route>
+            </Route>
+            <Route path="*" element={<NotFoundScreen />} />
+          </Routes>
+        )}
+      </ErrorBoundary>
+    );
+  }
 
   return (
     // Around every route and outside every shell (TAS-173): a page that throws

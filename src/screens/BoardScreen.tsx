@@ -10,17 +10,8 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import {
-  infiniteQueryOptions,
-  keepPreviousData,
-  queryOptions,
-  replaceEqualDeep,
-  useInfiniteQuery,
-  useMutation,
-  usePrefetchInfiniteQuery,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { infiniteQueryOptions, keepPreviousData, queryOptions, replaceEqualDeep, useInfiniteQuery, usePrefetchInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../hooks/useMutation";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Shapes, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
 import {
   useEffect,
@@ -51,7 +42,9 @@ import {
   isMissingOrForbidden,
   isProjectArchived,
   isTransitionConflict,
+  isWorkspaceClosed,
   IssueVersionConflictError,
+  reportable,
 } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
 import {
@@ -3194,7 +3187,7 @@ function IssuePanel({
     isTransitionConflict(transitionIssue.error) || transitionIssue.error instanceof UnsentTransition
       ? null
       : transitionIssue.error;
-  const writeError = editRefusal ?? transitionRefusal ?? deleteIssue.error;
+  const writeError = reportable(editRefusal) ?? reportable(transitionRefusal) ?? reportable(deleteIssue.error);
   const shownError: unknown = dateNotice ? null : (conflict?.error ?? writeError);
   const panelNotice = dateNotice
     ? planningDateIncompleteEditMessage(dateNotice.field)
@@ -5978,7 +5971,13 @@ function CommentsSection({
 
   // The panel has usually started this read already (`issueCommentsOptions`).
   const commentsRead = issueCommentsOptions(projectId, issueId);
-  const commentsQuery = useInfiniteQuery({ ...commentsRead, retryOnMount: !prefetched });
+  // Asked again on mount when the prefetch's answer belonged to a company
+  // session the tab has since left (TAS-500): that is no answer about the comments.
+  const commentsQuery = useInfiniteQuery({
+    ...commentsRead,
+    retryOnMount: !prefetched || isWorkspaceClosed(queryClient.getQueryState(commentsRead.queryKey)?.error),
+  });
+  const commentsReadError = reportable(commentsQuery.error);
 
   // Comment mutations also append to the issue history, so the activity feed has to refetch.
   const refresh = () =>
@@ -6009,7 +6008,7 @@ function CommentsSection({
 
   const comments = commentsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const totalCount = commentsQuery.data?.pages[0]?.totalCount ?? comments.length;
-  const mutationError = addComment.error ?? updateComment.error ?? deleteComment.error;
+  const mutationError = reportable(addComment.error) ?? reportable(updateComment.error) ?? reportable(deleteComment.error);
   const mutationWords = mutationError ? (refusalWords(mutationError) ?? mutationError.message) : "";
   const mutationRequestId = mutationError ? apiErrorFacts(mutationError).requestId : null;
   // The composer stays for a draft the right to comment left unsent — an archive,
@@ -6093,8 +6092,8 @@ function CommentsSection({
         </form>
       ) : null}
 
-      {commentsQuery.isError ? (
-        <ErrorNote requestId={apiErrorFacts(commentsQuery.error).requestId}>{commentsQuery.error.message}</ErrorNote>
+      {commentsReadError ? (
+        <ErrorNote requestId={apiErrorFacts(commentsReadError).requestId}>{commentsReadError.message}</ErrorNote>
       ) : null}
       {/* A write's refusal, announced since TAS-259: a confirmed delete moves
           focus to the heading, so without a word a refusal would just appear.
@@ -7407,7 +7406,7 @@ function CreateIssueModal({
   const formNotice =
     dateNotice && !archived
       ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE
-      : createIssue.isError
+      : createIssue.isError && reportable(createIssue.error)
         ? (typeRefused ?? refusalWords(createIssue.error) ?? createIssue.error.message)
         : null;
   /**

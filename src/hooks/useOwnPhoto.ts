@@ -1,4 +1,5 @@
-import { useMutation, useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import { useMutation } from "./useMutation";
 import { useState } from "react";
 import { taskaApi } from "../api/client";
 import { AVATAR_ACCEPTED_SUMMARY, AVATAR_MAX_SIZE_BYTES, avatarRefusalKind, type AvatarRefusalKind } from "../api/avatars";

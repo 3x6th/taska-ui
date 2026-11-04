@@ -1,7 +1,7 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: af7ab57ead44304b89bbd47dabeeba45b761ce16 (develop, 2026-10-29; body unchanged since d886b031)
-# Fetched: 2026-11-02
+# Backend commit: 758f8fc637b3b6aa79e10bb3eb6e34e096dd82a9 (develop, 2026-11-03; body unchanged since d886b031)
+# Fetched: 2026-11-04
 #
 # The backend repository is the single source of truth for this contract.
 # This copy exists so read-only reviewers without network access can audit

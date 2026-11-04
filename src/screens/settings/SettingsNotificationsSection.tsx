@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../../hooks/useMutation";
 import { ExternalLink } from "lucide-react";
 import { useRef, useState } from "react";
 import { taskaApi } from "../../api/client";

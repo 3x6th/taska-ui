@@ -45,6 +45,68 @@ export const isIssueVersionConflict = (error: unknown): error is IssueVersionCon
   error instanceof IssueVersionConflictError;
 
 /**
+ * The answer belonged to a company session this tab has since left (TAS-500,
+ * the B2B build only; api-contract-guard §4). Every request captures the tab's
+ * context epoch when it is made; the epoch moves on a switch, a closed company,
+ * a re-selected session and on signing in or out, and an answer that arrives
+ * for an older epoch — success or failure alike — is replaced by this, and the
+ * old request's `AbortController` is aborted. Thrown by both implementations,
+ * from the one session layer they share (`src/api/webSession.ts`).
+ *
+ * **Every error surface ignores it**, and nothing here can be mistaken for a
+ * gateway's refusal: it carries no `code`, `status`, `details` or `requestId`,
+ * and `apiErrorFacts` reads it as having no facts at all — not even a message,
+ * since the sentence is the client's and never the server's. So
+ * `isMissingOrForbidden`, `isConflict`, `isUndeployedRoute`, `isAccountLocked`
+ * and every `hasRefusalReason` predicate answer `false` for it (unit-tested).
+ * What the reader is told about a closed company comes from
+ * `onWorkspaceClosed`, never from a screen's error.
+ */
+export class WorkspaceClosedError extends Error {
+  constructor() {
+    super("This answer belongs to a company session the tab has left");
+    this.name = "WorkspaceClosedError";
+  }
+}
+
+/** Whether a failure is only "this answer is from a company session the tab has left" — ignore it. */
+export const isWorkspaceClosed = (error: unknown): error is WorkspaceClosedError => error instanceof WorkspaceClosedError;
+
+/**
+ * The failure a screen may show, or `null` for a `WorkspaceClosedError` —
+ * which no screen shows, ever: its message is the client's, and the shell says
+ * what happened to the company (DESIGN.md §4.35). For the places that print an
+ * error's own message.
+ */
+export function reportable<E>(error: E | null | undefined): E | null {
+  return error === undefined || error === null || isWorkspaceClosed(error) ? null : error;
+}
+
+/**
+ * An operation the B2B build does not offer (TAS-500, api-contract-guard §2,
+ * B5, B8), refused by the client without a request in both implementations:
+ * the legacy `POST /auth/login` and `/auth/refresh` (the account signs in with
+ * `signIn` instead), the provider sign-in's exchange and name step (the
+ * blueprint has not described their B2B answer — ask A8), issuing an access
+ * token (an unbound token is what contracts §2 forbids — TAS-509), and the
+ * administration console with the invitation route (a GLOBAL_ADMIN session
+ * needs the emailed code — TAS-510). `TaskaApi.getTenancy` tells the screens,
+ * which hide the controls; this is what a caller that did not ask meets.
+ *
+ * Like `WorkspaceClosedError` it carries no gateway field, and `apiErrorFacts`
+ * reads none from it: it is not a refusal anybody's server made.
+ */
+export class TenancyUnavailableError extends Error {
+  constructor(readonly operation: string) {
+    super(`${operation} is not offered in the companies build`);
+    this.name = "TenancyUnavailableError";
+  }
+}
+
+export const isTenancyUnavailable = (error: unknown): error is TenancyUnavailableError =>
+  error instanceof TenancyUnavailableError;
+
+/**
  * Everything a failure can tell the person looking at it. Every field is
  * `null` when the error did not carry it, so a caller never has to repeat the
  * `instanceof` / `typeof` dance that used to sit inline in each screen — and,
@@ -107,7 +169,11 @@ export function errorDetails(value: unknown): ErrorDetails | null {
 }
 
 export function apiErrorFacts(error: unknown): ApiErrorFacts {
-  if (!(error instanceof Error)) return { message: null, requestId: null, status: null, code: null, details: null };
+  // The two client-made errors of the companies build state no fact a screen
+  // may print as the server's — see `WorkspaceClosedError`.
+  if (!(error instanceof Error) || error instanceof WorkspaceClosedError || error instanceof TenancyUnavailableError) {
+    return { message: null, requestId: null, status: null, code: null, details: null };
+  }
   const { code, status, requestId, details } = error as Partial<{
     code: unknown;
     status: unknown;
@@ -415,4 +481,108 @@ export function isTransitionConflict(error: unknown): boolean {
 export function isAccountLocked(error: unknown): boolean {
   const { code, status } = apiErrorFacts(error);
   return code === "PERMISSION_DENIED" && (status === 403 || status === null);
+}
+
+/**
+ * The blueprint's `ErrorCode` (TAS-500, `docs/contract/b2b/b2b-openapi.yaml` at
+ * develop `758f8fc6`): the `code` of a `Problem`. Disjoint from the gRPC names
+ * the gateway's legacy envelope carries (`NOT_FOUND`, `PERMISSION_DENIED`, …),
+ * so a code is one or the other and never both.
+ */
+export const B2B_ERROR_CODES = [
+  "AUTHENTICATION_REQUIRED",
+  "MFA_REQUIRED",
+  "TOKEN_REVOKED",
+  "TENANT_REQUIRED",
+  "TENANT_MISMATCH",
+  "TENANT_NOT_FOUND",
+  "MEMBERSHIP_INACTIVE",
+  "SCOPE_DENIED",
+  "SESSION_REQUIRED",
+  "ADMIN_GRANT_REQUIRED",
+  "ADMIN_SCOPE_DENIED",
+  "RESOURCE_NOT_FOUND",
+  "VERSION_CONFLICT",
+  "IDEMPOTENCY_CONFLICT",
+  "QUOTA_EXCEEDED",
+  "CAPABILITY_DISABLED",
+  "READ_ONLY",
+  "OWNER_REQUIRED",
+  "LAST_ADMIN",
+  "OWNER_MEMBERSHIP_PROTECTED",
+  "INVITATION_EXPIRED",
+  "INVITATION_EMAIL_MISMATCH",
+  "FREE_ELIGIBILITY_USED",
+  "PAYMENT_PENDING",
+  "INVALID_STATE",
+  "CONFIRMATION_REQUIRED",
+  "CONFIRMATION_EXPIRED",
+  "RATE_LIMITED",
+  "DEPENDENCY_UNAVAILABLE",
+  "POLICY_NOT_CONFIGURED",
+  "VALIDATION_FAILED",
+] as const;
+export type B2bErrorCode = (typeof B2B_ERROR_CODES)[number];
+
+export const isB2bErrorCode = (value: unknown): value is B2bErrorCode =>
+  typeof value === "string" && (B2B_ERROR_CODES as readonly string[]).includes(value);
+
+/**
+ * The one classifier of a companies-build refusal (api-contract-guard B6): the
+ * `Problem.code` when it is one of the blueprint's, otherwise the legacy
+ * envelope's `details.reason` when *that* is one — because the blueprint is
+ * silent on how the existing data routes will word a tenant refusal once
+ * TAS-316 scopes them (ask A6), and either envelope may carry it. Anything
+ * else is `null`: an unknown code never closes a company or reads as one of
+ * these. The reason is read as an own property, as `errorDetails` asks.
+ *
+ * Not inert in today's build, though nothing there calls it: the stand's
+ * `LAST_ADMIN` refusal (400 `FAILED_PRECONDITION`, `details.reason`
+ * `LAST_ADMIN`, backend TAS-394) carries one of the blueprint's codes as its
+ * reason, so this answers `LAST_ADMIN` for it. Only the companies build's
+ * session layer reads it, and `LAST_ADMIN` closes nothing there.
+ */
+export function refusalCode(error: unknown): B2bErrorCode | null {
+  const { code, details } = apiErrorFacts(error);
+  if (isB2bErrorCode(code)) return code;
+  const reason = details !== null && Object.hasOwn(details, "reason") ? details.reason : null;
+  return isB2bErrorCode(reason) ? reason : null;
+}
+
+/**
+ * `Problem.reasons` — the restrictions behind a `READ_ONLY` or
+ * `CAPABILITY_DISABLED` refusal (`PLATFORM_BLOCK`, `OWNER_PAUSE`, `PAYMENT_*`,
+ * `OVER_QUOTA`, `PENDING_FIRST_PAYMENT`, or a code this build does not know,
+ * kept as it came). Empty when the error carried none — every error but a
+ * `Problem`'s.
+ */
+export function refusalReasons(error: unknown): readonly string[] {
+  if (!(error instanceof Error) || error instanceof WorkspaceClosedError || error instanceof TenancyUnavailableError) {
+    return [];
+  }
+  return toReasons((error as { reasons?: unknown }).reasons);
+}
+
+/** `Problem.reasons` as a body carried it: the strings, in order; anything else dropped. */
+export function toReasons(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item !== "") : [];
+}
+
+/** `FieldViolation` — one field the server refused, in its own words (`Problem.violations`). */
+export interface FieldViolation {
+  field: string;
+  code: string;
+  message: string;
+}
+
+/** `Problem.violations` as a body carried it: only entries with all three strings. */
+export function toFieldViolations(value: unknown): FieldViolation[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): FieldViolation[] => {
+    if (typeof item !== "object" || item === null) return [];
+    const { field, code, message } = item as Record<string, unknown>;
+    return typeof field === "string" && typeof code === "string" && typeof message === "string"
+      ? [{ field, code, message }]
+      : [];
+  });
 }

@@ -33,6 +33,8 @@ const run = promisify(execFile);
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SNAPSHOT = join(ROOT, "docs/contract/openapi.yml");
 const PENDING_DIR = join(ROOT, "docs/contract/pending");
+const B2B = join(ROOT, "docs/contract/b2b/b2b-openapi.yaml");
+const B2B_UPSTREAM = "docs/b2b/contracts/b2b-openapi.yaml";
 const REPO = "VladislavYurin/taska-backend";
 
 /** `#` comments only: every pin lives in a file header, never in the YAML body. */
@@ -122,6 +124,46 @@ async function checkPending(file, problems) {
   );
 }
 
+/**
+ * The B2B blueprint pins a `develop` commit, but develop moves on every merge
+ * while the blueprint changes only now and then. So the question is not "is the
+ * pin develop's head" but "is the file at the pin the file at develop's head" —
+ * compared by blob SHA, which is the diff-the-two-heads lesson in the pending
+ * README applied mechanically.
+ */
+async function checkB2b(problems) {
+  let text;
+  try {
+    text = await readFile(B2B, "utf8");
+  } catch {
+    return; // No vendored blueprint is a valid state.
+  }
+  const recorded = /^#\s*Backend commit:\s*([0-9a-f]{7,40})\b/m.exec(header(text))?.[1];
+  if (!recorded) {
+    problems.push(`docs/contract/b2b/b2b-openapi.yaml: no "Backend commit:" line in the header — nothing to verify against.`);
+    return;
+  }
+  const blob = (ref) => gh("api", `repos/${REPO}/contents/${B2B_UPSTREAM}?ref=${ref}`, "--jq", ".sha");
+  let pinned;
+  let live;
+  try {
+    [pinned, live] = await Promise.all([blob(recorded), blob("develop")]);
+  } catch {
+    console.log(`  ERROR   b2b-openapi.yaml          ${B2B_UPSTREAM} could not be read`);
+    problems.push(`docs/contract/b2b/b2b-openapi.yaml: ${B2B_UPSTREAM} could not be read at ${recorded} or on develop.`);
+    return;
+  }
+  if (pinned === live) {
+    console.log(`  ok      b2b-openapi.yaml          develop @ ${recorded.slice(0, 12)} (file unchanged on develop)`);
+    return;
+  }
+  console.log(`  STALE   b2b-openapi.yaml          pinned ${recorded.slice(0, 12)}, develop's copy has changed`);
+  problems.push(
+    `docs/contract/b2b/b2b-openapi.yaml: develop's ${B2B_UPSTREAM} differs from the copy pinned at ${recorded.slice(0, 12)}. ` +
+      `Refresh both files in docs/contract/b2b/, then re-read the TAS-500…517 work written against the old pin.`,
+  );
+}
+
 async function main() {
   try {
     await gh("auth", "status");
@@ -142,6 +184,7 @@ async function main() {
   }
   for (const file of files) await checkPending(file, problems);
   if (files.length === 0) console.log("  (no pending contracts)");
+  await checkB2b(problems);
 
   if (problems.length === 0) {
     console.log("\nEvery pin is current.");
