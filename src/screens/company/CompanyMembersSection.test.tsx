@@ -6,7 +6,7 @@ import type { TaskaApi } from "../../api/TaskaApi";
 import type { Invitation, Membership } from "../../api/tenantMembers";
 import { CompanyGate } from "../../components/CompanyGate";
 import { companiesHarness } from "../../test/companiesHarness";
-import { SettingsMembersSection } from "./SettingsMembersSection";
+import { CompanyMembersSection } from "./CompanyMembersSection";
 
 /*
  * Settings › Members (DESIGN.md §4.38, TAS-502) against a fake API: controls
@@ -149,7 +149,7 @@ function renderSection() {
       <h1 className="area-section-title" tabIndex={-1}>
         Members
       </h1>
-      <SettingsMembersSection />
+      <CompanyMembersSection />
     </div>,
     { wrapper: harness.wrapper },
   );
@@ -661,7 +661,7 @@ describe("a refused invitation reads the seats once (TAS-512, api-contract-guard
                 <h1 className="area-section-title" tabIndex={-1}>
                   Members
                 </h1>
-                <SettingsMembersSection />
+                <CompanyMembersSection />
               </div>
             }
           />

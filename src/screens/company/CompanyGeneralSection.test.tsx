@@ -6,7 +6,7 @@ import type { TaskaApi } from "../../api/TaskaApi";
 import type { Membership } from "../../api/tenantMembers";
 import type { Tenant } from "../../api/tenants";
 import { companiesHarness } from "../../test/companiesHarness";
-import { SettingsCompanySection } from "./SettingsCompanySection";
+import { CompanyGeneralSection } from "./CompanyGeneralSection";
 
 /*
  * Settings › General (DESIGN.md §4.39, TAS-504) against a fake API: controls
@@ -143,7 +143,7 @@ function renderSection(options: { state?: unknown } = {}) {
       <h1 className="area-section-title" tabIndex={-1}>
         General
       </h1>
-      <SettingsCompanySection />
+      <CompanyGeneralSection />
       <RouteState />
     </div>,
     { wrapper: harness.wrapper },
@@ -815,7 +815,7 @@ describe("a late answer after the reader moved away (release-reviewer F4)", () =
           General
         </h1>
         <Routes>
-          <Route path="/settings/company" element={<SettingsCompanySection />} />
+          <Route path="/settings/company" element={<CompanyGeneralSection />} />
           <Route path="/settings/profile" element={<p>profile</p>} />
         </Routes>
         <Away />

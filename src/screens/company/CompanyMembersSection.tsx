@@ -103,7 +103,7 @@ import { InviteMemberModal, type InviteDraft } from "./InviteMemberModal";
  * - **The reader's own change** — a 200 on their own row — re-enters the
  *   company: a new session, a new context, nothing said (ruling 3).
  */
-export function SettingsMembersSection() {
+export function CompanyMembersSection() {
   const address = useCompanyAddress();
   if (address?.companyId == null) return null;
   return <CompanyMembers companyId={address.companyId} />;

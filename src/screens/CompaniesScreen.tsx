@@ -19,7 +19,7 @@ import {
   tenantStateLine,
 } from "../lib/companies";
 import type { ScreenProps } from "./App";
-import { leftStatus } from "./settings/companyMembersText";
+import { leftStatus } from "./company/companyMembersText";
 
 /** What a navigation to `/companies` may carry (§4.33). */
 export interface CompaniesRouteState {

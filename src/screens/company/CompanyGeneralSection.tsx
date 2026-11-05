@@ -49,7 +49,7 @@ import {
 import { CompanyStateBlock } from "./CompanyStateBlock";
 import { isIndefinite, keyFor } from "./companyMembers";
 import { companyMembersOptions } from "./companyMembersQuery";
-import { Strip } from "./SettingsMembersSection";
+import { Strip } from "./CompanyMembersSection";
 import { TransferOwnershipModal, type TransferRefusal } from "./TransferOwnershipModal";
 
 /**
@@ -79,7 +79,7 @@ import { TransferOwnershipModal, type TransferRefusal } from "./TransferOwnershi
  *   the 200, the re-entry and the new context's `getTenant`, which then shows
  *   the reader's non-owner view (art-director B6).
  */
-export function SettingsCompanySection() {
+export function CompanyGeneralSection() {
   const address = useCompanyAddress();
   if (address?.companyId == null) return null;
   return <CompanyGeneral companyId={address.companyId} />;

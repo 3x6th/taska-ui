@@ -62,7 +62,7 @@ import { CompanyStateBlock } from "./CompanyStateBlock";
  *   refused write (both in `CompanyGate`), and once at the owner's
  *   paid-through or announced date, again 60 s later. No poll.
  */
-export function SettingsPlanSection() {
+export function CompanyPlanSection() {
   const address = useCompanyAddress();
   if (address?.companyId == null) return null;
   return <CompanyPlan companyId={address.companyId} />;

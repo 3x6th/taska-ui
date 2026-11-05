@@ -25,9 +25,9 @@ import { CompanySetupScreen } from "../screens/CompanySetupScreen";
 import { NotFoundScreen } from "../screens/NotFoundScreen";
 import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
 import type { CompaniesRouteState } from "../screens/CompaniesScreen";
-import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey } from "../screens/settings/companyGeneral";
-import { COMPANY_QUOTAS_KEY } from "../screens/settings/companyMembersQuery";
-import { COMPANY_ENTITLEMENT_KEY, refreshAfterRefusal, type CompanyMutationMeta } from "../screens/settings/companyPlan";
+import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey } from "../screens/company/companyGeneral";
+import { COMPANY_QUOTAS_KEY } from "../screens/company/companyMembersQuery";
+import { COMPANY_ENTITLEMENT_KEY, refreshAfterRefusal, type CompanyMutationMeta } from "../screens/company/companyPlan";
 
 /*
  * The company session of a tab (TAS-500): the address names a company, this

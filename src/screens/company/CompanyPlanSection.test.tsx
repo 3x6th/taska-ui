@@ -3,7 +3,7 @@ import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
 import { companiesHarness } from "../../test/companiesHarness";
-import { SettingsPlanSection } from "./SettingsPlanSection";
+import { CompanyPlanSection } from "./CompanyPlanSection";
 
 /*
  * Settings › Plan (DESIGN.md §4.40, TAS-512) against a fake API:
@@ -112,7 +112,7 @@ function renderPlan(options: { strict?: boolean; before?: (harness: ReturnType<t
       <h1 className="area-section-title" tabIndex={-1}>
         Plan
       </h1>
-      <SettingsPlanSection />
+      <CompanyPlanSection />
     </div>
   );
   // StrictMode around the whole tree, as main.tsx has it: React 19 rehearses
