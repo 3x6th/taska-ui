@@ -343,7 +343,7 @@ describe("the top bar's global search", () => {
         details: null,
       });
     failSearch(refused(["OWNER_PAUSE"]));
-    const harness = companiesHarness({ companyId: "t-initech", path: "/settings/company" });
+    const harness = companiesHarness({ companyId: "t-initech", path: "/company/general" });
     const view = render(
       <>
         <GlobalSearch />
@@ -357,12 +357,12 @@ describe("the top bar's global search", () => {
     expect(screen.queryByText("Project content is not available")).not.toBeInTheDocument();
     expect(screen.queryByText(/could not be run/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Copy request id rid-paused/ })).toBeVisible();
-    expect(screen.getByTestId("address")).toHaveTextContent("/settings/company");
+    expect(screen.getByTestId("address")).toHaveTextContent("/company/general");
     view.unmount();
 
     // Both reasons: the block's line.
     failSearch(refused(["OWNER_PAUSE", "PLATFORM_BLOCK"]));
-    const blocked = companiesHarness({ companyId: "t-initech", path: "/settings/company" });
+    const blocked = companiesHarness({ companyId: "t-initech", path: "/company/general" });
     render(<GlobalSearch />, { wrapper: blocked.wrapper });
     fireEvent.change(screen.getByRole("combobox", { name: /Search issues/ }), { target: { value: "printer" } });
     expect(await screen.findByText("Initech is blocked, so its issues can’t be searched right now.")).toBeVisible();

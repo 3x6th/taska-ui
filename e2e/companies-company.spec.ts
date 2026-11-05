@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { B2B, COMPANY, companyPath, companyRow, inCompany, setHooks, signIn } from "./companiesFixtures";
+import { B2B, COMPANY, companyPath, companyRow, inCompany, openCompanyZone, setHooks, signIn } from "./companiesFixtures";
 
 /*
- * Settings › General in the companies build (TAS-504, DESIGN.md §4.39, §4.35)
+ * Company › General in the companies build (TAS-504, DESIGN.md §4.39, §4.35, §5.10)
  * against the third e2e server's mock: the story's four acceptance criteria —
  * the owner renames the company and only the name changes; a transfer leaves
  * the former owner an admin without the owner's controls; FREE is not handed
@@ -12,17 +12,11 @@ import { B2B, COMPANY, companyPath, companyRow, inCompany, setHooks, signIn } fr
  */
 
 const DAY = 24 * 60 * 60_000;
-const generalPath = (companyId: string) => companyPath(companyId, "/settings/company");
+const generalPath = (companyId: string) => companyPath(companyId, "/company/general");
 
-/** Opens Settings › General from the rail's «Company» group, as a reader does. */
+/** Opens Company › General as a reader does: «Manage company» in the switcher, or in the profile menu on a phone (TAS-522). */
 async function openGeneral(page: Page, companyId: string) {
-  await page.goto(companyPath(companyId, "/settings/profile"));
-  const rail = page.getByRole("navigation", { name: "Settings" });
-  const group = rail.getByRole("group", { name: "Company" });
-  // TAS-512: Plan stands third (§5.9).
-  await expect(group.getByRole("link")).toHaveText(["General", "Members", "Plan"]);
-  await group.getByRole("link", { name: "General" }).click();
-  await expect(page).toHaveURL(generalPath(companyId));
+  await openCompanyZone(page, companyId, "General");
   await expect(page.getByRole("heading", { level: 1, name: /General/ })).toBeVisible();
   await expect(page.getByText(/^Only the owner of/)).toBeVisible();
 }
@@ -91,7 +85,7 @@ test("AC2: Tom hands Umbrella to Priya — the modal stays in flight through the
   await expect(said(page)).toHaveText("");
   await expect(page.getByRole("button", { name: "Transfer ownership" })).toHaveCount(0);
   // Members: Priya owns it, Tom is still an admin there.
-  await page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Members" }).click();
+  await page.getByRole("navigation", { name: "Company" }).getByRole("link", { name: "Members" }).click();
   const memberRow = (name: string) => page.locator(".company-member-row:not(.is-invitation)").filter({ hasText: name });
   await expect(memberRow("Priya Nair")).toContainText("Owner");
   await expect(memberRow("Tom Becker")).toContainText("Admin");
@@ -172,7 +166,7 @@ test("Hooli is blocked: the owner is told only Taska can lift it, and every comm
   await expect(dialog.getByRole("alert")).toHaveText("Taska has blocked Hooli, so it was not transferred.");
 });
 
-test("B2: with the read flag off, Initech's owner is told on Projects, reaches General and resumes; a member is told without the button", async ({
+test("B2 / TAS-522 B6: with the read flag off, Initech's owner is told on Projects, reaches General by Manage company and resumes; a member is told without the button", async ({
   page,
   browser,
 }) => {
@@ -181,10 +175,13 @@ test("B2: with the read flag off, Initech's owner is told on Projects, reaches G
   await setHooks(page, { contentReadUnderRestriction: false });
   await companyRow(page, /^Initech/).click();
   await expect(page.getByRole("heading", { level: 1, name: "Initech is paused" })).toBeFocused();
-  await expect(page.getByText("Its projects can’t be opened while it’s paused. You can resume it in its settings.")).toBeVisible();
+  await expect(page.getByText("Its projects can’t be opened while it’s paused. You can resume it in Company › General.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Log out" })).toHaveCount(0);
-  await page.getByRole("link", { name: "Open company settings" }).click();
+  await page.getByRole("link", { name: "Manage company" }).click();
   await expect(page).toHaveURL(generalPath(COMPANY.initech));
+  // The zone is never replaced by the statement (§4.35, §5.10), and its heading took the focus the statement had.
+  await expect(page.getByRole("heading", { level: 1, name: /General/ })).toBeFocused();
+  await expect(page.getByRole("navigation", { name: "Company" })).toBeVisible();
   await page.getByRole("button", { name: "Resume company" }).click();
   await expect(said(page)).toHaveText("Initech is no longer paused.");
   await page.getByRole("link", { name: "Back to projects" }).click();
@@ -199,8 +196,8 @@ test("B2: with the read flag off, Initech's owner is told on Projects, reaches G
   await anna.goto(companyPath(COMPANY.initech));
   await expect(anna.getByRole("heading", { level: 1, name: "Initech is paused" })).toBeVisible();
   await expect(anna.getByText("Its owner has paused it, so its projects can’t be opened right now.")).toBeVisible();
-  await expect(anna.getByRole("link", { name: "Open company settings" })).toHaveCount(0);
-  // Settings is never replaced: General tells her the same, with no controls.
+  await expect(anna.getByRole("link", { name: "Manage company" })).toHaveCount(0);
+  // The zone is never replaced: General tells her the same, with no controls.
   await anna.goto(generalPath(COMPANY.initech));
   await expect(anna.locator(".company-general-state")).toHaveText(["Paused by its owner. No one can change anything in it while it’s paused."]);
   await expect(anna.getByRole("button", { name: /Resume company|Pause company/ })).toHaveCount(0);

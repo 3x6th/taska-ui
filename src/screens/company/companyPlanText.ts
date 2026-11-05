@@ -4,7 +4,7 @@ import { formatBytes, planName } from "../../lib/plans";
 import { companyInside } from "./companyGeneralText";
 
 /*
- * The words of Settings › Plan (TAS-512, DESIGN.md §4.40) as pure values, so
+ * The words of Company › Plan (TAS-512, DESIGN.md §4.40) as pure values, so
  * every sentence is pinned by a unit test. The UI says «plan», «seats»,
  * «storage», «paid period», «automatic payments» — never «Billing» or
  * «Subscription» as a label, never «tenant», «workspace» or «team» (§4.33).

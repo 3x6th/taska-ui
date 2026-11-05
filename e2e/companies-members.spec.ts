@@ -1,23 +1,19 @@
 import { expect, test, type Page } from "@playwright/test";
-import { B2B, COMPANY, PROJECT, companyPath, companyRow, inCompany, setHooks } from "./companiesFixtures";
+import { B2B, COMPANY, PROJECT, companyPath, companyRow, inCompany, openCompanyZone, setHooks } from "./companiesFixtures";
 
 /*
- * Settings › Members in the companies build (TAS-502, DESIGN.md §4.38, §5.9)
+ * Company › Members in the companies build (TAS-502, DESIGN.md §4.38, §5.10)
  * against the third e2e server's mock: the story's four acceptance criteria —
  * a member sees the directory and nothing to manage; an invitation holds a
  * seat, resend does not, revoke frees it; the owner and the last admin are the
  * server's refusals; a role or a state changes only after the server.
  */
 
-const membersPath = (companyId: string) => companyPath(companyId, "/settings/members");
+const membersPath = (companyId: string) => companyPath(companyId, "/company/members");
 
-/** Opens Settings › Members from the Settings rail (the «Company» group), as a reader does. */
+/** Opens Company › Members as a reader does: «Manage company» — the switcher's, or the profile menu's on a phone — and the zone's rail (TAS-522). */
 async function openMembers(page: Page, companyId: string) {
-  await page.goto(companyPath(companyId, "/settings/profile"));
-  const rail = page.getByRole("navigation", { name: "Settings" });
-  await expect(rail.getByRole("group", { name: "Company" })).toBeVisible();
-  await rail.getByRole("link", { name: "Members" }).click();
-  await expect(page).toHaveURL(membersPath(companyId));
+  await openCompanyZone(page, companyId, "Members");
   await expect(page.getByRole("heading", { level: 2, name: /^Members/ })).toBeVisible();
 }
 
@@ -28,7 +24,7 @@ const seatLine = (page: Page) => page.locator(".company-seats");
 test("a member sees the directory without controls, invitations or seats", async ({ page }) => {
   await inCompany(page, "Globex", COMPANY.globex);
   await openMembers(page, COMPANY.globex);
-  await expect(page.getByRole("link", { name: "Members" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("navigation", { name: "Company" }).getByRole("link", { name: "Members" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByText("Everyone in Globex. Only its admins can invite people or change members.")).toBeVisible();
   await expect(row(page, "Priya Nair")).toContainText("Owner");
   await expect(row(page, "Anna Ivanova")).toContainText("(you)");
@@ -38,7 +34,7 @@ test("a member sees the directory without controls, invitations or seats", async
   await expect(page.getByText("Pending invitations")).toHaveCount(0);
   await expect(seatLine(page)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Leave company" })).toBeVisible();
-  // The «Company» group's hidden label stays inside the rail's strip: the document is never wider than the screen (§5.9).
+  // The zone's strip scrolls inside itself: the document is never wider than the screen (§5.8, §5.10).
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
 });
 
@@ -49,7 +45,7 @@ test("an invitation holds a seat: a full Northwind refuses it, revoking Kai free
   await expect(seatLine(page)).toContainText("To invite someone, remove a member or revoke an invitation.");
   // TAS-512: the plan's explanation is one link away (§4.38 → §4.40), its target at least 28 high.
   const seePlan = seatLine(page).getByRole("link", { name: "See Plan" });
-  await expect(seePlan).toHaveAttribute("href", "/c/" + COMPANY.northwind + "/settings/plan");
+  await expect(seePlan).toHaveAttribute("href", "/c/" + COMPANY.northwind + "/company/plan");
   expect((await seePlan.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(28);
 
   // «Invite a member» is not disabled by the snapshot: the server's 422 decides.
@@ -176,17 +172,18 @@ test("leaving Globex lands on the picker, never on «no longer have access»", a
   await expect(page.getByText("You no longer have access")).toHaveCount(0);
 });
 
-test("the project Members dialog sends a company admin to Settings › Members", async ({ page }) => {
+test("the project Members dialog sends a company admin to Company › Members", async ({ page }) => {
   await inCompany(page, "Northwind", COMPANY.northwind);
   await page.locator(`button.project-card[data-project-id="${PROJECT.taska}"]`).click();
   await page.getByRole("button", { name: "Members", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Members" });
   await dialog.getByRole("combobox", { name: "Add people" }).fill("nobody-here");
   const way = dialog.locator(".member-search-way");
-  await expect(way).toHaveText("Only members of Northwind can be added. Invite people from Settings › Members.");
+  await expect(way).toHaveText("Only members of Northwind can be added. Invite people from Company › Members.");
   await expect(dialog.getByRole("link", { name: "Administration › Users" })).toHaveCount(0);
-  await way.getByRole("link", { name: "Settings › Members" }).click();
+  await way.getByRole("link", { name: "Company › Members" }).click();
   await expect(page).toHaveURL(membersPath(COMPANY.northwind));
+  await expect(page.getByRole("navigation", { name: "Company" }).getByRole("link", { name: "Members" })).toHaveAttribute("aria-current", "page");
 });
 
 test("an admin's own demotion re-enters the company: the tab stays, the controls go, focus is on the heading", async ({ page }) => {
@@ -230,7 +227,11 @@ test("after a leave whose answer was lost, the next page's read finds it applied
   page,
 }) => {
   await inCompany(page, "Globex", COMPANY.globex);
-  await openMembers(page, COMPANY.globex);
+  // Loaded rather than reached through the switcher: the point is that Projects
+  // *reads* on the way back, and Projects seen within the cache's 20 s
+  // (`STALE_TIME_MS`) would be drawn from the cache without a read.
+  await page.goto(membersPath(COMPANY.globex));
+  await expect(page.getByRole("heading", { level: 2, name: /^Members/ })).toBeVisible();
   await setHooks(page, { loseAnswer: ["leaveTenant"] });
   await page.getByRole("button", { name: "Leave company" }).click();
   await page.locator(".company-leave-confirm").getByRole("button", { name: "Leave company" }).click();

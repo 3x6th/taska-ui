@@ -42,8 +42,13 @@ describe("the company in the address (DESIGN.md §5.1)", () => {
     expect(inCompanyRest("/projects/p/issues/i")).toBe("/projects/p/issues/i");
     expect(inCompanyRest("/browse/WEB-12")).toBe("/browse/WEB-12");
     expect(inCompanyRest("/settings/tokens?x")).toBe("/settings/tokens?x");
-    // Not in-company pages: they answer for themselves.
-    for (const path of ["/admin", "/admin/users", "/browse", "/projectsx", "/nope"]) expect(inCompanyRest(path)).toBeNull();
+    // TAS-522: the Company zone, like Settings (§5.10).
+    expect(inCompanyRest("/company")).toBe("/company");
+    expect(inCompanyRest("/company/members?x=1")).toBe("/company/members?x=1");
+    // Not in-company pages: they answer for themselves — `/companies` is the picker, not the zone.
+    for (const path of ["/admin", "/admin/users", "/browse", "/projectsx", "/nope", "/companyx", "/companies"]) {
+      expect(inCompanyRest(path)).toBeNull();
+    }
   });
 });
 
@@ -194,7 +199,7 @@ describe("the closed company's words (§4.35)", () => {
     const paused = { code: "CAPABILITY_DISABLED", reasons: ["OWNER_PAUSE"] };
     expect(closedCompanyWords("Initech", paused, null, true)).toEqual({
       title: "Initech is paused",
-      text: "Its projects can’t be opened while it’s paused. You can resume it in its settings.",
+      text: "Its projects can’t be opened while it’s paused. You can resume it in Company › General.",
     });
     expect(closedCompanyWords("Initech", paused, null)).toEqual({
       title: "Initech is paused",

@@ -2127,22 +2127,6 @@ h1 {
   outline-offset: 2px;
 }
 
-/* The B2B build's «Company» group (TAS-502, §5.9): a divider with 9 above
-   and below, then the Field label, then its sections. */
-.area-rail-group {
-  margin-top: 9px;
-  border-top: 1px solid var(--border);
-  padding-top: 9px;
-}
-
-.area-rail-group-label {
-  margin: 0;
-  padding: 0 9px 4px;
-  color: var(--fg-2);
-  font-size: 11.5px;
-  font-weight: 550;
-}
-
 /* The exit sits at the bottom behind a divider: leaving the area is not one of
    its sections, and it belongs to the area rather than to whichever section
    happens to be open. */
@@ -2602,6 +2586,9 @@ h1 {
   text-wrap: pretty;
 }
 
+/* Below 900 the heading and the plane come in to the strip's 14. The Company
+   zone (TAS-522, §5.10) carries the same class, so these are its insets too —
+   one rule, not a copy of its numbers. */
 @media (max-width: 900px) {
   .settings-area .area-section-head {
     padding: 16px 14px 11px;
@@ -3309,7 +3296,7 @@ h1 {
   }
 }
 
-/* ---------- Settings › Members (TAS-502, §4.38) ---------- */
+/* ---------- Company › Members (TAS-502, §4.38) ---------- */
 
 /* Every line of meta here is `--fg-2` on `--bg` (6.73 / 7.35), never `--fg-3`
    (2.91 / 3.32). No new tokens; nothing animates in or out. */
@@ -3729,7 +3716,7 @@ h1 {
   }
 }
 
-/* ---------- Settings › General: the company (TAS-504, §4.39) ---------- */
+/* ---------- Company › General: the company (TAS-504, §4.39) ---------- */
 
 /* The state lines under the lead: the board archive row's recipe (§5.7) — no
    ground, edge, stripe or icon; the fact in `--fg` 600, its explanation in
@@ -3986,7 +3973,7 @@ h1 {
   background: var(--surface);
 }
 
-/* «Choose a company» beside the owner's «Open company settings» (§4.35): a link
+/* «Choose a company» beside the owner's «Manage company» (§4.35): a link
    on the secondary recipe, without its underline. */
 .company-closed-secondary {
   text-decoration: none;
@@ -4036,7 +4023,7 @@ h1 {
   }
 }
 
-/* ---------- Settings › Plan: the company's plan and usage (TAS-512, §4.40) ---------- */
+/* ---------- Company › Plan: the company's plan and usage (TAS-512, §4.40) ---------- */
 
 /* The facts' recipe (§4.39), 22 under the lead or the state lines; on --bg,
    no card, no accent, no colour on a number. */
@@ -6129,41 +6116,6 @@ h1 {
   .area-rail ul {
     flex-direction: row;
     gap: 4px;
-  }
-
-  /* In the strip the group's label is only the group's name (§5.9): a
-     1×18 divider stands between the groups instead. */
-  /* Positioned, so the visually hidden label below stays inside the strip's
-     scroller: placed by the page instead, it widened the document to 475 at
-     320 (§5.9: the document never gets wider than the screen). */
-  .area-rail-group {
-    position: relative;
-    display: flex;
-    flex: none;
-    align-items: center;
-    margin: 0 0 0 4px;
-    border-top: 0;
-    padding: 0;
-  }
-
-  .area-rail-group::before {
-    flex: none;
-    width: 1px;
-    height: 18px;
-    margin-right: 4px;
-    background: var(--border);
-    content: "";
-  }
-
-  .area-rail-group-label {
-    position: absolute;
-    overflow: hidden;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 
   .area-rail-foot {
@@ -12006,7 +11958,7 @@ button.attachment-open:hover:not(:disabled) {
 
 /* The shared bar after the logo (§4.13): a 1×18 divider and the switcher, at
    768 and wider. Below, the bar is as it was — no slack at 390 — and «Switch
-   company» in the profile menu is the way there. */
+   company» and «Manage company» in the profile menu are the way there. */
 .topbar-company {
   display: flex;
   flex: 0 1 auto;
@@ -12024,6 +11976,17 @@ button.attachment-open:hover:not(:disabled) {
 
 @media (max-width: 767px) {
   .topbar-company {
+    display: none;
+  }
+}
+
+/* The profile menu's «Manage company» (TAS-522, §4.16, §5.10) is the
+   switcher's row on the screen that has no switcher: at 768 and wider, where
+   the switcher is drawn, the menu does not repeat it — the same breakpoint, so
+   at any width one of the two is there. Two classes, so the base row's
+   `display: flex` cannot win by order. */
+@media (min-width: 768px) {
+  .user-profile-link.user-profile-manage {
     display: none;
   }
 }
@@ -12178,7 +12141,8 @@ button.attachment-open:hover:not(:disabled) {
     height: 44px;
   }
 
-  /* «All companies», 44 like the rows above it (§4.34). */
+  /* The footer's rows — «Manage company», «All companies», «Create a company» —
+     44 like the rows above them (§4.34). */
   .company-switcher-footer .user-profile-link {
     min-height: 44px;
   }

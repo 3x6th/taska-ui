@@ -19,9 +19,9 @@ import { shortKey } from "../screens/admin/columns";
 import type { Membership } from "../api/tenantMembers";
 import { useCompanies, useCompanyName } from "../hooks/useCompanies";
 import { useCompanyAddress } from "../lib/companyAddress";
-import { readerAccess } from "../screens/settings/companyMembers";
-import { COMPANY_MEMBERS_KEY } from "../screens/settings/companyMembersQuery";
-import { companyInside } from "../screens/settings/companyMembersText";
+import { readerAccess } from "../screens/company/companyMembers";
+import { COMPANY_MEMBERS_KEY } from "../screens/company/companyMembersQuery";
+import { companyInside } from "../screens/company/companyMembersText";
 import { Avatar } from "./Avatar";
 import { Modal } from "./Modal";
 import { RequestId } from "./RequestId";
@@ -746,7 +746,7 @@ export function ProjectMembersModal({
             : "Searching people…";
   const noMatch = boxOpen && typedEnough && !searchFailed && people.length === 0 && search.data !== undefined && !search.isPlaceholderData;
   // The B2B build (TAS-502, §4.22): people come from the company, not from a
-  // Taska account, and a company admin invites them from Settings › Members.
+  // Taska account, and a company admin invites them from Company › Members (§5.10).
   // The reader's company role is read from what this session has already
   // cached — the members list, else the list of companies' owner — and never
   // asked for here: unknown, it is the other line.
@@ -1045,8 +1045,8 @@ export function ProjectMembersModal({
                       companyAdmin ? (
                         <>
                           Only members of {companyInside(companyName)} can be added. Invite people from{" "}
-                          <Link className="admin-note-link" to="/settings/members">
-                            Settings › Members
+                          <Link className="admin-note-link" to="/company/members">
+                            Company › Members
                           </Link>
                           .
                         </>

@@ -49,11 +49,11 @@ import {
 import { CompanyStateBlock } from "./CompanyStateBlock";
 import { isIndefinite, keyFor } from "./companyMembers";
 import { companyMembersOptions } from "./companyMembersQuery";
-import { Strip } from "./SettingsMembersSection";
+import { Strip } from "./CompanyMembersSection";
 import { TransferOwnershipModal, type TransferRefusal } from "./TransferOwnershipModal";
 
 /**
- * Settings › General (TAS-504, DESIGN.md §4.39) — the B2B build only: the
+ * Company › General (TAS-504, DESIGN.md §4.39, §5.10) — the B2B build only: the
  * tab's company's name, owner and state for every role, and for its owner the
  * rename, the pause or resume, and the transfer.
  *
@@ -79,7 +79,7 @@ import { TransferOwnershipModal, type TransferRefusal } from "./TransferOwnershi
  *   the 200, the re-entry and the new context's `getTenant`, which then shows
  *   the reader's non-owner view (art-director B6).
  */
-export function SettingsCompanySection() {
+export function CompanyGeneralSection() {
   const address = useCompanyAddress();
   if (address?.companyId == null) return null;
   return <CompanyGeneral companyId={address.companyId} />;
@@ -591,7 +591,7 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
                     ) : ownerName !== null ? (
                       ownerName
                     ) : (
-                      <Link className="admin-note-link" to="/settings/members">
+                      <Link className="admin-note-link" to="/company/members">
                         See Members
                       </Link>
                     )}

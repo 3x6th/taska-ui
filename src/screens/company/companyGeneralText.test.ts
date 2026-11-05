@@ -15,7 +15,7 @@ import {
 import type { Membership } from "../../api/tenantMembers";
 
 /*
- * Settings › General's words (TAS-504, DESIGN.md §4.39), every table row, and
+ * Company › General's words (TAS-504, DESIGN.md §4.39), every table row, and
  * the pure rules beside them: who may be the new owner, and what a route entry
  * hands over across a re-entry.
  */

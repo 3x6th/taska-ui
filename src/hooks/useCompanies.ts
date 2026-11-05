@@ -4,7 +4,7 @@ import { taskaApi } from "../api/client";
 import type { Workspace } from "../api/TaskaApi";
 import { onRefusedThisVisit, refusedThisVisit, tenantsQueryOptions } from "../lib/companies";
 import { companyMarker, type CompanyMarker } from "../lib/companyRestrictions";
-import { companyTenantOptions } from "../screens/settings/companyGeneral";
+import { companyTenantOptions } from "../screens/company/companyGeneral";
 import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
 import { plansQueryOptions } from "../lib/plans";
 

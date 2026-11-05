@@ -3,10 +3,10 @@ import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
 import { companiesHarness } from "../../test/companiesHarness";
-import { SettingsPlanSection } from "./SettingsPlanSection";
+import { CompanyPlanSection } from "./CompanyPlanSection";
 
 /*
- * Settings › Plan (DESIGN.md §4.40, TAS-512) against a fake API:
+ * Company › Plan (DESIGN.md §4.40, TAS-512) against a fake API:
  * owner-only rows and no subscription read for anybody else (api-contract-
  * guard B1, art-director B4), the one usage template (B3), loading (B9), each
  * failed read on its own with one «Try again» (B8, B9), the plan not in the
@@ -105,14 +105,14 @@ const { fakeApi, state } = vi.hoisted(() => {
 vi.mock("../../api/client", () => ({ taskaApi: fakeApi }));
 
 function renderPlan(options: { strict?: boolean; before?: (harness: ReturnType<typeof companiesHarness>) => void } = {}) {
-  const harness = companiesHarness({ companyId: UMBRELLA, path: "/settings/plan" });
+  const harness = companiesHarness({ companyId: UMBRELLA, path: "/company/plan" });
   options.before?.(harness);
   const page = (
     <div className="settings-area">
       <h1 className="area-section-title" tabIndex={-1}>
         Plan
       </h1>
-      <SettingsPlanSection />
+      <CompanyPlanSection />
     </div>
   );
   // StrictMode around the whole tree, as main.tsx has it: React 19 rehearses

@@ -84,7 +84,8 @@ export function isOutsideCompanies(path: string): boolean {
 export function inCompanyRest(path: string): string | null {
   const pathname = pathnameOf(path);
   if (pathname === "/") return COMPANY_HOME;
-  const inside = ["/projects", "/browse/", "/settings"];
+  // `/company` is the Company zone (TAS-522, §5.10) — never `/companies`, the picker outside every company.
+  const inside = ["/projects", "/browse/", "/settings", "/company"];
   return inside.some((root) => pathname === root || pathname.startsWith(root.endsWith("/") ? root : `${root}/`))
     ? path
     : null;
@@ -235,7 +236,7 @@ export function closedCompanyWords(
         return {
           title: `${company} is paused`,
           text: owner
-            ? "Its projects can’t be opened while it’s paused. You can resume it in its settings."
+            ? "Its projects can’t be opened while it’s paused. You can resume it in Company › General."
             : "Its owner has paused it, so its projects can’t be opened right now.",
         };
       // PROVISIONING, AUTO_CLOSED and OWNER_CANCELLED are not this screen's

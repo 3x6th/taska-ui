@@ -37,9 +37,11 @@ import { SettingsAppearanceSection } from "./settings/SettingsAppearanceSection"
 import { SettingsProfileSection } from "./settings/SettingsProfileSection";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { SettingsConnectedAppsSection } from "./settings/SettingsConnectedAppsSection";
-import { SettingsCompanySection } from "./settings/SettingsCompanySection";
-import { SettingsMembersSection } from "./settings/SettingsMembersSection";
-import { SettingsPlanSection } from "./settings/SettingsPlanSection";
+import { CompanyGeneralSection } from "./company/CompanyGeneralSection";
+import { CompanyMembersSection } from "./company/CompanyMembersSection";
+import { CompanyPlanSection } from "./company/CompanyPlanSection";
+import { CompanyScreen } from "./company/CompanyScreen";
+import { companySections, movedCompanySections } from "./company/sections";
 import { SettingsTokensSection } from "./settings/SettingsTokensSection";
 
 export interface ScreenProps {
@@ -47,6 +49,16 @@ export interface ScreenProps {
   toggleTheme: () => void;
   onLogout: () => void;
   logoutPending: boolean;
+}
+
+/**
+ * Replaces this address with `path`, keeping the query, the hash and the
+ * router state (TAS-522, §5.10): a section's old address, and `/company`
+ * itself, whose arrival from «Manage company» asks for the heading's focus.
+ */
+function MovedTo({ path }: { path: string }) {
+  const location = useLocation();
+  return <Navigate replace state={location.state} to={{ pathname: path, search: location.search, hash: location.hash }} />;
 }
 
 export function App() {
@@ -154,7 +166,7 @@ export function App() {
             </Route>
             <Route path="/invite" element={<LoginScreen {...screenProps} initialMode="invite" />} />
             <Route path="/auth/callback" element={<AuthCallbackScreen theme={theme} toggleTheme={toggleTheme} />} />
-            {["/projects/*", "/browse/*", "/settings/*"].map((path) => (
+            {["/projects/*", "/browse/*", "/settings/*", "/company/*"].map((path) => (
               <Route
                 key={path}
                 path={path}
@@ -178,6 +190,12 @@ export function App() {
             {OUTSIDE_COMPANY_ROUTES.map((path) => (
               <Route key={path} path={`${path}/*`} element={<LeaveCompanyPrefix />} />
             ))}
+            {/* Where the company's sections lived in Settings until they got a
+                zone of their own (TAS-522, §5.10): the old address is replaced
+                by the new one, nothing of Settings drawn on the way. */}
+            {movedCompanySections.map(({ from, to }) => (
+              <Route key={from} path={from} element={<MovedTo path={to} />} />
+            ))}
             <Route
               element={
                 <RequireSession>
@@ -200,10 +218,19 @@ export function App() {
                 <Route path="/settings/tokens" element={<SettingsTokensSection />} />
                 <Route path="/settings/connected-apps" element={<SettingsConnectedAppsSection />} />
                 <Route path="/settings/appearance" element={<SettingsAppearanceSection />} />
-                {/* The company itself (TAS-504, §4.39), its members (TAS-502, §4.38) and its plan (TAS-512, §4.40) — this build only. */}
-                <Route path="/settings/company" element={<SettingsCompanySection />} />
-                <Route path="/settings/members" element={<SettingsMembersSection />} />
-                <Route path="/settings/plan" element={<SettingsPlanSection />} />
+              </Route>
+              {/* The Company zone (TAS-522, §5.10), this build only: the company
+                  itself (TAS-504, §4.39), its members (TAS-502, §4.38) and its
+                  plan (TAS-512, §4.40). An area like /settings, for every role
+                  of the company; an address inside /company that matches no
+                  section falls through to the `*` route below. The index carries
+                  the router state into General, so «Manage company» lands with
+                  focus on the heading (§4.34). */}
+              <Route path="/company" element={<CompanyScreen {...screenProps} />}>
+                <Route index element={<MovedTo path={companySections[0].path} />} />
+                <Route path="/company/general" element={<CompanyGeneralSection />} />
+                <Route path="/company/members" element={<CompanyMembersSection />} />
+                <Route path="/company/plan" element={<CompanyPlanSection />} />
               </Route>
             </Route>
             <Route path="*" element={<NotFoundScreen />} />

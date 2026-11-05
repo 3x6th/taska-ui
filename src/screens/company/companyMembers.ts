@@ -8,7 +8,7 @@ import {
 import { shortKey } from "../admin/columns";
 
 /*
- * Settings › Members (TAS-502, DESIGN.md §4.38) as pure functions: who the
+ * Company › Members (TAS-502, DESIGN.md §4.38) as pure functions: who the
  * reader is in the list, what each row offers, the groups and their order, and
  * when a write may send its previous key again. Pinned by unit tests rather
  * than by whichever component happens to draw them.

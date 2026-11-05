@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import { DIRECTORY_QUERY_REFUSAL_MESSAGE } from "../api/TaskaApi";
 import type { GlobalRole, Project, ProjectMember, ProjectRole } from "../domain/types";
+import { companiesHarness } from "../test/companiesHarness";
 import { ProjectMembersModal } from "./ProjectMembersModal";
 
 /**
@@ -70,6 +71,8 @@ const { fakeApi, state, reset, release, releaseList } = vi.hoisted(() => {
     searchFailure: undefined as Error | undefined,
     /** Every directory request, as `[query, page]`. */
     searches: [] as [string, number][],
+    /** The reader's companies, for the companies build's case (TAS-502, TAS-522). */
+    tenants: [] as unknown[],
   };
 
   const hold = async () => {
@@ -121,6 +124,9 @@ const { fakeApi, state, reset, release, releaseList } = vi.hoisted(() => {
       state.members = state.members.map((member) => (member.userId === userId ? { ...member, role } : member));
       return { projectId, userId, role };
     },
+    listTenants: async () => ({ items: state.tenants, nextCursor: null }),
+    currentWorkspace: () => null,
+    onWorkspaceChange: () => () => {},
     removeProjectMember: async (projectId: string, userId: string) => {
       state.removals.push([projectId, userId]);
       await hold();
@@ -152,6 +158,7 @@ const { fakeApi, state, reset, release, releaseList } = vi.hoisted(() => {
     state.extraPeople = [];
     state.searchFailure = undefined;
     state.searches = [];
+    state.tenants = [];
   };
 
   const release = () => {
@@ -426,6 +433,40 @@ describe("ProjectMembersModal", () => {
     expect(await within(dialog()).findByText("No one matches “zoe”.")).toBeVisible();
     expect(within(dialog()).getByRole("link", { name: "Administration › Users" })).toHaveAttribute("href", "/admin/users");
     expect(searchField()).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("in the companies build sends a company admin to Company › Members, never to Administration (TAS-522, §4.22)", async () => {
+    // Anna owns Northwind: the list of companies says so, and nothing else is asked.
+    state.tenants = [
+      { id: "n", name: "Northwind", ownerId: ANNA, lifecycle: "ACTIVE", restrictions: [], createdAt: "2026-05-01T09:00:00Z", version: "1" },
+    ];
+    const harness = companiesHarness({ companyId: "n", path: `/projects/${PROJECT}/board` });
+    render(
+      <Routes>
+        <Route
+          element={
+            <ProjectMembersModal
+              currentUserId={ANNA}
+              globalRole="GLOBAL_ADMIN"
+              onClose={() => {}}
+              projectId={PROJECT}
+              projectKey="TAS"
+              readerRole="ADMIN"
+            />
+          }
+          path="/projects/:projectId/board"
+        />
+      </Routes>,
+      { wrapper: harness.wrapper },
+    );
+    await within(dialog()).findByText("Mark Lee");
+
+    fireEvent.change(searchField(), { target: { value: "zoe" } });
+
+    const way = await within(dialog()).findByText(/^Only members of Northwind can be added/);
+    expect(way).toHaveTextContent("Only members of Northwind can be added. Invite people from Company › Members.");
+    expect(within(way).getByRole("link", { name: "Company › Members" })).toHaveAttribute("href", "/company/members");
+    expect(within(dialog()).queryByRole("link", { name: "Administration › Users" })).toBeNull();
   });
 
   it("words an empty answer for everybody else, and for a reader whose global role is not stated", async () => {

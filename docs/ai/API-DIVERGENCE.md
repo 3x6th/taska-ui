@@ -2432,7 +2432,7 @@ Everything below is the entry as it stood, in the past tense.
     success; a 403 `OWNER_REQUIRED` is never itself read as success. Removal: ask A33 (replay the stored 200).
   - A content read refused `CAPABILITY_DISABLED` with `OWNER_PAUSE` or `PLATFORM_BLOCK` (and not
     `PENDING_FIRST_PAYMENT`) keeps the company session and marks the tab "content closed": §4.35 replaces content
-    routes only, never Settings, so the owner can reach Resume. This narrows TAS-500's closure rule to the blueprint's
+    routes only, never Settings or the Company zone (§5.10, TAS-522), so the owner can reach Resume in Company › General. This narrows TAS-500's closure rule to the blueprint's
     meaning; it is not a compensation. REST decides whether a successful read lifts the mark by path: every GET is
     content except `/users/me*`, `/meta`, `/notifications*` and `/auth/*` (mirroring the mock's account and tenant-self
     routes); marking itself keys on the server's reasons. Change requested: ask A35 (the control plane — session,
