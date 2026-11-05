@@ -17,8 +17,14 @@ import { App } from "../App";
  * this fake does not name waits forever, so the bodies stay in their loading
  * state — their behaviour is pinned in their own files.
  */
-const { fakeApi } = vi.hoisted(() => {
+const { fakeApi, rail } = vi.hoisted(() => {
   const workspace = { tenantId: "n", tenantName: "Northwind", tenantSessionId: "s-n" };
+  /** TAS-524: who owns Northwind in the list, and the members list Members reads (`null`: never answers). */
+  const rail = {
+    owner: "priya",
+    members: null as null | Array<Record<string, unknown>>,
+    activityCalls: 0,
+  };
   const known: Record<string, unknown> = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
@@ -34,7 +40,7 @@ const { fakeApi } = vi.hoisted(() => {
     // Anna owns neither: the zone is every member's (§5.10 «Доступ»).
     listTenants: async () => ({
       items: [
-        { id: "n", name: "Northwind", ownerId: "priya", lifecycle: "ACTIVE", restrictions: [], createdAt: "2026-05-01T09:00:00Z", version: "1" },
+        { id: "n", name: "Northwind", ownerId: rail.owner, lifecycle: "ACTIVE", restrictions: [], createdAt: "2026-05-01T09:00:00Z", version: "1" },
         { id: "g", name: "Globex", ownerId: "priya", lifecycle: "ACTIVE", restrictions: [], createdAt: "2026-05-01T09:00:00Z", version: "1" },
       ],
       nextCursor: null,
@@ -51,6 +57,11 @@ const { fakeApi } = vi.hoisted(() => {
     }),
     getMeta: async () => ({ issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null }),
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0, unreadCount: 0 }),
+    listTenantMembers: () => (rail.members === null ? new Promise(() => {}) : Promise.resolve({ items: rail.members, nextCursor: null })),
+    listTenantActivity: () => {
+      rail.activityCalls += 1;
+      return new Promise(() => {});
+    },
   };
   const api = new Proxy(known, {
     get: (target, key) => {
@@ -60,7 +71,7 @@ const { fakeApi } = vi.hoisted(() => {
       return () => new Promise(() => {});
     },
   });
-  return { fakeApi: api as unknown as TaskaApi };
+  return { fakeApi: api as unknown as TaskaApi, rail };
 });
 
 vi.mock("../../api/client", () => ({ taskaApi: fakeApi }));
@@ -96,6 +107,9 @@ const zoneRail = () => screen.getByRole("navigation", { name: "Company" });
 afterEach(() => {
   document.title = "";
   window.localStorage.clear();
+  rail.owner = "priya";
+  rail.members = null;
+  rail.activityCalls = 0;
 });
 
 describe("the Company zone (TAS-522, §5.10)", () => {
@@ -252,5 +266,73 @@ describe("the build without the flag (AC4, §5.10 «Без флага»)", () =>
       expect(screen.queryByRole("navigation", { name: "Company" })).not.toBeInTheDocument();
       view.unmount();
     }
+  });
+});
+
+describe("the rail's «Activity» (TAS-524, §4.41 «Где», api-contract-guard B6)", () => {
+  const railLinks = () => within(zoneRail()).getAllByRole("link").map((link) => link.textContent);
+  const row = (role: string, extra: Record<string, unknown> = {}) => ({
+    id: "m-anna",
+    tenantId: "n",
+    userId: "anna",
+    role,
+    state: "ACTIVE",
+    isOwner: false,
+    displayName: "Anna Ivanova",
+    email: "anna@example.com",
+    version: "1",
+    ...extra,
+  });
+
+  it("the owner by the list's ownerId: fourth, after Plan, before the exit — with the Audit's icon, and no read made for it", async () => {
+    rail.owner = "anna";
+    renderInCompany("/company/general");
+    await waitFor(() => expect(railLinks()).toEqual(["General", "Members", "Plan", "Activity", "Back to projects"]));
+    const activity = within(zoneRail()).getByRole("link", { name: "Activity" });
+    expect(activity).toHaveAttribute("href", "/company/activity");
+    expect(activity.querySelector("svg.lucide-scroll-text")).not.toBeNull();
+    expect(rail.activityCalls).toBe(0);
+  });
+
+  it("an Admin known from the cached members list — once Members has been read", async () => {
+    rail.members = [row("TENANT_ADMIN")];
+    renderInCompany("/company/members");
+    await waitFor(() => expect(railLinks()).toContain("Activity"));
+  });
+
+  it("a known member, a suspended admin, or a role the tab cannot read: no item — not disabled, absent", async () => {
+    for (const members of [[row("MEMBER")], [row("TENANT_ADMIN", { state: "SUSPENDED" })], [row("AUDITOR")], []]) {
+      rail.members = members;
+      const view = render(
+        <>
+          <App />
+          <Whereabouts />
+        </>,
+        { wrapper: companiesHarness({ companyId: "n", path: "/company/members" }).wrapper },
+      );
+      expect(await screen.findByRole("heading", { level: 1, name: /Company.*Members/ })).toBeInTheDocument();
+      // Members has answered: the reader's own row (or its absence) is what the rail reads.
+      await waitFor(() => expect(document.querySelector(".company-members .settings-lead")).not.toBeNull());
+      expect(railLinks()).toEqual(["General", "Members", "Plan", "Back to projects"]);
+      view.unmount();
+    }
+  });
+
+  it("the row wins over the list: an owner whose row says so, and a demoted former owner whose row says MEMBER", async () => {
+    rail.owner = "anna";
+    rail.members = [row("MEMBER")];
+    renderInCompany("/company/members");
+    await waitFor(() => expect(document.querySelector(".company-members .settings-lead")).not.toBeNull());
+    await waitFor(() => expect(railLinks()).not.toContain("Activity"));
+  });
+
+  it("the open route always names itself: a reader the tab knows nothing about on /company/activity sees «Activity» as current", async () => {
+    renderInCompany("/company/activity");
+    const heading = await screen.findByRole("heading", { level: 1, name: /Company.*Activity/ });
+    expect(heading).toBeInTheDocument();
+    expect(railLinks()).toEqual(["General", "Members", "Plan", "Activity", "Back to projects"]);
+    expect(within(zoneRail()).getByRole("link", { name: "Activity" })).toHaveAttribute("aria-current", "page");
+    // The address is not gated: the section reads, and the server answers.
+    await waitFor(() => expect(rail.activityCalls).toBe(1));
   });
 });

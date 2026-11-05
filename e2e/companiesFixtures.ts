@@ -89,8 +89,8 @@ export async function switchCompany(page: Page, name: string, isMobile: boolean)
   await companyRow(page, new RegExp(`^${name}`)).click();
 }
 
-/** A section of the Company zone (TAS-522, DESIGN.md §5.10), in its rail's order. */
-export type ZoneSection = "General" | "Members" | "Plan";
+/** A section of the Company zone (TAS-522, DESIGN.md §5.10), in its rail's order — «Activity» (TAS-524) only for its owner and Admins. */
+export type ZoneSection = "General" | "Members" | "Plan" | "Activity";
 
 const zonePath = (section: ZoneSection) => `/company/${section.toLowerCase()}`;
 
@@ -121,7 +121,14 @@ export async function openCompanyZone(page: Page, companyId: string, section: Zo
     await expect(page).toHaveURL(companyPath(companyId, "/company/general"));
   }
   const rail = page.getByRole("navigation", { name: "Company" });
-  await expect(rail.getByRole("link")).toHaveText(["General", "Members", "Plan", "Back to projects"]);
+  // The three every member sees, then — for a reader the tab knows to be its
+  // owner or an Admin — «Activity» (TAS-524, §4.41), then the exit. Whether
+  // «Activity» is drawn is companies-activity.spec.ts's to pin.
+  const links = rail.getByRole("link");
+  await expect(links.nth(0)).toHaveText("General");
+  await expect(links.nth(1)).toHaveText("Members");
+  await expect(links.nth(2)).toHaveText("Plan");
+  await expect(links.last()).toHaveText("Back to projects");
   if (section !== "General" && !page.url().endsWith(zonePath(section))) {
     await rail.getByRole("link", { name: section }).click();
   }

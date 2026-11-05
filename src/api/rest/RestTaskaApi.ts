@@ -125,6 +125,7 @@ import type {
   MembershipPage,
   QuotaSnapshot,
 } from "../tenantMembers";
+import { activitySearch, type CompanyActivityPage, type ListTenantActivityParams } from "../tenantActivity";
 import { WebSessionClient, type B2bTransport, type LockManagerLike } from "../webSession";
 import type {
   AccessToken,
@@ -1600,6 +1601,15 @@ export class RestTaskaApi implements TaskaApi {
     return this.companies("getEntitlement").getEntitlement(tenantId);
   }
 
+  /**
+   * TAS-524: the company's log — a route proposed on TAS-523, not in the
+   * blueprint; the session layer sends it with the tab's company session, for
+   * that company only. Today's build: no request.
+   */
+  async listTenantActivity(tenantId: string, params: ListTenantActivityParams = {}): Promise<CompanyActivityPage> {
+    return this.companies("listTenantActivity").listTenantActivity(tenantId, params);
+  }
+
   /** The session layer, or the refusal today's build gives a company operation — without a request. */
   private companies(operation: string): WebSessionClient {
     if (this.web === null) throw new TenancyUnavailableError(operation);
@@ -1752,6 +1762,10 @@ export class RestTaskaApi implements TaskaApi {
       getSubscription: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/subscription`, {}, bearer, signal),
       // TAS-512.
       getEntitlement: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/entitlement`, {}, bearer, signal),
+      // TAS-524 — proposed on TAS-523: `limit`, `actorUserId`, `kind` repeated
+      // (sorted, de-duplicated), `cursor`, in that order.
+      listTenantActivity: (bearer, tenantId, params, signal) =>
+        send(`${tenantPath(tenantId)}/activity${this.query(activitySearch(params))}`, {}, bearer, signal),
     };
   }
 

@@ -21,6 +21,7 @@ import type {
   MembershipPage,
   QuotaSnapshot,
 } from "./tenantMembers";
+import type { CompanyActivityPage, ListTenantActivityParams } from "./tenantActivity";
 import type {
   AccessTokenList,
   ConnectedApps,
@@ -1164,7 +1165,8 @@ export interface WorkspacePendingEvent {
  * company is not closed and its session is not revoked** — its settings, its
  * own reads and the owner's Resume go with that session — and the read itself
  * still rejects with its own error. The shell draws §4.35's paused or blocked
- * statement on the content routes only, never on Settings.
+ * statement on the content routes only, never on Settings or the Company zone
+ * (§5.10), so the owner can reach Resume in Company › General.
  *
  * `restricted: false` lifts the mark: a `Tenant` answer for the company
  * without either reason (the reader's own resume, a re-read), or a content
@@ -1620,6 +1622,23 @@ export interface TaskaApi {
    * request (`TenancyUnavailableError`).
    */
   getEntitlement(tenantId: string): Promise<Entitlement>;
+  /**
+   * `GET /tenants/{tenantId}/activity?limit&actorUserId&kind…&cursor`
+   * (TAS-524) — the company's log, newest first, for its admins and owner;
+   * **a route the frontend proposed on TAS-523, not in the blueprint**
+   * (docs/ai/API-DIVERGENCE.md «TAS-524»). One page, as sent: `kind` repeated,
+   * sorted and de-duplicated; a page is never sorted, merged or de-duplicated
+   * here. With the tab's company session of that company only (another
+   * company: `WorkspaceClosedError`, no request). Control plane — no `read`
+   * option: its refusal marks nothing and its success lifts no pause mark.
+   * Any record naming another company fails the page
+   * (`ForeignCompanyAnswerError`). Refusals: 400 `VALIDATION_FAILED`
+   * (violations name `limit`, `actorUserId`, `kind` or `cursor`), 403
+   * `SCOPE_DENIED` (not an admin), 409 `INVALID_STATE`, 429, 503 — and the
+   * closing codes every request has. Today's build refuses it without a
+   * request (`TenancyUnavailableError`).
+   */
+  listTenantActivity(tenantId: string, params?: ListTenantActivityParams): Promise<CompanyActivityPage>;
 
   /**
    * `GET /meta` — the enum dictionaries (backend TAS-217), read once per
