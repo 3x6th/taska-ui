@@ -1,4 +1,4 @@
-import { onlineManager } from "@tanstack/react-query";
+import { focusManager, onlineManager } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -121,6 +121,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  focusManager.setFocused(undefined);
   vi.useRealTimers();
 });
 
@@ -434,11 +435,37 @@ describe("«Show more» and the end (§4.41 «Подвал»)", () => {
     expect(state.calls).toHaveLength(2);
     act(() => onlineManager.setOnline(false));
     act(() => onlineManager.setOnline(true));
-    act(() => {
-      window.dispatchEvent(new Event("focus"));
-    });
+    act(() => focusManager.setFocused(false));
+    act(() => focusManager.setFocused(true));
     await act(async () => {});
     expect(state.calls).toHaveLength(2);
+    expect(rows()).toHaveLength(100);
+  });
+
+  it("a refused refresh on re-entry, then «Show more» succeeds: a return to the tab or a reconnect read nothing, the 100 rows stay", async () => {
+    const first = renderActivity();
+    await waitFor(() => expect(rows()).toHaveLength(50));
+    first.view.unmount();
+    state.answer = (params) => (params.cursor === undefined ? refusal(409, "INVALID_STATE") : page(long(50, 50), "c-2"));
+    render(
+      <div className="settings-area">
+        <h1 className="area-section-title" tabIndex={-1}>
+          Activity
+        </h1>
+        <CompanyActivitySection />
+      </div>,
+      { wrapper: first.wrapper },
+    );
+    expect(await notice("Activity could not be refreshed. The last loaded list is shown.")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Show more activity" }));
+    await waitFor(() => expect(rows()).toHaveLength(100));
+    const reads = state.calls.length;
+    act(() => focusManager.setFocused(false));
+    act(() => focusManager.setFocused(true));
+    act(() => onlineManager.setOnline(false));
+    act(() => onlineManager.setOnline(true));
+    await act(async () => {});
+    expect(state.calls).toHaveLength(reads);
     expect(rows()).toHaveLength(100);
   });
 
@@ -486,12 +513,14 @@ describe("«Show more» and the end (§4.41 «Подвал»)", () => {
       expect(scrolled.mock.contexts.at(-1)).toBe(screen.getByRole("button", { name: "Show more activity" }));
     });
 
-    it("a 400 is unchanged: «Start again» takes focus, nothing scrolled", async () => {
+    it("a 400: «Start again» takes focus and is scrolled into view, no animation", async () => {
       state.answer = (params) => (params.cursor === undefined ? page(long(0, 50), "c-1") : refusal(400, "VALIDATION_FAILED"));
       renderActivity();
       fireEvent.click(await screen.findByRole("button", { name: "Show more activity" }));
-      await screen.findByRole("button", { name: "Start again from the newest" });
-      expect(scrolled).not.toHaveBeenCalled();
+      const again = await screen.findByRole("button", { name: "Start again from the newest" });
+      await waitFor(() => expect(again).toHaveFocus());
+      expect(scrolled).toHaveBeenCalledWith({ block: "nearest" });
+      expect(scrolled.mock.contexts.at(-1)).toBe(again);
     });
   });
 

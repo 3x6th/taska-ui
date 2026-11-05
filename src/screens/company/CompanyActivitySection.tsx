@@ -9,6 +9,7 @@ import { ApiNotice } from "../../components/ApiNotice";
 import { ErrorNote } from "../../components/ErrorNote";
 import { useCompanyName } from "../../hooks/useCompanies";
 import { useCompanyAddress } from "../../lib/companyAddress";
+import { refetchFailedOnFocus } from "../../lib/queryClient";
 import { shortKey } from "../admin/columns";
 import {
   activityKey,
@@ -131,7 +132,13 @@ function CompanyActivity({ companyId }: { companyId: string }) {
   const filters: ActivityFilters = { actorUserId: read.actorUserId, kinds: read.kinds };
   const filterKey = JSON.stringify(activityKey(filters));
   const filtered = isFiltered(filters);
-  const first = useQuery(companyActivityOptions(companyId, filters));
+  // True while «Show more» pages are appended: a re-read nobody asked for would drop them, so a failed first page is not healed on focus or reconnect then.
+  const hasPagesRef = useRef(false);
+  const first = useQuery({
+    ...companyActivityOptions(companyId, filters),
+    refetchOnWindowFocus: (query) => refetchFailedOnFocus(query) && !hasPagesRef.current,
+    refetchOnReconnect: (query) => refetchFailedOnFocus(query) && !hasPagesRef.current,
+  });
   // A first page that did not load stays drawn while it is read again — «Try
   // again», or the return to the tab — with its button `aria-disabled`
   // (§4.40's recipe): a re-read of a query with no data is `pending` again,
@@ -182,6 +189,9 @@ function CompanyActivity({ companyId }: { companyId: string }) {
   /** The name of the author a row's link was followed from — a loaded record's — until the new filter's rows name them. */
   const [authorHint, setAuthorHint] = useState<{ id: string; label: string } | null>(null);
   const more = continuation !== null && continuation.base === first.data ? continuation : null;
+  useLayoutEffect(() => {
+    hasPagesRef.current = more !== null && more.pages.length > 0;
+  });
   const firstData = useRef(first.data);
   useLayoutEffect(() => {
     firstData.current = first.data;
@@ -232,7 +242,7 @@ function CompanyActivity({ companyId }: { companyId: string }) {
     }
     if (node === null) return;
     pendingFocus.current = null;
-    if (target.to === "row") {
+    if (target.to === "row" || target.to === "start-again") {
       node.focus({ preventScroll: true });
       // Into view without a glide, with or without reduced motion (§4.9, §4.24).
       node.scrollIntoView({ block: "nearest" });

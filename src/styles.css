@@ -4241,7 +4241,7 @@ h1 {
 /* The ring of a scripted focus is not clipped at the scroll edge. */
 .company-activity-row[tabindex],
 .company-activity-foot > button {
-  scroll-margin-block: 6px;
+  scroll-margin-block: 8px;
 }
 
 .company-activity-row + .company-activity-row {

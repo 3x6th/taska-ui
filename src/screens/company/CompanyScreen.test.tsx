@@ -356,5 +356,8 @@ describe("the rail's «Activity» (TAS-524, §4.41 «Где», api-contract-guar
     expect(within(zoneRail()).getByRole("link", { name: "Activity" })).toHaveAttribute("aria-current", "page");
     // The address is not gated: the section reads, and the server answers.
     await waitFor(() => expect(rail.activityCalls).toBe(1));
+    // The section reads neither the members nor the company: the rail's observers stay off.
+    expect(rail.membersCalls).toBe(0);
+    expect(rail.tenantCalls).toBe(0);
   });
 });
