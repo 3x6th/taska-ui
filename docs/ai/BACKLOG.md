@@ -4564,3 +4564,22 @@ asks A26 (TAS-338) and A27 (TAS-315) went to Jira; A28 (the B2B dictionaries in 
 - **No test pins that MANUAL_REVIEW keeps focus on «Check again»** (dropping its guard leaves the screen tests green).
 - **The full gate on `a0fcfec` failed 43 unrelated mobile specs** while a reviewer ran mutations in place in the
   worktree; `--last-failed` on the clean tree passed 43/43. Briefs now ask for mutations in a `git archive` copy.
+
+### Left by TAS-504 pre-build (company name, owner and pause, B2B blueprint `758f8fc6`, 2026-11-05)
+
+From the api-contract-guard design and the art-director ruling (`docs/ai/reviews/TAS-504/`, git-ignored). Backend asks
+A30–A41 went to Jira as comments on their owner stories.
+
+- **The TAS-501 mock answers an account session 403 `TENANT_MISMATCH`** on its routes where the member routes answer
+  400 `TENANT_REQUIRED`, and cancel answers a malformed `If-Match` 428 (guard N4; the latter is already in «Left by
+  TAS-502 pre-build»). TAS-504's routes use the TAS-502 form.
+- **With the read flag false, members cannot reach Leave**: DIRECTORY is refused, so Members does not render (guard
+  N5); a §4.38 sentence for that refusal instead of the server's words comes with ask A35 (art-director N6).
+- **Resume after the paid period ended leaves `PAYMENT_EXPIRED`**, and this build cannot take a payment (TAS-513) — a
+  recorded dead end (guard N6).
+- **`autopayState`** belongs with the B2B dictionaries in `/meta` (guard N7, with A28).
+- **Members get no sign of a pause until a write fails** (read flag on): a word marker in the switcher trigger on the
+  platform-access marker recipe (§4.34) — TAS-512's (art-director N4).
+- **§4.35's restricted form could live inside the app shell**, since the session is kept — revisit only if the owner's
+  «Back to projects» loop reads like being thrown out (art-director N5).
+
