@@ -7212,6 +7212,17 @@ function CreateIssueModal({
     return null;
   };
 
+  /**
+   * A create is out (§4.1, TAS-512 api-contract-guard B-1, release-reviewer
+   * L-1): set by the submit itself, before `mutate`, and cleared when the create
+   * settles. `isPending` alone is not enough — react-query tells React on a
+   * timeout, so a second press inside the same task, or before that timeout,
+   * still reads the first as not sent, and there is no idempotency key on a
+   * create to make the second one harmless.
+   */
+  const createOut = useRef(false);
+  /** Where a refusal brings the modal body's view (§4.40 «Отказы квоты»). */
+  const submitRef = useRef<HTMLButtonElement>(null);
   const createIssue = useMutation({
     // From a column's "+", in that column's status (backend TAS-428); from
     // "New", no status — the server's `TODO`. A refusal (the type's workflow
@@ -7252,6 +7263,9 @@ function CreateIssueModal({
     onSuccess: async (issue) => {
       await invalidateBoard(queryClient, projectId);
       onCreated(issue);
+    },
+    onSettled: () => {
+      createOut.current = false;
     },
   });
 
@@ -7445,6 +7459,18 @@ function CreateIssueModal({
    * slot is showing it.
    */
   const archiveRefused = isProjectArchived(createIssue.error) && !(dateNotice && !archived);
+  /**
+   * Every new refusal of the create brings the submit into the modal body's
+   * view, the sentence standing right above it (§4.40 «Отказы квоты»,
+   * art-director B2): at once, no `behavior`, once the sentence is laid out.
+   * Not a type refusal — that one hands focus to the type select, and the view
+   * goes with focus. Each refusal is an error of its own, so the same sentence
+   * twice still scrolls.
+   */
+  const refusalInView = createIssue.isError && typeRefused === null ? createIssue.error : null;
+  useLayoutEffect(() => {
+    if (refusalInView !== null) submitRef.current?.scrollIntoView({ block: "nearest" });
+  }, [refusalInView]);
 
   /** Text-work holds `Esc` (§4.11): a box with something typed in it, archived to `readOnly` or not. */
   const unsavedText = (value: string) => (value !== "" ? "true" : undefined);
@@ -7508,9 +7534,11 @@ function CreateIssueModal({
             return;
           }
           clearDateNotice();
-          // In flight, a press asks nothing more (§4.1).
-          if (createIssue.isPending) return;
+          // In flight, a press asks nothing more (§4.1) — the latch for the
+          // press React has not yet heard the first one's flight for.
+          if (createIssue.isPending || createOut.current) return;
           if (summary.trim() && issueType && !noTypeHasStatus) {
+            createOut.current = true;
             createIssue.mutate({ type: issueType, label: issueTypeLabel(issueType, issueTypes) });
           }
         }}
@@ -7788,6 +7816,7 @@ function CreateIssueModal({
               aria-disabled={createIssue.isPending || undefined}
               className="primary-button create-issue-submit"
               disabled={!summary.trim() || !issueType}
+              ref={submitRef}
               type="submit"
             >
               Create issue

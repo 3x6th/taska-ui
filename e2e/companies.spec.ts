@@ -149,7 +149,19 @@ test("«All companies» is 44 high at 820 and narrower, like the rows above it",
   await inCompany(page, "Northwind", COMPANY.northwind);
   await page.locator(".company-switcher-trigger").click();
   const dialog = page.getByRole("dialog", { name: "Companies" });
-  const heights = await dialog.getByRole("link").evaluateAll((links) => links.map((link) => link.getBoundingClientRect().height));
+  await expect(dialog.getByRole("link").first()).toBeVisible();
+  // Measured once the popover's entrance (`tk-pop`'s translateY) has run out,
+  // in one evaluate: mid-animation a 44 row reads 43.99998.
+  const heights = await dialog.evaluate(async (popover) => {
+    const moving = document
+      .getAnimations()
+      .filter((animation) => {
+        const target = (animation.effect as KeyframeEffect | null)?.target;
+        return target instanceof Element && (target === popover || target.contains(popover) || popover.contains(target));
+      });
+    await Promise.all(moving.map((animation) => animation.finished.catch(() => undefined)));
+    return [...popover.querySelectorAll("a[href]")].map((link) => link.getBoundingClientRect().height);
+  });
   expect(heights.length).toBeGreaterThan(1);
   for (const height of heights) expect(height).toBeGreaterThanOrEqual(44);
 });

@@ -4058,8 +4058,9 @@ h1 {
   margin: 0;
 }
 
+/* The next note 14 under «Try again», so the button reads with the first (§4.40). */
 .company-plan-failure + .company-plan-failure {
-  margin-top: 8px;
+  margin-top: 14px;
 }
 
 .company-plan-failure + .company-plan-dl {
@@ -4104,9 +4105,10 @@ h1 {
   text-wrap: pretty;
 }
 
-/* «Usage» — §4.38's group heading: 22 above, 4 to the rows. */
+/* «Usage» — §4.38's group heading: 22 above, and 12 seen to the first row,
+   whose `dl` row has no top padding here (§4.40). */
 .company-plan-usage-heading {
-  margin: 22px 0 4px;
+  margin: 22px 0 12px;
   color: var(--fg-2);
   font-size: 12px;
   font-weight: 600;
@@ -4144,6 +4146,14 @@ h1 {
 .primary-button.create-issue-submit[aria-disabled="true"],
 .primary-button.create-project-submit[aria-disabled="true"] {
   cursor: progress;
+}
+
+/* A refusal brings the submit into the modal body's view (§4.40 «Отказы
+   квоты», recipe §4.22, §4.28): with a margin, so §7's ring is not flush with
+   the body's edge. */
+.create-issue-submit,
+.create-project-submit {
+  scroll-margin-block: 8px;
 }
 
 /* «See Plan» after the no-seats line (§4.38): «See Members»' recipe — a 28

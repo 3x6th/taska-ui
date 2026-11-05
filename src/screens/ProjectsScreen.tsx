@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../hooks/useMutation";
 import { Pencil, Plus, Search } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, reportable } from "../api/errors";
@@ -452,6 +452,15 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
     [projectKey],
   );
 
+  /**
+   * A create is out (§4.1, TAS-512 api-contract-guard B-1, release-reviewer
+   * L-1): set by the submit itself, before `mutate`, cleared when it settles.
+   * `isPending` alone let a double click send two: react-query tells React on a
+   * timeout, and nothing on this form re-renders before the second press.
+   */
+  const createOut = useRef(false);
+  /** Where a refusal brings the modal body's view (§4.40 «Отказы квоты»). */
+  const submitRef = useRef<HTMLButtonElement>(null);
   const create = useMutation({
     // Both trimmed and both omitted when empty: a blank description is a value
     // the server would store, and "no description" is not the same project as
@@ -470,9 +479,20 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
       await queryClient.invalidateQueries({ queryKey: PROJECT_STATS_KEY });
       onClose();
     },
+    onSettled: () => {
+      createOut.current = false;
+    },
     // A refused project re-reads the company's quota snapshot too (TAS-512, B4).
     meta: QUOTA_WRITE_META,
   });
+
+  // Every new refusal brings the submit into the modal body's view, the
+  // sentence right above it (§4.40 «Отказы квоты», art-director B2): at once,
+  // no `behavior`, once the sentence is laid out.
+  const refusal = create.isError ? create.error : null;
+  useLayoutEffect(() => {
+    if (refusal !== null) submitRef.current?.scrollIntoView({ block: "nearest" });
+  }, [refusal]);
 
   return (
     <Modal busy={create.isPending} onClose={onClose} title="New project">
@@ -480,8 +500,11 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         className="form-stack"
         onSubmit={(event) => {
           event.preventDefault();
-          // In flight, a press asks nothing more (§4.1).
-          if (canSubmit && !create.isPending) create.mutate();
+          // In flight, a press asks nothing more (§4.1) — the latch for the
+          // press React has not yet heard the first one's flight for.
+          if (!canSubmit || create.isPending || createOut.current) return;
+          createOut.current = true;
+          create.mutate();
         }}
       >
         <label className="field">
@@ -543,7 +566,13 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
             Cancel
           </button>
           {/* In flight `aria-disabled`, not `disabled`: a refused create keeps focus on it (TAS-512, §4.40). */}
-          <button aria-disabled={create.isPending || undefined} className="primary-button create-project-submit" disabled={!canSubmit} type="submit">
+          <button
+            aria-disabled={create.isPending || undefined}
+            className="primary-button create-project-submit"
+            disabled={!canSubmit}
+            ref={submitRef}
+            type="submit"
+          >
             Create project
           </button>
         </div>

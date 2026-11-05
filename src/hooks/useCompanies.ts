@@ -2,10 +2,9 @@ import { QueryClient, useQuery } from "@tanstack/react-query";
 import { useEffect, useSyncExternalStore } from "react";
 import { taskaApi } from "../api/client";
 import type { Workspace } from "../api/TaskaApi";
-import type { Tenant } from "../api/tenants";
 import { onRefusedThisVisit, refusedThisVisit, tenantsQueryOptions } from "../lib/companies";
 import { companyMarker, type CompanyMarker } from "../lib/companyRestrictions";
-import { companyTenantKey } from "../screens/settings/companyGeneral";
+import { companyTenantOptions } from "../screens/settings/companyGeneral";
 import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
 import { plansQueryOptions } from "../lib/plans";
 
@@ -68,11 +67,17 @@ export function useCompanyName(companyId: string | null): string | null {
  * the reader's list, whichever answered last — so it changes in the frame
  * they do, and asks the server nothing (art-director G8). Inert in today's
  * build.
+ *
+ * With the company read's own options (release-reviewer L-2): an observer's
+ * options become the query's, so a bare one would hand the next refetch of
+ * `["tenant", id]` — an invalidation's, while this is mounted — the client's
+ * default retry, and a definite refusal or another company's answer would be
+ * asked again (`retryUnanswered`).
  */
 export function useCompanyMarker(companyId: string | null): CompanyMarker | null {
   const companies = useCompanies();
-  const tenant = useQuery<Tenant>(
-    { queryKey: companyTenantKey(companyId ?? ""), queryFn: () => taskaApi.getTenant(companyId ?? ""), enabled: false },
+  const tenant = useQuery(
+    { ...companyTenantOptions(companyId ?? ""), enabled: false },
     companyId === null ? inertClient : undefined,
   );
   if (companyId === null) return null;

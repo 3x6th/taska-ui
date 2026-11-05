@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { taskaApi } from "../../api/client";
-import { apiErrorFacts, refusalCode } from "../../api/errors";
+import { apiErrorFacts } from "../../api/errors";
 import {
   INVITATION_EMAIL_MAX,
   PROJECT_GRANT_ROLES,
@@ -57,7 +57,6 @@ export function InviteMemberModal({
   draft,
   onClose,
   onInvited,
-  onSeatsChanged,
 }: {
   companyId: string;
   company: string | null;
@@ -65,8 +64,6 @@ export function InviteMemberModal({
   draft: InviteDraft | null;
   onClose: () => void;
   onInvited: (invitation: Invitation) => void;
-  /** A `QUOTA_EXCEEDED`: the seats are read again (§4.38). */
-  onSeatsChanged: () => void;
 }) {
   const formId = useId();
   const queryClient = useQueryClient();
@@ -91,9 +88,10 @@ export function InviteMemberModal({
     },
     onError: (error) => {
       if (intent.current && isIndefinite(error)) intent.current = { ...intent.current, open: true };
-      if (refusalCode(error) === "QUOTA_EXCEEDED") onSeatsChanged();
     },
-    // A refused invitation re-reads the company's plan reads, the snapshot with them (TAS-512, B4).
+    // A refused invitation re-reads the company's plan reads, the snapshot with them (TAS-512, B4):
+    // the seats a `QUOTA_EXCEEDED` makes the section read again are that one read — the gate's
+    // (`CompanyGate`), never a second of this dialog's own (api-contract-guard N2).
     meta: QUOTA_WRITE_META,
   });
 

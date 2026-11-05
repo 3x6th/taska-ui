@@ -1,8 +1,10 @@
 import { notifyManager } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
 import type { Invitation, Membership } from "../../api/tenantMembers";
+import { CompanyGate } from "../../components/CompanyGate";
 import { companiesHarness } from "../../test/companiesHarness";
 import { SettingsMembersSection } from "./SettingsMembersSection";
 
@@ -634,5 +636,48 @@ describe("small rules (fix round 2)", () => {
     await waitFor(() => expect(scroll).toHaveBeenCalledWith({ block: "nearest" }));
     expect(scroll.mock.contexts.some((node) => (node as Element).classList.contains("error-note"))).toBe(true);
     scroll.mockRestore();
+  });
+});
+
+describe("a refused invitation reads the seats once (TAS-512, api-contract-guard N2)", () => {
+  it("QUOTA_EXCEEDED: the gate's one re-read of the snapshot, and none of the dialog's own", async () => {
+    Object.assign(fakeApi, {
+      // The company gate around the section, as the app has it: its session never needs to settle here.
+      enterCompany: () => new Promise(() => {}),
+      onWorkspaceClosed: () => () => {},
+      onWorkspaceLeft: () => () => {},
+      onWorkspaceRestricted: () => () => {},
+      onWorkspacePending: () => () => {},
+      createTenantInvitation: () => Promise.reject(refusal(422, "QUOTA_EXCEEDED")),
+    });
+    const harness = companiesHarness({ companyId: COMPANY, path: "/settings/members" });
+    render(
+      <Routes>
+        <Route element={<CompanyGate logoutPending={false} onLogout={() => {}} theme="light" toggleTheme={() => {}} />}>
+          <Route
+            path="/settings/members"
+            element={
+              <div className="settings-area">
+                <h1 className="area-section-title" tabIndex={-1}>
+                  Members
+                </h1>
+                <SettingsMembersSection />
+              </div>
+            }
+          />
+        </Route>
+      </Routes>,
+      { wrapper: harness.wrapper },
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Invite a member" }));
+    const dialog = screen.getByRole("dialog", { name: "Invite a member" });
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "nina@example.com" } });
+    await waitFor(() => expect(state.quotasAt.length).toBeGreaterThan(0));
+    const before = state.quotasAt.length;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+    await within(dialog).findByRole("alert");
+    await waitFor(() => expect(state.quotasAt.length).toBe(before + 1));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(state.quotasAt.length).toBe(before + 1);
   });
 });

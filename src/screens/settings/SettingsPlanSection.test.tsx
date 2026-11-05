@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
 import { companiesHarness } from "../../test/companiesHarness";
@@ -24,11 +25,23 @@ const { fakeApi, state } = vi.hoisted(() => {
     subscription: {} as Record<string, unknown>,
     fail: new Set<string>(),
     reentered: 0,
+    /** Every read waits behind it while it is set: «Try again» held in flight. */
+    gate: null as Promise<void> | null,
+    /** The subscription answers 403 OWNER_REQUIRED, and the company is this person's from then on (TAS-504 G6). */
+    ownerRequired: null as string | null,
+    /** Refusals by read, so a failure that stays carries a request id of its own. */
+    refused: {} as Record<string, number>,
   };
   // A definite refusal: an answer that never came would be retried once (`retryUnanswered`).
-  const refuse = (name: string) => Object.assign(new Error("the server's words"), { status: 403, code: "SCOPE_DENIED", requestId: `rid-${name}`, details: null, reasons: [] });
+  const refuse = (name: string, code = "SCOPE_DENIED") => {
+    const count = (state.refused[name] ?? 0) + 1;
+    state.refused[name] = count;
+    const requestId = count === 1 ? `rid-${name}` : `rid-${name}-${count}`;
+    return Object.assign(new Error("the server's words"), { status: 403, code, requestId, details: null, reasons: [] });
+  };
   const read = async <T,>(name: string, answer: () => T): Promise<T> => {
     state.calls.push(name);
+    if (state.gate) await state.gate;
     if (state.fail.has(name)) throw refuse(name);
     return answer();
   };
@@ -55,7 +68,12 @@ const { fakeApi, state } = vi.hoisted(() => {
         ],
         asOf: null,
       })),
-    getSubscription: () => read("subscription", () => ({ ...state.subscription })),
+    getSubscription: () =>
+      read("subscription", () => {
+        if (state.ownerRequired === null) return { ...state.subscription };
+        state.owner = state.ownerRequired;
+        throw refuse("subscription", "OWNER_REQUIRED");
+      }),
     listBillingPlans: () =>
       read("plans", () => ({
         items: [
@@ -86,18 +104,29 @@ const { fakeApi, state } = vi.hoisted(() => {
 
 vi.mock("../../api/client", () => ({ taskaApi: fakeApi }));
 
-function renderPlan() {
+function renderPlan(options: { strict?: boolean; before?: (harness: ReturnType<typeof companiesHarness>) => void } = {}) {
   const harness = companiesHarness({ companyId: UMBRELLA, path: "/settings/plan" });
-  render(
+  options.before?.(harness);
+  const page = (
     <div className="settings-area">
       <h1 className="area-section-title" tabIndex={-1}>
         Plan
       </h1>
       <SettingsPlanSection />
-    </div>,
-    { wrapper: harness.wrapper },
+    </div>
   );
-  return harness;
+  // StrictMode around the whole tree, as main.tsx has it: React 19 rehearses
+  // the effects of a subtree only when the boundary is at or above what the
+  // commit placed, so one nested inside the wrapper rehearses nothing.
+  const Wrapper = harness.wrapper;
+  const view = options.strict
+    ? render(
+        <StrictMode>
+          <Wrapper>{page}</Wrapper>
+        </StrictMode>,
+      )
+    : render(page, { wrapper: Wrapper });
+  return { ...harness, unmount: view.unmount };
 }
 
 const ready = () => screen.findByText(/^The plan /);
@@ -113,6 +142,9 @@ beforeEach(() => {
   state.entitlementPlan = "team-1";
   state.fail = new Set();
   state.reentered = 0;
+  state.gate = null;
+  state.ownerRequired = null;
+  state.refused = {};
   state.subscription = {
     tenantId: UMBRELLA,
     planVersionId: "team-1",
@@ -292,5 +324,175 @@ describe("the boundary re-read (B4)", () => {
     // The instant has passed: no third re-read is set up.
     expect(timeouts.mock.calls.slice(scheduled).some(([, ms]) => ms === 60_000 || (typeof ms === "number" && ms > 3_000 && ms <= 5_000))).toBe(false);
     expect(within(document.body).queryByText("Try again")).toBeNull();
+  });
+});
+
+/** Holds every read behind a gate until the returned release is called. */
+const hold = () => {
+  let release!: () => void;
+  state.gate = new Promise<void>((resolve) => {
+    release = () => {
+      state.gate = null;
+      resolve();
+    };
+  });
+  return release;
+};
+const box = (text: string) => screen.getByText(text).closest(".error-note");
+
+describe("«Try again» in flight (build review: art-director B1, release-reviewer M-1)", () => {
+  it("two reads fail and the first heals: no skeleton in flight, both boxes with their ids, the button aria-disabled with focus — then focus follows it to its new place", async () => {
+    state.fail = new Set(["entitlement", "quotas"]);
+    renderPlan();
+    await ready();
+    const before = labels();
+    const button = screen.getByRole("button", { name: "Try again" });
+    button.focus();
+    const usageBox = box("Usage could not be loaded.");
+
+    state.calls = [];
+    state.fail = new Set(["quotas"]);
+    const release = hold();
+    // Two presses in one task, before React has drawn the flight: one re-read each.
+    act(() => {
+      button.click();
+      button.click();
+    });
+    await waitFor(() => expect([...state.calls].sort()).toEqual(["entitlement", "quotas"]));
+
+    // In flight the page stays as it was: never the skeleton again (TanStack puts
+    // a failed read without data back to `pending`), every failed read's box with
+    // its error and request id, the rows that had arrived, and the button.
+    expect(document.querySelector(".company-plan-loading")).toBeNull();
+    expect(screen.getByText("This company’s plan could not be loaded.")).toBeInTheDocument();
+    expect(screen.getByText("Usage could not be loaded.")).toBeInTheDocument();
+    expect(screen.getByText("rid-entitlement")).toBeInTheDocument();
+    expect(screen.getByText("rid-quotas")).toBeInTheDocument();
+    expect(labels()).toEqual(before);
+    expect(button).toBeInTheDocument();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).toHaveTextContent(/^Try again$/);
+    expect(button).toHaveFocus();
+    // A press in flight asks nothing more.
+    fireEvent.click(button);
+    expect(state.calls).toHaveLength(2);
+
+    await act(async () => release());
+    // The plan's rows arrive; Usage's failure stays, its box remounted with the new id …
+    await waitFor(() => expect(dd("Plan")).toHaveTextContent("Team · version 1"));
+    expect(screen.queryByText("This company’s plan could not be loaded.")).toBeNull();
+    expect(box("Usage could not be loaded.")).not.toBe(usageBox);
+    expect(screen.getByText("rid-quotas-2")).toBeInTheDocument();
+    // … and «Try again» now stands under it, with focus.
+    const moved = screen.getByRole("button", { name: "Try again" });
+    expect(moved).not.toBe(button);
+    expect(moved.closest(".company-plan-failure")).toContainElement(box("Usage could not be loaded.") as HTMLElement);
+    await waitFor(() => expect(moved).toHaveFocus());
+    expect(moved).not.toHaveAttribute("aria-disabled");
+
+    // All healed: the page is whole, focus on the heading.
+    state.fail = new Set();
+    fireEvent.click(moved);
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveFocus());
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(dd("Seats")).toHaveTextContent("4 in use · 25 allowed");
+  });
+
+  it("the first failure stays: its box remounts in place and focus stays on the same «Try again»", async () => {
+    state.fail = new Set(["entitlement", "quotas"]);
+    renderPlan();
+    await ready();
+    const button = screen.getByRole("button", { name: "Try again" });
+    button.focus();
+    const planBox = box("This company’s plan could not be loaded.");
+
+    state.fail = new Set(["entitlement"]);
+    const release = hold();
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "true"));
+    expect(document.querySelector(".company-plan-loading")).toBeNull();
+    expect(screen.getByText("Usage could not be loaded.")).toBeInTheDocument();
+    expect(button).toHaveFocus();
+
+    await act(async () => release());
+    await waitFor(() => expect(dd("Seats")).toHaveTextContent("4 in use · 25 allowed"));
+    expect(box("This company’s plan could not be loaded.")).not.toBe(planBox);
+    expect(screen.getByText("rid-entitlement-2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBe(button);
+    expect(button).toHaveFocus();
+    expect(button).not.toHaveAttribute("aria-disabled");
+  });
+});
+
+describe("403 OWNER_REQUIRED on the subscription (TAS-504 G6, release-reviewer L-3)", () => {
+  it("another owner now: the company is read again and the tab re-enters it", async () => {
+    state.ownerRequired = "priya";
+    renderPlan();
+    await waitFor(() => expect(state.reentered).toBe(1));
+    expect(state.calls.filter((call) => call === "tenant")).toHaveLength(2);
+  });
+
+  it("the reader is still its owner: the company is read again, and nothing re-enters", async () => {
+    state.ownerRequired = "tom";
+    renderPlan();
+    await waitFor(() => expect(state.calls.filter((call) => call === "tenant")).toHaveLength(2));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 30)));
+    expect(state.reentered).toBe(0);
+  });
+});
+
+describe("the boundary's timers (release-reviewer L-4)", () => {
+  /** The indexes of the `setTimeout` calls that wait for the instant 5 s ahead. */
+  const boundaryCall = (timeouts: { mock: { calls: readonly (readonly unknown[])[] } }) =>
+    timeouts.mock.calls.flatMap(([, ms], index) => (typeof ms === "number" && ms > 3_000 && ms <= 5_000 ? [index] : []));
+
+  it("under StrictMode, with the subscription cached at mount, the instant is still waited for", async () => {
+    const soon = new Date(Date.now() + 5_000).toISOString();
+    state.subscription = { ...state.subscription, paidThrough: soon, scheduledEffectiveAt: soon };
+    const timeouts = vi.spyOn(window, "setTimeout");
+    const cleared = vi.spyOn(window, "clearTimeout");
+    renderPlan({
+      strict: true,
+      before: ({ client }) => {
+        // Everything the owner's page decides on is there at its first render, so
+        // the timer is set up in the commit StrictMode rehearses.
+        client.setQueryData(["me"], { id: "tom", email: "tom@example.com", displayName: "tom", status: "ACTIVE" });
+        client.setQueryData(["tenant", UMBRELLA], {
+          id: UMBRELLA,
+          name: "Umbrella",
+          ownerId: "tom",
+          lifecycle: "ACTIVE",
+          restrictions: [],
+          createdAt: null,
+          creationDeadline: null,
+          version: "3",
+        });
+        client.setQueryData(["company-subscription"], { ...state.subscription });
+      },
+    });
+    await ready();
+    const ids = boundaryCall(timeouts).map((index) => timeouts.mock.results[index].value as number);
+    const live = ids.filter((id) => !cleared.mock.calls.some(([cancelled]) => cancelled === id));
+    expect(live).toHaveLength(1);
+  });
+
+  it("an unmount clears the instant's re-read and the one 60 s later", async () => {
+    const soon = new Date(Date.now() + 5_000).toISOString();
+    state.subscription = { ...state.subscription, paidThrough: soon, scheduledEffectiveAt: soon };
+    const timeouts = vi.spyOn(window, "setTimeout");
+    const cleared = vi.spyOn(window, "clearTimeout");
+    const view = renderPlan();
+    await ready();
+    const [index] = boundaryCall(timeouts);
+    expect(index).toBeDefined();
+    const first = timeouts.mock.results[index].value as number;
+    await act(async () => (timeouts.mock.calls[index][0] as () => void)());
+    const againIndex = timeouts.mock.calls.findIndex(([, ms]) => ms === 60_000);
+    expect(againIndex).toBeGreaterThanOrEqual(0);
+    const again = timeouts.mock.results[againIndex].value as number;
+    view.unmount();
+    const ids = cleared.mock.calls.map(([id]) => id);
+    expect(ids).toContain(first);
+    expect(ids).toContain(again);
   });
 });

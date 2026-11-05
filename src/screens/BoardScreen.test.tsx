@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { BoardColumnPageParams, BoardParams, TaskaApi } from "../api/TaskaApi";
@@ -9,6 +9,7 @@ import { ATTACHMENT_MAX_SIZE_BYTES } from "../api/attachments";
 import { ObjectStoreError } from "../api/objectStore";
 import { tabbables } from "../lib/focusTrap";
 import { PLANNING_ESTIMATE_HINT } from "../lib/planning";
+import { companiesHarness } from "../test/companiesHarness";
 
 /**
  * The board reads five things and used to show a failure in only one of them.
@@ -6186,6 +6187,83 @@ describe("issue attachments", () => {
     expect(hint).toHaveTextContent(/JPEG, PNG or WebP images, PDF/);
     expect(hint).toHaveTextContent(/ZIP/);
   });
+
+  /**
+   * In a company (TAS-512, release-reviewer L-5): the upload-url leg is not a
+   * mutation, so neither the board's listener nor the company gate's hears
+   * it — the panel says §4.40's storage sentence or §4.35's reason itself and
+   * calls the plan's re-read itself, the snapshot with it (B4).
+   */
+  describe("in a company", () => {
+    const COMPANY_ID = "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b01";
+    const api = fakeApi as unknown as Record<string, unknown>;
+
+    beforeEach(() => {
+      Object.assign(api, {
+        listTenants: async () => ({
+          items: [
+            { id: COMPANY_ID, name: "Northwind", ownerId: "user-anna", lifecycle: "ACTIVE", restrictions: [], createdAt: null, creationDeadline: null, version: "1" },
+          ],
+          nextCursor: null,
+        }),
+        currentWorkspace: () => null,
+        onWorkspaceChange: () => () => {},
+      });
+    });
+    afterEach(() => {
+      delete api.listTenants;
+      delete api.currentWorkspace;
+      delete api.onWorkspaceChange;
+    });
+
+    /** The board on a company session's client, under the companies build's address and account client. */
+    const renderInCompany = async () => {
+      const harness = companiesHarness({ companyId: COMPANY_ID, path: ISSUE_PATH });
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 20_000 } } });
+      const board = <BoardScreen theme="light" toggleTheme={() => {}} onLogout={() => {}} logoutPending={false} />;
+      render(
+        <QueryClientProvider client={client}>
+          <Routes>
+            <Route path="/projects/:projectId/issues/:issueId" element={board} />
+          </Routes>
+        </QueryClientProvider>,
+        { wrapper: harness.wrapper },
+      );
+      // The company's name comes from the reader's list.
+      await waitFor(() => expect(harness.client.getQueryData(["tenants"])).toBeDefined());
+      return client;
+    };
+
+    it("an upload refused 422 QUOTA_EXCEEDED says the plan's storage sentence and re-reads the plan, the snapshot with it", async () => {
+      const client = await renderInCompany();
+      client.setQueryData(["company-quotas"], { tenantId: COMPANY_ID, version: "1", quotas: [], asOf: null });
+      client.setQueryData(["company-entitlement"], { tenantId: COMPANY_ID, version: "1", planVersionId: "free", limits: [] });
+      await section();
+      failUpload("sign", Object.assign(new Error("Quota exceeded"), { status: 422, code: "QUOTA_EXCEEDED", requestId: "req-quota" }));
+      chooseFile("notes.txt");
+
+      expect(await notes().findByText("notes.txt was not attached. Northwind has reached its plan’s storage limit.")).toBeVisible();
+      expect(notes().getByRole("button", { name: "Copy request id req-quota" })).toBeVisible();
+      expect(client.getQueryState(["company-quotas"])?.isInvalidated).toBe(true);
+      expect(client.getQueryState(["company-entitlement"])?.isInvalidated).toBe(true);
+      expect(confirmCalls()).toBe(0);
+    });
+
+    it("an upload refused READ_ONLY says the reason's phrase, not the server's words", async () => {
+      await renderInCompany();
+      await section();
+      failUpload(
+        "sign",
+        Object.assign(new Error("Tenant is read-only"), { status: 403, code: "READ_ONLY", reasons: ["PAYMENT_EXPIRED"], requestId: "req-ro" }),
+      );
+      chooseFile("notes.txt");
+
+      expect(
+        await notes().findByText("notes.txt was not attached. Northwind’s paid period has ended, so nothing in it can be changed."),
+      ).toBeVisible();
+      expect(notes().queryByText(/Tenant is read-only/)).toBeNull();
+    });
+  });
 });
 
 /**
@@ -8133,6 +8211,103 @@ describe("New issue and Esc", () => {
     fireEvent.keyDown(high, { key: "Escape" });
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New issue" })).not.toBeInTheDocument());
+  });
+});
+
+/**
+ * Create issue in flight and refused (§4.1, §4.40; TAS-512 api-contract-guard
+ * B-1, release-reviewer M-3, art-director B2): the latch the submit sets
+ * before `mutate` and the `isPending` check are the only stop on a second
+ * create — there is no idempotency key on it. Against a create that never
+ * settles each way of pressing twice sends one, and the button says it is out
+ * and keeps focus; a refusal brings the button into the body's view and lets
+ * the same press be made again.
+ */
+describe("Create issue in flight and refused", () => {
+  let creates: MockInstance;
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+  afterEach(() => {
+    creates?.mockRestore();
+  });
+
+  const filledForm = async () => {
+    renderBoard();
+    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "New issue" }));
+    fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "One issue" } });
+    const button = dialog.getByRole("button", { name: "Create issue" });
+    button.focus();
+    return button;
+  };
+  const holdCreates = () => {
+    creates = vi.spyOn(fakeApi, "createIssue").mockImplementation(() => new Promise(() => {}));
+  };
+  /** What a browser does with Enter on a focused button and jsdom does not: activate it, a click. */
+  const pressEnter = (button: HTMLElement) => {
+    fireEvent.keyDown(button, { key: "Enter" });
+    fireEvent.click(button);
+  };
+  const outAndFocused = async (button: HTMLElement) => {
+    await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "true"));
+    // A later task, too: nothing was waiting to go out.
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    expect(creates).toHaveBeenCalledTimes(1);
+    expect(button).toHaveFocus();
+  };
+
+  it("a double click sends one", async () => {
+    holdCreates();
+    const button = await filledForm();
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await outAndFocused(button);
+  });
+
+  it("a click, then Enter and Enter, sends one", async () => {
+    holdCreates();
+    const button = await filledForm();
+    fireEvent.click(button);
+    pressEnter(button);
+    await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "true"));
+    pressEnter(button);
+    await outAndFocused(button);
+  });
+
+  it("two submits in one task send one", async () => {
+    holdCreates();
+    const button = await filledForm();
+    const form = button.closest("form") as HTMLFormElement;
+    act(() => {
+      form.requestSubmit(button);
+      form.requestSubmit(button);
+    });
+    await outAndFocused(button);
+  });
+
+  it("a refusal brings Create issue into the body's view, focus kept, and the press may be made again", async () => {
+    failNextCreate(Object.assign(new Error("Quota exceeded"), { status: 422, code: "QUOTA_EXCEEDED", requestId: "req-q" }));
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      const button = await filledForm();
+      scroll.mockClear();
+      fireEvent.click(button);
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "TAS has reached its plan’s limit on issues, so this issue was not created.",
+      );
+      await waitFor(() => expect(scroll.mock.contexts).toContain(button));
+      expect(scroll.mock.calls[scroll.mock.contexts.indexOf(button)]).toEqual([{ block: "nearest" }]);
+      expect(button).toHaveFocus();
+      const before = createCalls().length;
+      fireEvent.click(button);
+      await waitFor(() => expect(createCalls().length).toBe(before + 1));
+    } finally {
+      scroll.mockRestore();
+    }
   });
 });
 

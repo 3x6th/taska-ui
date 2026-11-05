@@ -77,16 +77,49 @@ const unread = (query: UseQueryResult<unknown>) => query.isError && query.data =
 /** A read that failed again with its last answer still on screen: the page's one refresh notice. */
 const stale = (query: UseQueryResult<unknown>) => query.isError && query.data !== undefined;
 
+/** The page's five reads by name, in the page's order (§4.40). */
+type ReadName = "tenant" | "entitlement" | "plans" | "subscription" | "quotas";
+/** A read's failure as its `ErrorNote` draws it: the error (and with it the request id), and when it came. */
+interface Failure {
+  error: unknown;
+  at: number;
+}
+/**
+ * What the page draws of one read. Live, it is the query's own answer or
+ * failure; while «Try again» is out it is the failure the press was made
+ * against, so nothing the reader is looking at moves in flight (§4.40, the
+ * build review's B1: TanStack puts a failed query without data back to
+ * `pending` on a refetch, and drops its error).
+ */
+interface Drawn<T> {
+  data: T | undefined;
+  failure: Failure | null;
+}
+const drawnUnread = (read: Drawn<unknown>) => read.failure !== null && read.data === undefined;
+
 function CompanyPlan({ companyId }: { companyId: string }) {
   const queryClient = useQueryClient();
   const accountClient = useAccountQueryClient();
   const companies = useCompanies();
   const listedName = useCompanyName(companyId);
   const row = companies.data?.find((tenant) => tenant.id === companyId) ?? null;
+  /**
+   * «Try again» in flight: the failures it was pressed against, by read — each
+   * failed read's `ErrorNote` keeps its error and request id, the rows that had
+   * arrived stay, and the button stays where it was, until every re-read has
+   * answered (§4.40 «Отказы чтения»). `null` when nothing is being re-read.
+   */
+  const [retrying, setRetrying] = useState<Partial<Record<ReadName, Failure>> | null>(null);
+  const drawn = <T,>(name: ReadName, query: UseQueryResult<T>): Drawn<T> => {
+    const kept = retrying?.[name];
+    if (kept !== undefined) return { data: undefined, failure: kept };
+    return { data: query.data, failure: query.isError ? { error: query.error, at: query.errorUpdatedAt } : null };
+  };
   const me = useQuery({ queryKey: ME_QUERY_KEY, queryFn: () => taskaApi.getCurrentUser() });
   const meId = me.data?.id ?? null;
   const tenantQuery = useQuery(companyTenantOptions(companyId));
-  const tenant = tenantQuery.data ?? null;
+  const tenantRead = drawn("tenant", tenantQuery);
+  const tenant = tenantRead.data ?? null;
   // The company's answer decides; before it — or when it failed — the list
   // row, so the owner's five reads go out together (api-contract-guard §2).
   const ownerId = tenant !== null ? tenant.ownerId : (row?.ownerId ?? null);
@@ -97,6 +130,10 @@ function CompanyPlan({ companyId }: { companyId: string }) {
   const plans = useQuery(plansQueryOptions(taskaApi), accountClient ?? undefined);
   // The owner's read only, and never asked for anybody else (B1).
   const subscription = useQuery({ ...companySubscriptionOptions(companyId), enabled: owner });
+  const entitlementRead = drawn("entitlement", entitlement);
+  const quotasRead = drawn("quotas", quotas);
+  const plansRead = drawn("plans", plans);
+  const subscriptionRead = drawn("subscription", subscription);
   const company = tenant?.name ?? listedName;
 
   // 403 OWNER_REQUIRED (TAS-504 G6): who owns it is the re-read company's to
@@ -130,69 +167,126 @@ function CompanyPlan({ companyId }: { companyId: string }) {
 
   // The owner's boundaries (B4): once when the local clock passes the
   // paid-through or the announced date, once more 60 s later, then never.
-  const sub = owner ? (subscription.data ?? null) : null;
+  const sub = owner ? (subscriptionRead.data ?? null) : null;
   const boundary = sub === null ? null : nextBoundary([sub.paidThrough, sub.scheduledEffectiveAt]);
   const boundaryAt = boundary?.at ?? null;
   const boundaryIn = boundary?.inMs ?? null;
-  const timers = useRef<number[]>([]);
+  /** The instants whose first re-read is set up or has gone: each is waited for once. */
   const scheduled = useRef(new Set<string>());
+  /** The «60 s later» re-reads: they outlive the instant that set them (it is past by then), and go with the page. */
+  const again = useRef<number[]>([]);
   useEffect(() => {
-    const own = timers.current;
+    const own = again.current;
     return () => {
-      for (const timer of own) window.clearTimeout(timer);
+      for (const timer of own.splice(0)) window.clearTimeout(timer);
     };
   }, []);
+  // Set up and called off in the one effect (release-reviewer L-4): an instant
+  // whose re-read was called off before it went — StrictMode's rehearsal
+  // unmount, a company left, an instant that moved — may be waited for again.
   useEffect(() => {
     if (boundaryIn === null || boundaryAt === null || scheduled.current.has(boundaryAt)) return;
-    scheduled.current.add(boundaryAt);
+    const instants = scheduled.current;
+    instants.add(boundaryAt);
     const reread = () => {
       for (const queryKey of [companyTenantKey(companyId), COMPANY_ENTITLEMENT_KEY, COMPANY_QUOTAS_KEY, COMPANY_SUBSCRIPTION_KEY]) {
         void queryClient.invalidateQueries({ queryKey });
       }
     };
-    timers.current.push(
-      window.setTimeout(() => {
-        reread();
-        timers.current.push(window.setTimeout(reread, BOUNDARY_AGAIN_MS));
-      }, boundaryIn),
-    );
+    let gone = false;
+    const timer = window.setTimeout(() => {
+      gone = true;
+      reread();
+      again.current.push(window.setTimeout(reread, BOUNDARY_AGAIN_MS));
+    }, boundaryIn);
+    return () => {
+      window.clearTimeout(timer);
+      if (!gone) instants.delete(boundaryAt);
+    };
     // `boundaryIn` is read once, when its instant is first seen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boundaryAt, companyId, queryClient]);
 
-  const reads = owner ? [tenantQuery, entitlement, plans, subscription, quotas] : [tenantQuery, entitlement, plans, quotas];
+  const live: [ReadName, UseQueryResult<unknown>][] = owner
+    ? [
+        ["tenant", tenantQuery],
+        ["entitlement", entitlement],
+        ["plans", plans],
+        ["subscription", subscription],
+        ["quotas", quotas],
+      ]
+    : [
+        ["tenant", tenantQuery],
+        ["entitlement", entitlement],
+        ["plans", plans],
+        ["quotas", quotas],
+      ];
+  const reads = live.map(([, query]) => query);
+  // The skeleton only until every read has first settled — latched once: a
+  // re-read of a failed one is pending again and must not bring it back (B1).
   const ready = settled(me) && reads.every(settled);
-  const [retrying, setRetrying] = useState(false);
-  const failed = reads.filter(unread);
+  const [opened, setOpened] = useState(false);
+  if (ready && !opened) setOpened(true);
+  const retryButton = useRef<HTMLButtonElement>(null);
+  /** Bumped when a re-read left a failure: «Try again» takes focus wherever it now stands. */
+  const [refocus, setRefocus] = useState(0);
+  useEffect(() => {
+    if (refocus > 0) retryButton.current?.focus();
+  }, [refocus]);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const retry = () => {
-    if (retrying) return;
-    setRetrying(true);
-    void Promise.all(failed.map((query) => query.refetch())).then((results) => {
-      setRetrying(false);
+    // In flight a press asks nothing more — and a second press in the same
+    // task re-reads nothing new either: react-query hands a failed read's
+    // refetch the one already out.
+    if (retrying !== null) return;
+    const failed = live.filter(([, query]) => unread(query));
+    if (failed.length === 0) return;
+    setRetrying(Object.fromEntries(failed.map(([name, query]) => [name, { error: query.error, at: query.errorUpdatedAt }])));
+    void Promise.all(failed.map(([, query]) => query.refetch())).then((results) => {
+      if (!mounted.current) return;
+      setRetrying(null);
+      // Every one answered: the page is whole, focus on its heading. A failure
+      // that stays remounts its box, and focus stays on «Try again» — in its
+      // new place when the first failed box is another one now.
       if (results.every((result) => result.isSuccess)) heading()?.focus();
+      else setRefocus((value) => value + 1);
     });
   };
 
-  if (!ready) return <PlanLoading />;
+  if (!ready && !opened) return <PlanLoading />;
 
   // One «Try again», 8 under the first ErrorNote of the page (§4.40) — the slots in the page's order.
-  const firstFailed = [tenant === null ? tenantQuery : null, entitlement, plans, owner ? subscription : null, quotas].find(
-    (query) => query !== null && unread(query),
-  );
-  const failure = (query: UseQueryResult<unknown>, text: string, className?: string) => {
-    if (!unread(query)) return null;
-    const first = query === firstFailed;
+  const slots: [ReadName, Drawn<unknown>][] = [
+    ["tenant", tenantRead],
+    ["entitlement", entitlementRead],
+    ["plans", plansRead],
+    ["subscription", subscriptionRead],
+    ["quotas", quotasRead],
+  ];
+  const firstFailed =
+    slots.find(([name, read]) => (name === "tenant" ? tenant === null : name !== "subscription" || owner) && drawnUnread(read))?.[0] ?? null;
+  const failure = (name: ReadName, read: Drawn<unknown>, text: string, className?: string) => {
+    if (read.failure === null || !drawnUnread(read)) return null;
+    const first = name === firstFailed;
     return (
       <div className={className ? `company-plan-failure ${className}` : "company-plan-failure"}>
         {/* Found on arrival, not announced (§5.6); a failure that stays remounts its box. */}
-        <ErrorNote key={query.errorUpdatedAt} requestId={apiErrorFacts(query.error).requestId}>
+        <ErrorNote key={read.failure.at} requestId={apiErrorFacts(read.failure.error).requestId}>
           {text}
         </ErrorNote>
         {first ? (
+          // In flight (§4.1): `aria-disabled`, the label as it was, focus kept on it.
           <button
-            aria-disabled={retrying || undefined}
+            aria-disabled={retrying !== null || undefined}
             className="secondary-button compact-button company-plan-retry"
             onClick={retry}
+            ref={retryButton}
             type="button"
           >
             Try again
@@ -202,16 +296,17 @@ function CompanyPlan({ companyId }: { companyId: string }) {
     );
   };
 
-  const catalogue = plans.data ?? null;
-  const current = entitlement.data && catalogue ? planById(catalogue, entitlement.data.planVersionId) : null;
-  const planKnown = entitlement.data !== undefined && catalogue !== null && entitlement.data.planVersionId !== null;
+  const catalogue = plansRead.data ?? null;
+  const entitled = entitlementRead.data;
+  const current = entitled && catalogue ? planById(catalogue, entitled.planVersionId) : null;
+  const planKnown = entitled !== undefined && catalogue !== null && entitled.planVersionId !== null;
   const price = owner && current ? planPriceText(current) : null;
   const paidThrough = sub?.paidThrough ?? null;
   const announced =
     sub !== null && sub.scheduledPlanVersionId !== null && sub.scheduledEffectiveAt !== null && catalogue !== null
       ? { at: sub.scheduledEffectiveAt, plan: planById(catalogue, sub.scheduledPlanVersionId) }
       : null;
-  const lines = usageLines(quotas.data ?? null, entitlement.data ?? null);
+  const lines = usageLines(quotasRead.data ?? null, entitled ?? null);
   const refreshFailed = reads.some(stale);
 
   const firstFacts: ReactNode[] = [];
@@ -267,7 +362,7 @@ function CompanyPlan({ companyId }: { companyId: string }) {
         {tenant !== null ? (
           <CompanyStateBlock owner={owner} restrictions={tenant.restrictions} />
         ) : (
-          failure(tenantQuery, STATE_READ_FAILED, "company-plan-state-failure")
+          failure("tenant", tenantRead, STATE_READ_FAILED, "company-plan-state-failure")
         )}
         {refreshFailed ? (
           <div className="company-plan-refresh-failure">
@@ -278,15 +373,15 @@ function CompanyPlan({ companyId }: { companyId: string }) {
         ) : null}
 
         <div className="company-plan-facts">
-          {failure(entitlement, ENTITLEMENT_READ_FAILED)}
-          {failure(plans, CATALOGUE_READ_FAILED)}
+          {failure("entitlement", entitlementRead, ENTITLEMENT_READ_FAILED)}
+          {failure("plans", plansRead, CATALOGUE_READ_FAILED)}
           {firstFacts.length > 0 ? <dl className="settings-details company-plan-dl">{firstFacts}</dl> : null}
-          {owner ? failure(subscription, SUBSCRIPTION_READ_FAILED) : null}
+          {owner ? failure("subscription", subscriptionRead, SUBSCRIPTION_READ_FAILED) : null}
           {ownerFacts.length > 0 ? <dl className="settings-details company-plan-dl">{ownerFacts}</dl> : null}
         </div>
 
         <h2 className="company-plan-usage-heading">Usage</h2>
-        {failure(quotas, USAGE_READ_FAILED)}
+        {failure("quotas", quotasRead, USAGE_READ_FAILED)}
         {lines.length > 0 ? (
           <dl className="settings-details company-plan-dl company-plan-usage">
             {lines.map((line) => (

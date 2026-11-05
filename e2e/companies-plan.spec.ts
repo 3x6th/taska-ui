@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { COMPANY, LONG_NAME, PLAN, companyPath, inCompany, setHooks, switchCompany } from "./companiesFixtures";
 
 /*
@@ -202,4 +202,151 @@ test("the board carries the company's state: «paused» for Initech, «read-only
   await dialog.getByLabel("Summary").fill("Disputed");
   await dialog.getByRole("button", { name: "Create issue" }).click();
   await expect(dialog.getByRole("alert")).toHaveText("A payment for Northwind is disputed, so nothing in it can be changed until it’s settled.");
+});
+
+test("Plan › «Try again» in flight keeps the page — no skeleton, every failed read's box, the button aria-disabled with focus — then focus on what is left, and on the heading once whole", async ({
+  page,
+}) => {
+  await inCompany(page, "Umbrella", COMPANY.umbrella, "tom@example.com");
+  await setHooks(page, {
+    refuseNext: { getEntitlement: { status: 409, code: "INVALID_STATE" }, getTenantQuotas: { status: 409, code: "INVALID_STATE" } },
+  });
+  await openPlan(page, COMPANY.umbrella);
+  const planNote = page.getByText("This company’s plan could not be loaded.");
+  const usageNote = page.getByText("Usage could not be loaded.");
+  await expect(planNote).toBeVisible();
+  await expect(usageNote).toBeVisible();
+  const retry = page.getByRole("button", { name: "Try again" });
+  await expect(retry).toHaveCount(1);
+  const arrived = await labels(page).allTextContents();
+
+  // The plan heals and Usage fails again — both slowly, so the flight can be looked at.
+  await setHooks(page, {
+    refuseNext: { getTenantQuotas: { status: 409, code: "INVALID_STATE" } },
+    delayMs: { getEntitlement: 1500, getTenantQuotas: 1500 },
+  });
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(retry).toHaveAttribute("aria-disabled", "true");
+  await expect(page.locator(".company-plan-loading")).toHaveCount(0);
+  await expect(planNote).toBeVisible();
+  await expect(usageNote).toBeVisible();
+  await expect(labels(page)).toHaveText(arrived);
+  await expect(retry).toHaveText("Try again");
+  await expect(retry).toBeFocused();
+  expect(await retry.evaluate((node) => getComputedStyle(node).cursor)).toBe("progress");
+
+  // Answered: the plan's rows, Usage's box again — and «Try again» under it, with focus.
+  await expect(fact(page, "Plan")).toHaveText("Team · version 1");
+  await expect(planNote).toHaveCount(0);
+  await expect(usageNote).toBeVisible();
+  await expect(page.locator(".company-plan-failure").filter({ has: usageNote }).getByRole("button", { name: "Try again" })).toHaveCount(1);
+  await expect(retry).toBeFocused();
+  await expect(retry).not.toHaveAttribute("aria-disabled");
+
+  // All healed: the page is whole, focus on its heading.
+  await setHooks(page, null);
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { level: 1, name: /Plan/ })).toBeFocused();
+  await expect(retry).toHaveCount(0);
+  await expect(fact(page, "Seats")).toHaveText(/ in use · 25 allowed/);
+});
+
+/**
+ * The refusal's sentence and the focused submit both inside the modal body's
+ * visible rect (§4.40 «Отказы квоты», art-director B2) — measured in one
+ * evaluate, after the fonts, so nothing moves between the reads.
+ */
+async function expectRefusalInView(dialog: Locator, submit: string) {
+  const rects = await dialog.evaluate(async (node, name) => {
+    await document.fonts.ready;
+    const box = (element: Element | null | undefined) => {
+      const rect = element?.getBoundingClientRect();
+      return rect ? { top: rect.top, bottom: rect.bottom } : null;
+    };
+    const button = [...node.querySelectorAll("button")].find((item) => item.textContent?.trim() === name);
+    return {
+      body: box(node.querySelector(".modal-body")),
+      note: box(node.querySelector(".error-note")),
+      button: box(button),
+      viewport: window.innerHeight,
+    };
+  }, submit);
+  expect(rects.body && rects.note && rects.button).toBeTruthy();
+  const { body, note, button } = rects as { body: { top: number; bottom: number }; note: { top: number; bottom: number }; button: { top: number; bottom: number } };
+  expect(body.bottom).toBeLessThanOrEqual(rects.viewport);
+  for (const part of [note, button]) {
+    expect(part.top).toBeGreaterThanOrEqual(body.top);
+    expect(part.bottom).toBeLessThanOrEqual(body.bottom);
+  }
+}
+
+for (const size of [
+  { width: 320, height: 568, phone: true },
+  { width: 1440, height: 810, phone: false },
+]) {
+  test(`at ${size.width}×${size.height} a refused New issue brings its sentence and Create issue into the modal body's view, focus on it`, async ({
+    page,
+    isMobile,
+  }) => {
+    test.skip(isMobile !== size.phone, size.phone ? "a phone size" : "a desktop size");
+    await page.setViewportSize({ width: size.width, height: size.height });
+    await inCompany(page, "Northwind", COMPANY.northwind);
+    await page.goto(companyPath(COMPANY.northwind, `/projects/${WEB}/board`));
+    await page.getByRole("button", { name: "New", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "New issue" });
+    await dialog.getByLabel("Summary").fill("One issue too many");
+    const create = dialog.getByRole("button", { name: "Create issue" });
+    await create.click();
+    await expect(dialog.getByRole("alert")).toContainText("WEB has reached its plan’s limit on issues, so this issue was not created.");
+    await expect(create).toBeFocused();
+    await expectRefusalInView(dialog, "Create issue");
+  });
+}
+
+test("at 320×568 a refused New project brings its sentence and Create project into the modal body's view, focus on it", async ({ page, isMobile }) => {
+  test.skip(!isMobile, "a phone size");
+  await page.setViewportSize({ width: 320, height: 568 });
+  await inCompany(page, "Northwind", COMPANY.northwind);
+  await page.getByRole("button", { name: "New project" }).click();
+  const dialog = page.getByRole("dialog", { name: "New project" });
+  await dialog.getByRole("textbox", { name: "Key", exact: true }).fill("OPS");
+  await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("Operations");
+  const create = dialog.getByRole("button", { name: "Create project" });
+  await create.click();
+  await expect(dialog.locator(".error-note")).toContainText("Northwind has reached its plan’s limit on projects, so this project was not created.");
+  await expect(create).toBeFocused();
+  await expectRefusalInView(dialog, "Create project");
+});
+
+test("a refused write re-reads the company without a reload: the marker says «read-only», and Plan the dispute (B4)", async ({ page, isMobile }) => {
+  await inCompany(page, "Northwind", COMPANY.northwind);
+  await openPlan(page, COMPANY.northwind);
+  await expect(page.getByText("A payment is disputed.")).toHaveCount(0);
+  await setHooks(page, { paymentDispute: { [COMPANY.northwind]: true } });
+
+  // Inside the app from here on: nothing is reloaded.
+  await page.getByRole("link", { name: "Back to projects" }).click();
+  await expect(page).toHaveURL(companyPath(COMPANY.northwind));
+  await page.getByRole("button", { name: "New project" }).click();
+  const dialog = page.getByRole("dialog", { name: "New project" });
+  await dialog.getByRole("textbox", { name: "Key", exact: true }).fill("OPS");
+  await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("Operations");
+  await dialog.getByRole("button", { name: "Create project" }).click();
+  await expect(dialog.locator(".error-note")).toContainText("A payment for Northwind is disputed, so nothing in it can be changed until it’s settled.");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+
+  // The refusal's reasons were not the list row's: the list was read again, and the marker is there.
+  if (isMobile) {
+    await page.getByRole("button", { name: /Open profile/ }).click();
+    await expect(page.locator(".user-profile-company .company-marker")).toHaveText("Northwind is read-only");
+  } else {
+    await expect(page.locator(".company-switcher-trigger .company-marker")).toHaveText("read-only");
+    await page.getByRole("button", { name: /Open profile/ }).click();
+  }
+  // The company was invalidated with it: Plan reads it again and says the dispute.
+  await page.getByRole("link", { name: "Settings" }).click();
+  await page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Plan" }).click();
+  await expect(page).toHaveURL(planPath(COMPANY.northwind));
+  await expect(page.getByText("A payment is disputed.")).toBeVisible();
 });

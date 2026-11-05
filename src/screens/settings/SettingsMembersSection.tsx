@@ -541,7 +541,6 @@ function CompanyMembers({ companyId }: { companyId: string }) {
           draft={inviting.draft}
           onClose={() => setInviting(null)}
           onInvited={onInvited}
-          onSeatsChanged={() => void reread({ quotas: true })}
           seats={seats}
         />
       ) : null}
