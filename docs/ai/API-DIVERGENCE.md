@@ -2286,9 +2286,13 @@ Everything below is the entry as it stood, in the past tense.
     (`TaskaApi.onWorkspaceLeft`, a no-op in today's build), `CompanyGate` refreshes the list and lands on `/companies`
     with «You left …» — never §4.35. A lost leave is remembered only for the company session it was sent with (renewal
     and re-selection of that session included), and is forgotten on a 202, a definite refusal of its retry, a "left"
-    release, a 2xx with that session to a request sent after the loss, and any change of account; a 429 retry keeps it;
+    release, a 2xx with that session to a request sent after the loss (a retry lost again restarts the count), and any
+    change of account; a 429 retry keeps it;
     a 401 on the retry counts as left only when renewal was refused and re-selection answered «no longer a member» (an
-    unreachable refresh keeps the record). The blueprint is silent on replaying a leave.
+    unreachable refresh keeps the record). The 2xx rule assumes every company-session request checks revocation and
+    membership online and that a leave is applied before its 202 — contracts §2 also allows a bounded read cache, and
+    `/users/me` or `/meta` may not check membership; the enabling PR confirms this or narrows the rule to
+    membership-checked routes. The blueprint is silent on replaying a leave.
     Removal: ask A27.
   - `readAllPages` fails (no message of its own) at its 50-page cap or on a cursor the server repeats, rather than
     showing a partial directory as everyone.
