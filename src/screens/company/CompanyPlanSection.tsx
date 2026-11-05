@@ -40,7 +40,7 @@ import {
 import { CompanyStateBlock } from "./CompanyStateBlock";
 
 /**
- * Settings › Plan (TAS-512, DESIGN.md §4.40) — the B2B build only: the plan
+ * Company › Plan (TAS-512, DESIGN.md §4.40, §5.10) — the B2B build only: the plan
  * the tab's company is on, what it uses, its restrictions, and for its owner
  * the money. Every role sees it; the page only reads.
  *

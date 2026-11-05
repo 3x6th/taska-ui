@@ -1,6 +1,7 @@
 import { useIsMutating } from "@tanstack/react-query";
-import { Building2, Check, ChevronsUpDown, Plus } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { Building2, Check, ChevronsUpDown, Plus, Settings2 } from "lucide-react";
+import { useEffect, useId, useRef, useState, type MouseEvent } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { apiErrorFacts } from "../api/errors";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import {
@@ -14,6 +15,7 @@ import {
 import { useCompanies, useCompanyMarker, useCompanyName, usePrefetchPlans, useRefusedThisVisit } from "../hooks/useCompanies";
 import { AddressLink } from "./CompanyRouter";
 import { useAppPath, useCompanyAddress } from "../lib/companyAddress";
+import { COMPANY_ZONE, inCompanyZone } from "../screens/company/sections";
 import { ErrorNote } from "./ErrorNote";
 
 /**
@@ -44,6 +46,7 @@ export function CompanySwitcher() {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverId = useId();
   const appPath = useAppPath();
+  const location = useLocation();
 
   useDismissOnOutside(open, rootRef, () => setOpen(false), triggerRef);
   // «Create a company» is drawn while the popover is open (TAS-501, §4.36 «Входы»).
@@ -54,6 +57,19 @@ export function CompanySwitcher() {
     focusTriggerOnMount = false;
     triggerRef.current?.focus();
   }, []);
+
+  /**
+   * «Manage company» (TAS-522, §4.34): a modified click opens the zone in a
+   * new tab and leaves this one — and the popover — as it is (the profile
+   * menu's `followLink`, §4.16). A plain one closes the popover in the frame
+   * of the click and the router pushes the zone, whose heading takes focus
+   * from the link's state; the trigger does not take it — it may be gone with
+   * the page it was on.
+   */
+  const followManage = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    setOpen(false);
+  };
 
   const rows = companies.data ? orderTenants(companies.data, refused).filter((tenant) => tenantGroup(tenant, refused) === 1) : null;
   const known = name !== null;
@@ -127,6 +143,22 @@ export function CompanySwitcher() {
             </ul>
           )}
           <div className="company-switcher-footer">
+            {/* The tab's company's own zone (TAS-522, §5.10), for every role,
+                and drawn when the list could not be read: it needs nothing of
+                the list. A router link inside the company's prefix, so a write
+                in flight does not hold it — it stays in the company (§4.34).
+                Inside the zone it says so with `aria-current` alone, as
+                Settings does in the profile menu (§4.16). */}
+            <Link
+              aria-current={inCompanyZone(location.pathname) ? "page" : undefined}
+              className="user-profile-link"
+              onClick={followManage}
+              state={{ focusHeading: true }}
+              to={COMPANY_ZONE}
+            >
+              <Settings2 aria-hidden="true" size={15} />
+              Manage company
+            </Link>
             <AddressLink className="user-profile-link" path={COMPANIES_ROUTE} state={{ focusHeading: true }}>
               <Building2 aria-hidden="true" size={15} />
               All companies

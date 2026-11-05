@@ -1,9 +1,9 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { COMPANY, LONG_NAME, PLAN, companyPath, inCompany, setHooks, switchCompany } from "./companiesFixtures";
+import { COMPANY, LONG_NAME, PLAN, companyPath, inCompany, openCompanyZone, setHooks, switchCompany } from "./companiesFixtures";
 
 /*
- * Settings › Plan and the workspace's explanations of a restriction in the
- * companies build (TAS-512, DESIGN.md §4.40, §4.34, §4.35) against the third
+ * Company › Plan and the workspace's explanations of a restriction in the
+ * companies build (TAS-512, DESIGN.md §4.40, §4.34, §4.35, §5.10) against the third
  * e2e server's mock: the story's four acceptance criteria — finance only for
  * the owner, with no subscription read for anybody else; a move below usage
  * shows the kept data and READ_ONLY with its reason; exactly the task limit
@@ -14,14 +14,15 @@ import { COMPANY, LONG_NAME, PLAN, companyPath, inCompany, setHooks, switchCompa
 const WEB = "58e93598-ea1a-460d-9d72-f1f201c310e2";
 const LNG = "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c07";
 const HLP = "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c03";
-const planPath = (companyId: string) => companyPath(companyId, "/settings/plan");
+const planPath = (companyId: string) => companyPath(companyId, "/company/plan");
 
-/** Opens Settings › Plan from the rail's «Company» group, as a reader does — third, after General and Members. */
+/**
+ * Opens Company › Plan as a reader does — third in the zone's rail, after
+ * General and Members: «Manage company» and the rail, or the zone's address
+ * on a phone (TAS-522). Moving from General to Plan puts focus on the heading.
+ */
 async function openPlan(page: Page, companyId: string) {
-  await page.goto(companyPath(companyId, "/settings/profile"));
-  const group = page.getByRole("navigation", { name: "Settings" }).getByRole("group", { name: "Company" });
-  await expect(group.getByRole("link")).toHaveText(["General", "Members", "Plan"]);
-  await group.getByRole("link", { name: "Plan" }).click();
+  await openCompanyZone(page, companyId, "Plan");
   await expect(page).toHaveURL(planPath(companyId));
   await expect(page.getByRole("heading", { level: 1, name: /Plan/ })).toBeFocused();
   await expect(page.getByText(/^The plan /)).toBeVisible();
@@ -174,9 +175,8 @@ test("AC4: a late billing answer of Umbrella is never drawn once the tab is in N
   await expect(page.locator(".company-plan-loading")).toBeVisible();
   await switchCompany(page, "Northwind", isMobile);
   await expect(page).toHaveURL(companyPath(COMPANY.northwind));
-  await page.getByRole("button", { name: /Open profile/ }).click();
-  await page.getByRole("link", { name: "Settings" }).click();
-  await page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Plan" }).click();
+  // Within the page: a reload would drop Umbrella's late answers by itself.
+  await openCompanyZone(page, COMPANY.northwind, "Plan", { inApp: true });
   await expect(page).toHaveURL(planPath(COMPANY.northwind));
   // Northwind's own plan, once its own slow read answers — and past Umbrella's delay, nothing of Umbrella's.
   await expect(fact(page, "Plan")).toHaveText("Free · version 1", { timeout: 10_000 });
@@ -340,13 +340,12 @@ test("a refused write re-reads the company without a reload: the marker says «r
   if (isMobile) {
     await page.getByRole("button", { name: /Open profile/ }).click();
     await expect(page.locator(".user-profile-company .company-marker")).toHaveText("Northwind is read-only");
+    await page.keyboard.press("Escape");
   } else {
     await expect(page.locator(".company-switcher-trigger .company-marker")).toHaveText("read-only");
-    await page.getByRole("button", { name: /Open profile/ }).click();
   }
   // The company was invalidated with it: Plan reads it again and says the dispute.
-  await page.getByRole("link", { name: "Settings" }).click();
-  await page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Plan" }).click();
+  await openCompanyZone(page, COMPANY.northwind, "Plan", { inApp: true });
   await expect(page).toHaveURL(planPath(COMPANY.northwind));
   await expect(page.getByText("A payment is disputed.")).toBeVisible();
 });

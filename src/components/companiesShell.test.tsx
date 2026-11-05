@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi, Workspace, WorkspaceLeftEvent, WorkspacePendingEvent, WorkspaceRestrictedEvent } from "../api/TaskaApi";
 import type { User } from "../domain/types";
-import { Route, Routes } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router-dom";
 import { NotFoundScreen } from "../screens/NotFoundScreen";
 import { CompanyGate } from "./CompanyGate";
 import { companiesHarness } from "../test/companiesHarness";
@@ -219,10 +219,17 @@ describe("a paused or blocked company keeps its session (TAS-504, api-contract-g
       <Route element={<CompanyGate logoutPending={false} onLogout={() => {}} theme="light" toggleTheme={() => {}} />}>
         <Route path="/projects" element={<p>page</p>} />
         <Route path="/browse/:issueKey" element={<p>issue</p>} />
-        <Route path="/settings/company" element={<p>company settings</p>} />
+        <Route path="/settings/profile" element={<p>profile settings</p>} />
+        <Route path="/company/general" element={<CompanyArrival />} />
+        <Route path="/company/members" element={<p>company members</p>} />
       </Route>
     </Routes>
   );
+  /** The zone's General as the gate lets it through, saying whether it was asked for the heading's focus (§4.34). */
+  function CompanyArrival() {
+    const { state } = useLocation();
+    return <p>company general{(state as { focusHeading?: boolean } | null)?.focusHeading ? ", heading asked for" : ""}</p>;
+  }
   const restrict = (reasons: string[], restricted = true, tenantId = "n") =>
     act(() => {
       for (const listener of state.restricted) listener({ tenantId, restricted, reasons, requestId: "rid" });
@@ -242,25 +249,28 @@ describe("a paused or blocked company keeps its session (TAS-504, api-contract-g
     expect(screen.getByText("Its owner has paused it, so its projects can’t be opened right now.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Choose a company" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Open company settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Manage company" })).not.toBeInTheDocument();
     expect(screen.queryByText("page")).not.toBeInTheDocument();
     restrict([], false);
     expect(await screen.findByText("page")).toBeInTheDocument();
   });
 
-  it("the owner: their own words, Open company settings first and Choose a company — Settings is never replaced", async () => {
+  it("the owner: their own words, Manage company first and Choose a company — the Company zone is never replaced (TAS-522)", async () => {
     state.tenants = [tenant("n", "Northwind")];
     const { wrapper } = companiesHarness({ companyId: "n", path: "/projects" });
     render(gate(), { wrapper });
     await screen.findByText("page");
     restrict(["OWNER_PAUSE"]);
     expect(await screen.findByRole("heading", { level: 1, name: "Northwind is paused" })).toBeInTheDocument();
-    expect(screen.getByText("Its projects can’t be opened while it’s paused. You can resume it in its settings.")).toBeInTheDocument();
+    expect(screen.getByText("Its projects can’t be opened while it’s paused. You can resume it in Company › General.")).toBeInTheDocument();
     const links = screen.getAllByRole("link").map((node) => node.textContent);
-    expect(links).toEqual(["Open company settings", "Choose a company"]);
+    expect(links).toEqual(["Manage company", "Choose a company"]);
+    // The zone's General (§5.10), a router link inside the company — the same word as the switcher's entry (§4.34).
+    expect(screen.getByRole("link", { name: "Manage company" })).toHaveAttribute("href", "/company/general");
     expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Open company settings" }));
-    expect(await screen.findByText("company settings")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Manage company" }));
+    // Arrives asking for the heading's focus: the statement went with the click.
+    expect(await screen.findByText("company general, heading asked for")).toBeInTheDocument();
   });
 
   it("both reasons say the block's line; /browse is a content route too", async () => {
@@ -275,15 +285,22 @@ describe("a paused or blocked company keeps its session (TAS-504, api-contract-g
     ).toBeInTheDocument();
   });
 
-  it("on Settings nothing is replaced", async () => {
-    state.tenants = [tenant("n", "Northwind")];
-    const { wrapper } = companiesHarness({ companyId: "n", path: "/settings/company" });
-    render(gate(), { wrapper });
-    await screen.findByText("company settings");
-    restrict(["PLATFORM_BLOCK"]);
-    await act(async () => {});
-    expect(screen.getByText("company settings")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: /blocked/ })).not.toBeInTheDocument();
+  it("on Settings and in the Company zone nothing is replaced (§4.35, §5.10)", async () => {
+    for (const [path, page] of [
+      ["/settings/profile", "profile settings"],
+      ["/company/general", "company general"],
+      ["/company/members", "company members"],
+    ] as const) {
+      state.tenants = [tenant("n", "Northwind")];
+      const { wrapper } = companiesHarness({ companyId: "n", path });
+      const view = render(gate(), { wrapper });
+      await screen.findByText(page);
+      restrict(["PLATFORM_BLOCK"]);
+      await act(async () => {});
+      expect(screen.getByText(page)).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: /blocked/ })).not.toBeInTheDocument();
+      view.unmount();
+    }
   });
 });
 

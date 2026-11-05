@@ -4,7 +4,7 @@ import type { Entitlement, PlanVersion } from "../../api/tenants";
 import { announcedTail, autopayWord, planById, planLeadText, renewalNote, usageLines } from "./companyPlanText";
 
 /*
- * Settings › Plan's words (TAS-512, DESIGN.md §4.40; art-director B3, B4,
+ * Company › Plan's words (TAS-512, DESIGN.md §4.40; art-director B3, B4,
  * B10): the lead by role, the one usage template below, at and over a limit,
  * the owner's rows, and nothing computed — no «left», no percentage.
  */

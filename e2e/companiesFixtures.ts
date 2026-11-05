@@ -89,6 +89,46 @@ export async function switchCompany(page: Page, name: string, isMobile: boolean)
   await companyRow(page, new RegExp(`^${name}`)).click();
 }
 
+/** A section of the Company zone (TAS-522, DESIGN.md §5.10), in its rail's order. */
+export type ZoneSection = "General" | "Members" | "Plan";
+
+const zonePath = (section: ZoneSection) => `/company/${section.toLowerCase()}`;
+
+/**
+ * Opens a section of the tab's company's zone (TAS-522, DESIGN.md §5.10) the
+ * way a reader does at this width: at 768 and wider the switcher's «Manage
+ * company», which lands on General with focus on its heading, then the zone's
+ * rail. Below 768 there is no switcher and no menu entry (§5.10 «Входы»), so
+ * the zone's address — loaded, or with `inApp` moved to inside the page the
+ * way a router link would (the push `CompanyRouter.go` makes, as
+ * companies-tabs.spec.ts does for the picker), for a test whose point is that
+ * nothing is reloaded.
+ */
+export async function openCompanyZone(page: Page, companyId: string, section: ZoneSection = "General", options: { inApp?: boolean } = {}) {
+  if ((page.viewportSize()?.width ?? 0) >= 768) {
+    await page.locator(".company-switcher-trigger").click();
+    await page.getByRole("dialog", { name: "Companies" }).getByRole("link", { name: "Manage company" }).click();
+    await expect(page).toHaveURL(companyPath(companyId, "/company/general"));
+    await expect(page.getByRole("heading", { level: 1, name: /General/ })).toBeFocused();
+  } else if (options.inApp) {
+    await page.evaluate((path) => {
+      const index = ((window.history.state as { idx?: number } | null)?.idx ?? 0) + 1;
+      window.history.pushState({ usr: null, key: "e2e-zone", idx: index }, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, `/c/${companyId}${zonePath(section)}`);
+  } else {
+    await page.goto(companyPath(companyId, "/company"));
+    await expect(page).toHaveURL(companyPath(companyId, "/company/general"));
+  }
+  const rail = page.getByRole("navigation", { name: "Company" });
+  await expect(rail.getByRole("link")).toHaveText(["General", "Members", "Plan", "Back to projects"]);
+  if (section !== "General" && !page.url().endsWith(zonePath(section))) {
+    await rail.getByRole("link", { name: section }).click();
+  }
+  await expect(page).toHaveURL(companyPath(companyId, zonePath(section)));
+  await expect(rail.getByRole("link", { name: section })).toHaveAttribute("aria-current", "page");
+}
+
 /** Writes the companies mock's test hooks into the shared storage (src/api/mock/MockTenantServer.ts). */
 export async function setHooks(page: Page, hooks: Record<string, unknown> | null) {
   await page.evaluate((value) => {

@@ -12,7 +12,7 @@ import {
 } from "./companyMembers";
 
 /*
- * Settings › Members' rules as pure functions (TAS-502): gating from the
+ * Company › Members' rules as pure functions (TAS-502): gating from the
  * reader's own row only (api-contract-guard B3, B8; art-director B5 as
  * reconciled), the groups' order (B2), and the key of an intent (§4).
  */

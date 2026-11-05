@@ -9,7 +9,7 @@ import { companiesHarness } from "../../test/companiesHarness";
 import { CompanyGeneralSection } from "./CompanyGeneralSection";
 
 /*
- * Settings › General (DESIGN.md §4.39, TAS-504) against a fake API: controls
+ * Company › General (DESIGN.md §4.39, TAS-504) against a fake API: controls
  * gated by `Tenant.ownerId` only (api-contract-guard B3, art-director B3), the
  * subscription read only for the owner (B5), no optimism (B1, art-director
  * B5/B8), every refusal by code, the transfer chain through the re-entry (B4,
@@ -137,7 +137,7 @@ function RouteState() {
 }
 
 function renderSection(options: { state?: unknown } = {}) {
-  const harness = companiesHarness({ companyId: COMPANY, path: "/settings/company", state: options.state });
+  const harness = companiesHarness({ companyId: COMPANY, path: "/company/general", state: options.state });
   render(
     <div className="settings-area">
       <h1 className="area-section-title" tabIndex={-1}>
@@ -205,7 +205,7 @@ describe("gating by Tenant.ownerId (B3, B5)", () => {
     expect(screen.queryByRole("button", { name: "Rename company" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Pause company|Resume company|Transfer ownership/ })).not.toBeInTheDocument();
     expect(screen.queryByText("Paid until")).not.toBeInTheDocument();
-    expect(within(dd("Owner")).getByRole("link", { name: "See Members" })).toHaveAttribute("href", "/settings/members");
+    expect(within(dd("Owner")).getByRole("link", { name: "See Members" })).toHaveAttribute("href", "/company/members");
     expect(state.calls).not.toContain("subscription");
     expect(state.calls).not.toContain("members");
   });
@@ -808,14 +808,14 @@ describe("a late answer after the reader moved away (release-reviewer F4)", () =
     const reread = gate<unknown>();
     state.answers = [() => Promise.reject(refusal(403, "OWNER_REQUIRED"))];
     state.tenantReads = [() => Promise.resolve(tenant()), () => reread.promise];
-    const harness = companiesHarness({ companyId: COMPANY, path: "/settings/company" });
+    const harness = companiesHarness({ companyId: COMPANY, path: "/company/general" });
     render(
       <div className="settings-area">
         <h1 className="area-section-title" tabIndex={-1}>
           General
         </h1>
         <Routes>
-          <Route path="/settings/company" element={<CompanyGeneralSection />} />
+          <Route path="/company/general" element={<CompanyGeneralSection />} />
           <Route path="/settings/profile" element={<p>profile</p>} />
         </Routes>
         <Away />

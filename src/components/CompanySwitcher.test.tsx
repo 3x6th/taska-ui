@@ -1,15 +1,19 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import { companiesHarness } from "../test/companiesHarness";
 import { CompanySwitcher } from "./CompanySwitcher";
 
-/* DESIGN.md §4.34 (TAS-500): the trigger, the first group's rows, and a write in flight. */
+/* DESIGN.md §4.34 (TAS-500): the trigger, the first group's rows, a write in flight, and «Manage company» (TAS-522). */
 
 const { fakeApi, state } = vi.hoisted(() => {
-  const state = { tenants: [] as unknown[] };
+  const state = { tenants: [] as unknown[], listFails: false };
   const api = {
-    listTenants: async () => ({ items: state.tenants, nextCursor: null }),
+    listTenants: async () => {
+      if (state.listFails) throw Object.assign(new Error("Unavailable"), { status: 503, code: "DEPENDENCY_UNAVAILABLE", requestId: "rid-list" });
+      return { items: state.tenants, nextCursor: null };
+    },
     currentWorkspace: () => null,
     onWorkspaceChange: () => () => {},
     listBillingPlans: async () => ({ items: [], nextCursor: null }),
@@ -30,6 +34,7 @@ const tenant = (id: string, name: string, lifecycle = "ACTIVE", restrictions: st
 });
 
 beforeEach(() => {
+  state.listFails = false;
   state.tenants = [
     tenant("n", "Northwind"),
     tenant("g", "Globex"),
@@ -80,11 +85,19 @@ describe("the company switcher", () => {
     const dialog = screen.getByRole("dialog", { name: "Companies" });
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     const rows = within(dialog).getAllByRole("link");
-    expect(rows.map((row) => row.textContent)).toEqual(["Globex", "InitechPaused", "Northwind", "All companies", "Create a company"]);
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "Globex",
+      "InitechPaused",
+      "Northwind",
+      "Manage company",
+      "All companies",
+      "Create a company",
+    ]);
     expect(rows[2]).toHaveAttribute("aria-current", "true");
     expect(rows[0]).toHaveAttribute("href", "/c/g/projects");
-    expect(rows[3]).toHaveAttribute("href", "/companies");
-    expect(rows[4]).toHaveAttribute("href", "/companies/new");
+    expect(rows[3]).toHaveAttribute("href", "/company");
+    expect(rows[4]).toHaveAttribute("href", "/companies");
+    expect(rows[5]).toHaveAttribute("href", "/companies/new");
   });
 
   it("«Create a company» under «All companies» carries the tab's address, and a write in flight does not hold it (TAS-501)", async () => {
@@ -128,5 +141,121 @@ describe("the company switcher", () => {
     await waitFor(() => expect(trigger).toBeEnabled());
     expect(trigger).toHaveTextContent("Company");
     expect(trigger.querySelector(".company-switcher-name.is-unknown")).not.toBeNull();
+  });
+});
+
+/** Where the router is, and whether the entry asked for the heading's focus. */
+function Whereabouts() {
+  const location = useLocation();
+  const asked = (location.state as { focusHeading?: unknown } | null)?.focusHeading === true;
+  return <p data-testid="whereabouts">{`${location.pathname}${asked ? " · focus the heading" : ""}`}</p>;
+}
+
+describe("«Manage company» (TAS-522, §4.34)", () => {
+  const openPopover = async () => {
+    // The trigger is disabled until the tab's company is named (§4.34).
+    fireEvent.click(await screen.findByRole("button", { name: "Northwind, switch company" }));
+    return screen.getByRole("dialog", { name: "Companies" });
+  };
+  const manage = (dialog: HTMLElement) => within(dialog).getByRole("link", { name: "Manage company" });
+
+  it("is the footer's first row, above All companies: Settings2, a router link to the tab's zone, for any role", async () => {
+    // Anna owns none of these: the row is every member's (§5.10 «Доступ»).
+    const { wrapper } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(<CompanySwitcher />, { wrapper });
+    const dialog = await openPopover();
+    const footer = dialog.querySelector(".company-switcher-footer") as HTMLElement;
+    expect(within(footer).getAllByRole("link").map((link) => link.textContent)).toEqual(["Manage company", "All companies", "Create a company"]);
+    const link = manage(dialog);
+    expect(link).toHaveClass("user-profile-link");
+    expect(link).toHaveAttribute("href", "/company");
+    expect(link).not.toHaveAttribute("aria-current");
+    const icon = link.querySelector("svg");
+    expect(icon).toHaveClass("lucide-settings-2");
+    expect(icon).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("is the current page on /company and anywhere inside it, and nowhere else", async () => {
+    for (const [path, current] of [
+      ["/company", true],
+      ["/company/general", true],
+      ["/company/plan", true],
+      ["/settings/profile", false],
+      ["/projects", false],
+    ] as const) {
+      const { wrapper } = companiesHarness({ companyId: "n", path });
+      const view = render(<CompanySwitcher />, { wrapper });
+      const link = manage(await openPopover());
+      if (current) expect(link).toHaveAttribute("aria-current", "page");
+      else expect(link).not.toHaveAttribute("aria-current");
+      view.unmount();
+    }
+  });
+
+  it("a plain click closes the popover in the same frame and pushes the zone asking for its heading — not `go`, not the trigger", async () => {
+    const { wrapper, go } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(
+      <>
+        <CompanySwitcher />
+        <Whereabouts />
+      </>,
+      { wrapper },
+    );
+    const dialog = await openPopover();
+    fireEvent.click(manage(dialog));
+    expect(screen.queryByRole("dialog", { name: "Companies" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("whereabouts")).toHaveTextContent("/company · focus the heading");
+    expect(go).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Northwind, switch company" })).not.toHaveFocus();
+  });
+
+  it("a modified click leaves this tab where it is and the popover open, for the new tab to take (§4.16)", async () => {
+    const { wrapper, go } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(
+      <>
+        <CompanySwitcher />
+        <Whereabouts />
+      </>,
+      { wrapper },
+    );
+    const dialog = await openPopover();
+    for (const modifier of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { altKey: true }]) {
+      fireEvent.click(manage(dialog), modifier);
+      expect(screen.getByRole("dialog", { name: "Companies" })).toBeInTheDocument();
+      expect(screen.getByTestId("whereabouts")).toHaveTextContent(/^\/projects$/);
+    }
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("does not change while this tab writes: it stays in the company (§4.34)", async () => {
+    const { wrapper, client } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(
+      <>
+        <CompanySwitcher />
+        <Whereabouts />
+      </>,
+      { wrapper },
+    );
+    void client.getMutationCache().build(client, { mutationFn: () => new Promise(() => {}) }).execute(undefined);
+    const dialog = await openPopover();
+    await waitFor(() => expect(within(dialog).getByRole("link", { name: "Globex" })).toHaveAttribute("aria-disabled", "true"));
+    const link = manage(dialog);
+    expect(link).not.toHaveAttribute("aria-disabled");
+    expect(link).toHaveAttribute("href", "/company");
+    fireEvent.click(link);
+    expect(screen.getByTestId("whereabouts")).toHaveTextContent("/company · focus the heading");
+  });
+
+  it("is drawn when the list of companies could not be read — it needs nothing of the list", async () => {
+    state.listFails = true;
+    const { wrapper } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(<CompanySwitcher />, { wrapper });
+    const trigger = screen.getByRole("button", { name: "Company, switch company" });
+    await waitFor(() => expect(trigger).toBeEnabled());
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "Companies" });
+    expect(within(dialog).getByText("Your companies could not be loaded.")).toBeInTheDocument();
+    expect(within(dialog).getAllByRole("link").map((link) => link.textContent)).toEqual(["Manage company", "All companies", "Create a company"]);
+    expect(manage(dialog)).toHaveAttribute("href", "/company");
   });
 });

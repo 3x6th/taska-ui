@@ -82,7 +82,7 @@ import {
 import { InviteMemberModal, type InviteDraft } from "./InviteMemberModal";
 
 /**
- * Settings › Members (TAS-502, DESIGN.md §4.38) — the B2B build only: the
+ * Company › Members (TAS-502, DESIGN.md §4.38, §5.10) — the B2B build only: the
  * tab's company's directory, and for its admins the invitations, the seats
  * and the writes on both.
  *
@@ -419,7 +419,7 @@ function CompanyMembers({ companyId }: { companyId: string }) {
                     <p className="company-seats-line">
                       {SEATS_FULL_HINT}{" "}
                       {/* The plan's explanation (TAS-512, §4.38 → §4.40). */}
-                      <Link className="admin-note-link company-seats-plan-link" to="/settings/plan">
+                      <Link className="admin-note-link company-seats-plan-link" to="/company/plan">
                         See Plan
                       </Link>
                     </p>
@@ -636,7 +636,7 @@ function Controls({
 }
 
 /** §4.22's strip under a row: the true sentence, Cancel first and focused, the answer edged in `--danger`. */
-/** §4.22's strip, Cancel first — shared with Settings › General's pause question (TAS-504). */
+/** §4.22's strip, Cancel first — shared with Company › General's pause question (TAS-504). */
 export function Strip({
   id,
   sentence,

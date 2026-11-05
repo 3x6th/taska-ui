@@ -9,7 +9,7 @@ import { companiesHarness } from "../../test/companiesHarness";
 import { CompanyMembersSection } from "./CompanyMembersSection";
 
 /*
- * Settings › Members (DESIGN.md §4.38, TAS-502) against a fake API: controls
+ * Company › Members (DESIGN.md §4.38, TAS-502) against a fake API: controls
  * gated by the reader's own row (api-contract-guard B3, B8; art-director B5),
  * no optimism (B2, art-director B7), the reader's own change re-entering the
  * company (ruling 3), refusals by Problem.code, and the strips' true sentences
@@ -143,7 +143,7 @@ function gate<T>() {
 
 /** The section under the area's heading, which several hand-overs put focus on. */
 function renderSection() {
-  const harness = companiesHarness({ companyId: COMPANY, path: "/settings/members" });
+  const harness = companiesHarness({ companyId: COMPANY, path: "/company/members" });
   render(
     <div className="settings-area">
       <h1 className="area-section-title" tabIndex={-1}>
@@ -650,12 +650,12 @@ describe("a refused invitation reads the seats once (TAS-512, api-contract-guard
       onWorkspacePending: () => () => {},
       createTenantInvitation: () => Promise.reject(refusal(422, "QUOTA_EXCEEDED")),
     });
-    const harness = companiesHarness({ companyId: COMPANY, path: "/settings/members" });
+    const harness = companiesHarness({ companyId: COMPANY, path: "/company/members" });
     render(
       <Routes>
         <Route element={<CompanyGate logoutPending={false} onLogout={() => {}} theme="light" toggleTheme={() => {}} />}>
           <Route
-            path="/settings/members"
+            path="/company/members"
             element={
               <div className="settings-area">
                 <h1 className="area-section-title" tabIndex={-1}>

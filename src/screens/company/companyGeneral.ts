@@ -4,7 +4,7 @@ import { isKnownMembershipRole, type Membership } from "../../api/tenantMembers"
 import { retryUnanswered } from "./companyMembersQuery";
 
 /*
- * Settings › General (TAS-504, DESIGN.md §4.39) as pure values and query
+ * Company › General (TAS-504, DESIGN.md §4.39) as pure values and query
  * options: the company's two reads, who may be handed the company, and the
  * hand-over that carries a transfer across the re-entry it ends with. On the
  * company session's own query client, so the keys carry the company only where

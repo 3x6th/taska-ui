@@ -53,7 +53,7 @@ import { Strip } from "./CompanyMembersSection";
 import { TransferOwnershipModal, type TransferRefusal } from "./TransferOwnershipModal";
 
 /**
- * Settings › General (TAS-504, DESIGN.md §4.39) — the B2B build only: the
+ * Company › General (TAS-504, DESIGN.md §4.39, §5.10) — the B2B build only: the
  * tab's company's name, owner and state for every role, and for its owner the
  * rename, the pause or resume, and the transfer.
  *
@@ -591,7 +591,7 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
                     ) : ownerName !== null ? (
                       ownerName
                     ) : (
-                      <Link className="admin-note-link" to="/settings/members">
+                      <Link className="admin-note-link" to="/company/members">
                         See Members
                       </Link>
                     )}
