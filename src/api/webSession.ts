@@ -8,6 +8,7 @@ import type {
   WorkspaceClosedEvent,
   WorkspaceLeftEvent,
   WorkspacePendingEvent,
+  WorkspaceRestrictedEvent,
 } from "./TaskaApi";
 import { TRANSPORT_FAILURE_REASON } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
@@ -29,6 +30,7 @@ import {
 import {
   toCreateTenantResult,
   toPlanVersionPage,
+  toSubscription,
   toTenant,
   toTenantOperation,
   toTenantPage,
@@ -37,6 +39,7 @@ import {
   type ListBillingPlansParams,
   type ListTenantsParams,
   type PlanVersionPage,
+  type Subscription,
   type Tenant,
   type TenantOperation,
   type TenantPage,
@@ -165,6 +168,29 @@ export interface B2bTransport {
   ): Promise<void>;
   /** `GET /tenants/{tenantId}/quotas` — 200 `QuotaSnapshot`. */
   getTenantQuotas(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
+
+  /*
+   * The company's name, owner and pause (TAS-504), with that company's
+   * WEB_TENANT. Every command carries the caller's `Idempotency-Key` and
+   * `If-Match: "{version}"` (`Tenant.version`, ask A31) and answers 200 `Tenant`.
+   */
+
+  /** `PATCH /tenants/{tenantId}` `{name}`. */
+  renameTenant(bearer: string | null, tenantId: string, name: string, version: string, idempotencyKey: string): Promise<unknown>;
+  /** `PUT /tenants/{tenantId}/pause` `{confirmed: true}`. */
+  pauseTenant(bearer: string | null, tenantId: string, version: string, idempotencyKey: string): Promise<unknown>;
+  /** `DELETE /tenants/{tenantId}/pause`, no body. */
+  resumeTenant(bearer: string | null, tenantId: string, version: string, idempotencyKey: string): Promise<unknown>;
+  /** `POST /tenants/{tenantId}/ownership-transfer` `{newOwnerUserId, confirmed: true}`, in that order. */
+  transferTenantOwnership(
+    bearer: string | null,
+    tenantId: string,
+    newOwnerUserId: string,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<unknown>;
+  /** `GET /tenants/{tenantId}/billing/subscription` — 200 `Subscription`, the owner's read. */
+  getSubscription(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
 }
 
 /** `AccessSession` as this layer reads it: the four strings it needs, `tenantId` only on a company session. */
@@ -369,6 +395,28 @@ const CLOSING_CODES: ReadonlySet<string> = new Set([
   "TENANT_MISMATCH",
 ]);
 
+/**
+ * The restrictions whose content refusal keeps the company (TAS-504,
+ * api-contract-guard B2): a pause and a block close the company's projects,
+ * not the company — its settings, its own reads and the owner's Resume go on
+ * with the same session (DESIGN.md §4.35).
+ */
+const CONTENT_CLOSING_REASONS: readonly string[] = ["OWNER_PAUSE", "PLATFORM_BLOCK"];
+
+const closesContentOnly = (reasons: readonly string[]) => reasons.some((reason) => CONTENT_CLOSING_REASONS.includes(reason));
+
+/**
+ * What a request is, for the refusal rules: `read` — a GET, whose
+ * `CAPABILITY_DISABLED` is an answer about the company (§4.35); `content` — a
+ * read of the company's projects, whose success lifts a pause's or a block's
+ * mark (TAS-504). The REST leg marks every GET a read and only the project
+ * routes content; the mock, its `tenant-read` routes both.
+ */
+export interface RequestOptions {
+  read?: boolean;
+  content?: boolean;
+}
+
 /** Something that never got an answer from a server: no HTTP status (`fetch`'s `TypeError`, an abort). */
 const isTransportFailure = (error: unknown) => apiErrorFacts(error).status === null;
 
@@ -458,6 +506,14 @@ export class WebSessionClient {
   private readonly closed = new WorkspaceClosedSignal<WorkspaceClosedEvent>();
   private readonly pending = new WorkspaceClosedSignal<WorkspacePendingEvent>();
   private readonly left = new WorkspaceClosedSignal<WorkspaceLeftEvent>();
+  private readonly restrictedSignal = new WorkspaceClosedSignal<WorkspaceRestrictedEvent>();
+  /**
+   * The company whose project content a read found closed by a pause or a
+   * block (TAS-504, B2) — kept across a re-entry of the same company, lifted by
+   * a `Tenant` answer without those reasons or a content read that succeeded,
+   * and by anything that takes the company from the tab.
+   */
+  private restriction: { tenantId: string } | null = null;
 
   constructor(deps: WebSessionDeps) {
     this.transport = deps.transport;
@@ -599,6 +655,8 @@ export class WebSessionClient {
   enterCompany(tenantId: string): Promise<Workspace> {
     if (this.entering?.tenantId === tenantId) return this.entering.promise;
     if (this.companyInView() !== tenantId) this.moveEpoch();
+    // Another company's pause says nothing about this one (TAS-504).
+    if (this.restriction !== null && this.restriction.tenantId !== tenantId) this.liftRestriction();
     const started = this.epoch;
     // Only if no later switch has taken the epoch over since.
     const discardWaiting = () => {
@@ -661,6 +719,7 @@ export class WebSessionClient {
       await this.restoring;
       const owned = this.owned;
       this.moveEpoch();
+      this.liftRestriction();
       if (owned) {
         this.dropOwned();
         void this.revokeQuietly(owned.record.tenantSessionId);
@@ -690,6 +749,24 @@ export class WebSessionClient {
 
   onWorkspaceLeft(listener: (event: WorkspaceLeftEvent) => void): () => void {
     return this.left.subscribe(listener);
+  }
+
+  onWorkspaceRestricted(listener: (event: WorkspaceRestrictedEvent) => void): () => void {
+    return this.restrictedSignal.subscribe(listener);
+  }
+
+  /** A read found the company's content closed by a pause or a block: the mark, said again with each refusal. */
+  private markRestricted(tenantId: string, reasons: readonly string[], requestId: string | null): void {
+    this.restriction = { tenantId };
+    this.restrictedSignal.emit({ tenantId, restricted: true, reasons: [...reasons], requestId });
+  }
+
+  /** The mark lifted — said once, and only when there was one (for `tenantId`, when it is given). */
+  private liftRestriction(tenantId?: string): void {
+    const marked = this.restriction;
+    if (marked === null || (tenantId !== undefined && marked.tenantId !== tenantId)) return;
+    this.restriction = null;
+    this.restrictedSignal.emit({ tenantId: marked.tenantId, restricted: false, reasons: [], requestId: null });
   }
 
   /* ------------------------------------------------ creating a company (TAS-501) */
@@ -734,7 +811,7 @@ export class WebSessionClient {
   async getTenant(tenantId: string): Promise<Tenant> {
     const tenant = toTenant(await this.call("session", (bearer, signal) => this.transport.getTenant(bearer, tenantId, signal)));
     if (tenant === null) throw new Error("The answer held no company.");
-    this.learnName(tenant);
+    this.learnTenant(tenant);
     return tenant;
   }
 
@@ -753,11 +830,17 @@ export class WebSessionClient {
       await this.call("session", (bearer) => this.transport.cancelTenantCreation(bearer, tenantId, version, idempotencyKey)),
     );
     if (tenant === null) throw new Error("The answer held no company.");
-    this.learnName(tenant);
+    this.learnTenant(tenant);
     return tenant;
   }
 
-  private learnName(tenant: Tenant): void {
+  /**
+   * What a `Tenant` answer teaches the tab: its name, and — when it carries
+   * neither a pause nor a block — that a content-closing mark on it is over
+   * (TAS-504, DESIGN.md §4.35).
+   */
+  private learnTenant(tenant: Tenant): void {
+    if (!closesContentOnly(tenant.restrictions)) this.liftRestriction(tenant.id);
     if (tenant.name === null) return;
     this.names.set(tenant.id, tenant.name);
     this.renameOwned();
@@ -953,6 +1036,58 @@ export class WebSessionClient {
     );
   }
 
+  /* ------------------------------------- the company's name, owner and pause (TAS-504) */
+
+  /*
+   * api-contract-guard's pre-build design §1 and B1–B5: every call with the
+   * tab's company session, and only once the tab holds **that** company
+   * (`inCompany`) — sent for another, it would be the server's 403
+   * `TENANT_MISMATCH`, which closes the tab's own. The key and `If-Match` are
+   * the caller's; a retry of one intent sends the same ones, and the body is
+   * built field by field so it is the same bytes. Each answer is a `Tenant`,
+   * learnt as `getTenant`'s is.
+   */
+
+  async renameTenant(tenantId: string, name: string, version: string, idempotencyKey: string): Promise<Tenant> {
+    return this.tenantAnswer(
+      await this.inCompany(tenantId, (bearer) => this.transport.renameTenant(bearer, tenantId, name, version, idempotencyKey)),
+    );
+  }
+
+  async pauseTenant(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant> {
+    return this.tenantAnswer(
+      await this.inCompany(tenantId, (bearer) => this.transport.pauseTenant(bearer, tenantId, version, idempotencyKey)),
+    );
+  }
+
+  async resumeTenant(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant> {
+    return this.tenantAnswer(
+      await this.inCompany(tenantId, (bearer) => this.transport.resumeTenant(bearer, tenantId, version, idempotencyKey)),
+    );
+  }
+
+  async transferTenantOwnership(tenantId: string, newOwnerUserId: string, version: string, idempotencyKey: string): Promise<Tenant> {
+    return this.tenantAnswer(
+      await this.inCompany(tenantId, (bearer) =>
+        this.transport.transferTenantOwnership(bearer, tenantId, newOwnerUserId, version, idempotencyKey),
+      ),
+    );
+  }
+
+  /** The owner's read (B5). A control-plane read: its refusal is its own error and marks nothing. */
+  async getSubscription(tenantId: string): Promise<Subscription> {
+    return toSubscription(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.getSubscription(bearer, tenantId, signal)),
+    );
+  }
+
+  private tenantAnswer(answer: unknown): Tenant {
+    const tenant = toTenant(answer);
+    if (tenant === null) throw new Error("The answer held no company.");
+    this.learnTenant(tenant);
+    return tenant;
+  }
+
   /**
    * A new company session for the tab's company (TAS-502, the orchestrator's
    * ruling 3): after a change to the reader's own membership, so that nothing
@@ -1001,7 +1136,7 @@ export class WebSessionClient {
   private inCompany<T>(
     tenantId: string,
     send: (bearer: string | null, signal: AbortSignal) => Promise<T>,
-    options: { read?: boolean } = {},
+    options: RequestOptions = {},
   ): Promise<T> {
     return this.call(
       "session",
@@ -1048,32 +1183,41 @@ export class WebSessionClient {
    * lock and retries once; a refused rotation signs every tab out.
    * `MEMBERSHIP_INACTIVE`, `TENANT_NOT_FOUND`, `TENANT_REQUIRED` and
    * `TENANT_MISMATCH` close the company. So does a **read** refused
-   * `CAPABILITY_DISABLED` with `reasons` — a paused or blocked company whose
-   * content cannot be read is an answer about the company, not a missing page
-   * (DESIGN.md §4.35, api-contract-guard N2, ask A2c) — **except** one whose
-   * `reasons` carry `PENDING_FIRST_PAYMENT`, or code `PAYMENT_PENDING`: that
-   * company has never opened, and the read only tells `onWorkspacePending`
-   * (TAS-501, B4). `READ_ONLY`, and `CAPABILITY_DISABLED` on a write, do not
-   * close: they reject that one request with their `reasons`.
+   * `CAPABILITY_DISABLED` with `reasons` — a company whose content cannot be
+   * read is an answer about the company, not a missing page (DESIGN.md §4.35,
+   * api-contract-guard N2, ask A2c) — **except** two:
+   *
+   * - `reasons` carrying `PENDING_FIRST_PAYMENT`, or code `PAYMENT_PENDING`:
+   *   that company has never opened, and the read only tells
+   *   `onWorkspacePending` (TAS-501, B4);
+   * - `reasons` naming `OWNER_PAUSE` or `PLATFORM_BLOCK` (TAS-504, B2): the
+   *   pause or the block closes the projects, not the company — the session
+   *   and its cache stay, so the owner can still reach Resume, and the read
+   *   only tells `onWorkspaceRestricted`. A content read that succeeds, or a
+   *   `Tenant` answer without either reason, lifts that mark.
+   *
+   * `READ_ONLY`, and `CAPABILITY_DISABLED` on a write, do not close: they
+   * reject that one request with their `reasons`.
    */
   async call<T>(
     credential: RequestCredential,
     send: (bearer: string | null, signal: AbortSignal) => Promise<T>,
-    options: { read?: boolean } = {},
+    options: RequestOptions = {},
   ): Promise<T> {
     const epoch = this.epoch;
     await this.settled();
     if (epoch !== this.epoch) throw new WorkspaceClosedError();
     if (credential === "none") return this.answerFor(epoch, () => send(null, epoch.controller.signal));
-    return this.withCredential(epoch, send, false, options.read === true);
+    return this.withCredential(epoch, send, false, options);
   }
 
   private async withCredential<T>(
     epoch: Epoch,
     send: (bearer: string | null, signal: AbortSignal) => Promise<T>,
     isRetry: boolean,
-    read: boolean,
+    options: RequestOptions,
   ): Promise<T> {
+    const read = options.read === true;
     const owned = this.owned;
     if (owned) {
       const sent = owned.record.accessToken;
@@ -1081,6 +1225,8 @@ export class WebSessionClient {
       try {
         const answer = await this.answerFor(epoch, () => send(sent, epoch.controller.signal));
         if (this.lostLeaves.size > 0) this.answeredAfterLostLeave(owned, number);
+        // The projects answered: whatever closed them is over (TAS-504).
+        if (options.content === true && owned === this.owned) this.liftRestriction(owned.record.tenantId);
         return answer;
       } catch (error) {
         if (isWorkspaceClosed(error)) throw error;
@@ -1088,7 +1234,7 @@ export class WebSessionClient {
         if (status === 401 && !isRetry) {
           const outcome = await this.renewCompany(owned, sent);
           if (epoch !== this.epoch) throw new WorkspaceClosedError();
-          if (outcome === "renewed") return this.withCredential(epoch, send, true, read);
+          if (outcome === "renewed") return this.withCredential(epoch, send, true, options);
           throw error;
         }
         const code = refusalCode(error);
@@ -1108,6 +1254,13 @@ export class WebSessionClient {
           throw error;
         }
         if (read && code === "CAPABILITY_DISABLED" && reasons.length > 0) {
+          // Paused or blocked (TAS-504, B2): the projects are closed, the
+          // company is not — no closure, no revoke; the shell is told, and
+          // the read rejects as it was refused.
+          if (closesContentOnly(reasons)) {
+            if (owned === this.owned) this.markRestricted(owned.record.tenantId, reasons, requestId);
+            throw error;
+          }
           if (this.closeWorkspace(owned, code, requestId, reasons, message)) throw new WorkspaceClosedError();
           throw error;
         }
@@ -1122,7 +1275,7 @@ export class WebSessionClient {
       if (isWorkspaceClosed(error) || account === null || apiErrorFacts(error).status !== 401) throw error;
       const outcome: RotateOutcome = isRetry ? "refused" : await this.rotateAccount(account);
       if (epoch !== this.epoch) throw new WorkspaceClosedError();
-      if (outcome === "rotated") return this.withCredential(epoch, send, true, read);
+      if (outcome === "rotated") return this.withCredential(epoch, send, true, options);
       if (outcome === "unreachable") throw error;
       if (outcome === "refused") this.expireAccount();
       throw new WorkspaceClosedError();
@@ -1359,6 +1512,7 @@ export class WebSessionClient {
     const left = (reason === "MEMBERSHIP_INACTIVE" || reason === "TENANT_NOT_FOUND") && this.lostLeaveOf(owned) !== null;
     if (left) this.forgetLostLeaves(tenantId);
     this.moveEpoch();
+    this.liftRestriction(tenantId);
     this.dropOwned();
     void this.revokeQuietly(tenantSessionId);
     this.notifyChange();
@@ -1508,6 +1662,7 @@ export class WebSessionClient {
     this.lostLeaves.clear();
     this.leaveRefusedBySelection = null;
     this.moveEpoch();
+    this.liftRestriction();
   }
 
   private dropOwned(): void {

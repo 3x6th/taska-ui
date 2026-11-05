@@ -4564,3 +4564,69 @@ asks A26 (TAS-338) and A27 (TAS-315) went to Jira; A28 (the B2B dictionaries in 
 - **No test pins that MANUAL_REVIEW keeps focus on «Check again»** (dropping its guard leaves the screen tests green).
 - **The full gate on `a0fcfec` failed 43 unrelated mobile specs** while a reviewer ran mutations in place in the
   worktree; `--last-failed` on the clean tree passed 43/43. Briefs now ask for mutations in a `git archive` copy.
+
+### Left by TAS-504 pre-build (company name, owner and pause, B2B blueprint `758f8fc6`, 2026-11-05)
+
+From the api-contract-guard design and the art-director ruling (`docs/ai/reviews/TAS-504/`, git-ignored). Backend asks
+A30–A41 went to Jira as comments on their owner stories.
+
+- **The TAS-501 mock answers an account session 403 `TENANT_MISMATCH`** on its routes where the member routes answer
+  400 `TENANT_REQUIRED`, and cancel answers a malformed `If-Match` 428 (guard N4; the latter is already in «Left by
+  TAS-502 pre-build»). TAS-504's routes use the TAS-502 form.
+- **With the read flag false, members cannot reach Leave**: DIRECTORY is refused, so Members does not render (guard
+  N5); a §4.38 sentence for that refusal instead of the server's words comes with ask A35 (art-director N6).
+- **Resume after the paid period ended leaves `PAYMENT_EXPIRED`**, and this build cannot take a payment (TAS-513) — a
+  recorded dead end (guard N6).
+- **`autopayState`** belongs with the B2B dictionaries in `/meta` (guard N7, with A28).
+- **Members get no sign of a pause until a write fails** (read flag on): a word marker in the switcher trigger on the
+  platform-access marker recipe (§4.34) — TAS-512's (art-director N4).
+- **§4.35's restricted form could live inside the app shell**, since the session is kept — revisit only if the owner's
+  «Back to projects» loop reads like being thrown out (art-director N5).
+
+### Left by TAS-504 review (company page, build review of `8f7e58f`, 2026-11-05)
+
+Non-blocking notes from the three roles (`docs/ai/reviews/TAS-504/`, git-ignored), left out of the fix round. Ask A42
+(DIRECTORY and INBOX under a content-closing restriction) and the amendments to A30, A32, A33, A37 went to TAS-480.
+
+- **The owner's cold load of General is depth 2**: `Workspace` carries no `userId`, though the session record has it
+  (guard L2).
+- **Answers are not checked against the requested company** (`tenantAnswer`, `getTenant`, `toSubscription` don't
+  compare `Tenant.id` / `Subscription.tenantId` with the path) — defence in depth; the request side is checked (L4).
+- **A definite getSubscription failure** (404 "No static resource" while TAS-314 is absent) re-reads on every focus
+  return under `refetchFailedOnFocus` — decide in the flag-on PR (L5).
+- **§4.37's `creationDeadline` keeps any string** — an unparseable value would crash `formatDeadline` the way
+  `paidThrough` did before its fix (guard M2's class).
+- **Focus after «Open company settings»** lands on `<body>`, as every arrival in Settings today; give Settings the
+  `focusHeading` route state «Choose a company» passes (art-director).
+- **The blocked-search notice is in the danger tint** though it is an answer, not a failure — revisit with TAS-512.
+- **§4.35's owner variant draws a blank plane until the account `/users/me`** on a cold load (~145 ms on the mock):
+  fill the account `["me"]` from the company client's (art-director).
+- **§4.11 describes a footer on `--surface-2` that no modal draws**: buttons are `.modal-actions` in the body —
+  bring the text and the product together in one decision.
+- **The mock's notifications stay readable under a flag-off pause or block**, contrary to the blueprint's INBOX
+  (older than TAS-504; ask A42).
+- **The mock seeds Hooli's autopay `SUSPENDED`** (the guard would prefer `CONSENTED`: a block stops attempts, not the
+  state) and turns the old owner's autopay off in the same write as a transfer (state-machines.md:38 does it through an
+  outbox).
+- **No test pins that a financial restriction alone, with the read flag off, leaves the mock's directory readable**
+  (guard R2: "any restriction + flag off" survived) — one line for `listTenantMembers` in the "ended period alone"
+  test.
+- **At ≤559 the focus ring of «See Members» cuts ~7 px into «Owner»** above it — `margin:0 0 -10px;
+  align-items:flex-start` in that range keeps the row and the 44 target (art-director re-check 1).
+- **A one-frame «See Members» flash before the recipient's name after a transfer** (3 of 11 runs): the name is set in
+  a `useEffect` after paint — `useLayoutEffect`, or derive it from the hand-over while rendering (2).
+- **The failed-re-read notice after a transfer loses `role="alert"` 8 ms after mounting** (its `continued` comes from
+  route state cleared in the same step) — key it on a local flag, so a screen reader announces it (3).
+- **The failed-re-read path after a transfer drops the status** although the 200 confirmed it — keep «{Name} now owns
+  {Company}. You’re still an admin.» and drop only the Owner name, as the failed re-entry path does (4).
+- **✕ during the transfer shows no inactive sign** (`aria-disabled` absent, pointer cursor) — make it «в полёте» §4.1
+  (5; the behaviour itself is in §4.39).
+- **The unconfirmed transfer prints the server's words after a 403** (`companyGeneralText.ts:229-231`) — on the mock
+  «Only the owner can change the tenant», with «tenant» (§4.33) and against «couldn’t confirm»; show words only for a
+  lost answer (release-reviewer 2).
+- **A transfer lost twice whose re-read names a third owner** ends with no alert, status or re-entry, and the sentence
+  table says «still yours» when the re-read is not the reader's — follow G6 for any other non-null owner, «still
+  yours» only when it is the reader's (release-reviewer 3; needs a concurrent transfer and two lost answers).
+- **`e2e/companies.spec.ts:146` («All companies» is 44 high) flaked once at 43.99999** on desktop in the TAS-504 gate
+  (`03beade`); 10/10 on a re-run. Compare with a sub-pixel tolerance (`toBeGreaterThanOrEqual(43.5)` or round first),
+  like the other layout measures in the suite.

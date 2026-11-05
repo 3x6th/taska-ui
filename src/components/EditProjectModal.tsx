@@ -462,7 +462,7 @@ export function EditProjectModal({
             <button
               aria-controls={askingArchive ? archiveConfirmId : undefined}
               aria-expanded={askingArchive}
-              className="secondary-button compact-button project-archive-trigger"
+              className="secondary-button compact-button strip-trigger project-archive-trigger"
               onClick={() => {
                 if (archiving) return;
                 archive.reset();

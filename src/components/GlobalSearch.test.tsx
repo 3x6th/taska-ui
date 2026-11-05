@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
+import { companiesHarness } from "../test/companiesHarness";
 import { GlobalSearch } from "./GlobalSearch";
 
 /**
@@ -106,6 +107,13 @@ const { fakeApi, seedHits, failSearch, holdSearch, projectReads, contextReads, r
       if (state.failure) throw state.failure;
       return { items: state.hits, page: 0, pageSize: 8, totalCount: state.totalCount };
     },
+    // The companies build's name of the tab's company (TAS-504); asked only under a company address.
+    listTenants: async () => ({
+      items: [{ id: "t-initech", name: "Initech", ownerId: "o", lifecycle: "ACTIVE", restrictions: ["OWNER_PAUSE"], createdAt: null, version: "1" }],
+      nextCursor: null,
+    }),
+    currentWorkspace: () => null,
+    onWorkspaceChange: () => () => {},
   };
 
   return {
@@ -323,6 +331,41 @@ describe("the top bar's global search", () => {
     // With the gateway's own words and the id its log knows the failure by.
     expect(screen.getByText("Internal error")).toBeVisible();
     expect(screen.getByRole("button", { name: /Copy request id 9c0b41ee-2f10-4a55/ })).toBeVisible();
+  });
+
+  it("TAS-504: in a paused or blocked company the refusal is said in its own panel — the company, the id, no server words, no navigation", async () => {
+    const refused = (reasons: string[]) =>
+      Object.assign(new Error("Project content is not available"), {
+        status: 403,
+        code: "CAPABILITY_DISABLED",
+        reasons,
+        requestId: "rid-paused",
+        details: null,
+      });
+    failSearch(refused(["OWNER_PAUSE"]));
+    const harness = companiesHarness({ companyId: "t-initech", path: "/settings/company" });
+    const view = render(
+      <>
+        <GlobalSearch />
+        <Address />
+      </>,
+      { wrapper: harness.wrapper },
+    );
+    const box = screen.getByRole("combobox", { name: /Search issues/ });
+    fireEvent.change(box, { target: { value: "printer" } });
+    expect(await screen.findByText("Initech is paused, so its issues can’t be searched right now.")).toBeVisible();
+    expect(screen.queryByText("Project content is not available")).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not be run/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Copy request id rid-paused/ })).toBeVisible();
+    expect(screen.getByTestId("address")).toHaveTextContent("/settings/company");
+    view.unmount();
+
+    // Both reasons: the block's line.
+    failSearch(refused(["OWNER_PAUSE", "PLATFORM_BLOCK"]));
+    const blocked = companiesHarness({ companyId: "t-initech", path: "/settings/company" });
+    render(<GlobalSearch />, { wrapper: blocked.wrapper });
+    fireEvent.change(screen.getByRole("combobox", { name: /Search issues/ }), { target: { value: "printer" } });
+    expect(await screen.findByText("Initech is blocked, so its issues can’t be searched right now.")).toBeVisible();
   });
 
   it("says a search is running rather than saying it found nothing", async () => {

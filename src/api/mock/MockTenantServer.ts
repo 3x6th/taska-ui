@@ -23,13 +23,14 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * revoked one, a suspended membership or a paused company is refused here the
  * way the blueprint says the gateway will refuse it.
  *
- * **Shared by every tab** through `localStorage` `taska.mockServer.v3`: the
+ * **Shared by every tab** through `localStorage` `taska.mockServer.v4`: the
  * companies, memberships, sessions and tokens — since TAS-501 the FREE
- * ledger, the creations' operations and their durable receipts, and since
- * TAS-502 the invitations, the seat limits, the membership generation and the
- * member writes' durable receipts — read and written on every operation, so a
- * second tab — or a duplicated one — meets the same server. (v1 was TAS-500's,
- * v2 TAS-501's; each bump re-seeds, signing every mock account out once.)
+ * ledger, the creations' operations and their durable receipts, since TAS-502
+ * the invitations, the seat limits, the membership generation and the member
+ * writes' durable receipts, and since TAS-504 each company's subscription —
+ * read and written on every operation, so a second tab — or a duplicated one
+ * — meets the same server. (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's;
+ * each bump re-seeds, signing every mock account out once.)
  * Each company's projects and issues are this page's own, in memory, as
  * today's mock's are: they reset with a reload.
  *
@@ -38,7 +39,7 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * untouched and enforces nothing.
  */
 
-export const MOCK_SERVER_KEY = "taska.mockServer.v3";
+export const MOCK_SERVER_KEY = "taska.mockServer.v4";
 
 /**
  * `localStorage` key for the server's test hooks, as JSON — the seam
@@ -96,6 +97,28 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v3";
  *   the member routes only — `PAYMENT_EXPIRED` shows the RECOVERY policy
  *   (remove and revoke allowed, the rest `READ_ONLY`).
  *
+ * The company's name, owner and pause (TAS-504, api-contract-guard §6):
+ *
+ * - `refuseNext`, `delayMs` and `loseAnswer` take `renameTenant`,
+ *   `pauseTenant`, `resumeTenant`, `transferTenantOwnership` and
+ *   `getSubscription` — a lost command is applied and then answered like a
+ *   dropped connection, once;
+ * - `platformBlock`: `{[tenantId]: boolean}` — stands in for the platform's
+ *   `setPlatformBlock` (GLOBAL_ADMIN): `true` adds `PLATFORM_BLOCK`, `false`
+ *   lifts it, a company not named keeps what it has (Hooli is seeded blocked);
+ * - `ownerPauseEnabled` (default `true`): `false` refuses a new pause 403
+ *   `CAPABILITY_DISABLED` (D93/D94) — never a resume;
+ * - `ownershipTransferEnabled` (default `true`): `false` refuses a transfer
+ *   403 `CAPABILITY_DISABLED`;
+ * - `clockOffsetMs` also ends paid periods: an ACTIVE company whose
+ *   `paidThrough` has passed gets `PAYMENT_EXPIRED`, which a resume never
+ *   lifts (D131);
+ * - `contentReadUnderRestriction: false` closes content — and the members
+ *   list with it (DIRECTORY inherits CONTENT_READ, access-matrix.json) — under
+ *   a pause or a block only, never under a dispute, an ended period or a quota;
+ *   the reader's notifications stay readable. Whether the directory should be
+ *   the control plane there instead is ask A42.
+ *
  * Everything time- or hook-driven is evaluated on every read of the server's
  * state: there are no timers.
  */
@@ -124,6 +147,9 @@ export interface MockTenantHooks {
   memberOperationOutcome?: string;
   memberOperationFailureCode?: string;
   restrict?: Record<string, string[]>;
+  platformBlock?: Record<string, boolean>;
+  ownerPauseEnabled?: boolean;
+  ownershipTransferEnabled?: boolean;
 }
 
 /** The fixture companies' ids (fixed, `createdAt` ascending in this order). */
@@ -251,6 +277,22 @@ export const MOCK_INVITATION_IDS = {
 type MembershipRole = "TENANT_ADMIN" | "MEMBER";
 type MembershipState = "ACTIVE" | "SUSPENDED" | "REMOVED";
 
+/**
+ * A company's subscription (TAS-504; `Subscription`, TAS-314) — **never on the
+ * `Tenant` wire**, answered only by `getSubscription`, to the owner.
+ * `paidThrough` is the exclusive end of the current paid coverage, absent for
+ * FREE and before the first payment (ask A37); a pause or a block never moves
+ * it (D129, D145).
+ */
+interface StoredSubscription {
+  planVersionId: string;
+  version: string;
+  paidThrough?: string;
+  anchorDay?: number;
+  renewalCancelled: boolean;
+  autopayState: string;
+}
+
 interface StoredTenant {
   id: string;
   name: string;
@@ -261,6 +303,8 @@ interface StoredTenant {
   creationDeadline?: string;
   version: string;
   ownerVersion: string;
+  /** TAS-504. Never on the wire. */
+  subscription: StoredSubscription;
   /** The plan's SEAT limit, a decimal string, or `null` for an unlimited one (TAS-502). Never on the wire. */
   seatLimit: string | null;
   /** `QuotaSnapshot.version`: moves whenever `used` or `reserved` does. Never on the wire. */
@@ -360,7 +404,7 @@ interface StoredCreation {
 }
 
 interface ServerState {
-  v: 3;
+  v: 4;
   tenants: StoredTenant[];
   memberships: StoredMembership[];
   sessions: StoredSession[];
@@ -458,6 +502,65 @@ const seatLimitOf = (planId: string): string | null => {
   return seat && !seat.unlimited && seat.limit ? seat.limit : null;
 };
 
+/** How long a paid period the mock starts on a confirmed first payment lasts — its own choice (TAS-504). */
+const PAID_PERIOD_MS = 30 * DAY;
+
+/** Sets or lifts one restriction, kept in `RESTRICTION_ORDER`; a change moves the company's version. */
+function setRestriction(tenant: StoredTenant, code: string, on: boolean): boolean {
+  if (tenant.restrictions.includes(code) === on) return false;
+  tenant.restrictions = orderedRestrictions(on ? [...tenant.restrictions, code] : tenant.restrictions.filter((item) => item !== code));
+  tenant.version = nextVersion(tenant.version);
+  return true;
+}
+
+/** A subscription with no paid period: FREE, or a paid plan before its first payment (TAS-504). */
+const unpaid = (planVersionId: string): StoredSubscription => ({
+  planVersionId,
+  version: "1",
+  renewalCancelled: false,
+  autopayState: "DISABLED",
+});
+
+/** Whether a plan of this mock's catalogue is FREE — the server's knowledge, never the client's (B3). */
+const isFreePlan = (planVersionId: string) => MOCK_PLANS.find((plan) => plan.id === planVersionId)?.price.amountMinor === "0";
+
+/**
+ * The order a refusal names a company's restrictions in, and the order they
+ * are kept in (api-contract-guard §6) — a code this mock does not know, last.
+ */
+const RESTRICTION_ORDER: readonly string[] = [
+  "PLATFORM_BLOCK",
+  "OWNER_PAUSE",
+  "PAYMENT_DISPUTE",
+  "PENDING_FIRST_PAYMENT",
+  "PAYMENT_EXPIRED",
+  "OVER_QUOTA",
+];
+const orderedRestrictions = (codes: readonly string[]): string[] => {
+  const rank = (code: string) => {
+    const index = RESTRICTION_ORDER.indexOf(code);
+    return index === -1 ? RESTRICTION_ORDER.length : index;
+  };
+  return [...new Set(codes)].sort((a, b) => rank(a) - rank(b));
+};
+
+/** The two restrictions that close a company's projects when the global read flag is off (contracts §5, D82). */
+const closesContent = (codes: readonly string[]) => codes.includes("OWNER_PAUSE") || codes.includes("PLATFORM_BLOCK");
+
+/**
+ * Which restrictions each command's rule lets through (access-matrix.json
+ * `tenant.*`; api-contract-guard §4): rename (NORMAL) none; pause and resume
+ * (OWNER_CONTROL) the owner's own pause and the two financial ones; a transfer
+ * (TRANSFER) the owner's own pause only (D244). Anything else is 403
+ * `READ_ONLY` with every current restriction as `reasons`.
+ */
+type TenantPolicy = "NORMAL" | "OWNER_CONTROL" | "TRANSFER";
+const POLICY_ALLOWS: Readonly<Record<TenantPolicy, ReadonlySet<string>>> = {
+  NORMAL: new Set(),
+  OWNER_CONTROL: new Set(["OWNER_PAUSE", "PAYMENT_EXPIRED", "OVER_QUOTA"]),
+  TRANSFER: new Set(["OWNER_PAUSE"]),
+};
+
 /** Which restriction rule a member route answers to (access-matrix.json `membership.*`, `invitation.*`). */
 type MemberPolicy = "DIRECTORY" | "SEATS" | "ADMIN_READ" | "NORMAL" | "RECOVERY" | "LEAVE";
 const nextVersion = (version: string) => (/^[0-9]+$/.test(version) ? (BigInt(version) + 1n).toString() : "1");
@@ -501,6 +604,16 @@ export type MockRouteKind = "tenant-read" | "tenant-write" | "tenant-self" | "ac
  * admin, with Lena's invitation of hers pending; Globex is Anna's member view;
  * Initech, paused, keeps its directory readable and its Leave open; Hooli,
  * blocked, refuses Priya's admin writes `READ_ONLY`.
+ *
+ * TAS-504 adds each company's subscription (api-contract-guard §6), never on
+ * the `Tenant` wire: Northwind and Globex are FREE — no `paidThrough`, autopay
+ * DISABLED — so a transfer of either is refused; Initech (paused, Sofia) is
+ * paid 32 days past the seed, Umbrella (Tom) 45, Hooli (blocked, Priya) 38
+ * and the long-named company (Priya) 50 — every one past the largest clock
+ * offset the earlier tests use (29 days), so none of them expires there.
+ * Stark, Wayne and Massive Dynamic have never been paid. Who may be the new
+ * owner: Initech's Anna (ACTIVE member), Umbrella's Priya (ACTIVE admin) — and
+ * Umbrella's Anna is SUSPENDED, refused.
  */
 function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships" | "freeLedger" | "invitations"> {
   const at = (day: number) => `2026-05-${String(day).padStart(2, "0")}T09:00:00Z`;
@@ -513,6 +626,7 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
     lifecycle = "ACTIVE",
     restrictions: string[] = [],
     seatLimit: string | null = seatLimitOf(MOCK_PLAN_IDS.team),
+    subscription: StoredSubscription = unpaid(MOCK_PLAN_IDS.team),
   ): StoredTenant => ({
     id,
     name,
@@ -522,11 +636,25 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
     createdAt: at(day),
     version: "3",
     ownerVersion: "1",
+    subscription,
     seatLimit,
     quotaVersion: 1,
     generation: 1,
   });
+  /** Team, paid `days` past the seed; the anchor is that day of the month. */
+  const paid = (days: number, autopayState: string): StoredSubscription => {
+    const through = new Date(seedAt + days * DAY);
+    return {
+      planVersionId: MOCK_PLAN_IDS.team,
+      version: "2",
+      paidThrough: through.toISOString(),
+      anchorDay: through.getUTCDate(),
+      renewalCancelled: false,
+      autopayState,
+    };
+  };
   const free = seatLimitOf(MOCK_PLAN_IDS.free);
+  const freePlan = unpaid(MOCK_PLAN_IDS.free);
   const ids = MOCK_TENANT_IDS;
   const joined = new Map<string, string>([
     [ids.northwind, at(1)],
@@ -557,16 +685,17 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
   });
   return {
     tenants: [
-      tenant(ids.northwind, "Northwind", anna, 1, "ACTIVE", [], free),
-      tenant(ids.globex, "Globex", priya, 2, "ACTIVE", [], free),
-      tenant(ids.initech, "Initech", sofia, 3, "ACTIVE", ["OWNER_PAUSE"]),
-      tenant(ids.umbrella, "Umbrella", tom, 4),
-      tenant(ids.hooli, "Hooli", priya, 5, "ACTIVE", ["PLATFORM_BLOCK"]),
+      tenant(ids.northwind, "Northwind", anna, 1, "ACTIVE", [], free, freePlan),
+      tenant(ids.globex, "Globex", priya, 2, "ACTIVE", [], free, freePlan),
+      tenant(ids.initech, "Initech", sofia, 3, "ACTIVE", ["OWNER_PAUSE"], undefined, paid(32, "CONSENTED")),
+      tenant(ids.umbrella, "Umbrella", tom, 4, "ACTIVE", [], undefined, paid(45, "CONSENTED")),
+      // Blocked: no automatic payment is taken while it is (D145).
+      tenant(ids.hooli, "Hooli", priya, 5, "ACTIVE", ["PLATFORM_BLOCK"], undefined, paid(38, "SUSPENDED")),
       {
         ...tenant(ids.massive, "Massive Dynamic", tom, 6, "AUTO_CLOSED", ["PENDING_FIRST_PAYMENT"]),
         creationDeadline: "2026-06-05T09:00:00Z",
       },
-      tenant(ids.longName, MOCK_LONG_TENANT_NAME, priya, 7),
+      tenant(ids.longName, MOCK_LONG_TENANT_NAME, priya, 7, "ACTIVE", [], undefined, paid(50, "DISABLED")),
       {
         ...tenant(ids.stark, "Stark Industries", tom, 8, "AWAITING_PAYMENT", ["PENDING_FIRST_PAYMENT"]),
         createdAt: iso(seedAt - 20 * DAY),
@@ -579,7 +708,7 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
         creationDeadline: iso(seedAt - 5 * DAY + CREATION_WINDOW_MS),
         version: "2",
       },
-      tenant(ids.vandelay, "Vandelay Industries", sofia, 10, "DELETED", [], free),
+      tenant(ids.vandelay, "Vandelay Industries", sofia, 10, "DELETED", [], free, freePlan),
     ],
     memberships: [
       member(ids.northwind, anna, "TENANT_ADMIN"),
@@ -866,6 +995,12 @@ export class MockTenantServer {
       revokeTenantInvitation: (bearer, tenantId, invitationId, version, key) =>
         this.revokeTenantInvitation(bearer, tenantId, invitationId, version, key),
       getTenantQuotas: (bearer, tenantId) => this.getTenantQuotas(bearer, tenantId),
+      renameTenant: (bearer, tenantId, name, version, key) => this.renameTenant(bearer, tenantId, name, version, key),
+      pauseTenant: (bearer, tenantId, version, key) => this.pauseTenant(bearer, tenantId, version, key),
+      resumeTenant: (bearer, tenantId, version, key) => this.resumeTenant(bearer, tenantId, version, key),
+      transferTenantOwnership: (bearer, tenantId, newOwnerUserId, version, key) =>
+        this.transferTenantOwnership(bearer, tenantId, newOwnerUserId, version, key),
+      getSubscription: (bearer, tenantId) => this.getSubscription(bearer, tenantId),
     };
   }
 
@@ -1122,6 +1257,8 @@ export class MockTenantServer {
         ...(free ? {} : { creationDeadline: new Date(createdMs + CREATION_WINDOW_MS).toISOString() }),
         version: "1",
         ownerVersion: "1",
+        // FREE, or a paid plan before its first payment: no paid period yet (TAS-504).
+        subscription: unpaid(plan.id),
         seatLimit: seatLimitOf(plan.id),
         quotaVersion: 1,
         generation: 1,
@@ -1569,6 +1706,183 @@ export class MockTenantServer {
     });
   }
 
+  /* ------------------------------- the company's name, owner and pause (TAS-504) */
+
+  /*
+   * api-contract-guard §6, the order of checks: (1) a bearer, (2) a company
+   * session — WEB_GLOBAL is 400 `TENANT_REQUIRED`, (3) a `refuseNext` hook,
+   * (4) the path's id a UUID and the session's own company (403
+   * `TENANT_MISMATCH`), (5) the company there (404), (6) ACTIVE (409
+   * `INVALID_STATE`), (7) the caller ACTIVE (403 `MEMBERSHIP_INACTIVE`), (8)
+   * the caller its owner (403 `OWNER_REQUIRED`), (9) the command's restriction
+   * rule (403 `READ_ONLY` with every current restriction, in
+   * `RESTRICTION_ORDER`), (10) the platform's flags (403 `CAPABILITY_DISABLED`,
+   * no reasons; never for a resume), (11) a transfer's paid coverage (409
+   * `INVALID_STATE` — the code the blueprint has not named, ask A32), (12) the
+   * key's durable receipt — after the access checks, so a replay is checked
+   * again (contracts.md:89) and a transfer's replay by its former owner is 403
+   * `OWNER_REQUIRED` (ask A33) —, (13) the body, (14) `If-Match`, (15) apply.
+   * No session is revoked by any of them.
+   */
+
+  /** `PATCH /tenants/{t}` `{name}` — the shared name rule; the same name is a 200 at the same version. */
+  private async renameTenant(bearer: string | null, tenantId: string, name: string, version: string, key: string): Promise<unknown> {
+    await this.delay("renameTenant");
+    const answer = this.write((state) => {
+      const { session, tenant } = this.authorizeOwner(state, bearer, tenantId, "renameTenant", "NORMAL");
+      const receipt = this.memberReceipt(state, session.userId, "renameTenant", key, { name, version });
+      if (receipt.replay !== undefined) return receipt.replay;
+      if (typeof name !== "string" || tenantNameProblem(name) !== null) {
+        throw invalid("Invalid request", [{ field: "name", code: "INVALID", message: "name must be 1-120 characters, trimmed, without control characters" }]);
+      }
+      this.checkVersion(version, tenant.version);
+      if (name !== tenant.name) {
+        tenant.name = name;
+        tenant.version = nextVersion(tenant.version);
+      }
+      return receipt.keep(this.wireTenant(tenant));
+    });
+    if (this.takeLostAnswer("renameTenant")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /** `PUT /tenants/{t}/pause` — adds `OWNER_PAUSE`; a company already paused is a 200 at the same version (ask A34). */
+  private async pauseTenant(bearer: string | null, tenantId: string, version: string, key: string): Promise<unknown> {
+    await this.delay("pauseTenant");
+    const answer = this.write((state) => {
+      const { session, tenant } = this.authorizeOwner(state, bearer, tenantId, "pauseTenant", "OWNER_CONTROL");
+      if (this.hooks().ownerPauseEnabled === false) {
+        throw problem(403, "CAPABILITY_DISABLED", "Pausing a company is not available");
+      }
+      const receipt = this.memberReceipt(state, session.userId, "pauseTenant", key, { confirmed: true, version });
+      if (receipt.replay !== undefined) return receipt.replay;
+      this.checkVersion(version, tenant.version);
+      setRestriction(tenant, "OWNER_PAUSE", true);
+      return receipt.keep(this.wireTenant(tenant));
+    });
+    if (this.takeLostAnswer("pauseTenant")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /**
+   * `DELETE /tenants/{t}/pause` — lifts `OWNER_PAUSE` and nothing else: a
+   * block, a dispute and an ended period stay (D131), and the paid period is
+   * not moved. Refused under a block, as the access matrix's OWNER_CONTROL
+   * says (ask A34c). Not paused is a 200 at the same version.
+   */
+  private async resumeTenant(bearer: string | null, tenantId: string, version: string, key: string): Promise<unknown> {
+    await this.delay("resumeTenant");
+    const answer = this.write((state) => {
+      const { session, tenant } = this.authorizeOwner(state, bearer, tenantId, "resumeTenant", "OWNER_CONTROL");
+      const receipt = this.memberReceipt(state, session.userId, "resumeTenant", key, { version });
+      if (receipt.replay !== undefined) return receipt.replay;
+      this.checkVersion(version, tenant.version);
+      setRestriction(tenant, "OWNER_PAUSE", false);
+      return receipt.keep(this.wireTenant(tenant));
+    });
+    if (this.takeLostAnswer("resumeTenant")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /**
+   * `POST /tenants/{t}/ownership-transfer` `{newOwnerUserId, confirmed}` — a
+   * paid company with current coverage only (a FREE one, or one whose period
+   * has ended, is 409 `INVALID_STATE`); allowed under the owner's own pause
+   * (D244). The recipient: a UUID (400), not the caller (409), a member (404
+   * `RESOURCE_NOT_FOUND`), ACTIVE (409 `INVALID_STATE` — never the caller's
+   * `MEMBERSHIP_INACTIVE`). Applied: the recipient owns it and is a
+   * TENANT_ADMIN, the former owner stays a TENANT_ADMIN, both memberships and
+   * the generation move, the old autopay consent is switched off, and no
+   * session is revoked (ask A36).
+   */
+  private async transferTenantOwnership(
+    bearer: string | null,
+    tenantId: string,
+    newOwnerUserId: string,
+    version: string,
+    key: string,
+  ): Promise<unknown> {
+    await this.delay("transferTenantOwnership");
+    const answer = this.write((state) => {
+      const { session, tenant, actor } = this.authorizeOwner(state, bearer, tenantId, "transferTenantOwnership", "TRANSFER");
+      if (this.hooks().ownershipTransferEnabled === false) {
+        throw problem(403, "CAPABILITY_DISABLED", "Transferring a company is not available");
+      }
+      const through = tenant.subscription.paidThrough;
+      const covered = through !== undefined && Date.parse(through) > this.lifecycleNow();
+      if (isFreePlan(tenant.subscription.planVersionId) || !covered) {
+        throw problem(409, "INVALID_STATE", "The tenant has no current paid coverage");
+      }
+      const receipt = this.memberReceipt(state, session.userId, "transferTenantOwnership", key, { newOwnerUserId, confirmed: true, version });
+      if (receipt.replay !== undefined) return receipt.replay;
+      if (typeof newOwnerUserId !== "string" || !UUID_PATTERN.test(newOwnerUserId)) {
+        throw invalid("Invalid request", [{ field: "newOwnerUserId", code: "INVALID", message: "newOwnerUserId must be a UUID" }]);
+      }
+      if (newOwnerUserId === session.userId) throw problem(409, "INVALID_STATE", "The tenant is already owned by this user");
+      const recipient = state.memberships.find((item) => item.tenantId === tenantId && item.userId === newOwnerUserId);
+      if (!recipient || recipient.state === "REMOVED") throw problem(404, "RESOURCE_NOT_FOUND", "Membership not found");
+      if (this.membershipState(state, tenantId, newOwnerUserId) !== "ACTIVE") {
+        throw problem(409, "INVALID_STATE", "The new owner's membership is not active");
+      }
+      this.checkVersion(version, tenant.version);
+      tenant.ownerId = newOwnerUserId;
+      tenant.ownerVersion = nextVersion(tenant.ownerVersion);
+      tenant.version = nextVersion(tenant.version);
+      tenant.generation += 1;
+      recipient.role = "TENANT_ADMIN";
+      recipient.version += 1;
+      actor.role = "TENANT_ADMIN";
+      actor.version += 1;
+      // The former owner's consent is never carried over: the new owner sets up their own.
+      tenant.subscription = { ...tenant.subscription, autopayState: "DISABLED", version: nextVersion(tenant.subscription.version) };
+      return receipt.keep(this.wireTenant(tenant));
+    });
+    if (this.takeLostAnswer("transferTenantOwnership")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /** `GET /tenants/{t}/billing/subscription` — the company's own session and its owner only (403 `OWNER_REQUIRED`); no restriction stops it. */
+  private async getSubscription(bearer: string | null, tenantId: string): Promise<unknown> {
+    await this.delay("getSubscription");
+    const answer = this.read((state) => {
+      const { session, tenant } = this.authorizeControl(state, bearer, tenantId, "getSubscription");
+      if (tenant.ownerId !== session.userId) throw problem(403, "OWNER_REQUIRED", "Only the owner can read the subscription");
+      return this.wireSubscription(tenant);
+    });
+    if (this.takeLostAnswer("getSubscription")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /** Checks (1)–(9) for the four commands — see the block comment above. */
+  private authorizeOwner(
+    state: ServerState,
+    bearer: string | null,
+    tenantId: string,
+    operation: string,
+    policy: TenantPolicy,
+  ): { session: StoredSession; tenant: StoredTenant; actor: StoredMembership } {
+    if (!bearer) throw problem(401, "AUTHENTICATION_REQUIRED", "Authentication required");
+    const session = this.sessionOf(state, bearer);
+    if (session.kind === "WEB_GLOBAL") throw problem(400, "TENANT_REQUIRED", "A company session is required");
+    const refusal = this.takeRefusal(operation);
+    if (refusal) throw refusal;
+    if (!UUID_PATTERN.test(tenantId)) throw problem(400, "VALIDATION_FAILED", "tenantId must be a UUID");
+    if (session.tenantId !== tenantId) throw problem(403, "TENANT_MISMATCH", "The session is for another tenant");
+    const tenant = state.tenants.find((item) => item.id === tenantId);
+    if (!tenant || tenant.lifecycle === "DELETED") throw problem(404, "TENANT_NOT_FOUND", "Tenant not found");
+    if (tenant.lifecycle !== "ACTIVE") throw problem(409, "INVALID_STATE", "The tenant is not active");
+    const actor = state.memberships.find((item) => item.tenantId === tenantId && item.userId === session.userId);
+    if (!actor || this.membershipState(state, tenantId, session.userId) !== "ACTIVE") {
+      throw problem(403, "MEMBERSHIP_INACTIVE", "Membership is not active");
+    }
+    if (tenant.ownerId !== session.userId) throw problem(403, "OWNER_REQUIRED", "Only the owner can change the tenant");
+    const restrictions = orderedRestrictions(tenant.restrictions);
+    if (restrictions.some((code) => !POLICY_ALLOWS[policy].has(code))) {
+      throw problem(403, "READ_ONLY", "The tenant is read-only", restrictions);
+    }
+    return { session, tenant, actor };
+  }
+
   /**
    * The checks in front of every member route, in PR #287's order up to the
    * receipt: a company session of exactly this company (WEB_GLOBAL is 400
@@ -1577,9 +1891,10 @@ export class MockTenantServer {
    * membership ACTIVE, (3) a company admin where the route needs one, (4) the
    * route's restriction policy:
    *
-   * - `DIRECTORY` (the members list, CONTENT_READ): refused 403
-   *   `CAPABILITY_DISABLED` before the first payment, and under a pause or a
-   *   block only when the global read flag is off;
+   * - `DIRECTORY` (the members list, CONTENT_READ's rule as `authorize` has
+   *   it): refused 403 `CAPABILITY_DISABLED` with the ordered restrictions
+   *   before the first payment, and under a pause or a block when the global
+   *   read flag is off (ask A42);
    * - `SEATS` and `LEAVE`: never;
    * - `ADMIN_READ` (the invitations list): none stated, so never;
    * - `NORMAL` (role, state, invite, resend): `READ_ONLY` under any restriction;
@@ -1614,10 +1929,11 @@ export class MockTenantServer {
       throw problem(403, "SCOPE_DENIED", "A tenant admin is required");
     }
     const restrictions = this.restrictionsOf(tenant);
-    if (policy === "DIRECTORY") {
-      if (restrictions.includes("PENDING_FIRST_PAYMENT") || (restrictions.length > 0 && !this.contentReadUnderRestriction())) {
-        throw problem(403, "CAPABILITY_DISABLED", "The directory is not available", restrictions);
-      }
+    if (
+      policy === "DIRECTORY" &&
+      (restrictions.includes("PENDING_FIRST_PAYMENT") || (closesContent(restrictions) && !this.contentReadUnderRestriction()))
+    ) {
+      throw problem(403, "CAPABILITY_DISABLED", "The directory is not available", orderedRestrictions(restrictions));
     }
     if (policy === "NORMAL" && restrictions.length > 0) throw problem(403, "READ_ONLY", "The tenant is read-only", restrictions);
     if (policy === "RECOVERY" && restrictions.some((code) => !RECOVERY_ALLOWED.has(code))) {
@@ -1676,7 +1992,7 @@ export class MockTenantServer {
   }
 
   /** (8) `If-Match`: missing 428 `VERSION_CONFLICT`, malformed 400 `VALIDATION_FAILED`, stale 412 (contracts §6). */
-  private checkVersion(version: string, current: number): void {
+  private checkVersion(version: string, current: number | string): void {
     if (version === "") throw problem(428, "VERSION_CONFLICT", "If-Match is required");
     if (!/^(0|[1-9][0-9]{0,18})$/.test(version)) throw problem(400, "VALIDATION_FAILED", "If-Match must be a quoted version");
     if (version !== String(current)) throw problem(412, "VERSION_CONFLICT", "The resource has changed");
@@ -1830,8 +2146,11 @@ export class MockTenantServer {
     if (kind === "tenant-read" && tenant.restrictions.includes("PENDING_FIRST_PAYMENT")) {
       throw problem(403, "CAPABILITY_DISABLED", "Project content is not available", tenant.restrictions);
     }
-    if (kind === "tenant-read" && tenant.restrictions.length > 0 && !this.contentReadUnderRestriction()) {
-      throw problem(403, "CAPABILITY_DISABLED", "Project content is not available", tenant.restrictions);
+    // Only a pause or a block closes content with the flag off (contracts §5,
+    // D82); a dispute, an ended period or a quota leaves it readable
+    // (api-contract-guard §4). The reasons are every current restriction.
+    if (kind === "tenant-read" && closesContent(tenant.restrictions) && !this.contentReadUnderRestriction()) {
+      throw problem(403, "CAPABILITY_DISABLED", "Project content is not available", orderedRestrictions(tenant.restrictions));
     }
     return { userId: session.userId, tenantId };
   }
@@ -1866,10 +2185,28 @@ export class MockTenantServer {
     return { session, tenant };
   }
 
-  /** `Tenant` as the wire carries it: `creationDeadline` only when there is one, and none of the mock's own bookkeeping. */
+  /**
+   * `Tenant` as the wire carries it: `creationDeadline` only when there is one,
+   * and none of the mock's own bookkeeping — the subscription included
+   * (TAS-504: `getSubscription` is the owner's only).
+   */
   private wireTenant(tenant: StoredTenant): unknown {
-    const { seatLimit: _seats, quotaVersion: _quota, generation: _generation, ...rest } = tenant;
+    const { seatLimit: _seats, quotaVersion: _quota, generation: _generation, subscription: _subscription, ...rest } = tenant;
     return { ...rest, restrictions: [...tenant.restrictions] };
+  }
+
+  /** `Subscription`: `paidThrough` and `anchorDay` only when there is a paid period (ask A37). */
+  private wireSubscription(tenant: StoredTenant): unknown {
+    const { planVersionId, version, paidThrough, anchorDay, renewalCancelled, autopayState } = tenant.subscription;
+    return {
+      tenantId: tenant.id,
+      planVersionId,
+      version,
+      ...(paidThrough === undefined ? {} : { paidThrough }),
+      ...(anchorDay === undefined ? {} : { anchorDay }),
+      renewalCancelled,
+      autopayState,
+    };
   }
 
   /** `Operation`; `asCreated` is develop's createTenant answer — PENDING, `updatedAt = createdAt` (ask A12). */
@@ -1999,13 +2336,13 @@ export class MockTenantServer {
       const raw = this.storage.getItem(MOCK_SERVER_KEY);
       if (raw !== null) {
         const parsed = JSON.parse(raw) as ServerState;
-        if (parsed && parsed.v === 3 && Array.isArray(parsed.tenants)) return parsed;
+        if (parsed && parsed.v === 4 && Array.isArray(parsed.tenants)) return parsed;
       }
     } catch {
       if (this.memory) return this.memory;
     }
     return {
-      v: 3,
+      v: 4,
       ...seedTenants(this.now()),
       sessions: [],
       access: {},
@@ -2028,8 +2365,12 @@ export class MockTenantServer {
    * Each change moves the company's version. Since TAS-502 a removal's
    * operation moves the same way by `memberOperationStepMs` (default 0) and
    * removes the member when it succeeds, and a pending invitation whose
-   * `expiresAt` has passed is EXPIRED, its seat released. Answers whether
-   * anything changed.
+   * `expiresAt` has passed is EXPIRED, its seat released. Since TAS-504 a
+   * confirmed first payment starts a paid period (`PAID_PERIOD_MS`, the mock's
+   * own length), an ACTIVE company whose `paidThrough` has passed gets
+   * `PAYMENT_EXPIRED` (nothing here lifts it — payment is TAS-513), and the
+   * `platformBlock` hook sets or lifts `PLATFORM_BLOCK`; each change moves the
+   * version. Answers whether anything changed.
    */
   private evaluate(state: ServerState): boolean {
     const now = this.lifecycleNow();
@@ -2041,11 +2382,21 @@ export class MockTenantServer {
     const confirmed = new Set(Array.isArray(hooks.firstPaymentConfirmed) ? hooks.firstPaymentConfirmed : []);
     const late = new Set(Array.isArray(hooks.latePaymentConfirmed) ? hooks.latePaymentConfirmed : []);
     let changed = false;
-    const open = (tenant: StoredTenant) => {
+    const open = (tenant: StoredTenant, paidAt?: number) => {
       tenant.lifecycle = "ACTIVE";
       tenant.restrictions = tenant.restrictions.filter((code) => code !== "PENDING_FIRST_PAYMENT");
       delete tenant.creationDeadline;
       tenant.version = nextVersion(tenant.version);
+      // A first payment confirmed: the paid period starts (TAS-504).
+      if (paidAt !== undefined && !isFreePlan(tenant.subscription.planVersionId)) {
+        const through = new Date(paidAt + PAID_PERIOD_MS);
+        tenant.subscription = {
+          ...tenant.subscription,
+          version: nextVersion(tenant.subscription.version),
+          paidThrough: through.toISOString(),
+          anchorDay: through.getUTCDate(),
+        };
+      }
       changed = true;
     };
 
@@ -2087,12 +2438,22 @@ export class MockTenantServer {
       changed = true;
     }
     for (const tenant of state.tenants) {
-      if (tenant.lifecycle === "AWAITING_PAYMENT" && confirmed.has(tenant.id)) open(tenant);
+      if (tenant.lifecycle === "AWAITING_PAYMENT" && confirmed.has(tenant.id)) open(tenant, now);
       else if (tenant.lifecycle === "AWAITING_PAYMENT" && tenant.creationDeadline && Date.parse(tenant.creationDeadline) <= now) {
         tenant.lifecycle = "AUTO_CLOSED";
         tenant.version = nextVersion(tenant.version);
         changed = true;
-      } else if (tenant.lifecycle === "AUTO_CLOSED" && late.has(tenant.id)) open(tenant);
+      } else if (tenant.lifecycle === "AUTO_CLOSED" && late.has(tenant.id)) open(tenant, now);
+    }
+    // TAS-504: the platform's block, and paid periods that have ended.
+    const blocks = typeof hooks.platformBlock === "object" && hooks.platformBlock !== null ? hooks.platformBlock : {};
+    for (const tenant of state.tenants) {
+      const block = blocks[tenant.id];
+      if (typeof block === "boolean" && setRestriction(tenant, "PLATFORM_BLOCK", block)) changed = true;
+      const through = tenant.subscription.paidThrough;
+      if (tenant.lifecycle === "ACTIVE" && through !== undefined && Date.parse(through) <= now && setRestriction(tenant, "PAYMENT_EXPIRED", true)) {
+        changed = true;
+      }
     }
     return changed;
   }

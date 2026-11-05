@@ -426,7 +426,7 @@ export function CompanySetupScreen({
               <button
                 aria-controls={asking ? stripId : undefined}
                 aria-expanded={asking}
-                className="secondary-button compact-button company-cancel-trigger"
+                className="secondary-button compact-button strip-trigger company-cancel-trigger"
                 onClick={() => {
                   if (cancelling) return;
                   setCancelRefusal(null);

@@ -10,6 +10,7 @@ import {
   toPlanVersion,
   toPlanVersionPage,
   toQuotaLimit,
+  toSubscription,
   toTenant,
   toTenantOperation,
   toTenantPage,
@@ -204,3 +205,21 @@ describe("the one name rule, shared by the form and the mock (DESIGN.md §4.36, 
   });
 });
 
+
+describe("the owner's subscription (TAS-504, api-contract-guard §1, M2)", () => {
+  it("reads paidThrough as sent, null when absent — and drops one Date cannot read, so «Paid until» never throws", () => {
+    expect(toSubscription({ tenantId: "t", planVersionId: "p", version: "2", paidThrough: "2026-12-20T09:00:00Z", autopayState: "CONSENTED", renewalCancelled: false })).toEqual({
+      tenantId: "t",
+      planVersionId: "p",
+      version: "2",
+      paidThrough: "2026-12-20T09:00:00Z",
+      autopayState: "CONSENTED",
+      renewalCancelled: false,
+    });
+    expect(toSubscription({ autopayState: "PAUSED_BY_BANK" })).toMatchObject({ paidThrough: null, autopayState: "PAUSED_BY_BANK", renewalCancelled: null });
+    for (const paidThrough of ["not a date", "", 42, null, "2026-13-45T99:00:00Z"]) {
+      expect(toSubscription({ paidThrough }).paidThrough, String(paidThrough)).toBeNull();
+    }
+    expect(toSubscription(null)).toMatchObject({ tenantId: null, paidThrough: null });
+  });
+});

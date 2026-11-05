@@ -1,4 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { refusalCode, refusalReasons } from "../api/errors";
 import type { TaskaApi } from "../api/TaskaApi";
 import { isKnownTenantLifecycle, readAllTenants, type Tenant } from "../api/tenants";
 
@@ -182,6 +183,12 @@ export interface ClosedWords {
   text: string | null;
 }
 
+/** A pause before a block in no list: with both, the block's line — resuming would not open it (§4.35). */
+const blockFirst = (codes: readonly string[]) =>
+  codes.includes("PLATFORM_BLOCK") && codes.includes("OWNER_PAUSE")
+    ? ["PLATFORM_BLOCK", ...codes.filter((code) => code !== "PLATFORM_BLOCK")]
+    : [...codes];
+
 /**
  * §4.35's table (TAS-500; TAS-501 moved the never-opened rows to §4.37's
  * card — `isNeverOpened`): the reason from the refusal — its code, then its reasons; a
@@ -190,11 +197,16 @@ export interface ClosedWords {
  * plain `INVALID_STATE` — the contract names no code, ask A2); no row either,
  * the table's last row, the server's words in place of the sentence. `name` is
  * the company's from the reader's list, else «This company».
+ *
+ * `owner` (TAS-504): the reader owns the company — the list row's `ownerId` —
+ * and the pause's and the block's rows say so in their own words; with both,
+ * the block's (§4.35).
  */
 export function closedCompanyWords(
   name: string | null,
   refusal: { code: string | null; reasons: readonly string[] } | null,
   tenant: Tenant | null,
+  owner = false,
 ): ClosedWords {
   // «This company» at the start of a sentence, «this company» inside one (§4.35).
   const company = name ?? "This company";
@@ -207,9 +219,19 @@ export function closedCompanyWords(
           text: "Your membership was suspended or removed. If that’s a mistake, ask one of the company’s admins.",
         };
       case "PLATFORM_BLOCK":
-        return { title: `${company} is blocked`, text: "Taska has blocked this company, so its projects can’t be opened right now." };
+        return {
+          title: `${company} is blocked`,
+          text: owner
+            ? "Taska has blocked this company, so its projects can’t be opened right now. Only Taska can lift the block."
+            : "Taska has blocked this company, so its projects can’t be opened right now.",
+        };
       case "OWNER_PAUSE":
-        return { title: `${company} is paused`, text: "Its owner has paused it, so its projects can’t be opened right now." };
+        return {
+          title: `${company} is paused`,
+          text: owner
+            ? "Its projects can’t be opened while it’s paused. You can resume it in its settings."
+            : "Its owner has paused it, so its projects can’t be opened right now.",
+        };
       // PROVISIONING, AUTO_CLOSED and OWNER_CANCELLED are not this screen's
       // (TAS-501): a company that has never opened draws §4.37's card.
       case "DELETING":
@@ -220,11 +242,37 @@ export function closedCompanyWords(
         return null;
     }
   };
-  const first = (keys: readonly (string | null)[]) => keys.map(by).find((words) => words !== null) ?? null;
-  return (
-    first([refusal?.code ?? null, ...(refusal?.reasons ?? [])]) ??
-    first([tenant?.lifecycle ?? null, ...(tenant?.restrictions ?? [])]) ?? { title: `${company} could not be opened`, text: null }
-  );
+  const key = closedCompanyReason(refusal, tenant);
+  return (key === null ? null : by(key)) ?? { title: `${company} could not be opened`, text: null };
+}
+
+/** The reasons §4.35's table has a row for. */
+const CLOSED_REASONS: ReadonlySet<string> = new Set(["MEMBERSHIP_INACTIVE", "PLATFORM_BLOCK", "OWNER_PAUSE", "DELETING", "DELETED"]);
+
+/**
+ * The row of §4.35's table `closedCompanyWords` says: the refusal's code, then
+ * its reasons, then the list row's lifecycle and restrictions — the block
+ * before the pause in either list — or `null` for the table's last row. The
+ * owner's row of buttons belongs to the pause's and the block's (TAS-504).
+ */
+export function closedCompanyReason(refusal: { code: string | null; reasons: readonly string[] } | null, tenant: Tenant | null): string | null {
+  const first = (keys: readonly (string | null)[]) => keys.find((key): key is string => key !== null && CLOSED_REASONS.has(key)) ?? null;
+  return first([refusal?.code ?? null, ...blockFirst(refusal?.reasons ?? [])]) ?? first([tenant?.lifecycle ?? null, ...blockFirst(tenant?.restrictions ?? [])]);
+}
+
+/**
+ * A search refused because the tab's company is paused or blocked (TAS-504,
+ * DESIGN.md §4.35): said in the search's own panel, with the request id and
+ * without the server's words — the page stays as it is. The block's line when
+ * both. `null` for any other failure.
+ */
+export function restrictedSearchText(error: unknown, company: string | null): string | null {
+  if (refusalCode(error) !== "CAPABILITY_DISABLED") return null;
+  const reasons = refusalReasons(error);
+  const name = company ?? "This company";
+  if (reasons.includes("PLATFORM_BLOCK")) return `${name} is blocked, so its issues can’t be searched right now.`;
+  if (reasons.includes("OWNER_PAUSE")) return `${name} is paused, so its issues can’t be searched right now.`;
+  return null;
 }
 
 /**

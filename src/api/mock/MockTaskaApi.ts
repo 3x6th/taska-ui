@@ -49,6 +49,7 @@ import type {
   WorkspaceClosedEvent,
   WorkspacePendingEvent,
   WorkspaceLeftEvent,
+  WorkspaceRestrictedEvent,
 } from "../TaskaApi";
 import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
@@ -73,6 +74,7 @@ import type {
   ListBillingPlansParams,
   ListTenantsParams,
   PlanVersionPage,
+  Subscription,
   Tenant,
   TenantOperation,
   TenantPage,
@@ -9647,6 +9649,10 @@ export class MockTaskaApi implements TaskaApi {
     return () => {};
   }
 
+  onWorkspaceRestricted(_listener: (event: WorkspaceRestrictedEvent) => void): () => void {
+    return () => {};
+  }
+
   lastCompanyHint(): string | null {
     return null;
   }
@@ -9728,6 +9734,28 @@ export class MockTaskaApi implements TaskaApi {
 
   async reenterCompany(_tenantId: string): Promise<void> {
     throw new TenancyUnavailableError("reenterCompany");
+  }
+
+  // The company's name, owner and pause (TAS-504): today's build has none,
+  // like the lists above.
+  async renameTenant(_tenantId: string, _name: string, _version: string, _idempotencyKey: string): Promise<Tenant> {
+    throw new TenancyUnavailableError("renameTenant");
+  }
+
+  async pauseTenant(_tenantId: string, _version: string, _idempotencyKey: string): Promise<Tenant> {
+    throw new TenancyUnavailableError("pauseTenant");
+  }
+
+  async resumeTenant(_tenantId: string, _version: string, _idempotencyKey: string): Promise<Tenant> {
+    throw new TenancyUnavailableError("resumeTenant");
+  }
+
+  async transferTenantOwnership(_tenantId: string, _newOwnerUserId: string, _version: string, _idempotencyKey: string): Promise<Tenant> {
+    throw new TenancyUnavailableError("transferTenantOwnership");
+  }
+
+  async getSubscription(_tenantId: string): Promise<Subscription> {
+    throw new TenancyUnavailableError("getSubscription");
   }
 
   async getMeta(): Promise<EnumDictionaries> {

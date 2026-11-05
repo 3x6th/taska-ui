@@ -2136,9 +2136,10 @@ Everything below is the entry as it stood, in the past tense.
     §4.35 «Initech is paused»); a write so refused only rejects that action. **Except** a refusal whose `reasons`
     carry `PENDING_FIRST_PAYMENT`, or code `PAYMENT_PENDING` (TAS-501): that company has never opened, and the tab
     shows its §4.37 card without closing the company or revoking its session — payment, status and cancel go
-    with that session. Removal: ask A14. REST counts every GET as a read, the
-    mock its company content routes. The rule is broader than the two content-blocking reasons (`OWNER_PAUSE`,
-    `PLATFORM_BLOCK`) because contracts §5 does not say which reasons a read can carry. Removal: ask A2c on TAS-316.
+    with that session. Removal: ask A14. **And, since TAS-504,** a read refused with `OWNER_PAUSE` or
+    `PLATFORM_BLOCK` (and not `PENDING_FIRST_PAYMENT`) keeps the session and marks the tab "content closed" — see
+    «TAS-504». REST counts every GET as a read, the mock its company content routes. For the other reasons the rule
+    stays broad because contracts §5 does not say which reasons a read can carry. Removal: ask A2c on TAS-316.
     The mock reaches it through the hook `contentReadUnderRestriction: false` in `taska.mockTenantHooks`.
   - Sign-out revokes the tab's tenant session and drops the global record locally; the global family and sibling
     tabs' families stay live until expiry. Removal: ask A4 on TAS-315.
@@ -2157,8 +2158,8 @@ Everything below is the entry as it stood, in the past tense.
   404, a suspended membership closes its tab. Before TAS-316 and TAS-340 the flag is **unsafe**, not merely early:
   a gateway that issues tenant sessions but does not scope data routes would show the same projects in every
   company's tab, and the UI cannot tell.
-- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v3` since
-  TAS-502; `v2` in TAS-501, `v1` before it); this
+- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v4` since
+  TAS-504; `v3` in TAS-502, `v2` in TAS-501, `v1` before it); this
   narrows "The mock has a session flag but no session enforcement" for the flag-on build only.
 - **Mock answers where the blueprint is silent** (`src/api/mock/MockTenantServer.ts`, `mockCompanies.ts`) — the
   mock's choices, not the blueprint's behaviour; each falls away with the ask named:
@@ -2169,7 +2170,10 @@ Everything below is the entry as it stood, in the past tense.
   - Any restriction makes every company write 403 `READ_ONLY` with all restrictions as `reasons` — stricter than
     contracts §5, where a financial READ_ONLY still allows some admin actions; the reader's own notifications,
     notification settings and Telegram are not stopped (TAS-325). Content reads under a restriction are allowed:
-    `MOCK_PROJECT_CONTENT_READ_UNDER_RESTRICTION = true`, the "separate global flag" of contracts §5. Ask A2c.
+    `MOCK_PROJECT_CONTENT_READ_UNDER_RESTRICTION = true`, the "separate global flag" of contracts §5. Ask A2c. With
+    the flag off (`contentReadUnderRestriction: false`), since TAS-504 only `OWNER_PAUSE` and `PLATFORM_BLOCK` close
+    content (access-matrix CONTENT_READ's conditionalDeny), with every current restriction as `reasons`; a financial
+    restriction alone stays readable.
     **Except `PENDING_FIRST_PAYMENT`** (since TAS-501): the blueprint denies a pending company's content reads
     unconditionally (`access-matrix.json` CONTENT_READ), and the mock refuses them 403 `CAPABILITY_DISABLED`
     with the reason whatever the flag.
@@ -2332,6 +2336,70 @@ Everything below is the entry as it stood, in the past tense.
   «first Leave after being removed loops» fixed. The enabling PR
   carries the stand probe: invite → reserved + 1; resend → unchanged; revoke → − 1; suspend keeps used; remove frees
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
+- **Removal:** delete with the flag, after the probe.
+
+### TAS-504: company name, owner transfer and pause ship ahead of the gateway, on the B2B blueprint
+
+- **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`; none in `openapi.yml`):
+  `PATCH /api/v1/tenants/{tenantId}` (renameTenant), `PUT` / `DELETE …/pause` (pauseTenant, resumeTenant),
+  `POST …/ownership-transfer` (transferTenantOwnership), `GET …/billing/subscription` (getSubscription, owner only);
+  reused: `GET /api/v1/tenants/{tenantId}` (getTenant), `listTenants`, `listTenantMembers` (the recipient picker),
+  `reenterCompany` after a transfer. Not called: `getTenantCapabilities` (TAS-497), `getEntitlement` (its `validUntil`
+  is not paid-through), `setPlatformBlock` (GLOBAL_ADMIN; the mock's `platformBlock` hook stands in). Backend: TAS-333,
+  TAS-473, TAS-480 (no PR), TAS-314 (subscription, not started); develop has only CreateTenant, GetTenant and
+  ListTenantMembers over gRPC.
+- **Observed (2026-11-05, no token, api-contract-guard):** all answer 404 "No static resource" — rename
+  `2bdcb0e7-fa80-46db-99c6-6a09f1b5dd44`, pause `9a7d6889-fdbb-4461-9fe8-2fc569fa4370`, resume
+  `48fed019-80ae-4c1a-981e-aa232ea9a8d2`, transfer `aa5b87b9-38b1-47a5-a6af-f23b50b50c80`, getTenant
+  `9043ad03-589d-4f0d-a2c2-b4837289aa45`, capabilities `ced186bc-3395-4700-b3f4-4c4a6be75f25`, subscription
+  `ea1d51f6-6015-454c-9e98-d0538f909f89`, entitlement `faf41d6a-b553-4d34-a419-b95e6aa144ec`, platform block
+  `b3fea109-cf54-4b42-93de-b5358a9ae2ed`; control `GET /api/v1/projects` 401 (`f9bfd3be-0f5b-4a3f-b588-84625cdd26c0`).
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`.
+- **What the UI assumes where the blueprint is silent — each removable:**
+  - `If-Match` on the four commands is `Tenant.version` from the last `getTenant`; develop keeps a separate
+    `restriction_version` off the wire. Removal: ask A31 (one version source).
+  - No capabilities are read: controls are gated by `Tenant.ownerId` = the reader only; pause and transfer are always
+    offered to the owner, a static sentence states the transfer rule (a paid company with a current paid period), and
+    the server's refusal decides. The story's «show transfer only for paid + flag» is unmet. Removal: asks A30
+    (capability registry) and A32 (a distinct FREE / no-coverage refusal).
+  - A transfer whose answer was lost twice is resolved by re-reading `getTenant`: `ownerId` = the chosen recipient →
+    success; a 403 `OWNER_REQUIRED` is never itself read as success. Removal: ask A33 (replay the stored 200).
+  - A content read refused `CAPABILITY_DISABLED` with `OWNER_PAUSE` or `PLATFORM_BLOCK` (and not
+    `PENDING_FIRST_PAYMENT`) keeps the company session and marks the tab "content closed": §4.35 replaces content
+    routes only, never Settings, so the owner can reach Resume. This narrows TAS-500's closure rule to the blueprint's
+    meaning; it is not a compensation. REST decides whether a successful read lifts the mark by path: every GET is
+    content except `/users/me*`, `/meta`, `/notifications*` and `/auth/*` (mirroring the mock's account and tenant-self
+    routes); marking itself keys on the server's reasons. Change requested: ask A35 (the control plane — session,
+    getTenant, subscription, the four commands — survives a content-closing restriction) and A42 (access-matrix
+    DIRECTORY and INBOX inherit CONTENT_READ, so with the read flag off the members list — the transfer picker,
+    Members, Leave — and the inbox are closed too; the mock follows the blueprint).
+  - `getSubscription` is requested only for the owner; an absent or failed `paidThrough` is drawn as nothing, never
+    «free», never computed; it is read as an instant, the exclusive end of coverage. Removal: ask A37.
+  - A pause or resume answer that was lost is repeated with the same key and no re-read. Removal: ask A34 (idempotent
+    200 for pause-paused / resume-unpaused).
+  - After one's own transfer, or a 403 `OWNER_REQUIRED` whose re-read names another owner, the tab drops the
+    subscription cache and re-enters the company (the client's own cache rule, as TAS-502's own-row change).
+  - A non-owner sees the owner's name only from the cached members list, else a «See Members» link. Removal: ask A39.
+- **Found on develop, recorded, not compensated:** `restriction_version` off the wire (`0001-registry.sql:13`); the
+  signed-context action is the operationId (`TenantMembershipService.java:107`) while contracts §5 names matrix actions
+  (`tenant.transfer_ownership`); create's name rule is 128 code points and refuses an untrimmed name
+  (`TenantRegistryService.java:82-85`) against the blueprint's 1–120; `Tenant.restrictions` only ever carries
+  `PENDING_FIRST_PAYMENT` (`TenantRegistryService.java:326-327`).
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v4`): order of checks as
+  TAS-502 (session, tenant, lifecycle, caller ACTIVE, owner, policy NORMAL / OWNER_CONTROL / TRANSFER with reasons in a
+  stable order, flags, coverage, receipt, body, version); a transfer on FREE or without coverage and to a non-ACTIVE
+  recipient → 409 `INVALID_STATE`; pause-paused and resume-unpaused → 200 no-op; resume under a platform block refused
+  per the access matrix; a transfer replay after success → 403 `OWNER_REQUIRED` (contracts.md:89); the
+  `platformBlock`, `ownerPauseEnabled`, `ownershipTransferEnabled` hooks; paid periods expire by the lifecycle clock
+  (`PAYMENT_EXPIRED`, never lifted by resume, D131); a paid period of 30 days starts on the first or late payment
+  confirmation hook (the blueprint has a calendar month with an anchor day), with the anchor day from its end; Hooli's
+  autopay is seeded `SUSPENDED`; pause checks the owner-pause flag before its receipt, resume never checks it; a
+  transfer revokes no session; the subscription is never on the `Tenant` wire; the reader's notifications stay readable
+  under a flag-off pause or block (the mock's tenant-self routes, older than TAS-504), contrary to the blueprint's INBOX
+  (ask A42).
+- **Turning the flag on** additionally needs TAS-333, TAS-473, TAS-480 and TAS-314 on the gateway and **asks A31, A32,
+  A34, A35 and A36 answered**; a platform that runs with the read flag off (default on, D82) also needs A42, or its
+  owners cannot pick a transfer recipient and its members cannot reach Leave under a pause.
 - **Removal:** delete with the flag, after the probe.
 
 ### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log

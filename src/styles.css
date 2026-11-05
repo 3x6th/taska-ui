@@ -3729,6 +3729,313 @@ h1 {
   }
 }
 
+/* ---------- Settings › General: the company (TAS-504, §4.39) ---------- */
+
+/* The state lines under the lead: the board archive row's recipe (§5.7) — no
+   ground, edge, stripe or icon; the fact in `--fg` 600, its explanation in
+   `--fg-2`, a line per reason, 4 apart, 8 under the lead. */
+.company-general-states {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.company-general-state {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.company-general-state-fact {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* A refresh that failed: the values stay, the notice 14 above them. */
+.company-general-refresh-failure {
+  margin-top: 14px;
+}
+
+/* My profile's `<dl>` (§5.9), 22 under the lead or the state lines. */
+.settings-details.company-general-facts {
+  margin-top: 22px;
+}
+
+/* The name whole — wrapping, never cut (§4.16's reason) — with the pencil
+   right after its first line. The pencil's 5 above and below are taken back,
+   so the 28 button sits on an 18 line without growing the row. */
+.company-general-name-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.company-general-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.icon-button.company-general-rename {
+  margin: -5px 0;
+}
+
+/* «See Members» alone in the Owner row: §5.8's standalone link — a 28 target
+   whose 5 above and below are taken back. Inline-level, so the `dd`'s own line
+   still sets the row: as a block the row lost 0.8 (37.8 → 37.0, measured). */
+.company-general-facts .admin-note-link {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 28px;
+  margin: -5px 0;
+}
+
+/* The rename form in the `dd` (§5.9's recipe), no wider than it. */
+.company-general-rename-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 420px;
+}
+
+.company-general-rename-form > .error-note {
+  margin: 2px 0 0;
+}
+
+/* The loading rows: the facts' grid with §5.6's bars where labels and values stand. */
+.company-general-loading .settings-details.company-general-facts {
+  margin-top: 0;
+}
+
+.company-general-skeleton-label {
+  width: 60px;
+  height: 11px;
+}
+
+.company-general-skeleton-value {
+  width: 160px;
+  height: 13px;
+}
+
+.company-general-failure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.company-general-failure .api-notice {
+  align-self: stretch;
+}
+
+/* The owner's zone: Leave company's recipe (§4.38) with two rows — the line
+   above it 22 under the facts, a hairline between the rows. */
+.company-general-zone {
+  margin-top: 22px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.company-general-zone-row {
+  padding: 14px 0;
+}
+
+.company-general-zone-row:first-child {
+  padding-top: 0;
+}
+
+.company-general-zone-row + .company-general-zone-row {
+  border-top: 1px solid var(--border);
+}
+
+.company-general-zone-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.company-general-zone-text {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.company-general-zone-button {
+  flex: none;
+}
+
+/* The pause question: §4.22's strip under its row, the column's full width, no indent. */
+.member-confirm.company-general-pause-confirm {
+  flex: none;
+  margin: 10px 0 0;
+}
+
+.company-general-zone-row > .error-note {
+  margin: 10px 0 0;
+}
+
+/* In flight (§4.1): no fade, the progress cursor, labels as they were. */
+.company-general [aria-disabled="true"]:not(.is-unavailable),
+.company-transfer-body [aria-disabled="true"]:not(.is-unavailable) {
+  cursor: progress;
+}
+
+/* The transfer modal (§4.11): the body 13 apart. */
+.company-transfer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.company-transfer-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.company-transfer-field label {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+/* §4.3's field at 38, as a select — its own ring kept (§7). */
+.company-transfer-select {
+  width: 100%;
+  height: 38px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 0 8px;
+  background: var(--surface);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.company-transfer-select:focus {
+  border-color: var(--accent);
+}
+
+.company-transfer-hint,
+.company-transfer-consequences .company-transfer-rule {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.company-transfer-note {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.company-transfer-failure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.company-transfer-failure > .error-note {
+  align-self: stretch;
+  margin: 0;
+}
+
+.company-transfer-consequences {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.company-transfer-consequences p {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.company-transfer-body > .error-note {
+  margin: 0;
+}
+
+/* The answer steadily unavailable until someone is chosen (§4.1): dimmed and
+   `not-allowed`, and quiet under the pointer. */
+.secondary-button.company-transfer-confirm.is-unavailable[aria-disabled="true"] {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.secondary-button.company-transfer-confirm.is-unavailable[aria-disabled="true"]:hover {
+  border-color: color-mix(in oklab, var(--danger) 45%, transparent);
+  background: var(--surface);
+}
+
+/* «Choose a company» beside the owner's «Open company settings» (§4.35): a link
+   on the secondary recipe, without its underline. */
+.company-closed-secondary {
+  text-decoration: none;
+}
+
+/* The modal re-drawn by the company's new context while its transfer is
+   still out (§4.11 «Та же модалка, нарисованная заново», §4.39 «В полёте»):
+   it is not opening, so neither the panel's tk-pop nor the scrim's tk-fade
+   plays again — the scrim stays where it was on every frame. */
+.modal-layer.is-continued > .modal,
+.modal-layer.is-continued > .modal-backdrop {
+  animation: none;
+}
+
+@media (max-width: 820px) {
+  /* §7's 44 through each recipe (§4.39 «Ширины»). The pencil's is §5.9's
+     `.settings-name-edit::before`; Save and Cancel's `.settings-name-actions`. */
+  .company-general-zone-button,
+  .company-general-pause-confirm .compact-button,
+  .company-general-retry,
+  .company-transfer-retry,
+  .company-transfer-body .modal-actions button {
+    min-height: 44px;
+  }
+
+  .company-transfer-select {
+    height: 44px;
+  }
+
+  /* «See Members»: 44 from its 28 without growing the row. */
+  .company-general-facts .admin-note-link {
+    position: relative;
+  }
+
+  .company-general-facts .admin-note-link::before {
+    position: absolute;
+    content: "";
+    inset: -8px -4px;
+  }
+}
+
+/* Below 560 a zone button goes under its sentence, left (§4.39). */
+@media (max-width: 559px) {
+  .company-general-zone-line {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
 /* ---------- Data section ---------- */
 
 .admin-data {
@@ -7151,11 +7458,14 @@ h1 {
   flex: none;
 }
 
-/* While its question is open the trigger wears the answer's edge (§4.22's
-   `--danger` at 45%) with `--fg` text — never `--danger` text, which measures
-   under §7's 4.5:1. Three classes' worth, so `.compact-button:hover` (later
-   in this file, 0,2,0) cannot repaint it accent under the pointer. */
-.secondary-button.project-archive-trigger[aria-expanded="true"] {
+/* While its question is open a strip's trigger wears the answer's edge
+   (§4.22's `--danger` at 45%) with `--fg` text — never `--danger` text, which
+   measures under §7's 4.5:1. Three classes' worth, so `.compact-button:hover`
+   (later in this file, 0,2,0) cannot repaint it accent under the pointer. One
+   class for every trigger of a §4.22 strip that stands in a column (TAS-504,
+   art-director N1): Archive project, Cancel creation, Leave company and Pause
+   company. */
+.secondary-button.strip-trigger[aria-expanded="true"] {
   border-color: color-mix(in oklab, var(--danger) 45%, transparent);
   color: var(--fg);
 }
@@ -11949,12 +12259,8 @@ button.attachment-open:hover:not(:disabled) {
   flex: none;
 }
 
-/* While its question is open the trigger wears the answer's edge — the
-   archive trigger's treatment (TAS-149). */
-.secondary-button.company-cancel-trigger[aria-expanded="true"] {
-  border-color: color-mix(in oklab, var(--danger) 45%, transparent);
-  color: var(--fg);
-}
+/* While its question is open the trigger wears the answer's edge: the shared
+   `.strip-trigger` (TAS-504). */
 
 /* §4.22's strip in a column: no avatar indent, no flex basis. */
 .member-confirm.company-cancel-confirm {

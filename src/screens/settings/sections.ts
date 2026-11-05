@@ -1,4 +1,4 @@
-import { KeyRound, Link2, Palette, UserRound, Users } from "lucide-react";
+import { Building2, KeyRound, Link2, Palette, UserRound, Users } from "lucide-react";
 import type { AreaSection, AreaSectionGroup } from "../../components/SectionArea";
 import type { Theme } from "../../hooks/useTheme";
 
@@ -16,14 +16,18 @@ export const settingsSections: readonly AreaSection[] = [
 
 /**
  * The B2B build's «Company» group (TAS-502, DESIGN.md §5.9): sections about the
- * tab's company rather than the reader — Members now, TAS-504 and TAS-512
- * later. Every role of the company sees it; without the flag it is not drawn
- * and its route does not exist.
+ * tab's company rather than the reader — first the company itself («General»,
+ * TAS-504, §4.39), then its people («Members», TAS-502); TAS-512 later. Every
+ * role of the company sees it; without the flag it is not drawn and its routes
+ * do not exist.
  */
 export const companySettingsGroup: AreaSectionGroup = {
   id: "company",
   label: "Company",
-  sections: [{ id: "members", label: "Members", path: "/settings/members", icon: Users }],
+  sections: [
+    { id: "company", label: "General", path: "/settings/company", icon: Building2 },
+    { id: "members", label: "Members", path: "/settings/members", icon: Users },
+  ],
 };
 
 /** The section a path inside `/settings` belongs to, or `undefined` for `/settings` itself. */

@@ -34,6 +34,7 @@ import type {
   WorkspaceClosedEvent,
   WorkspacePendingEvent,
   WorkspaceLeftEvent,
+  WorkspaceRestrictedEvent,
   SearchIssuesParams,
   SearchUsersParams,
   SignupInput,
@@ -108,6 +109,7 @@ import type {
   ListBillingPlansParams,
   ListTenantsParams,
   PlanVersionPage,
+  Subscription,
   Tenant,
   TenantOperation,
   TenantPage,
@@ -1069,6 +1071,18 @@ const LEGACY_SESSION_PATHS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The reader's own routes in the companies build — the account's, its
+ * notifications and their settings — which are not the company's project
+ * content (TAS-504): a GET of one of them answering is no sign that a pause's
+ * or a block's mark is over. Every other GET under a company session reads its
+ * content (`MOCK_COMPANY_ROUTES`' `tenant-read`, the mock's list of the same).
+ */
+const NON_CONTENT_PREFIXES: readonly string[] = ["/users/me", "/meta", "/notifications", "/auth/"];
+
+const isContentPath = (path: string) =>
+  !NON_CONTENT_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`) || path.startsWith(`${prefix}?`));
+
+/**
  * One `AuditEntryDto`, field by field. The schema declares nothing `required`,
  * so anything that is not a string arrives here as `null` rather than as
  * whatever it was — the section prints a dash for it, and never a `[object
@@ -1458,6 +1472,10 @@ export class RestTaskaApi implements TaskaApi {
     return this.web ? this.web.onWorkspaceLeft(listener) : () => {};
   }
 
+  onWorkspaceRestricted(listener: (event: WorkspaceRestrictedEvent) => void): () => void {
+    return this.web ? this.web.onWorkspaceRestricted(listener) : () => {};
+  }
+
   lastCompanyHint(): string | null {
     return this.web?.lastCompanyHint() ?? null;
   }
@@ -1548,6 +1566,32 @@ export class RestTaskaApi implements TaskaApi {
 
   async reenterCompany(tenantId: string): Promise<void> {
     return this.companies("reenterCompany").reenterCompany(tenantId);
+  }
+
+  /*
+   * The company's name, owner and pause (TAS-504): the session layer sends
+   * each with the tab's company session, for that company only. Today's
+   * build: no request.
+   */
+
+  async renameTenant(tenantId: string, name: string, version: string, idempotencyKey: string): Promise<Tenant> {
+    return this.companies("renameTenant").renameTenant(tenantId, name, version, idempotencyKey);
+  }
+
+  async pauseTenant(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant> {
+    return this.companies("pauseTenant").pauseTenant(tenantId, version, idempotencyKey);
+  }
+
+  async resumeTenant(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant> {
+    return this.companies("resumeTenant").resumeTenant(tenantId, version, idempotencyKey);
+  }
+
+  async transferTenantOwnership(tenantId: string, newOwnerUserId: string, version: string, idempotencyKey: string): Promise<Tenant> {
+    return this.companies("transferTenantOwnership").transferTenantOwnership(tenantId, newOwnerUserId, version, idempotencyKey);
+  }
+
+  async getSubscription(tenantId: string): Promise<Subscription> {
+    return this.companies("getSubscription").getSubscription(tenantId);
   }
 
   /** The session layer, or the refusal today's build gives a company operation — without a request. */
@@ -1680,6 +1724,26 @@ export class RestTaskaApi implements TaskaApi {
         );
       },
       getTenantQuotas: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/quotas`, {}, bearer, signal),
+      // TAS-504. Every command: the key and `If-Match: "{Tenant.version}"`
+      // (ask A31); the bodies field by field in the blueprint's order, so a
+      // retry with the same key sends the same bytes; resume has none.
+      renameTenant: (bearer, tenantId, name, version, idempotencyKey) =>
+        send(tenantPath(tenantId), { method: "PATCH", body: { name }, headers: { ...key(idempotencyKey), ...ifMatch(version) } }, bearer),
+      pauseTenant: (bearer, tenantId, version, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/pause`,
+          { method: "PUT", body: { confirmed: true }, headers: { ...key(idempotencyKey), ...ifMatch(version) } },
+          bearer,
+        ),
+      resumeTenant: (bearer, tenantId, version, idempotencyKey) =>
+        send(`${tenantPath(tenantId)}/pause`, { method: "DELETE", headers: { ...key(idempotencyKey), ...ifMatch(version) } }, bearer),
+      transferTenantOwnership: (bearer, tenantId, newOwnerUserId, version, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/ownership-transfer`,
+          { method: "POST", body: { newOwnerUserId, confirmed: true }, headers: { ...key(idempotencyKey), ...ifMatch(version) } },
+          bearer,
+        ),
+      getSubscription: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/subscription`, {}, bearer, signal),
     };
   }
 
@@ -3955,11 +4019,14 @@ export class RestTaskaApi implements TaskaApi {
     const web = this.web;
     if (web) {
       if (LEGACY_SESSION_PATHS.has(path)) throw new TenancyUnavailableError(path);
+      const read = (options.method ?? "GET") === "GET";
       return web.call(
         options.skipAuth ? "none" : "session",
         (bearer, signal) => this.transmit<T>(path, options, bearer, signal),
-        // A read: a refusal of the company's content closes the company (§4.35).
-        { read: (options.method ?? "GET") === "GET" },
+        // A read: a refusal of the company's content is an answer about the
+        // company (§4.35); a read of its content that answers lifts a pause's
+        // or a block's mark (TAS-504).
+        { read, content: read && isContentPath(path) },
       );
     }
     // Captured before the request leaves: whatever comes back answers *this*

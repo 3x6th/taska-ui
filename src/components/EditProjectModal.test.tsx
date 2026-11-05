@@ -438,7 +438,7 @@ describe("archiving a project from the dialog", () => {
 
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(trigger);
-    // `aria-expanded="true"` is what `.project-archive-trigger[aria-expanded="true"]` paints.
+    // `aria-expanded="true"` is what the shared `.strip-trigger[aria-expanded="true"]` paints (TAS-504).
     expect(trigger).toHaveAttribute("aria-expanded", "true");
   });
 

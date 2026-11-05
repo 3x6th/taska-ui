@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { toTenant, type Tenant } from "../api/tenants";
 import {
   chooseCompanyRoute,
+  closedCompanyReason,
   closedCompanyWords,
   companyRoute,
   documentTitleFor,
   inCompanyRest,
   isOutsideCompanies,
   orderTenants,
+  restrictedSearchText,
   splitCompanyRoute,
   switcherStateLabel,
   tenantGroup,
@@ -177,6 +179,41 @@ describe("the closed company's words (§4.35)", () => {
     expect(closedCompanyWords("Northwind", { code: "INVALID_STATE", reasons: [] }, tenant("n", "Northwind")).title).toBe(
       "Northwind could not be opened",
     );
+  });
+
+  it("TAS-504: to the owner, the pause's and the block's rows say so; with both, the block's (§4.35)", () => {
+    const paused = { code: "CAPABILITY_DISABLED", reasons: ["OWNER_PAUSE"] };
+    expect(closedCompanyWords("Initech", paused, null, true)).toEqual({
+      title: "Initech is paused",
+      text: "Its projects can’t be opened while it’s paused. You can resume it in its settings.",
+    });
+    expect(closedCompanyWords("Initech", paused, null)).toEqual({
+      title: "Initech is paused",
+      text: "Its owner has paused it, so its projects can’t be opened right now.",
+    });
+    const both = { code: "CAPABILITY_DISABLED", reasons: ["OWNER_PAUSE", "PLATFORM_BLOCK"] };
+    expect(closedCompanyWords("Hooli", both, null, true)).toEqual({
+      title: "Hooli is blocked",
+      text: "Taska has blocked this company, so its projects can’t be opened right now. Only Taska can lift the block.",
+    });
+    expect(closedCompanyWords("Hooli", both, null).text).toBe("Taska has blocked this company, so its projects can’t be opened right now.");
+    expect(closedCompanyReason(both, null)).toBe("PLATFORM_BLOCK");
+    expect(closedCompanyReason({ code: "MEMBERSHIP_INACTIVE", reasons: ["OWNER_PAUSE"] }, null)).toBe("MEMBERSHIP_INACTIVE");
+    expect(closedCompanyReason({ code: "INVALID_STATE", reasons: [] }, tenant("i", "Initech", "ACTIVE", ["OWNER_PAUSE"]))).toBe("OWNER_PAUSE");
+    expect(closedCompanyReason({ code: "INVALID_STATE", reasons: [] }, null)).toBeNull();
+    // A lapsed membership says the same to the owner as to anybody.
+    expect(closedCompanyWords("Globex", { code: "MEMBERSHIP_INACTIVE", reasons: [] }, null, true).title).toBe("You no longer have access to Globex");
+  });
+
+  it("TAS-504: a search refused for a pause or a block says so; any other failure is not this sentence", () => {
+    const refused = (code: string, reasons: string[]) => Object.assign(new Error("words"), { status: 403, code, reasons, requestId: "r", details: null });
+    expect(restrictedSearchText(refused("CAPABILITY_DISABLED", ["OWNER_PAUSE"]), "Initech")).toBe("Initech is paused, so its issues can’t be searched right now.");
+    expect(restrictedSearchText(refused("CAPABILITY_DISABLED", ["OWNER_PAUSE", "PLATFORM_BLOCK"]), null)).toBe(
+      "This company is blocked, so its issues can’t be searched right now.",
+    );
+    expect(restrictedSearchText(refused("CAPABILITY_DISABLED", ["PAYMENT_DISPUTE"]), "Initech")).toBeNull();
+    expect(restrictedSearchText(refused("READ_ONLY", ["OWNER_PAUSE"]), "Initech")).toBeNull();
+    expect(restrictedSearchText(new TypeError("Failed to fetch"), "Initech")).toBeNull();
   });
 
   it("titles the document by the company, the picker or nothing", () => {

@@ -339,9 +339,60 @@ export async function readAllPlans(
   return plans;
 }
 
+/* --------------------------------------- the company's subscription (TAS-504) */
+
+/** `Subscription.autopayState`. */
+export const AUTOPAY_STATES = ["DISABLED", "CONSENTED", "SUSPENDED"] as const;
+export type KnownAutopayState = (typeof AUTOPAY_STATES)[number];
+/** A value this build knows, or the server's own string as it came — kept, and given no sentence (TAS-173). */
+export type AutopayState = KnownAutopayState | (string & {});
+
+/**
+ * `Subscription` (`GET /tenants/{t}/billing/subscription`, TAS-314; owner only)
+ * as the company page reads it (api-contract-guard §1, B5): `paidThrough` is
+ * the one field drawn — «Paid until», as sent, never computed — and is `null`
+ * when the answer carried none (a FREE company, one before its first payment,
+ * or a server without TAS-314). **Nothing here says whether the company is
+ * paid** or whether its coverage is current: a missing `paidThrough` is never
+ * read as FREE (B3, ask A16).
+ */
+export interface Subscription {
+  tenantId: string | null;
+  planVersionId: string | null;
+  /** The entity version, a decimal string. */
+  version: string | null;
+  /** An instant; the exclusive end of the current paid coverage (ask A37). `null` when absent. */
+  paidThrough: string | null;
+  autopayState: AutopayState | null;
+  renewalCancelled: boolean | null;
+}
+
+const instant = (value: unknown): string | null => {
+  const at = text(value);
+  return at === null || Number.isNaN(Date.parse(at)) ? null : at;
+};
+
+/** One wire `Subscription`: every field optional, an unknown `autopayState` kept as its string, an unreadable `paidThrough` dropped. */
+export function toSubscription(wire: unknown): Subscription {
+  const row = typeof wire === "object" && wire !== null ? (wire as Record<string, unknown>) : {};
+  return {
+    tenantId: text(row.tenantId),
+    planVersionId: text(row.planVersionId),
+    version: text(row.version),
+    // An instant the page can draw, or nothing: a value `Date` cannot read is not «Paid until» (api-contract-guard M2).
+    paidThrough: instant(row.paidThrough),
+    autopayState: text(row.autopayState),
+    renewalCancelled: typeof row.renewalCancelled === "boolean" ? row.renewalCancelled : null,
+  };
+}
+
 /* -------------------------------------------------------- the company's name */
 
-/** `CreateTenantRequest.name`'s `maxLength` — the blueprint's 120 (develop allows 128, ask A13). */
+/**
+ * `CreateTenantRequest.name`'s and `RenameTenantRequest.name`'s `maxLength` —
+ * the blueprint's 120 (develop allows 128, ask A13). One rule for creating and
+ * renaming (TAS-504, ask A38).
+ */
 export const TENANT_NAME_MAX = 120;
 
 /** A control character (`\p{Cc}`) — never part of a company's name (DESIGN.md §4.36). */

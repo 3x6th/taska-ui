@@ -32,6 +32,7 @@ export function ApiNotice({
   error,
   live = "alert",
   dismiss,
+  words = true,
 }: {
   children: ReactNode;
   error?: unknown;
@@ -45,6 +46,11 @@ export function ApiNotice({
   live?: "alert" | "polite" | "off";
   /** Events — a rejected drop, a rolled-back move — can be dismissed. States cannot. */
   dismiss?: { label: string; onDismiss: () => void };
+  /**
+   * `false` prints the request id alone: the sentence is the whole answer, and
+   * the server's words may say «tenant» (DESIGN.md §4.35, §4.37, §4.39).
+   */
+  words?: boolean;
 }) {
   // An answer of a company session the tab has left (TAS-500) is nobody's
   // failure to report: the shell says what happened (DESIGN.md §4.35).
@@ -52,7 +58,7 @@ export function ApiNotice({
   const { requestId } = apiErrorFacts(error);
   // The server's words — or, for a write refused because the project was
   // archived meanwhile, ours in their place (DESIGN.md §5.7).
-  const message = refusalWords(error);
+  const message = words ? refusalWords(error) : null;
 
   return (
     <div className="api-notice">

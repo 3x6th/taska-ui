@@ -9,6 +9,9 @@ import type { IssueSearchHit } from "../domain/types";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { useMeta } from "../hooks/useMeta";
+import { useCompanyName } from "../hooks/useCompanies";
+import { useCompanyAddress } from "../lib/companyAddress";
+import { restrictedSearchText } from "../lib/companies";
 import { useUnanswered } from "../hooks/useUnanswered";
 import { issueTypeLabel, priorityInSentence, statusLabel } from "../lib/format";
 import { ApiNotice } from "./ApiNotice";
@@ -52,6 +55,7 @@ const GLOBAL_SEARCH_PAGE_SIZE = 8;
  */
 export function GlobalSearch() {
   const navigate = useNavigate();
+  const companyName = useCompanyName(useCompanyAddress()?.companyId ?? null);
   const [value, setValue] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -271,6 +275,11 @@ export function GlobalSearch() {
             <p className="global-search-state" role="status">
               Type at least {SEARCH_QUERY_MIN_LENGTH} characters to search.
             </p>
+          ) : searchUnread.unanswered && restrictedSearchText(searchUnread.error, companyName) !== null ? (
+            // A paused or blocked company (TAS-504, §4.35): its reason, the id, no server words.
+            <ApiNotice error={searchUnread.error} live="polite" words={false}>
+              {restrictedSearchText(searchUnread.error, companyName)}
+            </ApiNotice>
           ) : searchUnread.unanswered ? (
             // Not zero results. A search that never answered says so, with the
             // server's own words and the id its log knows this failure by.

@@ -18,6 +18,7 @@ export const COMPANY = {
   globex: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b02",
   initech: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b03",
   umbrella: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b04",
+  hooli: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b05",
   massive: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b06",
   longName: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b07",
   // TAS-501: Tom's creations — awaiting its first payment, and cancelled.

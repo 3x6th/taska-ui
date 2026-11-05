@@ -1,9 +1,9 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isWorkspaceClosed, refusalCode, refusalReasons } from "../api/errors";
-import type { WorkspaceClosedEvent, WorkspacePendingEvent } from "../api/TaskaApi";
+import type { WorkspaceClosedEvent, WorkspacePendingEvent, WorkspaceRestrictedEvent } from "../api/TaskaApi";
 import { TRANSPORT_FAILURE_REASON } from "../api/TaskaApi";
 import type { Tenant } from "../api/tenants";
 import {
@@ -39,7 +39,18 @@ import type { CompaniesRouteState } from "../screens/CompaniesScreen";
  * the company or revoking its session**. On a tab's first screen the list is
  * waited for before anything of the company is drawn, so a pending company
  * never shows the app shell for a frame.
+ *
+ * A paused or blocked company whose content a read found closed (TAS-504,
+ * api-contract-guard B2, §4.35) keeps its session and its cache: §4.35's
+ * statement replaces only the content routes — Projects, a board, an issue,
+ * `/browse/…` — and never Settings, where its owner can resume it. A `Tenant`
+ * answer without the pause or the block, or a content read that answers,
+ * lifts the mark (`onWorkspaceRestricted`).
  */
+
+/** The routes of a company's project content (§4.35), as the router inside the prefix sees them. */
+const isContentRoute = (pathname: string) =>
+  pathname === "/projects" || pathname.startsWith("/projects/") || pathname.startsWith("/browse/");
 
 type Entry =
   | { status: "entering" }
@@ -74,6 +85,7 @@ export function CompanyGate({
   toggleTheme: () => void;
 }) {
   const address = useCompanyAddress();
+  const location = useLocation();
   const accountClient = useAccountQueryClient();
   const go = address?.go;
   const companyId = address?.companyId ?? "";
@@ -84,6 +96,14 @@ export function CompanyGate({
   const [entry, setEntry] = useState<Entry>({ status: "entering" });
   /** A content read refused because the company has never opened (B4) — the card, and the session kept. */
   const [pending, setPending] = useState<WorkspacePendingEvent | null>(null);
+  /** A content read refused for a pause or a block (TAS-504, B2) — §4.35 on the content routes, the session kept. */
+  const [restricted, setRestricted] = useState<WorkspaceRestrictedEvent | null>(null);
+  // Whose company it is, for §4.35's owner variant: the list row's `ownerId`
+  // against the account, read only once there is something to say.
+  const me = useQuery(
+    { queryKey: ["me"], queryFn: () => taskaApi.getCurrentUser(), enabled: restricted !== null && accountClient !== null },
+    accountClient ?? undefined,
+  );
   /** The card handed the address over and the shell's first read bounced back: the card stays (no loop). */
   const handedOver = useRef(false);
   const [bounced, setBounced] = useState(false);
@@ -147,6 +167,15 @@ export function CompanyGate({
         });
       }),
     [companyId, accountClient, go],
+  );
+
+  useEffect(
+    () =>
+      taskaApi.onWorkspaceRestricted((event) => {
+        if (event.tenantId !== companyId) return;
+        setRestricted(event.restricted ? event : null);
+      }),
+    [companyId],
   );
 
   useEffect(
@@ -288,6 +317,29 @@ export function CompanyGate({
   if (!begun) return null;
   const liveSession = entry.status === "open" && workspace?.tenantId === companyId ? "open" : "entering";
   if (neverOpened || pending !== null) return setupCard(liveSession);
+  if (restricted !== null && isContentRoute(location.pathname)) {
+    // The owner's words need the account: until it answers, the plane (§4.35's
+    // column pops in once, with the right text).
+    if (me.isPending && !me.isError) {
+      return (
+        <main className="company-pending">
+          <p className="visually-hidden" role="status">
+            Opening Taska
+          </p>
+        </main>
+      );
+    }
+    return (
+      <CompanyClosedScreen
+        logoutPending={logoutPending}
+        name={name}
+        onLogout={onLogout}
+        owner={row !== null && me.data?.id !== undefined && row.ownerId === me.data.id}
+        refusal={{ code: "CAPABILITY_DISABLED", reasons: restricted.reasons, message: null, requestId: restricted.requestId }}
+        tenant={row}
+      />
+    );
+  }
   // A tab's first screen: the list decides whether this is the app shell at all.
   if (row === null && companies.isPending) {
     return (

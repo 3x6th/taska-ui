@@ -5,6 +5,7 @@ import type {
   ListBillingPlansParams,
   ListTenantsParams,
   PlanVersionPage,
+  Subscription,
   Tenant,
   TenantOperation,
   TenantPage,
@@ -1154,6 +1155,28 @@ export interface WorkspacePendingEvent {
   requestId: string | null;
 }
 
+/**
+ * The tab's company has its project content closed by a pause or a block
+ * (TAS-504, api-contract-guard B2, DESIGN.md §4.35): a read refused 403
+ * `CAPABILITY_DISABLED` whose `reasons` name `OWNER_PAUSE` or `PLATFORM_BLOCK`
+ * (and not `PENDING_FIRST_PAYMENT`, which is `WorkspacePendingEvent`'s). **The
+ * company is not closed and its session is not revoked** — its settings, its
+ * own reads and the owner's Resume go with that session — and the read itself
+ * still rejects with its own error. The shell draws §4.35's paused or blocked
+ * statement on the content routes only, never on Settings.
+ *
+ * `restricted: false` lifts the mark: a `Tenant` answer for the company
+ * without either reason (the reader's own resume, a re-read), or a content
+ * read that succeeded.
+ */
+export interface WorkspaceRestrictedEvent {
+  tenantId: string;
+  restricted: boolean;
+  /** The refusal's `Problem.reasons`, as sent; empty when the mark is lifted. */
+  reasons: readonly string[];
+  requestId: string | null;
+}
+
 export interface TaskaApi {
   login(input: LoginInput): Promise<AuthTokens>;
   /**
@@ -1427,6 +1450,12 @@ export interface TaskaApi {
   /** Fires when the tab's company turns out to have been left (see `WorkspaceLeftEvent`, TAS-502). Never in today's build. */
   onWorkspaceLeft(listener: (event: WorkspaceLeftEvent) => void): () => void;
   /**
+   * Fires when a read found the tab's company's content closed by a pause or a
+   * block, and when that mark is lifted (see `WorkspaceRestrictedEvent`,
+   * TAS-504). Never in today's build.
+   */
+  onWorkspaceRestricted(listener: (event: WorkspaceRestrictedEvent) => void): () => void;
+  /**
    * `taska.lastCompany` for the signed-in account — the company to suggest to a
    * tab that has none (DESIGN.md §5.1). A hint; it opens nothing.
    */
@@ -1532,6 +1561,52 @@ export interface TaskaApi {
    * `POST /auth/tenant-sessions` and a best-effort revoke of the old session.
    */
   reenterCompany(tenantId: string): Promise<void>;
+
+  /*
+   * The company itself — its name, its owner and its pause (TAS-504), on the
+   * B2B blueprint's routes, none of them on the stand (docs/ai/API-DIVERGENCE.md
+   * «TAS-504»). Each goes with the tab's company session and only for the
+   * company the tab holds; a call for another is refused without a request
+   * (`WorkspaceClosedError`). The four commands carry `If-Match: "{version}"`
+   * — `Tenant.version` from the last `getTenant` (ask A31) — and the caller's
+   * `Idempotency-Key`, one per confirmed intent and the same on every retry of
+   * it; each answers 200 `Tenant`. **None is optimistic** (DESIGN.md §4.39).
+   * The owner only: 403 `OWNER_REQUIRED` for anybody else. Today's build
+   * refuses all five without a request (`TenancyUnavailableError`).
+   */
+
+  /**
+   * `PATCH /tenants/{tenantId}` `{name}` — the name sent trimmed, 1–120 code
+   * points, no control character (`tenantNameProblem`). Refusals: 400
+   * `VALIDATION_FAILED` (violation `name`), 403 `OWNER_REQUIRED` / `READ_ONLY`
+   * (`reasons`) / `CAPABILITY_DISABLED`, 409 `INVALID_STATE`, 412 / 428
+   * `VERSION_CONFLICT`, 409 `IDEMPOTENCY_CONFLICT`, 429.
+   */
+  renameTenant(tenantId: string, name: string, version: string, idempotencyKey: string): Promise<Tenant>;
+  /**
+   * `PUT /tenants/{tenantId}/pause` `{confirmed: true}`. Refusals: 403
+   * `OWNER_REQUIRED`, `READ_ONLY` (`PLATFORM_BLOCK`, `PAYMENT_DISPUTE`,
+   * `PENDING_FIRST_PAYMENT`), `CAPABILITY_DISABLED` (owner pauses switched
+   * off, D93/D94); 412 / 428; 429.
+   */
+  pauseTenant(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant>;
+  /** `DELETE /tenants/{tenantId}/pause`, no body, no question — the owner's pause only; a block stays. */
+  resumeTenant(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant>;
+  /**
+   * `POST /tenants/{tenantId}/ownership-transfer` `{newOwnerUserId, confirmed:
+   * true}`, no OTP (D248). Refusals: 403 `OWNER_REQUIRED` — also what a retry
+   * after a lost success may answer (ask A33) —, `READ_ONLY` (`reasons`),
+   * `CAPABILITY_DISABLED`; 404 `RESOURCE_NOT_FOUND` (the recipient); 409
+   * `INVALID_STATE` (a FREE company, no paid coverage, a recipient not
+   * `ACTIVE` — ask A32); 412 / 428; 422; 429.
+   */
+  transferTenantOwnership(tenantId: string, newOwnerUserId: string, version: string, idempotencyKey: string): Promise<Tenant>;
+  /**
+   * `GET /tenants/{tenantId}/billing/subscription` — the owner's read only
+   * (403 `OWNER_REQUIRED` for anybody else); never asked for a reader who is
+   * not the owner (api-contract-guard B5).
+   */
+  getSubscription(tenantId: string): Promise<Subscription>;
 
   /**
    * `GET /meta` — the enum dictionaries (backend TAS-217), read once per

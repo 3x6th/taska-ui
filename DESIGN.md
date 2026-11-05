@@ -338,7 +338,7 @@ Slide-over — единственная поверхность с горизон
 | Колонка доски | width 312 |
 | Issue slide-over | width 480 (max 92vw) |
 | Окно задачи по центру (§4.10) | width 480 (max `calc(100vw − 32px)`); высота — слой минус 6vh сверху и снизу; только при ширине ≥821 |
-| Modal | width 480 (max 92vw), отступ сверху 11vh |
+| Modal | width 480 (max `calc(100vw − 32px)`: 288 на 320, 358 на 390), отступ сверху 11vh |
 | Login card | width 392 (max 90vw) |
 | Projects content | max-width 980, центр |
 | Settings content (§5.9) | max-width 560, слева по полю 22 |
@@ -840,6 +840,8 @@ padding:6vh 16px`. Окно: `position:relative` (`top/right/bottom:auto`), widt
 - иначе модалка закрывается, как ✕, — и модалка только для чтения после архива тоже.
 Механизм — §4.10: внутренние слои зовут `preventDefault()` и модалку сами не закрывают; `Modal` слушает `keydown` на `window`, пропускает `defaultPrevented` и не закрывается, пока внутри диалога есть `[data-unsaved-text="true"]` — порядок задаёт место слушателя (у Members и Workflows слушатели на `document` регистрируются после `Modal`). Собственные `Esc`-ветки подтверждений Users и Events, приглашения, Members и Workflows уходят в этот слушатель; `Cmd/Ctrl+Enter` остаётся там, где он есть. Фокус после закрытия — открывший контрол, если он в документе (TAS-299); иначе правило экрана: строка архива доски (§5.7), карточка на месте ушедшей или «New project» на `/projects` (ниже), админка — §5.8; иначе кнопка «назад» доски, как у панели (§4.10).
 `Cmd/Ctrl+Enter` — подтвердить. Клик по скриму закрывает, клик внутри — нет.
+**Та же модалка, нарисованная заново** (TAS-504, `continued`): новый контекст страницы рисует диалог, который уже открыт и в полёте, — ни панель (`tk-pop`), ни скрим (`tk-fade`) второй раз не входят: `.modal-layer.is-continued` снимает анимацию у обоих. Фокус — на ответ «в полёте», где его оставил читатель, без автофокуса поля.
+
 **Содержимое меняется под открытой модалкой** (TAS-412, «New access token» → «Token created», §5.9):
 `Modal` передаёт фокус своему `h2` через `titleRef` (`tabIndex=-1`, Tab на нём не останавливается);
 кольцо — обычное §7 (2px, offset 2), а не исключение 4, которое для `h1` экрана. Только при смене
@@ -3029,6 +3031,8 @@ B4). Обычный клик входит в этой вкладке; модиф
 | `ACTIVE` | — | первая |
 | `lifecycle` вне словаря | код как есть (§6) | первая |
 
+После паузы, снятия или переименования в этой вкладке строка берётся из ответа команды в том же кадре, затем список перечитывается (§4.39); другие вкладки узнают при своём следующем чтении списка, опроса нет.
+
 Строки `PROVISIONING`, `AWAITING_PAYMENT`, `OWNER_CANCELLED`, `AUTO_CLOSED` ведут на адрес компании, где
 рисуется карточка §4.37 (TAS-501). Группа — только порядок и цвет имени, не допуск. Финансовые ограничения строки здесь не дают — их
 слот у TAS-512. Ролей «Admin»/«Member» и состояния членства нет: `TenantPage` их не несёт, чтения
@@ -3129,9 +3133,7 @@ Platform access (вход в компанию без членства) — не 
 компании отказали по членству или жизненному циклу). Посреди работы экран заменяет всё, кэш
 компании чистится, набранное не сохраняется — некуда. Фокус — на `h1` (`tabIndex=-1`, исключение 4
 §7). **Отказ чтения** с `CAPABILITY_DISABLED` и непустыми `reasons` — этот экран со строкой по причине, не
-§4.18: это ответ о компании, а не «нет такой страницы» (api-contract-guard N2). Сегодня так закрывает
-любая причина, не только `OWNER_PAUSE` и `PLATFORM_BLOCK`: контракт не сказал, какие причины несёт
-отказ чтения (ask A2c в TAS-316); ответят — правило сузится до причин, закрывающих содержимое. **Отказ записи** (`READ_ONLY`, `CAPABILITY_DISABLED` с `reasons`) компанию не закрывает: он
+§4.18: это ответ о компании, а не «нет такой страницы» (api-contract-guard N2). **Пауза и блокировка компанию не закрывают** (TAS-504, api-contract-guard B2). Отказ чтения с `CAPABILITY_DISABLED`, чьи `reasons` называют `OWNER_PAUSE` или `PLATFORM_BLOCK` и не называют `PENDING_FIRST_PAYMENT`, оставляет сессию компании и её кэш, а вкладку помечает «содержимое закрыто». Пометка заменяет этим экраном только маршруты содержимого — Projects, доску, задачу, `/browse/…`; Settings, в том числе «General» (§4.39), рисуется как обычно и пометкой не заменяется никогда, иначе владелец не дошёл бы до «Resume company». Поиск бара под пометкой отвечает в своей панели `ApiNotice` «{Company} is paused, so its issues can’t be searched right now.» / «{Company} is blocked, so its issues can’t be searched right now.» + id, без слов сервера, и страницу не заменяет. Пометку снимает ответ `Tenant` без этих причин (своё снятие паузы, перечитывание компании) или удачное чтение содержимого; экран переспрашивает сервер перезагрузкой и новым входом в компанию (ask A35). Остальные причины закрывают, как раньше: какие ещё причины несёт отказ чтения, контракт не сказал (ask A2c в TAS-316). **Отказ записи** (`READ_ONLY`, `CAPABILITY_DISABLED` с `reasons`) компанию не закрывает: он
 показывается на этом действии его обычным отказом (§5.6), со словами сервера и id; объяснение
 ограничений — слот TAS-512 (api-contract-guard §5).
 
@@ -3142,10 +3144,13 @@ Request id нет: это ответ, не сбой (кроме последне
 Причина — из отказа (`code`, затем `reasons`); код отказа вне таблицы или отказа нет — из
 `lifecycle`/`restrictions` строки списка (у закрытой компании сервер может ответить и общим
 `INVALID_STATE`, контракт код не назвал — ask A2 в TAS-315); строки нет — последняя строка таблицы.
+Владельцу (`ownerId` строки списка — читатель) на строках паузы и блокировки ряд другой: primary-ссылка «Open company settings» (`/c/{companyId}/settings/company`, §4.39) и secondary «Choose a company»; «Log out» у него нет — он в меню профиля, в одном шаге. Ряд `flex-wrap`, `gap:8`, по центру: на 320 (колонка 268) вторая кнопка уходит строкой ниже. Обе причины сразу — строка блокировки: снятие паузы её не открыло бы. Слова владельца требуют знать читателя: пока `/users/me` не ответил — плоскость `--bg` со скрытым status, затем колонка входит один раз. Посреди работы читатель известен, кадра плоскости нет (замер TAS-504: холодная загрузка ≈145 мс на моке, переход внутри вкладки — 0).
 
 | Причина | `h1` | Текст |
 | --- | --- | --- |
 | `MEMBERSHIP_INACTIVE` | «You no longer have access to {Company}» | «Your membership was suspended or removed. If that’s a mistake, ask one of the company’s admins.» |
+| `PLATFORM_BLOCK`, читатель — владелец | «{Company} is blocked» | «Taska has blocked this company, so its projects can’t be opened right now. Only Taska can lift the block.» |
+| `OWNER_PAUSE`, читатель — владелец | «{Company} is paused» | «Its projects can’t be opened while it’s paused. You can resume it in its settings.» |
 | `PLATFORM_BLOCK` | «{Company} is blocked» | «Taska has blocked this company, so its projects can’t be opened right now.» |
 | `OWNER_PAUSE` | «{Company} is paused» | «Its owner has paused it, so its projects can’t be opened right now.» |
 | `DELETING` / `DELETED` | «{Company} is being deleted» / «{Company} has been deleted» | «Its projects can no longer be opened.» |
@@ -3463,6 +3468,104 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 **Ширины** (оценка до сборки). ≥900 — колонка 560, ряд справа 92+8+80+8+32 = 220, тексту ≈280. ≤820 — ghost-кнопки, primary и Leave 44 в высоту; корзины 44×44; select 29 — долг §7. ≤560 — ряд справа уходит под текст (`grid-column:2; margin-top:8`). 390×844 (колонка ≈352) и 320×568 (≈282, текст 244, ряд 232) — ряд в одну строку. 50 строк ≈ 2 400 px, без виртуализации.
 
 **Цвет и движение.** Новых токенов нет. Контраст на `--bg`: `--fg` 16.56 / 17.13, `--fg-2` 6.73 / 7.35. Полоса — `--fg` на `--surface-2` 15.72 / 16.38. Пунктир аватара приглашения — 1.36 / 1.46: это край, смысл несут слова (§7). Строки появляются и уходят без анимации.
+
+### 4.39 Компания: название, владелец и пауза (TAS-504)
+Только сборка B2B. Решение art-director 2026-11-05 до сборки, сведённое с api-contract-guard (`docs/ai/API-DIVERGENCE.md` «TAS-504»): контролы зависят только от `Tenant.ownerId` = читатель; capabilities не читаются (ask A30), оплату, флаги и ограничения решает сервер, клиент их не выводит (B3). Записи не оптимистичны — исключение из §6, как §4.38: название, владелец и состояние меняются на экране только ответом сервера.
+
+**Где.** Settings → группа «Company» → «General» (`Building2` 15), первым в группе; `/c/{companyId}/settings/company`. Видит каждый участник любой роли, управляет только владелец. Входы — рельс Settings и §4.35 владельцу; в меню профиля (§4.16), переключателе и на Projects входа нет. Шапка — рецепт §5.9 («Settings ›» + «General»), заголовок документа — «{Company} — Taska» (§4.34). Слово — §4.33: «company», «owner»; передача — «Transfer ownership» / «transferred»; никогда «tenant», «workspace», «team».
+
+**Лид** `.settings-lead` 12.5/400 `--fg-2`, у всех ролей: «Only the owner of {Company} can rename it, pause it or transfer it.» {Company} — из `getTenant`, иначе из списка, иначе «this company» (§4.35).
+
+**Состояние** — через 8 под лидом, только если в `restrictions` есть что сказать. Рецепт строки архива доски (§5.7): без подложки, рамки, полосы и иконки; факт 12.5/600 `--fg` + пояснение 12.5/400 `--fg-2`, строка на причину, `gap:4`; не живая область. Порядок — строк таблицы, незнакомые — последними.
+
+| Причина | Факт | Пояснение владельцу | Остальным |
+| --- | --- | --- | --- |
+| `PLATFORM_BLOCK` | «Blocked by Taska.» | « No one can change anything in it, and only Taska can lift the block.» | « No one can change anything in it while it’s blocked.» |
+| `OWNER_PAUSE` | «Paused by its owner.» | « No one can change anything in it while it’s paused.» | то же |
+| `PAYMENT_DISPUTE` | «A payment is disputed.» | — | — |
+| `PAYMENT_EXPIRED` | «Its paid period has ended.» | — | — |
+| `OVER_QUOTA` | «It’s over its plan’s limits.» | — | — |
+| вне словаря | код как есть (§6) | — | — |
+
+Пояснения трёх финансовых — слот TAS-512, в той же строке после факта. `PENDING_FIRST_PAYMENT` сюда не доходит: адрес такой компании рисует §4.37. «Paused by its owner», а не «by you»: передача под паузой разрешена (D244), и новый владелец мог её не ставить.
+
+**Факты** — `<dl>` рецепта My profile (§5.9): сетка `140px 1fr`, `dt` 11.5/550 `--fg-2`, `dd` 13/400 `--fg`, строка `padding:9 0`, волосяная линия между строками; уже 560 — стопкой. Через 22 под лидом или состоянием.
+- **Name** — `Tenant.name` целиком, `overflow-wrap:anywhere`, без многоточия (довод §4.16). Владельцу — карандаш §5.9 сразу за текстом: ряд flex, `gap:8; align-items:flex-start`, имя `flex:0 1 auto; min-width:0`; ghost icon-button 28, radius 7, `Pencil` 14, `--fg-2`, hover `--surface-2` + `--fg`, `aria-label` «Rename company», `title` «Rename»; ≤820 — `::before` `inset:-8px`.
+- **Owner** — владельцу «You»; остальным — имя владельца из уже прочитанного списка участников (§4.38), иначе — и когда `ownerId` нет — ссылка `.admin-note-link` «See Members» на `/c/{companyId}/settings/members` рецептом отдельной ссылки §5.8 (`display:inline-flex; min-height:28; margin:-5px 0` — inline, чтобы строка Owner не меняла высоту; ≤820 — `::before` до 44). Чтения списка ради одного имени нет (ask A39). После своей передачи — имя получателя (ниже).
+- **Paid until** — только владельцу и только если пришёл `Subscription.paidThrough` (ask A37): формат §4.37 — «Dec 4, 14:32», другой год — «Dec 4, 2027, 14:32»; `<time dateTime>`; без цвета, отсчёта и вычислений; прошедшая дата — как есть. Не пришёл, не прочитался, отказ — строки нет; никогда «Free», никогда `Entitlement.validUntil`. Не-владельцу этого чтения нет (B5).
+
+**Управление** — только владельцу; у остальных его нет в DOM (§5.7). Зона рецепта Leave company (§4.38): линия `1px --border`, `margin-top:22; padding-top:14`; две строки, между ними волосяная `1px --border`, у строки padding `14 0` (у первой сверху 0); строка — предложение 12 `--fg-2` и справа secondary compact (29; ≤820 — 44; ≤560 — под предложением, слева). Обе предлагаются всегда — под блокировкой, бесплатной компании, при выключенном флаге: правило говорит предложение, решает отказ (B3).
+- **Пауза** (`OWNER_PAUSE` нет): «Pausing stops all changes in {Company} until you resume it.» и «Pause company». Вопрос — полоса §4.22 под строкой во всю ширину, без отступа: «{Company} will be paused: no one can change anything in it until you resume it, and its projects may not open at all. Pausing doesn’t extend the paid period — it still ends {date} — and no automatic payments are taken while it’s paused.» (без даты — «…Pausing doesn’t extend the paid period, and no automatic payments are taken while it’s paused.»; D129, D130). «may not open» — флаг чтения под паузой платформенный и клиенту не виден (D82). «Cancel» (фокус первым) и ответ «Pause company». Пока вопрос открыт, триггер носит рамку ответа и `--fg` (рецепт триггера Archive project §4.11 и Cancel creation §4.37), не акцент под указателем. `Esc` закрывает полосу, фокус — на триггер.
+- **Снятие** (`OWNER_PAUSE` есть): «Resuming lets everyone work in {Company} again. It takes no payment and doesn’t extend the paid period.» и «Resume company» — без вопроса, только по нажатию. После конца оплаченного периода снятие ничего не списывает: компания остаётся с `PAYMENT_EXPIRED`, строка состояния говорит факт, оплата — TAS-513 (D131).
+- **Передача**: «Make another member the owner of {Company}. Only a paid company with a current paid period can be transferred.» и «Transfer ownership» (`aria-haspopup="dialog"`) — модалка ниже.
+
+**Пауза и снятие: в полёте и ответ.** В полёте — рецепт §4.1 на ответе и Cancel полосы и на кнопке строки, подписи прежние; Enter и `Esc` полосы ничего не делают. 200 `Tenant` ложится в `["tenant", companyId]` и строкой в список компаний в том же кадре, затем список перечитывается: строка состояния, кнопка строки (Pause ↔ Resume) и строки §4.33/§4.34 этой вкладки — из ответа. Полоса закрывается, фокус — на кнопку строки, `focusVisible:true` (§5.9 «Успех»). Статус: «{Company} is paused.» / «{Company} is no longer paused.» Отказ — полоса закрывается, фокус на триггер, под строкой `ErrorNote` §5.6 + id, не живая (предложение говорит скрытый статус, §4.38); любой отказ, кроме потерянного ответа, перечитывает компанию.
+
+| Код | Пауза | Снятие |
+| --- | --- | --- |
+| `READ_ONLY` с `PLATFORM_BLOCK` | «Taska has blocked {Company}, so it was not paused.» | «Taska has blocked {Company}, so it can’t be resumed until Taska lifts the block.» |
+| `READ_ONLY` с другой причиной | «{Company} can’t be paused right now.» | «{Company} can’t be resumed right now.» |
+| `CAPABILITY_DISABLED` | «Pausing companies isn’t available right now.» (D93, D94) | — |
+| `OWNER_REQUIRED` | «Only the owner of {Company} can pause it.» | «Only the owner of {Company} can resume it.» |
+| 412 | «{Company} changed while you were deciding, so it was not paused. Check it and try again.» | «{Company} changed elsewhere, so it was not resumed. Check it and try again.» |
+| 429 | «Too many attempts. Try again in {wait}.» (§4.31) | то же |
+| 5xx, 408, сеть | «Taska couldn’t confirm that {Company} was paused. Press Pause company again to check.» + слова + id; компания не перечитывается, повтор — тем же ключом (ask A34) | «…was resumed. Press Resume company again to check.» |
+| прочее | «{Company} was not paused.» (вне словаря — и слова сервера) | «{Company} was not resumed.» |
+
+**Rename** — рецепт правки имени §5.9 (TAS-425) на месте `dd`:
+- форма не шире `dd` (420); поле 32, radius 9, padding `0 12`, `1px --border-strong`, `--surface` на `--bg`, 13/400 `--fg`, рамка фокуса `--accent`, без плейсхолдера; доступное имя — «Company name» (видимую подпись несёт `dt`); под полем строка причины, только пока причина есть; через 8 — primary compact «Save» и secondary compact «Cancel» (29; ≤820 — `::before` `inset:-7.5px 0`). Save — единственный акцент экрана, и только пока форма открыта.
+- Правило имени — §4.36 (ask A38): края обрезаются, 1–120 code points, символы управления вырезаются при вводе, `maxLength=120`; пусто после обрезки — «Enter a company name.» и «стойко недоступна» на Save (§5.9). Неизменённое имя ничего не шлёт и закрывает форму, как Cancel.
+- Открытие — фокус в поле, каретка в конце; Enter сохраняет; `Esc` и Cancel возвращают строку и фокус на карандаш; при `isComposing` — ничего. В полёте — поле `readOnly`, Save и Cancel «в полёте» §4.1.
+- 200 `Tenant` — имя меняется в том же кадре везде, где стоит: строка, лид, триггер переключателя (§4.34), пара «Company» меню профиля (§4.16), заголовок документа; список перечитывается. Форма закрывается, фокус — на карандаш с `focusVisible:true`. Статус: «The company is now called {name}.»
+- Отказ — форма открыта с набранным, фокус где был, `ErrorNote` под рядом кнопок, `margin-top:8`, `live="alert"`, перемонтируется на попытку. Слова сервера — только у кода вне таблицы и у 5xx (в них бывает «tenant», §4.36). Любой отказ, кроме потерянного ответа, перечитывает компанию. Новая попытка снимает прежний отказ в кадре нажатия, как пауза и передача. Причины — первая подходящая: `PLATFORM_BLOCK`, затем `OWNER_PAUSE`.
+
+| Код | Текст (+ id всегда) |
+| --- | --- |
+| 400 `VALIDATION_FAILED` | «Taska didn’t accept this name.»; `aria-invalid` на поле |
+| 403 `READ_ONLY` с `PLATFORM_BLOCK` | «Taska has blocked {Company}, so it can’t be renamed.» |
+| 403 `READ_ONLY` с `OWNER_PAUSE` | «{Company} is paused. Resume it to rename it.» |
+| 403 `READ_ONLY` с другой причиной, `CAPABILITY_DISABLED` | «{Company} can’t be renamed right now.» (объяснение — TAS-512) |
+| 403 `OWNER_REQUIRED` | «Only the owner of {Company} can rename it.»; страница следует перечитанной компании |
+| 412 | «{Company} changed while you were editing, so it was not renamed. Check it and save again.» Набранное остаётся; сам клиент с новой версией не повторяет |
+| 429 | «Too many attempts. Try again in {wait}.» |
+| 5xx, 408, сеть | «Taska couldn’t confirm the new name. Save again — it won’t be applied twice.» + слова; повтор тем же ключом и телом, пока текст не менялся |
+| прочее (409 `INVALID_STATE`, 428, `IDEMPOTENCY_CONFLICT`, вне словаря) | «{Company} was not renamed.» (вне словаря — и слова сервера) |
+
+**Transfer ownership** — модалка §4.11 «Transfer ownership». Тело `gap:13`:
+- «New owner» — Field label 11.5/550 `--fg-2` и `select` рецепта поля §4.3 (38; ≤820 — 44), автофокус; первым `disabled` «Choose a member», заранее ничего не выбрано (прецедент шага Workflows §4.28). Варианты — `ACTIVE` участники со знакомой ролью, кроме читателя, по имени (§4.38): «{Name} · {email}». Под полем 11.5 `--fg-2`, `aria-describedby`: «Only active members can become the owner.» Набор — кэш списка участников (§4.38), иначе одно чтение при открытии; поиска людей и чтений по человеку нет (B4). Чтение в полёте — на месте поля 12.5 `--fg-2`, `role="status"`, «Loading members». Отказ — `ErrorNote` «Members could not be loaded, so no one can be chosen.» + id и secondary compact «Try again». Никого — 12.5 `--fg-2` «{Company} has no other active members to make its owner.»
+- Последствия — `p` 12.5/400 `--fg`, lh 1.55, `gap:6`, только верные; {Name} — выбранный, до выбора — «the new owner» / «The new owner»:
+  - выбран Member — «{Name} becomes the owner of {Company} and an admin in every project.»; выбран Admin — «{Name} becomes the owner of {Company}.»;
+  - «You stay an admin, but lose access to the subscription, payments and invoices.»;
+  - «Automatic payments you set up are turned off. {Name} sets up their own.» — продолжение автоплатежа не обещается никогда;
+  - «{Name} isn’t asked to accept. Only they can transfer {Company} back.»;
+  - последней — 11.5 `--fg-2`: «Only a paid company with a current paid period can be transferred.»
+- Ряд `.modal-actions` в конце тела (справа, как у приглашения §4.38) — Cancel и ответ «Transfer ownership» рецептом ответа §4.22, не primary (прецедент «Move and delete» §4.28): для читателя это не отменить. До выбора — «стойко недоступна до выбора» (§4.1); нажатие и `Cmd/Ctrl+Enter` ставят фокус на select. Без OTP и второго вопроса (D248). `Esc` — по §4.11 (выбор — значение, не текст-работа); закрытие — фокус на «Transfer ownership».
+- **В полёте** — Cancel и ответ «в полёте» §4.1, select `aria-disabled`; модалка держит это до конца цепочки: 200, новый вход в компанию и `getTenant` нового контекста. Кадра с видом владельца после ответа нет. ✕ и скрим в полёте передачи ничего не закрывают — исключение из §4.11: закрытие показало бы вид владельца после ответа сервера (B6). Потерянный ответ (сеть, 408, 5xx) повторяется один раз тем же ключом и телом, затем решает перечитанная компания (api-contract-guard B4; ask A33): читатель видит одно «в полёте».
+- **Успех** — модалка закрывается в кадре, где страница уже в виде не-владельца: зоны и «Paid until» нет; Owner — имя получателя из выбора, если `ownerId` нового `getTenant` — он; фокус на `h1` (исключение 4 §7: триггера больше нет). Статус страницы: «{Name} now owns {Company}. You’re still an admin.» Он переживает перемонтирование через state маршрута, который снимается заменой: перезагрузка его не повторяет. Адрес не меняется, записи в истории нет. Строка §4.33 теряет «Owner» при перечитывании списка. Новый вход не ответил — остаётся прежняя сессия, страница следует перечитанной компании, статус тот же.
+- **Отказ** — модалка остаётся, выбор на месте, `ErrorNote` в конце тела, `live="alert"`, перемонтируется на попытку; компания и список участников перечитываются.
+
+| Код | Текст (+ id всегда) |
+| --- | --- |
+| 403 `READ_ONLY` с `PLATFORM_BLOCK` | «Taska has blocked {Company}, so it was not transferred.» |
+| 403 `READ_ONLY` с другой причиной | «{Company} can’t be transferred right now.» (TAS-512) |
+| 403 `CAPABILITY_DISABLED` | «Transferring companies isn’t available right now.» |
+| 403 `OWNER_REQUIRED` (не после потерянного ответа) | «Only the owner of {Company} can transfer it.»; страница следует перечитанной компании |
+| 404 `RESOURCE_NOT_FOUND` | «{Name} is no longer in {Company}, so it was not transferred.»; выбор снимается, если человека нет в перечитанном списке |
+| 409 `INVALID_STATE` | перечитанный список показывает получателя не `ACTIVE` — «{Name} is no longer an active member, so {Company} was not transferred.», выбор снимается; иначе «{Company} was not transferred.» (так сейчас отвечает и бесплатная компания — ask A32) |
+| 412 | «{Company} changed while you were deciding, so it was not transferred. Check it and try again.» |
+| 429 | «Too many attempts. Try again in {wait}.» |
+| ответ потерян дважды или потерян, а повтор отказан `OWNER_REQUIRED`, и перечитанная компания — всё ещё читателя (или не перечиталась) | «Taska couldn’t confirm the transfer, and {Company} is still yours. Try again.» + слова; перечитать не удалось — «Taska couldn’t confirm the transfer. Reload this page to see who owns {Company}.» |
+| прочее (422, 428, `IDEMPOTENCY_CONFLICT`, вне словаря) | «{Company} was not transferred.» (вне словаря — и слова сервера) |
+
+`MEMBERSHIP_INACTIVE` и прочие закрывающие коды — §4.35 (B7). Отказ `OWNER_REQUIRED`, после которого перечитанная компания называет другого владельца (передача в другой вкладке), чистит кэш подписки и заново входит в компанию, как после своей передачи, но без статуса.
+
+**Загрузка и чтения.** Содержимое ждёт `getTenant` и `/users/me`, у владельца — ещё `getSubscription` (отказ — тоже итог), иначе «Paid until» вставал бы над зоной кадром позже. До того — шапка и три строки-скелета `dl` (`.value-skeleton` 60×11 и 160×13) и скрытый `role="status"` «Loading company»; ни лида, ни зоны, без спиннера. Отказ `getTenant` (не закрывающий) — `ApiNotice` «This company’s details could not be loaded.» + id, без слов сервера (§4.37), не живая; через 8 secondary «Try again»; удачный — фокус на `h1`. Фоновое перечитывание не удалось — значения остаются, над `dl` `ApiNotice` «This company’s details could not be refreshed. The last loaded details are shown.» (§4.38). Закрывающие отказы — §4.35; компания до открытия — §4.37.
+
+**Клавиатура.** Владелец: рельс → карандаш → Pause/Resume → Transfer ownership; форма: поле → Save → Cancel; полоса: Cancel → ответ; модалка: select → (Try again) → Cancel → Transfer ownership. Не-владелец: рельс → «See Members», если она есть.
+
+**Ширины** (оценка до сборки, build review меряет). ≥900 — колонка 560, `dl` 140 + 420. ≤820 — карандаш, кнопки зоны и полосы, Save/Cancel, select и ряд кнопок модалки — 44 своими рецептами. ≤560 — `dl` стопкой, кнопка зоны под предложением. 390×844 и 320×568 — имя в 120 знаков переносится целиком, карандаш справа у первой строки; модалка — ширина §2.7 (288 на 320), длинные варианты select обрезает сам браузер. Полоса рельса прибавляет пункт ≈ 95; текущий прокручивается в видимую часть (§5.8).
+
+**Цвет и движение.** Новых токенов нет; контрасты — §4.38 (`--fg` 16.56 / 17.13, `--fg-2` 6.73 / 7.35 на `--bg`; полоса 15.72 / 16.38). Акцента в покое нет. Строки состояния, кнопки зоны и полоса появляются без анимации; модалка — §4.11 (`tk-pop var(--dur-enter)`).
 
 ## 5. Patterns
 
@@ -4616,8 +4719,8 @@ history: прямая ссылка и перезагрузка обязаны д
   `Cmd/Ctrl+Enter` ничего не шлют; Cancel прежний. Список перечитывается, и строка теряет
   «Resend invite». Закрытие после 409 возвращает фокус на оставшееся действие строки (Block /
   Unblock / Reset lockout), а если его нет — на заголовок раздела.
-- **Клавиатура и 390.** Закрытие возвращает фокус тому, что открыло модалку. Модалка 92vw
-  (358.8). Ячейка `INVITED` шире (≈151 против 96) и на 390 уезжает за край, как сейчас, —
+- **Клавиатура и 390.** Закрытие возвращает фокус тому, что открыло модалку. Модалка — ширина §2.7
+  (358). Ячейка `INVITED` шире (≈151 против 96) и на 390 уезжает за край, как сейчас, —
   затухание §5.8 это уже говорит.
 
 ---
@@ -4631,7 +4734,7 @@ history: прямая ссылка и перезагрузка обязаны д
 сессии (§5.1), ролевого гейта нет: это свой профиль и свой вид, `VIEWER` владеет ими так же, как
 `ADMIN`; пустой плоскости `--bg` на время чтения профиля тоже нет.
 
-**Сборка B2B — группа «Company»** (TAS-502). Под личными разделами рельса — разделитель `1px --border` (`margin:9 0`) и подпись «Company» 11.5/550 `--fg-2` (Field label §2.3), padding `0 9 4`. В группе — «Members» (`Users` 15), `/c/{companyId}/settings/members` (§4.38). Группа — оговорка к «области читателя о себе»: её разделы — о компании вкладки, и туда же встанут TAS-504 и TAS-512. Группу видит любая роль компании; без флага её нет. Ниже 900 подпись визуально скрыта (`role="group"` с `aria-labelledby`), а между группами полосы стоит разделитель 1×18 `--border` (§4.13). Группа в полосе — `position: relative`: иначе скрытая подпись выходит из прокрутки рельса и раздвигает страницу (на 320 — до 475).
+**Сборка B2B — группа «Company»** (TAS-502). Под личными разделами рельса — разделитель `1px --border` (`margin:9 0`) и подпись «Company» 11.5/550 `--fg-2` (Field label §2.3), padding `0 9 4`. В группе — «General» (`Building2` 15), `/c/{companyId}/settings/company` (§4.39), затем «Members» (`Users` 15), `/c/{companyId}/settings/members` (§4.38): сначала сама компания, потом её люди; TAS-512 встанет третьим. Группа — оговорка к «области читателя о себе»: её разделы — о компании вкладки, и туда же встанет TAS-512. Группу видит любая роль компании; без флага её нет. Ниже 900 подпись визуально скрыта (`role="group"` с `aria-labelledby`), а между группами полосы стоит разделитель 1×18 `--border` (§4.13). Группа в полосе — `position: relative`: иначе скрытая подпись выходит из прокрутки рельса и раздвигает страницу (на 320 — до 475).
 
 **Рельс.** Рецепт §5.8: 168, `--surface`, правая граница `1px --border`, padding `13 9`; пункт —
 иконка 15 + 12/600, padding `6 9`, radius 8, `--fg-2`, hover и активный — `--surface-2` + `--fg`,
@@ -5086,7 +5189,7 @@ workflow-статуса раньше подписи сборки, если в н
 | --- | --- | --- |
 | session | currentUser, accessToken/refresh | auth-контекст + `GET /users/me` |
 | route | projectId, issueId | URL (§7 handoff README) |
-| server | (B2B: участники и приглашения компании — **не оптимистичны**, TAS-502 §4.38: критерий истории «меняются только после успеха сервера») projects, project stats (`["project-stats"]`), membership, workflow, workflows (`/workflows`, TAS-382), board (`["board", projectId, {issueType, assigneeId, labelId, query}]` — запись на комбинацию фильтров, префикс `["board", projectId]` для инвалидаций; колонки до 200 задач с `totalCount`/`hasMore`, `unplacedIssues` с `unplacedTotalCount`/`unplacedHasMore`; запись без фильтров держится наблюдателем — из неё `Y` и пикер связи, §5.4), issue+history, comments, worklogs (страницы по 100, `useInfiniteQuery`), notifications | react-query, мутации оптимистичные + инвалидация; смена фильтра — `placeholderData` (§5.4) |
+| server | (B2B: участники и приглашения компании — **не оптимистичны**, TAS-502 §4.38: критерий истории «меняются только после успеха сервера»; название, владелец и пауза компании — тоже, TAS-504 §4.39) projects, project stats (`["project-stats"]`), membership, workflow, workflows (`/workflows`, TAS-382), board (`["board", projectId, {issueType, assigneeId, labelId, query}]` — запись на комбинацию фильтров, префикс `["board", projectId]` для инвалидаций; колонки до 200 задач с `totalCount`/`hasMore`, `unplacedIssues` с `unplacedTotalCount`/`unplacedHasMore`; запись без фильтров держится наблюдателем — из неё `Y` и пикер связи, §5.4), issue+history, comments, worklogs (страницы по 100, `useInfiniteQuery`), notifications | react-query, мутации оптимистичные + инвалидация; смена фильтра — `placeholderData` (§5.4) |
 | board ui | `{ q, type, assignee, label }` — набранное; в ключ чтения доски `q` уходит после паузы 200 мс, обрезанный и непустой (§5.4); dragIssueId, dragOverStatus | локальный стейт экрана |
 | app ui | notifOpen, creating, draft, editingCommentId | локальный стейт / контекст |
 | reader prefs (TAS-380) | theme, issueDetails, boardColumns | `localStorage` (`taska.theme`, `taska.issueDetails`, `taska.boardColumns`), отражены в атрибуты `<html>` до первой отрисовки; незнакомое значение — по умолчанию (§5.9) |
@@ -5390,6 +5493,7 @@ e2e). Другое значение останавливает dev-сервер,
   планов — не меньше 44 своим содержимым (48.8 / 65.5 у радио-пары §5.9 на 1440, выше на 320), долга
   нет; цель — вся строка `label`, а не кружок 14.
 - **Открыто в TAS-502** (решение art-director 2026-11-04, до сборки): select роли в строках Members (§4.38) и в строках проектов модалки приглашения — 29 на 390. У `select` нет `::before`, поэтому тот же долг, что у select'а участников проекта (TAS-158). Остальные контролы раздела ниже 820 — 44, строки проектов — 44.
+- **Открыто в TAS-504** (решение art-director 2026-11-05, до сборки): новых долгов нет — карандаш, кнопки зоны и полосы паузы, Save/Cancel переименования, select и футер модалки передачи ниже 820 — 44 своими рецептами (§4.38, §5.9, §4.11); build review меряет. Триггер полосы паузы носит рамку ответа, пока вопрос открыт; триггеры Leave company (TAS-502), Archive project и Cancel creation сведены с ним в один класс `.strip-trigger` (TAS-504). N5 закрыт: §4.35 остаётся вне shell.
 - Поповер уведомлений: `aria-expanded` на триггере, счётчик непрочитанных в `aria-label`.
 - Иконки-кнопки без текста — обязателен `aria-label`.
 - Drag & drop дублируется кнопками переходов (клавиатурный путь).
