@@ -14,7 +14,7 @@ import { B2B, COMPANY, companyPath, companyRow, inCompany, openCompanyZone, setH
 const DAY = 24 * 60 * 60_000;
 const generalPath = (companyId: string) => companyPath(companyId, "/company/general");
 
-/** Opens Company › General as a reader does: «Manage company» in the switcher, or the zone's address on a phone (TAS-522). */
+/** Opens Company › General as a reader does: «Manage company» in the switcher, or in the profile menu on a phone (TAS-522). */
 async function openGeneral(page: Page, companyId: string) {
   await openCompanyZone(page, companyId, "General");
   await expect(page.getByRole("heading", { level: 1, name: /General/ })).toBeVisible();

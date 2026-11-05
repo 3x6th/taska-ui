@@ -4693,7 +4693,7 @@ into the fix round.
 
 From the art-director ruling (`docs/ai/reviews/TAS-522/`, git-ignored).
 
-- **Phones have no menu path into the Company zone** (B7, N3): below 768 the switcher is not drawn and the story
+- ~~**Phones have no menu path into the Company zone**~~ — **closed 2026-11-05**: the owner chose «Да, добавить»; «Manage company» is the profile menu's second row below 768 (`9a7f6a3`, DESIGN.md §4.16, §5.10). Was (B7, N3): below 768 the switcher is not drawn and the story
   forbids a profile-menu entry, so a member who is neither admin nor owner reaches Members only by address — before
   TAS-522 it was Settings › Company. Put to the owner: keep «no profile-menu entry» on phones, or «Manage company» in
   the profile menu below 768 only, where the switcher is missing (the reason «Switch company» lives there).
@@ -4716,6 +4716,17 @@ Non-blocking notes (`docs/ai/reviews/TAS-522/`, git-ignored).
 - **A lost leave answer, then «Back to projects» within 20 s** draws the left company's projects from cache (Projects
   inside `STALE_TIME_MS` reads nothing, so «no longer a member» is not met until the next read). Predates TAS-522; the
   switcher path made it reachable in e2e (builder, release-reviewer).
+- **Profile-menu rows are 32.7 on touch widths** (§4.16, §7): Switch company, Manage company (below 768), Settings, Log
+  out — 258 × 32.7 at 390 and 820, while the switcher's rows and footer are 44 at ≤820. One rule for every row of
+  `.user-profile-actions` at ≤820 (`min-height:44`, as `.company-switcher-footer .user-profile-link`), never one row
+  alone; menu 314.1 → 359.4 at 390 (bottom 408.9, fits 320×568), 279.4 → 313.4 at 768–820. Changes the 768–820 menu the
+  owner froze — needs the owner's word (art-director, TAS-522 phone-row build review, ruling a).
+- **The cold load of the bare `/c/{id}/company` has no e2e** since the phone helper moved to the profile menu (the index
+  redirect is unit-tested at `CompanyScreen.test.tsx:103`): one `goto(companyPath(COMPANY.northwind, "/company"))` with URL
+  and heading assertions in the AC3 test of `e2e/companies-zone.spec.ts` (release-reviewer, phone-row review 3).
+- **The comment beside the 768 rule in `styles.css`** («at any width one of the two is there») is false on the board at
+  ≥768, where neither the switcher nor the menu row draws — say «in the shared bar» (release-reviewer, phone-row
+  review 2).
 
 ### Left by TAS-524 pre-build (the company Activity section, a contract proposed on TAS-523, 2026-11-05)
 

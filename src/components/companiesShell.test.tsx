@@ -312,18 +312,123 @@ describe("the profile menu in the companies build", () => {
     const terms = screen.getAllByRole("term").map((node) => node.textContent);
     expect(terms).toEqual(["Company", "Status", "Taska role"]);
     expect(await screen.findByText("Northwind")).toHaveClass("user-profile-company");
+    // «Manage company» is in the DOM at every width — the CSS takes it out at 768 and wider, which jsdom does not apply.
     const actions = screen.getAllByRole("link").map((node) => node.textContent);
-    expect(actions).toEqual(["Switch company", "Settings"]);
+    expect(actions).toEqual(["Switch company", "Manage company", "Settings"]);
     fireEvent.click(screen.getByRole("link", { name: "Switch company" }));
     expect(go).toHaveBeenCalledWith("/companies", { state: { focusHeading: true } });
     expect(screen.queryByRole("dialog", { name: "Current user profile" })).not.toBeInTheDocument();
   });
 
-  it("has no Company pair in a tab without a company", () => {
+  it("has no Company pair and no «Manage company» in a tab without a company", () => {
     const { wrapper } = companiesHarness({ companyId: null, path: "/companies" });
     render(<UserProfileMenu onLogout={() => {}} user={mark} />, { wrapper });
     fireEvent.click(screen.getByRole("button", { name: "Open profile for Mark Lee" }));
     expect(screen.queryByText("Company")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("link").map((node) => node.textContent)).toEqual(["Switch company", "Settings"]);
+  });
+});
+
+/** Where the router is, and whether the entry asked for the heading's focus. */
+function Whereabouts() {
+  const location = useLocation();
+  const asked = (location.state as { focusHeading?: unknown } | null)?.focusHeading === true;
+  return <p data-testid="whereabouts">{`${location.pathname}${asked ? " · focus the heading" : ""}`}</p>;
+}
+
+/*
+ * The owner's decision, 2026-11-05: the switcher's «Manage company» (§4.34) in
+ * the profile menu on the narrow screen that has no switcher (§4.16, §5.10).
+ * The width is the CSS's (`.user-profile-manage`, display:none at 768 and
+ * wider) and e2e/companies-zone.spec.ts proves it; here, the row itself.
+ */
+describe("«Manage company» in the profile menu (TAS-522, §4.16)", () => {
+  const openMenu = () => {
+    const trigger = screen.getByRole("button", { name: "Open profile for Mark Lee" });
+    fireEvent.click(trigger);
+    return trigger;
+  };
+  const manage = () => screen.getByRole("link", { name: "Manage company" });
+
+  it("is the second row, under Switch company and above Settings: the Settings row's class, Settings2, a router link to the tab's zone", () => {
+    const { wrapper } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(<UserProfileMenu onLogout={() => {}} user={{ ...mark, globalRole: "USER" }} />, { wrapper });
+    openMenu();
+    const link = manage();
+    expect(link.previousElementSibling).toBe(screen.getByRole("link", { name: "Switch company" }));
+    expect(link.nextElementSibling).toBe(screen.getByRole("link", { name: "Settings" }));
+    expect(link).toHaveClass("user-profile-link", "user-profile-manage");
+    expect(link).toHaveAttribute("href", "/company");
+    expect(link).not.toHaveAttribute("aria-current");
+    const icon = link.querySelector("svg");
+    expect(icon).toHaveClass("lucide-settings-2");
+    expect(icon).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("is the current page on /company and anywhere inside it, and nowhere else", () => {
+    for (const [path, current] of [
+      ["/company", true],
+      ["/company/general", true],
+      ["/company/members", true],
+      ["/company/plan", true],
+      ["/companyx", false],
+      ["/settings/profile", false],
+      ["/projects", false],
+    ] as const) {
+      const { wrapper } = companiesHarness({ companyId: "n", path });
+      const view = render(<UserProfileMenu onLogout={() => {}} user={mark} />, { wrapper });
+      openMenu();
+      if (current) expect(manage()).toHaveAttribute("aria-current", "page");
+      else expect(manage()).not.toHaveAttribute("aria-current");
+      view.unmount();
+    }
+  });
+
+  it("a plain click closes the menu in the same frame and pushes the zone asking for its heading — not `go`, not the trigger", () => {
+    const { wrapper, go } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(
+      <>
+        <UserProfileMenu onLogout={() => {}} user={mark} />
+        <Whereabouts />
+      </>,
+      { wrapper },
+    );
+    const trigger = openMenu();
+    fireEvent.click(manage());
+    expect(screen.queryByRole("dialog", { name: "Current user profile" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("whereabouts")).toHaveTextContent("/company · focus the heading");
+    expect(go).not.toHaveBeenCalled();
+    expect(trigger).not.toHaveFocus();
+  });
+
+  it("a modified click leaves this tab where it is and the menu open, for the new tab to take (§4.16)", () => {
+    const { wrapper, go } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(
+      <>
+        <UserProfileMenu onLogout={() => {}} user={mark} />
+        <Whereabouts />
+      </>,
+      { wrapper },
+    );
+    openMenu();
+    // A modified click is the browser's to follow, in a new tab; jsdom cannot
+    // open one, so its default is cancelled before the menu sees the click.
+    const stayHere = (event: MouseEvent) => event.preventDefault();
+    document.addEventListener("click", stayHere, { capture: true });
+    for (const modifier of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { altKey: true }]) {
+      fireEvent.click(manage(), modifier);
+      expect(screen.getByRole("dialog", { name: "Current user profile" })).toBeInTheDocument();
+      expect(screen.getByTestId("whereabouts")).toHaveTextContent(/^\/projects$/);
+    }
+    document.removeEventListener("click", stayHere, { capture: true });
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("is there for a profile that did not load — it needs nothing of the profile", () => {
+    const { wrapper } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(<UserProfileMenu onLogout={() => {}} />, { wrapper });
+    fireEvent.click(screen.getByRole("button", { name: "Open profile" }));
+    expect(screen.getAllByRole("link").map((node) => node.textContent)).toEqual(["Switch company", "Manage company", "Settings"]);
   });
 });
 

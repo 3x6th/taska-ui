@@ -11,7 +11,7 @@ import { B2B, COMPANY, PROJECT, companyPath, companyRow, inCompany, openCompanyZ
 
 const membersPath = (companyId: string) => companyPath(companyId, "/company/members");
 
-/** Opens Company › Members as a reader does: «Manage company» and the zone's rail, or the zone's address on a phone (TAS-522). */
+/** Opens Company › Members as a reader does: «Manage company» — the switcher's, or the profile menu's on a phone — and the zone's rail (TAS-522). */
 async function openMembers(page: Page, companyId: string) {
   await openCompanyZone(page, companyId, "Members");
   await expect(page.getByRole("heading", { level: 2, name: /^Members/ })).toBeVisible();
