@@ -4677,5 +4677,14 @@ into the fix round.
 - **Without A49** a plan change on the server shows only after a Tenant re-read, a refused write, a boundary or a reload
   (release-reviewer residual).
 - **`e2e/companies-tabs.spec.ts:272` flaked once** in the fix round's first gate (desktop: a modifier click in the
-  switcher popover opened no new page within 30 s; 30/30 alone) — possibly the same `tk-pop` animation cause as the
-  fixed `companies.spec.ts:146`; unverified (builder fix 1).
+  switcher popover opened no new page within 30 s; 30/30 alone). Not the popover animation (Playwright waits for the
+  element to settle; the link doesn't move): more likely a slow `inCompany` under full-gate load eating the 30 s budget;
+  50/50 on head and base (release-reviewer wave 2). The fix round's gate also timed out once each in
+  `issue-types.spec.ts:580` and `notification-preferences.spec.ts:259` while a reviewer's Playwright ran in parallel —
+  90/90 alone.
+- **A focus-return or invalidation re-read of a failed Plan read** still unmounts its note and «Try again» and drops focus
+  to `<body>` (the freeze covers only Try again's own re-read, `SettingsPlanSection.tsx` `drawn()`): draw a read's last
+  failure while it re-reads without data, or refocus when its box returns (release-reviewer wave 2, low 1).
+- **Scroll-to-submit ignores where focus is**: Enter in Summary at a refusal scrolls the focused field out of the modal
+  body (scrollTop 65 at 1440×810, 381 at 320×568) — §4.40 says only when focus stays on the submit; scroll only when
+  the submit has focus (release-reviewer wave 2, low 2).
