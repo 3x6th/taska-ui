@@ -4688,3 +4688,17 @@ into the fix round.
 - **Scroll-to-submit ignores where focus is**: Enter in Summary at a refusal scrolls the focused field out of the modal
   body (scrollTop 65 at 1440×810, 381 at 320×568) — §4.40 says only when focus stays on the submit; scroll only when
   the submit has focus (release-reviewer wave 2, low 2).
+
+### Left by TAS-522 pre-build (the company admin zone, 2026-11-05)
+
+From the art-director ruling (`docs/ai/reviews/TAS-522/`, git-ignored).
+
+- **Phones have no menu path into the Company zone** (B7, N3): below 768 the switcher is not drawn and the story
+  forbids a profile-menu entry, so a member who is neither admin nor owner reaches Members only by address — before
+  TAS-522 it was Settings › Company. Put to the owner: keep «no profile-menu entry» on phones, or «Manage company» in
+  the profile menu below 768 only, where the switcher is missing (the reason «Switch company» lives there).
+- **Two hover fills in the switcher popover**: company rows `--surface-3`, footer rows `--surface-2` (1.14:1 light /
+  1.04:1 dark on `--surface`); §4.13 makes `-3` the hover on a `--surface` plane — fix in the shared
+  `.user-profile-link` with §4.16 and §4.34 together (art-director N1).
+- **«Back to projects» is clipped in the Company strip** (18 at 390, 88 at 320) — accepted under §5.8; the fix is the
+  strip scroll indication already listed for every strip (art-director N2).
