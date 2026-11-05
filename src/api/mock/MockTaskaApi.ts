@@ -48,6 +48,7 @@ import type {
   Workspace,
   WorkspaceClosedEvent,
   WorkspacePendingEvent,
+  WorkspaceLeftEvent,
 } from "../TaskaApi";
 import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
@@ -76,6 +77,16 @@ import type {
   TenantOperation,
   TenantPage,
 } from "../tenants";
+import type {
+  CreateInvitationInput,
+  Invitation,
+  InvitationPage,
+  KnownMembershipRole,
+  ListCompanyPageParams,
+  Membership,
+  MembershipPage,
+  QuotaSnapshot,
+} from "../tenantMembers";
 import {
   ATTACHMENT_BUCKET,
   ATTACHMENT_MAX_SIZE_BYTES,
@@ -4129,6 +4140,40 @@ export class MockTaskaStore {
   /** The companies build's directory scope (see `directoryScope`); never called in today's build. */
   scopeDirectory(userIds: ReadonlySet<string> | null): void {
     this.directoryScope = userIds;
+  }
+
+  /**
+   * The name and address an account carries, for the companies build's member
+   * list (TAS-502): the directory's profile fields come from the account
+   * store, as backend TAS-321 will join them; `null` for an id nobody holds.
+   * Never called in today's build.
+   */
+  accountProfile(userId: string): { displayName: string; email: string } | null {
+    const user = this.users.find((item) => item.id === userId);
+    return user ? { displayName: user.displayName, email: user.email } : null;
+  }
+
+  /** Whether `projectId` is one of this store's projects and not archived — an invitation's grant may name it (TAS-502). */
+  hasOpenProject(projectId: string): boolean {
+    return this.projects.some((project) => project.id === projectId && !project.archivedAt);
+  }
+
+  /**
+   * A person suspended in, removed from or leaving the company this store is
+   * (TAS-502, contracts §8, L03): their project rows go and every issue they
+   * were assigned to is unassigned. Reactivating restores none of it. Never
+   * called in today's build.
+   */
+  forgetCompanyMember(userId: string): void {
+    for (const project of this.projects) {
+      if (project.memberIds?.includes(userId)) project.memberIds = project.memberIds.filter((id) => id !== userId);
+    }
+    for (const [projectId, rows] of Object.entries(this.membersByProject)) {
+      if (rows.some((member) => member.userId === userId)) {
+        this.membersByProject[projectId] = rows.filter((member) => member.userId !== userId);
+      }
+    }
+    for (const issue of this.issues) if (issue.assigneeId === userId) issue.assigneeId = null;
   }
 
   /**
@@ -9598,6 +9643,10 @@ export class MockTaskaApi implements TaskaApi {
     return () => {};
   }
 
+  onWorkspaceLeft(_listener: (event: WorkspaceLeftEvent) => void): () => void {
+    return () => {};
+  }
+
   lastCompanyHint(): string | null {
     return null;
   }
@@ -9621,6 +9670,64 @@ export class MockTaskaApi implements TaskaApi {
 
   async cancelTenantCreation(_tenantId: string, _version: string, _idempotencyKey: string): Promise<Tenant> {
     throw new TenancyUnavailableError("cancelTenantCreation");
+  }
+
+  // A company's members, invitations and seats (TAS-502): today's build has
+  // none, like the list above.
+  async listTenantMembers(_tenantId: string, _params?: ListCompanyPageParams): Promise<MembershipPage> {
+    throw new TenancyUnavailableError("listTenantMembers");
+  }
+
+  async setTenantMemberRole(
+    _tenantId: string,
+    _userId: string,
+    _role: KnownMembershipRole,
+    _version: string,
+    _idempotencyKey: string,
+  ): Promise<Membership> {
+    throw new TenancyUnavailableError("setTenantMemberRole");
+  }
+
+  async setTenantMemberState(
+    _tenantId: string,
+    _userId: string,
+    _state: "ACTIVE" | "SUSPENDED",
+    _version: string,
+    _idempotencyKey: string,
+  ): Promise<Membership> {
+    throw new TenancyUnavailableError("setTenantMemberState");
+  }
+
+  async removeTenantMember(_tenantId: string, _userId: string, _version: string, _idempotencyKey: string): Promise<TenantOperation> {
+    throw new TenancyUnavailableError("removeTenantMember");
+  }
+
+  async leaveTenant(_tenantId: string, _idempotencyKey: string): Promise<TenantOperation | null> {
+    throw new TenancyUnavailableError("leaveTenant");
+  }
+
+  async listTenantInvitations(_tenantId: string, _params?: ListCompanyPageParams): Promise<InvitationPage> {
+    throw new TenancyUnavailableError("listTenantInvitations");
+  }
+
+  async createTenantInvitation(_tenantId: string, _input: CreateInvitationInput, _idempotencyKey: string): Promise<Invitation> {
+    throw new TenancyUnavailableError("createTenantInvitation");
+  }
+
+  async resendTenantInvitation(_tenantId: string, _invitationId: string, _idempotencyKey: string): Promise<Invitation> {
+    throw new TenancyUnavailableError("resendTenantInvitation");
+  }
+
+  async revokeTenantInvitation(_tenantId: string, _invitationId: string, _version: string, _idempotencyKey: string): Promise<void> {
+    throw new TenancyUnavailableError("revokeTenantInvitation");
+  }
+
+  async getTenantQuotas(_tenantId: string): Promise<QuotaSnapshot> {
+    throw new TenancyUnavailableError("getTenantQuotas");
+  }
+
+  async reenterCompany(_tenantId: string): Promise<void> {
+    throw new TenancyUnavailableError("reenterCompany");
   }
 
   async getMeta(): Promise<EnumDictionaries> {

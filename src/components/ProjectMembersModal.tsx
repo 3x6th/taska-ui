@@ -16,6 +16,12 @@ import { PROJECT_STATS_KEY } from "../lib/boardQuery";
 import { keyBadgeStyle } from "../lib/format";
 import { projectContextKey } from "../lib/projectContext";
 import { shortKey } from "../screens/admin/columns";
+import type { Membership } from "../api/tenantMembers";
+import { useCompanies, useCompanyName } from "../hooks/useCompanies";
+import { useCompanyAddress } from "../lib/companyAddress";
+import { readerAccess } from "../screens/settings/companyMembers";
+import { COMPANY_MEMBERS_KEY } from "../screens/settings/companyMembersQuery";
+import { companyInside } from "../screens/settings/companyMembersText";
 import { Avatar } from "./Avatar";
 import { Modal } from "./Modal";
 import { RequestId } from "./RequestId";
@@ -739,6 +745,21 @@ export function ProjectMembersModal({
             ? `No one matches “${debounced}”.`
             : "Searching people…";
   const noMatch = boxOpen && typedEnough && !searchFailed && people.length === 0 && search.data !== undefined && !search.isPlaceholderData;
+  // The B2B build (TAS-502, §4.22): people come from the company, not from a
+  // Taska account, and a company admin invites them from Settings › Members.
+  // The reader's company role is read from what this session has already
+  // cached — the members list, else the list of companies' owner — and never
+  // asked for here: unknown, it is the other line.
+  const companyId = useCompanyAddress()?.companyId ?? null;
+  const companyName = useCompanyName(companyId);
+  const companies = useCompanies();
+  const cachedMembers = companyId === null ? undefined : queryClient.getQueryData<Membership[]>(COMPANY_MEMBERS_KEY);
+  const companyAdmin =
+    companyId !== null &&
+    currentUserId !== undefined &&
+    (cachedMembers !== undefined
+      ? readerAccess(cachedMembers, currentUserId).admin
+      : companies.data?.find((tenant) => tenant.id === companyId)?.ownerId === currentUserId);
 
   const submitAdd = () => {
     // The guard the `aria-disabled` on Add no longer enforces by itself.
@@ -1020,7 +1041,19 @@ export function ProjectMembersModal({
                 </p>
                 {noMatch ? (
                   <p className="member-search-state member-search-way">
-                    {globalRole === "GLOBAL_ADMIN" ? (
+                    {companyId !== null ? (
+                      companyAdmin ? (
+                        <>
+                          Only members of {companyInside(companyName)} can be added. Invite people from{" "}
+                          <Link className="admin-note-link" to="/settings/members">
+                            Settings › Members
+                          </Link>
+                          .
+                        </>
+                      ) : (
+                        `Only members of ${companyInside(companyName)} can be added — a company admin can invite people.`
+                      )
+                    ) : globalRole === "GLOBAL_ADMIN" ? (
                       <>
                         People need a Taska account first. Invite them from{" "}
                         <Link className="admin-note-link" to="/admin/users">

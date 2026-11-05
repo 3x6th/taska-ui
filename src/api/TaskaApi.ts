@@ -10,6 +10,16 @@ import type {
   TenantPage,
 } from "./tenants";
 import type {
+  CreateInvitationInput,
+  Invitation,
+  InvitationPage,
+  KnownMembershipRole,
+  ListCompanyPageParams,
+  Membership,
+  MembershipPage,
+  QuotaSnapshot,
+} from "./tenantMembers";
+import type {
   AccessTokenList,
   ConnectedApps,
   AdminCatalog,
@@ -1117,6 +1127,19 @@ export interface WorkspaceClosedEvent {
 export const TRANSPORT_FAILURE_REASON = "TRANSPORT_FAILURE";
 
 /**
+ * The tab's company turned out to have been left (TAS-502, api-contract-guard
+ * B-1): a leave whose answer never came, and then a refusal of another request
+ * saying the reader is no longer a member. Its session is already released.
+ * Not a closure — the shell goes to the picker with «You left {Company}.», as
+ * after an answered leave (DESIGN.md §4.38: §4.35 is never drawn for one's
+ * own leaving).
+ */
+export interface WorkspaceLeftEvent {
+  tenantId: string;
+  tenantName: string | null;
+}
+
+/**
  * A content read of the tab's company refused because the company has never
  * opened (TAS-501, api-contract-guard B4): `reasons` carry
  * `PENDING_FIRST_PAYMENT`, or the code is `PAYMENT_PENDING`. **The company is
@@ -1401,6 +1424,8 @@ export interface TaskaApi {
   onWorkspaceClosed(listener: (event: WorkspaceClosedEvent) => void): () => void;
   /** Fires when a content read met a company that has never opened (see `WorkspacePendingEvent`). Never in today's build. */
   onWorkspacePending(listener: (event: WorkspacePendingEvent) => void): () => void;
+  /** Fires when the tab's company turns out to have been left (see `WorkspaceLeftEvent`, TAS-502). Never in today's build. */
+  onWorkspaceLeft(listener: (event: WorkspaceLeftEvent) => void): () => void;
   /**
    * `taska.lastCompany` for the signed-in account — the company to suggest to a
    * tab that has none (DESIGN.md §5.1). A hint; it opens nothing.
@@ -1442,6 +1467,71 @@ export interface TaskaApi {
    * `PAYMENT_PENDING`, 412 for a stale version.
    */
   cancelTenantCreation(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant>;
+
+  /*
+   * A company's members, invitations and seats (TAS-502), on the B2B
+   * blueprint's routes — none of them on the stand (docs/ai/API-DIVERGENCE.md
+   * «TAS-502»). Each goes with the tab's company session and only for the
+   * company the tab holds; a call for another is refused without a request
+   * (`WorkspaceClosedError`). `version` is the row's from the last list read,
+   * sent verbatim as `If-Match: "{version}"`; `idempotencyKey` is the caller's,
+   * one per confirmed intent and the same on every retry of it. **No write
+   * here is optimistic** (DESIGN.md §4.38): a screen re-reads the list after
+   * each. Today's build refuses all eleven without a request
+   * (`TenancyUnavailableError`).
+   */
+
+  /** `GET /tenants/{tenantId}/members` — one page, as sent (`readAllPages` follows the cursor). */
+  listTenantMembers(tenantId: string, params?: ListCompanyPageParams): Promise<MembershipPage>;
+  /**
+   * `PATCH /tenants/{tenantId}/members/{userId}/role` — 200 `Membership`.
+   * Refusals: 403 `SCOPE_DENIED` / `READ_ONLY`, 404 `RESOURCE_NOT_FOUND`, 409
+   * `OWNER_MEMBERSHIP_PROTECTED` / `LAST_ADMIN` / `INVALID_STATE`, 412 / 428
+   * `VERSION_CONFLICT`.
+   */
+  setTenantMemberRole(
+    tenantId: string,
+    userId: string,
+    role: KnownMembershipRole,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<Membership>;
+  /** `PATCH /tenants/{tenantId}/members/{userId}/state` — suspend or reactivate; 200 `Membership`, the refusals of the role's. */
+  setTenantMemberState(
+    tenantId: string,
+    userId: string,
+    state: "ACTIVE" | "SUSPENDED",
+    version: string,
+    idempotencyKey: string,
+  ): Promise<Membership>;
+  /** `DELETE /tenants/{tenantId}/members/{userId}` — 202 `Operation`, read with `getTenantOperation` until it ends. */
+  removeTenantMember(tenantId: string, userId: string, version: string, idempotencyKey: string): Promise<TenantOperation>;
+  /**
+   * `POST /tenants/{tenantId}/leave` `{confirmed: true}`, no `If-Match`. On a
+   * 202 whose operation is not `FAILED` the tab's company session is released
+   * before this answers. `null`: a retry of a leave whose answer never came was
+   * refused 401/403/404 — the reader has already left (B6). While it is out, no
+   * refusal closes the company (§4.35 is never drawn for one's own leaving).
+   */
+  leaveTenant(tenantId: string, idempotencyKey: string): Promise<TenantOperation | null>;
+  /** `GET /tenants/{tenantId}/invitations` — a company admin's read only (`TENANT_ADMIN_OR_ADMIN_READ`). */
+  listTenantInvitations(tenantId: string, params?: ListCompanyPageParams): Promise<InvitationPage>;
+  /** `POST /tenants/{tenantId}/invitations` — 201 `Invitation`; 422 `QUOTA_EXCEEDED` when no seat is free. */
+  createTenantInvitation(tenantId: string, input: CreateInvitationInput, idempotencyKey: string): Promise<Invitation>;
+  /** `POST /tenants/{tenantId}/invitations/{invitationId}/resend` — 200 `Invitation`; `expiresAt` unchanged, no seat taken. */
+  resendTenantInvitation(tenantId: string, invitationId: string, idempotencyKey: string): Promise<Invitation>;
+  /** `DELETE /tenants/{tenantId}/invitations/{invitationId}` with `If-Match` — 204; its seat is released. */
+  revokeTenantInvitation(tenantId: string, invitationId: string, version: string, idempotencyKey: string): Promise<void>;
+  /** `GET /tenants/{tenantId}/quotas` — the seats come from here and from nowhere else (api-contract-guard B4). */
+  getTenantQuotas(tenantId: string): Promise<QuotaSnapshot>;
+  /**
+   * A new company session for the tab's company — after a change to the
+   * reader's own membership, so that nothing cached under the old role
+   * survives (the orchestrator's ruling 3 on TAS-502). The shell remounts on
+   * the same route; nothing is said. Not a gateway route of its own: it is
+   * `POST /auth/tenant-sessions` and a best-effort revoke of the old session.
+   */
+  reenterCompany(tenantId: string): Promise<void>;
 
   /**
    * `GET /meta` — the enum dictionaries (backend TAS-217), read once per

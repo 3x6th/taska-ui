@@ -4517,3 +4517,50 @@ speed after clean verdicts).
 - `companies.spec.ts:146` sub-pixel flake on desktop (43.999996 < 44) seen once by api-contract-guard; passed 3/3.
 - `SettingsConnectedAppsSection.test.tsx` «selects the text … when the clipboard refuses» (TAS-414) flaked once under
   load in the orchestrator's gate on `b85e869`; 5/5 alone, and green in every later run.
+
+### Left by TAS-502 pre-build (company members and invitations, B2B blueprint `758f8fc6`, 2026-11-05)
+
+From the api-contract-guard design and the art-director ruling (`docs/ai/reviews/TAS-502/`, git-ignored). Backend asks
+A17–A25 went to Jira as comments on their owner stories.
+
+- **TAS-501's mock answers a malformed `If-Match` 428 `VALIDATION_FAILED`**; contracts §6 says malformed → 400
+  `VALIDATION_FAILED`, missing → 428 `VERSION_CONFLICT`.
+- **New B2B enums** (membership role and state, invitation state, quota kind) belong in `/meta` (the TAS-217 pattern).
+- **A cursor invalidated by a concurrent change** is the same 400 as a forged one.
+- **A deleted account's name is a Russian placeholder** (contracts §10); ask for a flag and draw English words.
+- **Membership carries no `joinedAt` / `suspendedAt`** on the wire (the columns exist) — no «Member since» / «Suspended on».
+- **The mock's quota snapshot has only the SEAT row** (TAS-512 adds PROJECT and STORAGE).
+- **Members beyond 50 seats** need a filter; inviting several emails at once; the invitation row naming its projects;
+  §4.36 «5 members» vs §4.38 «seats» wording — align in TAS-512; ~150 Tab stops at 50 rows (roving focus if heavy);
+  My profile «Role · User» → «Taska role» in the B2B build (as the menu).
+- **Discoverability:** Members is reachable only through Settings (and the project Members dialog's empty search); a
+  «Members» row in the switcher footer is the fallback if the owner finds it too deep.
+
+### Left by TAS-502 review (company members and invitations, build review of `a0fcfec`, 2026-11-05)
+
+Non-blocking notes from the three roles (`docs/ai/reviews/TAS-502/`, git-ignored), left out of the fix round. Backend
+asks A26 (TAS-338) and A27 (TAS-315) went to Jira; A28 (the B2B dictionaries in `/meta`) is the pre-build line above.
+
+- **A write whose follow-up re-read fails** shows the old row while the hidden status already said the new state; the
+  «could not be refreshed» notice offers no retry. A compact «Try again» (29; 44 at ≤820) 8 px under it (art-director N-b).
+- **`.company-member-ghost` re-declares §4.1's ghost** instead of reusing it; the values match today (N-e).
+- **The heading hand-over after one's own demotion** is a module-level flag and depends on effect vs `setTimeout(0)`
+  order (release-reviewer L3).
+- **A background re-read that drops a row mid-removal** unmounts it and stops the polling, so the seat line can lag
+  until the next read; real backend only (L4).
+- **The Leave zone shows when the reader's own row is missing**, on the company list's `ownerId` (art-director approved
+  the fallback; the server decides) (L5).
+- **B2B deep links (`/c/{id}/…`) show a blank `--bg` plane before first paint** — not TAS-502 (N-f).
+- **`refusalViolations`** is exported and tested but unused, since DESIGN chose one sentence per refusal (guard N6).
+- **The admin list jumps ~97 px on load**: «Pending invitations» arrives ~100 ms after Members and inserts above it,
+  because the invitations read waits for the reader's role (art-director; A26 would remove the wait). Option: for
+  admins, draw the groups once invitations answer or fail.
+- **The 2-minute removal stop lands on the first poll after 120 s**, up to ~10 s late (art-director: fine).
+- **A first Leave after being suspended or removed by someone else loops on «Press Leave company again»** (release-reviewer
+  R3-1, from round 3's 401-as-unanswered rule): the 401 → refused refresh → MEMBERSHIP_INACTIVE re-selection is suppressed
+  by the leaving flag, there is no lost-leave record, and the screen neither re-reads nor closes; only navigating away
+  shows §4.35. Fix before the flag goes on: count a 401 as unanswered only on a retry (`leaveIntent.current?.open`), in
+  the screen and in `leaveRefusalWords`. Flag-on only; taken to BACKLOG on the owner's speed rule after clean verdicts.
+- **No test pins that MANUAL_REVIEW keeps focus on «Check again»** (dropping its guard leaves the screen tests green).
+- **The full gate on `a0fcfec` failed 43 unrelated mobile specs** while a reviewer ran mutations in place in the
+  worktree; `--last-failed` on the clean tree passed 43/43. Briefs now ask for mutations in a `git archive` copy.

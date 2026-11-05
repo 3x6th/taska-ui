@@ -2127,6 +2127,22 @@ h1 {
   outline-offset: 2px;
 }
 
+/* The B2B build's «Company» group (TAS-502, §5.9): a divider with 9 above
+   and below, then the Field label, then its sections. */
+.area-rail-group {
+  margin-top: 9px;
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+
+.area-rail-group-label {
+  margin: 0;
+  padding: 0 9px 4px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
 /* The exit sits at the bottom behind a divider: leaving the area is not one of
    its sections, and it belongs to the area rather than to whichever section
    happens to be open. */
@@ -3290,6 +3306,426 @@ h1 {
   .mcp-snippet .compact-button,
   .mcp-help-link {
     min-height: 44px;
+  }
+}
+
+/* ---------- Settings › Members (TAS-502, §4.38) ---------- */
+
+/* Every line of meta here is `--fg-2` on `--bg` (6.73 / 7.35), never `--fg-3`
+   (2.91 / 3.32). No new tokens; nothing animates in or out. */
+.company-members-unchecked {
+  margin: 6px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  text-wrap: pretty;
+}
+
+.company-seats {
+  margin-top: 8px;
+}
+
+.company-seats-line {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-wrap: pretty;
+}
+
+.company-seats-skeleton {
+  display: block;
+  width: 200px;
+  height: 13px;
+}
+
+.company-seats .error-note {
+  margin: 0;
+}
+
+.company-invite-action {
+  margin-top: 14px;
+}
+
+/* Primary compact with its icon (§4.1, as «Create token»). */
+.company-invite-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.company-members-loading,
+.company-members-failure,
+.company-members-refresh-failure {
+  margin-top: 22px;
+}
+
+.company-members-retry {
+  margin-top: 8px;
+}
+
+.company-member-skeleton {
+  display: grid;
+  align-items: center;
+  grid-template-columns: 28px minmax(0, 1fr);
+  column-gap: 10px;
+  min-height: 48px;
+  padding: 8px 0;
+}
+
+.company-member-skeleton + .company-member-skeleton {
+  border-top: 1px solid var(--border);
+}
+
+.company-member-skeleton-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+}
+
+.company-member-skeleton-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.company-member-skeleton-name {
+  width: 140px;
+  height: 13px;
+}
+
+.company-member-skeleton-line {
+  width: 200px;
+  height: 11px;
+}
+
+/* A group: its h2 and the count after 6, §4.22's «Current members» recipe
+   without the pill (its --fg-3 on --bg measures 2.91). 22 above each, 4 to
+   its rows. */
+.company-group {
+  margin-top: 22px;
+}
+
+.company-group > .error-note {
+  margin: 0;
+}
+
+.company-group-title {
+  margin: 0 0 4px;
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* A space stands before the count, so the heading reads «Members 4» (TAS-502);
+   with it, 3 makes §4.38's 6. */
+.company-group-count {
+  margin-left: 3px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.company-member-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The Settings row (§5.9): a hairline between rows only, no hover. The strip,
+   a refusal and «Check again» take the text column's width under the row. */
+.company-member-row {
+  display: grid;
+  align-items: center;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  min-height: 48px;
+  padding: 8px 0;
+}
+
+.company-member-row + .company-member-row {
+  border-top: 1px solid var(--border);
+}
+
+.company-member-avatar {
+  display: inline-flex;
+}
+
+.company-member-text {
+  min-width: 0;
+}
+
+.company-member-name {
+  overflow: hidden;
+  margin: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An invitation's first line is its address: it wraps anywhere, never an
+   ellipsis (§4.16). An expired one's is --fg-2. */
+.company-member-name.is-email {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.company-member-row.is-expired .company-member-name,
+.company-member-row.is-suspended .company-member-name {
+  color: var(--fg-2);
+}
+
+.company-member-you {
+  color: var(--fg-2);
+  font-weight: 400;
+}
+
+.company-member-line {
+  margin: 2px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+/* «Suspended» carries the state in a word, at 600 — no pill, no opacity (§2.2). */
+.company-member-line strong {
+  font-weight: 600;
+}
+
+.company-member-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  user-select: text;
+}
+
+/* Three cells of a fixed width — role, action, destructive — so the columns
+   line up down the list; an empty one holds its place, aria-hidden. */
+.company-member-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.company-member-role {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 92px;
+}
+
+.company-member-action {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 80px;
+}
+
+.company-member-destructive {
+  display: flex;
+  justify-content: flex-end;
+  width: 32px;
+}
+
+.company-member-role-word {
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+/* §4.1's ghost at 29. */
+.company-member-ghost {
+  height: 29px;
+  border-radius: 8px;
+  padding: 0 9px;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.company-member-ghost:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+/* §4.1's destructive ghost: --danger only under the pointer, and the hover's
+   ground while its question is open. */
+.company-member-trash:hover {
+  background: var(--surface-2);
+  color: var(--danger);
+}
+
+.company-member-trash[aria-expanded="true"] {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+/* In flight (§4.1): no fade, the progress cursor, labels as they were. */
+.company-member-row [aria-disabled="true"],
+.company-leave [aria-disabled="true"],
+.company-invite-form [data-busy="true"],
+.company-invite-form .modal-actions [aria-disabled="true"] {
+  cursor: progress;
+}
+
+/* Under the row from the text column (38 = the avatar's 28 and the gap). */
+.member-confirm.company-member-confirm {
+  flex: none;
+  grid-column: 2 / -1;
+  margin: 8px 0 0;
+}
+
+.company-member-row > .error-note,
+.company-member-check {
+  grid-column: 2 / -1;
+  margin: 8px 0 0;
+}
+
+/* The danger zone (§4.11) after the list. */
+.company-leave {
+  margin-top: 22px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.company-leave-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.company-leave-text,
+.company-leave-owner {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12px;
+  text-wrap: pretty;
+}
+
+.company-leave-owner {
+  margin-top: 22px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.member-confirm.company-leave-confirm {
+  flex: none;
+  margin: 10px 0 0;
+}
+
+.company-leave > .error-note {
+  margin: 10px 0 0;
+}
+
+/* The invite modal (§4.38 «Приглашение»). */
+.company-invite-head,
+.company-invite-note {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12px;
+  text-wrap: pretty;
+}
+
+.company-invite-note {
+  font-size: 11.5px;
+}
+
+.company-invite-projects-skeleton {
+  display: block;
+  width: 180px;
+  height: 13px;
+}
+
+.company-invite-project-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 29, the role select's height: a row that is checked does not grow by 1
+   (art-director N-d); 44 at ≤820 below. */
+.company-invite-project {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 29px;
+}
+
+.company-invite-project-label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.company-invite-project-label input {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.company-invite-project-name {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* «Send invitation» steadily unavailable while the address is empty (§4.1). */
+.company-invite-submit.is-unavailable {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+@media (max-width: 820px) {
+  .company-invite-button,
+  .company-member-ghost,
+  .company-members-retry,
+  .company-leave-button,
+  .company-member-confirm .compact-button,
+  .company-leave-confirm .compact-button,
+  .company-invite-project {
+    min-height: 44px;
+  }
+
+  .company-member-destructive {
+    width: 44px;
+  }
+
+  .company-member-trash {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* Below 560 the right row goes under the text, in the text column. */
+@media (max-width: 559px) {
+  .company-member-controls {
+    grid-column: 2 / -1;
+    justify-content: flex-start;
+    margin-top: 8px;
+  }
+
+  .company-member-role,
+  .company-member-action {
+    justify-content: flex-start;
+  }
+
+  .company-leave-row {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 
@@ -5221,6 +5657,41 @@ h1 {
   .area-rail ul {
     flex-direction: row;
     gap: 4px;
+  }
+
+  /* In the strip the group's label is only the group's name (§5.9): a
+     1×18 divider stands between the groups instead. */
+  /* Positioned, so the visually hidden label below stays inside the strip's
+     scroller: placed by the page instead, it widened the document to 475 at
+     320 (§5.9: the document never gets wider than the screen). */
+  .area-rail-group {
+    position: relative;
+    display: flex;
+    flex: none;
+    align-items: center;
+    margin: 0 0 0 4px;
+    border-top: 0;
+    padding: 0;
+  }
+
+  .area-rail-group::before {
+    flex: none;
+    width: 1px;
+    height: 18px;
+    margin-right: 4px;
+    background: var(--border);
+    content: "";
+  }
+
+  .area-rail-group-label {
+    position: absolute;
+    overflow: hidden;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .area-rail-foot {

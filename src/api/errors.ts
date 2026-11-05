@@ -578,6 +578,18 @@ export function refusalRetryAfter(error: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
+/**
+ * `Problem.violations` — the fields a `VALIDATION_FAILED` refused (TAS-502),
+ * from `ApiError` and the companies mock's `MockProblemError` alike. Empty for
+ * every other error and for the two client-made ones.
+ */
+export function refusalViolations(error: unknown): readonly FieldViolation[] {
+  if (!(error instanceof Error) || error instanceof WorkspaceClosedError || error instanceof TenancyUnavailableError) {
+    return [];
+  }
+  return toFieldViolations((error as { violations?: unknown }).violations);
+}
+
 /** `Problem.reasons` as a body carried it: the strings, in order; anything else dropped. */
 export function toReasons(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item !== "") : [];

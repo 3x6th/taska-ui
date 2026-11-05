@@ -25,6 +25,8 @@ const PEOPLE_NAME_QUERY_KEYS: readonly QueryKey[] = [
   ["worklogs"],
   ["user-directory"],
   ["admin", "users"],
+  // A company's members (TAS-502): the directory names each person as their account does.
+  ["company-members"],
 ];
 
 export function invalidatePeopleNames(queryClient: QueryClient): void {

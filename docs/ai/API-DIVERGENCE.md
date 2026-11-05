@@ -2157,8 +2157,8 @@ Everything below is the entry as it stood, in the past tense.
   404, a suspended membership closes its tab. Before TAS-316 and TAS-340 the flag is **unsafe**, not merely early:
   a gateway that issues tenant sessions but does not scope data routes would show the same projects in every
   company's tab, and the UI cannot tell.
-- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v2` since
-  TAS-501; `v1` before it); this
+- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v3` since
+  TAS-502; `v2` in TAS-501, `v1` before it); this
   narrows "The mock has a session flag but no session enforcement" for the flag-on build only.
 - **Mock answers where the blueprint is silent** (`src/api/mock/MockTenantServer.ts`, `mockCompanies.ts`) — the
   mock's choices, not the blueprint's behaviour; each falls away with the ask named:
@@ -2240,6 +2240,99 @@ Everything below is the entry as it stood, in the past tense.
   auto-close after the deadline.
 - **Removal:** delete with the flag, after a stand probe: FREE create → ACTIVE; paid → AWAITING_PAYMENT with a
   deadline and refused content; cancel; a replay with the same key returns the same company id.
+
+### TAS-502: company members and invitations ship ahead of the gateway, on the B2B blueprint
+
+- **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`; none in `openapi.yml`):
+  `GET /api/v1/tenants/{tenantId}/members` (listTenantMembers), `PATCH …/members/{userId}/role`
+  (setTenantMemberRole), `PATCH …/members/{userId}/state` (setTenantMemberState), `DELETE …/members/{userId}`
+  (removeTenantMember), `POST …/leave` (leaveTenant), `GET` / `POST …/invitations` (listTenantInvitations,
+  createTenantInvitation), `POST …/invitations/{invitationId}/resend` (resendTenantInvitation),
+  `DELETE …/invitations/{invitationId}` (revokeTenantInvitation), `GET …/quotas` (getTenantQuotas). Backend: TAS-311
+  (rows merged as #284, gRPC only), TAS-321 (profile fields and the HTTP adapter, not started), TAS-312 (PR #287 open at
+  `2602e085`: role change and leave over gRPC), TAS-322, TAS-323, TAS-335, TAS-339 (not started).
+  `getTenantCapabilities` (TAS-497) is not called.
+- **Observed (2026-11-04, no token, api-contract-guard):** all eleven routes, `capabilities` included, answer 404 "No
+  static resource" — members `a33040ff-094e-4476-8c88-2eacedad4352`, invitations
+  `3a46f785-16ab-4dc2-8e3c-dd69fc71b6be`, quotas `9978e74d-c964-44c4-bcd4-b4a1b9a1299f`, capabilities
+  `0f77d742-871e-4453-8771-7bd4a730b0e8`, role `59e5a65a-de5a-4d5f-9687-23e14ab85f71`, state
+  `1b132b5f-7351-4a25-8583-5c939d7a77db`, remove `8bda7952-cabd-45ad-8982-4026ea76e31a`, leave
+  `34307127-9132-4cf2-8b48-766571ad953a`, invite `3b217573-66af-44ad-ad45-0b50b3d47dfd`, resend
+  `96aad8e9-3c3a-4701-b9af-828d803c22e7`, revoke `abfb9049-eef2-416c-a54d-bf478099e95d`; control `GET /api/v1/projects`
+  401 (`c9d89ac9-075b-42e6-b67b-c878e3a93822`).
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. api-contract-guard proposed one (re-select the company once
+  before closing it on `MEMBERSHIP_INACTIVE` / `TENANT_NOT_FOUND`, to survive develop's deviations below); the
+  orchestrator declined it on the owner's rule (TAS-253) — the fix belongs to the backend as asks A17 and A18. The client
+  keeps TAS-500's rule: those codes on a company-session request close the company (§4.35).
+- **What the UI assumes where the blueprint is silent — each removable:**
+  - Controls are gated by the reader's own `Membership` row (`role`, `isOwner`); no capabilities are read; invitations
+    are listed for TENANT_ADMIN only. Removal: ask A21 (TAS-497); ask A1 (TAS-338) for one read fewer.
+  - No count of admins and no seat arithmetic beyond one read of `getTenantQuotas`; `LAST_ADMIN` and
+    `QUOTA_EXCEEDED` are the server's, and «Invite a member» is never disabled by the seat snapshot.
+  - `avatarPath` is not loaded (initials drawn); a missing `displayName` or `email` draws the unnamed-person fallback;
+    no profile join. Removal: ask A19 (TAS-321).
+  - The invitation list shows PENDING and EXPIRED and hides the rest. Removal: ask A22.
+  - Invite refusals other than `QUOTA_EXCEEDED` and `VALIDATION_FAILED` print the server's words. Removal: ask A23.
+  - `leaveTenant` is sent without `If-Match`, as the blueprint has it; PR #287 requires an expected version. Removal:
+    ask A20.
+  - No write is optimistic (the story's acceptance criterion; an exception to DESIGN.md §6); a 412 re-reads and never
+    retries by itself. After a change to the reader's own row the tab re-enters the company (the client's own cache
+    rule, not a compensation): `reenterCompany` creates the new company session first and revokes the old one after,
+    and closes the company only on a refusal that closes it.
+  - A leave whose answer was lost (transport, 408, 5xx — not 429) is retried with the same key; a retry refused 401,
+    403 `MEMBERSHIP_INACTIVE` or 404 `TENANT_NOT_FOUND` is read as having left, and while such a lost leave of company T
+    is open, a 403 `MEMBERSHIP_INACTIVE` or 404 `TENANT_NOT_FOUND` for T on any request (also after renewal and
+    re-selection) is read the same way: the session layer releases the company and emits its own "left" signal
+    (`TaskaApi.onWorkspaceLeft`, a no-op in today's build), `CompanyGate` refreshes the list and lands on `/companies`
+    with «You left …» — never §4.35. A lost leave is remembered only for the company session it was sent with (renewal
+    and re-selection of that session included), and is forgotten on a 202, a definite refusal of its retry, a "left"
+    release, a 2xx with that session to a request sent after the loss (a retry lost again restarts the count), and any
+    change of account; a 429 retry keeps it;
+    a 401 on the retry counts as left only when renewal was refused and re-selection answered «no longer a member» (an
+    unreachable refresh keeps the record). The 2xx rule assumes every company-session request checks revocation and
+    membership online and that a leave is applied before its 202 — contracts §2 also allows a bounded read cache, and
+    `/users/me` or `/meta` may not check membership; the enabling PR confirms this or narrows the rule to
+    membership-checked routes. The blueprint is silent on replaying a leave.
+    Removal: ask A27.
+  - `readAllPages` fails (no message of its own) at its 50-page cap or on a cursor the server repeats, rather than
+    showing a partial directory as everyone.
+  - `INVALID_STATE` on a member row, an invitation and Leave shows the action's own sentence, never the server's words
+    (the mock's say «tenant», which §4.33 forbids). The invite modal picks «already a member» or «already has a pending
+    invitation» by matching the sent address against the members and invitations lists already loaded; otherwise «This
+    invitation was not created.». Removal: ask A29 (a reason on `INVALID_STATE`), with A23 and A5.
+  - The reader's company role outside Members (the project Members dialog's hint line, and the Leave zone when the
+    reader's own row is missing) comes from the cached members list, else the company list's `ownerId`; no read of its
+    own. Removal: ask A26.
+  - Pending invitations are ordered by `expiresAt`, standing in for the issue time while the company's TTL is constant.
+    Removal: ask A22 (`issuedAt` on the wire).
+- **Found on develop / open PRs (not deployed), recorded, not compensated:** a role change on a non-ACTIVE target
+  answers 403 `MEMBERSHIP_INACTIVE` (PR #287 `TenantMembershipMutationService.java:167-168`) — the blueprint means the
+  caller (contracts §6), so on the real backend an admin changing a suspended member would see their own company close
+  (ask A17); a stale membership generation of the reader after any change to their own row answers 404
+  `TENANT_NOT_FOUND` on the list and 403 `MEMBERSHIP_INACTIVE` on writes (develop `TenantMembershipService.java:127,
+  :154-156`; PR #287 `:114-117`; PR #288 refresh) — the same false close (ask A18); empty profile fields (develop,
+  TAS-321); leave's expected version (PR #287 `:65-66`); members ordered `(joined_at, user_id)`; PR #287 replays a
+  leave's stored receipt before the actor check (`TenantMembershipMutationService.java:128-130`), reachable while the
+  leaver's access token lives — the mock revokes the leaver's session at once, so its own replay is unreachable.
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v3`): the blueprint's
+  meaning where develop deviates (a non-ACTIVE target → 409 `INVALID_STATE`; no stale-generation refusal of the reader —
+  the role is re-checked online, contracts §2); PR #287's order of checks otherwise; per-policy restrictions (NORMAL /
+  RECOVERY / LEAVE / DIRECTORY) for these routes, unlike the TAS-500 blanket for project routes; a duplicate pending
+  email → 409 `INVALID_STATE`; a foreign project → 400 with a violation; resend of an expired invitation → 422
+  `INVITATION_EXPIRED`; removal's operation timing by hook; seats SEAT-only; invitation expiry on the lifecycle clock;
+  suspend and remove clear project rows and assignees, and reactivation restores none; inviting a current member's
+  email → 409 `INVALID_STATE` (the modal says its own sentence, never the server's words); leave applied at once (its
+  operation `SUCCEEDED`; the `loseAnswer: ["leaveTenant"]` hook commits it and loses the answer); the invitations list
+  and the quotas are never refused by a restriction; the SEAT quota row carries `version`; suspend, remove and
+  leave revoke the person's sessions and pending invitations, a demotion only their pending invitations (contracts §99
+  names suspend and remove as the generation-revoking changes).
+- **Turning the flag on** additionally needs TAS-321, TAS-322, TAS-323, TAS-335 and TAS-339 on the gateway and **asks
+  A17–A20 answered** (without A17 and A18 an admin's own company closes on ordinary member changes), with A27 decided
+  together with A18 (a stale generation refused at the edge would also refuse a lost leave's replay), and BACKLOG's
+  «first Leave after being removed loops» fixed. The enabling PR
+  carries the stand probe: invite → reserved + 1; resend → unchanged; revoke → − 1; suspend keeps used; remove frees
+  it; the owner and the last admin are refused; a self-demotion keeps the tab open.
+- **Removal:** delete with the flag, after the probe.
 
 ### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log
 

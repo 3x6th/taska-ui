@@ -1,9 +1,31 @@
 import { clearLastCompany, readLastCompany, writeLastCompany } from "../lib/lastCompany";
 import { WorkspaceClosedError, apiErrorFacts, isWorkspaceClosed, refusalCode, refusalReasons } from "./errors";
 import { SessionExpiredSignal, WorkspaceClosedSignal } from "./session";
-import type { LoginInput, SignInResult, Workspace, WorkspaceClosedEvent, WorkspacePendingEvent } from "./TaskaApi";
+import type {
+  LoginInput,
+  SignInResult,
+  Workspace,
+  WorkspaceClosedEvent,
+  WorkspaceLeftEvent,
+  WorkspacePendingEvent,
+} from "./TaskaApi";
 import { TRANSPORT_FAILURE_REASON } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
+import {
+  toInvitation,
+  toInvitationPage,
+  toMembership,
+  toMembershipPage,
+  toQuotaSnapshot,
+  type CreateInvitationInput,
+  type Invitation,
+  type InvitationPage,
+  type KnownMembershipRole,
+  type ListCompanyPageParams,
+  type Membership,
+  type MembershipPage,
+  type QuotaSnapshot,
+} from "./tenantMembers";
 import {
   toCreateTenantResult,
   toPlanVersionPage,
@@ -96,6 +118,53 @@ export interface B2bTransport {
   getTenantOperation(bearer: string | null, tenantId: string, operationId: string, signal: AbortSignal): Promise<unknown>;
   /** `POST /tenants/{tenantId}/cancel-creation` with WEB_TENANT, `Idempotency-Key` and `If-Match: "{version}"`. */
   cancelTenantCreation(bearer: string | null, tenantId: string, version: string, idempotencyKey: string): Promise<unknown>;
+
+  /*
+   * A company's members, invitations and seats (TAS-502), all with that
+   * company's WEB_TENANT. `version` goes as `If-Match: "{version}"`; every
+   * write carries the caller's `Idempotency-Key`.
+   */
+
+  /** `GET /tenants/{tenantId}/members?cursor&limit` — 200 `MembershipPage`. */
+  listTenantMembers(bearer: string | null, tenantId: string, params: ListCompanyPageParams, signal: AbortSignal): Promise<unknown>;
+  /** `PATCH /tenants/{tenantId}/members/{userId}/role` `{role}` with the key and `If-Match` — 200 `Membership`. */
+  setTenantMemberRole(
+    bearer: string | null,
+    tenantId: string,
+    userId: string,
+    role: KnownMembershipRole,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<unknown>;
+  /** `PATCH /tenants/{tenantId}/members/{userId}/state` `{state}` with the key and `If-Match` — 200 `Membership`. */
+  setTenantMemberState(
+    bearer: string | null,
+    tenantId: string,
+    userId: string,
+    state: "ACTIVE" | "SUSPENDED",
+    version: string,
+    idempotencyKey: string,
+  ): Promise<unknown>;
+  /** `DELETE /tenants/{tenantId}/members/{userId}`, no body, the key and `If-Match` — 202 `Operation`. */
+  removeTenantMember(bearer: string | null, tenantId: string, userId: string, version: string, idempotencyKey: string): Promise<unknown>;
+  /** `POST /tenants/{tenantId}/leave` `{confirmed: true}` with the key, **no `If-Match`** (the blueprint's; ask A20) — 202 `Operation`. */
+  leaveTenant(bearer: string | null, tenantId: string, idempotencyKey: string): Promise<unknown>;
+  /** `GET /tenants/{tenantId}/invitations?cursor&limit` — 200 `InvitationPage`. */
+  listTenantInvitations(bearer: string | null, tenantId: string, params: ListCompanyPageParams, signal: AbortSignal): Promise<unknown>;
+  /** `POST /tenants/{tenantId}/invitations` `{email, role, projectGrants}` with the key — 201 `Invitation`. */
+  createTenantInvitation(bearer: string | null, tenantId: string, input: CreateInvitationInput, idempotencyKey: string): Promise<unknown>;
+  /** `POST /tenants/{tenantId}/invitations/{invitationId}/resend`, no body, the key only — 200 `Invitation`. */
+  resendTenantInvitation(bearer: string | null, tenantId: string, invitationId: string, idempotencyKey: string): Promise<unknown>;
+  /** `DELETE /tenants/{tenantId}/invitations/{invitationId}` with the key and `If-Match` — 204. */
+  revokeTenantInvitation(
+    bearer: string | null,
+    tenantId: string,
+    invitationId: string,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<void>;
+  /** `GET /tenants/{tenantId}/quotas` — 200 `QuotaSnapshot`. */
+  getTenantQuotas(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
 }
 
 /** `AccessSession` as this layer reads it: the four strings it needs, `tenantId` only on a company session. */
@@ -278,6 +347,15 @@ interface Epoch {
 
 const newEpoch = (value: number): Epoch => ({ value, controller: new AbortController() });
 
+/** A leave whose answer never came (`WebSessionClient.lostLeaves`). */
+interface LostLeave {
+  tenantId: string;
+  /** The company session it was sent with: only that session's refusals can say it was applied. */
+  tenantSessionId: string;
+  /** The number of the last request sent when it was recorded: a 2xx of a later one proves the session still works. */
+  after: number;
+}
+
 interface Owned {
   record: TabRecord;
   release: () => void;
@@ -344,10 +422,42 @@ export class WebSessionClient {
   private renewing: Promise<RenewOutcome> | null = null;
   private rotating: Promise<RotateOutcome> | null = null;
   private readonly names = new Map<string, string>();
+  /**
+   * The company this tab is leaving (TAS-502, api-contract-guard B6), from
+   * `leaveTenant`'s send until its company session is released: a closing
+   * refusal meanwhile — the server may already have removed the reader —
+   * closes nothing and draws no §4.35; it rejects its own request.
+   */
+  private leaving: string | null = null;
+  /**
+   * Leaves whose answer never came — no status, 408 or 5xx; never a 429, which
+   * says the leave was not taken (api-contract-guard M4) — by key, with the
+   * company and **the company session** they were sent with, and the number of
+   * the last request sent before the answer was lost. While one is open, a
+   * refusal of that same session saying the reader is no longer in the company
+   * means the leave was applied: released as left, never closed (B-1).
+   *
+   * How long one lives (release-reviewer R2-M1): until the leave is answered
+   * — 202, or a definite refusal (a 429 keeps it); until any later request of
+   * that session is answered 2xx, which proves it still works and so the leave
+   * did not apply; and until the account changes. A new session of the
+   * company — a switch away and back, a successful re-selection — never
+   * matches it.
+   */
+  private readonly lostLeaves = new Map<string, LostLeave>();
+  /** Every request a company session sends is numbered, so a 2xx can tell whether it was sent after a leave was lost. */
+  private sent = 0;
+  /**
+   * Set while a leave is out, when the re-selection behind a refused renewal
+   * of its session was itself refused «no longer a member» — the one 401 that
+   * counts as «left» on a retry (ruling 2b; not an unreachable refresh, L-a).
+   */
+  private leaveRefusedBySelection: string | null = null;
   private readonly expired = new SessionExpiredSignal();
   private readonly changeListeners = new Set<() => void>();
   private readonly closed = new WorkspaceClosedSignal<WorkspaceClosedEvent>();
   private readonly pending = new WorkspaceClosedSignal<WorkspacePendingEvent>();
+  private readonly left = new WorkspaceClosedSignal<WorkspaceLeftEvent>();
 
   constructor(deps: WebSessionDeps) {
     this.transport = deps.transport;
@@ -578,6 +688,10 @@ export class WebSessionClient {
     return this.pending.subscribe(listener);
   }
 
+  onWorkspaceLeft(listener: (event: WorkspaceLeftEvent) => void): () => void {
+    return this.left.subscribe(listener);
+  }
+
   /* ------------------------------------------------ creating a company (TAS-501) */
 
   /** `GET /billing/plans`: public metadata, sent with no credential. */
@@ -649,6 +763,277 @@ export class WebSessionClient {
     this.renameOwned();
   }
 
+  /* -------------------------------- members, invitations and seats (TAS-502) */
+
+  /*
+   * api-contract-guard's pre-build design §1, §4 and B6, with the
+   * orchestrator's rulings: every call goes with the tab's company session
+   * (`call("session")`, `{read: true}` on the three reads), and only once the
+   * tab holds **that** company — a call for another is refused here without a
+   * request (`inCompany`), because sent it would be the server's 403
+   * `TENANT_MISMATCH`, which closes the tab's own company. The key and
+   * `If-Match` are the caller's: a retry of one intent sends the same ones.
+   */
+
+  async listTenantMembers(tenantId: string, params: ListCompanyPageParams = {}): Promise<MembershipPage> {
+    return toMembershipPage(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.listTenantMembers(bearer, tenantId, params, signal), {
+        read: true,
+      }),
+    );
+  }
+
+  async setTenantMemberRole(
+    tenantId: string,
+    userId: string,
+    role: KnownMembershipRole,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<Membership> {
+    return this.membership(
+      await this.inCompany(tenantId, (bearer) =>
+        this.transport.setTenantMemberRole(bearer, tenantId, userId, role, version, idempotencyKey),
+      ),
+    );
+  }
+
+  async setTenantMemberState(
+    tenantId: string,
+    userId: string,
+    state: "ACTIVE" | "SUSPENDED",
+    version: string,
+    idempotencyKey: string,
+  ): Promise<Membership> {
+    return this.membership(
+      await this.inCompany(tenantId, (bearer) =>
+        this.transport.setTenantMemberState(bearer, tenantId, userId, state, version, idempotencyKey),
+      ),
+    );
+  }
+
+  async removeTenantMember(tenantId: string, userId: string, version: string, idempotencyKey: string): Promise<TenantOperation> {
+    return this.operation(
+      await this.inCompany(tenantId, (bearer) => this.transport.removeTenantMember(bearer, tenantId, userId, version, idempotencyKey)),
+    );
+  }
+
+  /**
+   * `POST /tenants/{tenantId}/leave` — leaving the company on purpose (B6).
+   * While it is out, a refusal that would close the company closes nothing
+   * (`leaving`). Answered 202 with an operation that is not `FAILED`, the
+   * tab's company session is released (`leaveCompany`) before this answers:
+   * nothing of the company can be sent after it. An operation that is
+   * `FAILED` is answered as it came, with the session kept.
+   *
+   * A leave whose answer never came is remembered by its key (`lostLeaves`).
+   * Its retry with that key, from the same company session, is the same
+   * success, answered `null`, when it is refused in a way that says the reader
+   * is no longer a member (ruling 2b, by the code and never the status alone):
+   * 403 `MEMBERSHIP_INACTIVE`, 404 `TENANT_NOT_FOUND`, or a 401 whose renewal
+   * was refused and whose re-selection was refused «no longer a member» — not
+   * a 401 whose refresh got no answer, which leaves the retry as open as it was
+   * (L-a). A 429 keeps the record too; any other refusal, of a first leave or
+   * of a retry, is that refusal and closes it.
+   */
+  async leaveTenant(tenantId: string, idempotencyKey: string): Promise<TenantOperation | null> {
+    const session = this.owned?.record.tenantId === tenantId ? this.owned.record.tenantSessionId : null;
+    const record = this.lostLeaves.get(idempotencyKey);
+    const retry = record !== undefined && record.tenantId === tenantId && record.tenantSessionId === session;
+    this.leaving = tenantId;
+    this.leaveRefusedBySelection = null;
+    let answer: unknown;
+    try {
+      answer = await this.inCompany(tenantId, (bearer) => this.transport.leaveTenant(bearer, tenantId, idempotencyKey));
+    } catch (error) {
+      if (!isWorkspaceClosed(error)) {
+        const { status } = apiErrorFacts(error);
+        const code = refusalCode(error);
+        const refusedBySelection = status === 401 && session !== null && this.leaveRefusedBySelection === session;
+        const gone = code === "MEMBERSHIP_INACTIVE" || code === "TENANT_NOT_FOUND" || refusedBySelection;
+        if (retry && gone) {
+          this.forgetLostLeaves(tenantId);
+          await this.releaseLeft(tenantId);
+          return null;
+        }
+        const unanswered = status === null || status === 408 || (status !== null && status >= 500);
+        // A 401 whose refresh got no answer says nothing either (L-a): the leave stays as open as it was.
+        const unrenewed = status === 401 && retry && !refusedBySelection;
+        if (session !== null && (unanswered || unrenewed)) {
+          // Lost again, the record moves on to now: a request sent before this
+          // loss — while the retry was out — proves nothing by its 2xx (N2).
+          this.lostLeaves.set(idempotencyKey, { tenantId, tenantSessionId: session, after: this.sent });
+        } else if (status !== 429) {
+          this.lostLeaves.delete(idempotencyKey);
+        }
+      }
+      if (this.leaving === tenantId) this.leaving = null;
+      throw error;
+    }
+    this.forgetLostLeaves(tenantId);
+    let operation: TenantOperation;
+    try {
+      operation = this.operation(answer);
+    } catch (error) {
+      if (this.leaving === tenantId) this.leaving = null;
+      throw error;
+    }
+    if (operation.state === "FAILED") {
+      if (this.leaving === tenantId) this.leaving = null;
+      return operation;
+    }
+    await this.releaseLeft(tenantId);
+    return operation;
+  }
+
+  private forgetLostLeaves(tenantId: string): void {
+    for (const [key, record] of this.lostLeaves) if (record.tenantId === tenantId) this.lostLeaves.delete(key);
+  }
+
+  /** The record of a lost leave sent with this session of this company, if one is open. */
+  private lostLeaveOf(owned: Owned): LostLeave | null {
+    for (const record of this.lostLeaves.values()) {
+      if (record.tenantId === owned.record.tenantId && record.tenantSessionId === owned.record.tenantSessionId) return record;
+    }
+    return null;
+  }
+
+  /** A 2xx of a request this session sent after a leave was lost: the session works, so that leave did not apply. */
+  private answeredAfterLostLeave(owned: Owned, number: number): void {
+    for (const [key, record] of this.lostLeaves) {
+      if (record.tenantId === owned.record.tenantId && record.tenantSessionId === owned.record.tenantSessionId && number > record.after) {
+        this.lostLeaves.delete(key);
+      }
+    }
+  }
+
+  /** The company left: its session released, and only then the closing rule back on. */
+  private async releaseLeft(tenantId: string): Promise<void> {
+    try {
+      if (this.owned?.record.tenantId === tenantId) await this.leaveCompany();
+    } finally {
+      if (this.leaving === tenantId) this.leaving = null;
+    }
+  }
+
+  async listTenantInvitations(tenantId: string, params: ListCompanyPageParams = {}): Promise<InvitationPage> {
+    return toInvitationPage(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.listTenantInvitations(bearer, tenantId, params, signal), {
+        read: true,
+      }),
+    );
+  }
+
+  /** The body is the three fields exactly, in one order, so a retry with the same key sends the same bytes. */
+  async createTenantInvitation(tenantId: string, input: CreateInvitationInput, idempotencyKey: string): Promise<Invitation> {
+    const body: CreateInvitationInput = {
+      email: input.email,
+      role: input.role,
+      projectGrants: input.projectGrants.map((grant) => ({ projectId: grant.projectId, role: grant.role })),
+    };
+    return this.invitation(
+      await this.inCompany(tenantId, (bearer) => this.transport.createTenantInvitation(bearer, tenantId, body, idempotencyKey)),
+    );
+  }
+
+  async resendTenantInvitation(tenantId: string, invitationId: string, idempotencyKey: string): Promise<Invitation> {
+    return this.invitation(
+      await this.inCompany(tenantId, (bearer) => this.transport.resendTenantInvitation(bearer, tenantId, invitationId, idempotencyKey)),
+    );
+  }
+
+  async revokeTenantInvitation(tenantId: string, invitationId: string, version: string, idempotencyKey: string): Promise<void> {
+    await this.inCompany(tenantId, (bearer) =>
+      this.transport.revokeTenantInvitation(bearer, tenantId, invitationId, version, idempotencyKey),
+    );
+  }
+
+  async getTenantQuotas(tenantId: string): Promise<QuotaSnapshot> {
+    return toQuotaSnapshot(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.getTenantQuotas(bearer, tenantId, signal), { read: true }),
+    );
+  }
+
+  /**
+   * A new company session for the tab's company (TAS-502, the orchestrator's
+   * ruling 3): after a change to the reader's own membership, so that nothing
+   * cached under the old role survives — a new session is a new context, and
+   * the shell remounts on the route it was on, without a notice. The new
+   * session is made first and the old one revoked best-effort after it; a
+   * refusal that closes the company closes it (§4.35); no answer, or any other
+   * refusal, keeps the session the tab has — the server checks the role on
+   * every request either way (contracts §2).
+   */
+  reenterCompany(tenantId: string): Promise<void> {
+    return this.serialize(async () => {
+      await this.restoring;
+      const owned = this.owned;
+      if (owned === null || owned.record.tenantId !== tenantId) return;
+      let session: AccessSession;
+      try {
+        session = await this.createSession(tenantId);
+      } catch (error) {
+        if (owned !== this.owned) return;
+        if (error instanceof AccountGone) {
+          if (error.refused) this.expireAccount();
+          return;
+        }
+        const code = refusalCode(error);
+        if (code !== null && CLOSING_CODES.has(code)) {
+          const { requestId, message } = apiErrorFacts(error);
+          this.closeWorkspace(owned, code, requestId, refusalReasons(error), message);
+        }
+        return;
+      }
+      if (owned !== this.owned) {
+        void this.revokeQuietly(session.sessionId);
+        return;
+      }
+      this.moveEpoch();
+      const { tenantSessionId, tenantName } = owned.record;
+      this.dropOwned();
+      void this.revokeQuietly(tenantSessionId);
+      await this.install(session, tenantName);
+      this.notifyChange();
+    });
+  }
+
+  /** `call("session")` for `tenantId` only: refused without a request (`WorkspaceClosedError`) unless the tab holds it. */
+  private inCompany<T>(
+    tenantId: string,
+    send: (bearer: string | null, signal: AbortSignal) => Promise<T>,
+    options: { read?: boolean } = {},
+  ): Promise<T> {
+    return this.call(
+      "session",
+      (bearer, signal) => {
+        const owned = this.owned;
+        if (owned === null || owned.record.tenantId !== tenantId || bearer !== owned.record.accessToken) {
+          return Promise.reject(new WorkspaceClosedError());
+        }
+        return send(bearer, signal);
+      },
+      options,
+    );
+  }
+
+  private membership(answer: unknown): Membership {
+    const membership = toMembership(answer);
+    if (membership === null) throw new Error("The answer held no membership.");
+    return membership;
+  }
+
+  private invitation(answer: unknown): Invitation {
+    const invitation = toInvitation(answer);
+    if (invitation === null) throw new Error("The answer held no invitation.");
+    return invitation;
+  }
+
+  private operation(answer: unknown): TenantOperation {
+    const operation = toTenantOperation(answer);
+    if (operation === null) throw new Error("The answer held no operation.");
+    return operation;
+  }
+
   /* --------------------------------------------------------------- requests */
 
   /**
@@ -692,8 +1077,11 @@ export class WebSessionClient {
     const owned = this.owned;
     if (owned) {
       const sent = owned.record.accessToken;
+      const number = ++this.sent;
       try {
-        return await this.answerFor(epoch, () => send(sent, epoch.controller.signal));
+        const answer = await this.answerFor(epoch, () => send(sent, epoch.controller.signal));
+        if (this.lostLeaves.size > 0) this.answeredAfterLostLeave(owned, number);
+        return answer;
       } catch (error) {
         if (isWorkspaceClosed(error)) throw error;
         const { status, requestId, message } = apiErrorFacts(error);
@@ -706,8 +1094,8 @@ export class WebSessionClient {
         const code = refusalCode(error);
         const reasons = refusalReasons(error);
         if (code !== null && CLOSING_CODES.has(code)) {
-          this.closeWorkspace(owned, code, requestId, reasons, message);
-          throw new WorkspaceClosedError();
+          if (this.closeWorkspace(owned, code, requestId, reasons, message)) throw new WorkspaceClosedError();
+          throw error;
         }
         // A company that has never opened (TAS-501, B4): its content is
         // refused until the first payment, and that is no closure — the
@@ -720,8 +1108,8 @@ export class WebSessionClient {
           throw error;
         }
         if (read && code === "CAPABILITY_DISABLED" && reasons.length > 0) {
-          this.closeWorkspace(owned, code, requestId, reasons, message);
-          throw new WorkspaceClosedError();
+          if (this.closeWorkspace(owned, code, requestId, reasons, message)) throw new WorkspaceClosedError();
+          throw error;
         }
         throw error;
       }
@@ -842,6 +1230,11 @@ export class WebSessionClient {
       const { code, requestId, message } = apiErrorFacts(error);
       const transport = isTransportFailure(error);
       const reason = transport ? TRANSPORT_FAILURE_REASON : (refusalCode(error) ?? code ?? "UNKNOWN");
+      // While a leave of this company is out, the re-selection's «no longer a
+      // member» is what lets its 401 read as «left» (ruling 2b).
+      if (this.leaving === tenantId && (reason === "MEMBERSHIP_INACTIVE" || reason === "TENANT_NOT_FOUND")) {
+        this.leaveRefusedBySelection = owned.record.tenantSessionId;
+      }
       this.closeWorkspace(owned, reason, requestId, refusalReasons(error), transport ? null : message);
       return "closed";
     }
@@ -940,21 +1333,38 @@ export class WebSessionClient {
     });
   }
 
-  /** Closes the tab's company with a reason the shell can word (DESIGN.md §4.35). */
+  /**
+   * Closes the tab's company with a reason the shell can word (DESIGN.md
+   * §4.35). Answers whether the request that asked is to be answered
+   * `WorkspaceClosedError` — `false` only while the tab is leaving this
+   * company (TAS-502, B6): then nothing is closed, no §4.35 is drawn, and the
+   * refusal stands as that request's answer.
+   *
+   * While a leave of this company whose answer never came is open, a refusal
+   * that says the reader is no longer in it (`MEMBERSHIP_INACTIVE`,
+   * `TENANT_NOT_FOUND`) is that leave applied (api-contract-guard B-1): the
+   * company is released all the same, with no `closed` event: `left` says it,
+   * and the shell goes to the picker, never to §4.35.
+   */
   private closeWorkspace(
     owned: Owned,
     reason: string,
     requestId: string | null,
     reasons: readonly string[],
     message: string | null,
-  ): void {
-    if (owned !== this.owned) return;
-    this.moveEpoch();
+  ): boolean {
+    if (owned !== this.owned) return true;
+    if (this.leaving !== null && this.leaving === owned.record.tenantId) return false;
     const { tenantId, tenantName, tenantSessionId } = owned.record;
+    const left = (reason === "MEMBERSHIP_INACTIVE" || reason === "TENANT_NOT_FOUND") && this.lostLeaveOf(owned) !== null;
+    if (left) this.forgetLostLeaves(tenantId);
+    this.moveEpoch();
     this.dropOwned();
     void this.revokeQuietly(tenantSessionId);
     this.notifyChange();
-    this.closed.emit({ reason, tenantId, tenantName, requestId, reasons: [...reasons], message });
+    if (left) this.left.emit({ tenantId, tenantName });
+    else this.closed.emit({ reason, tenantId, tenantName, requestId, reasons: [...reasons], message });
+    return true;
   }
 
   /* ------------------------------------------------------- the account family */
@@ -1093,6 +1503,10 @@ export class WebSessionClient {
   private moveAccountEpoch(): void {
     this.accountEpoch.controller.abort();
     this.accountEpoch = newEpoch(this.accountEpoch.value + 1);
+    // Sign-out, sign-in, expiry, another account: no leave of the account
+    // before it says anything about the next one (release-reviewer R2-M1).
+    this.lostLeaves.clear();
+    this.leaveRefusedBySelection = null;
     this.moveEpoch();
   }
 

@@ -33,6 +33,7 @@ import type {
   Workspace,
   WorkspaceClosedEvent,
   WorkspacePendingEvent,
+  WorkspaceLeftEvent,
   SearchIssuesParams,
   SearchUsersParams,
   SignupInput,
@@ -111,6 +112,16 @@ import type {
   TenantOperation,
   TenantPage,
 } from "../tenants";
+import type {
+  CreateInvitationInput,
+  Invitation,
+  InvitationPage,
+  KnownMembershipRole,
+  ListCompanyPageParams,
+  Membership,
+  MembershipPage,
+  QuotaSnapshot,
+} from "../tenantMembers";
 import { WebSessionClient, type B2bTransport, type LockManagerLike } from "../webSession";
 import type {
   AccessToken,
@@ -1443,6 +1454,10 @@ export class RestTaskaApi implements TaskaApi {
     return this.web ? this.web.onWorkspacePending(listener) : () => {};
   }
 
+  onWorkspaceLeft(listener: (event: WorkspaceLeftEvent) => void): () => void {
+    return this.web ? this.web.onWorkspaceLeft(listener) : () => {};
+  }
+
   lastCompanyHint(): string | null {
     return this.web?.lastCompanyHint() ?? null;
   }
@@ -1473,6 +1488,68 @@ export class RestTaskaApi implements TaskaApi {
     return this.companies("cancelTenantCreation").cancelTenantCreation(tenantId, version, idempotencyKey);
   }
 
+  /*
+   * A company's members, invitations and seats (TAS-502): the session layer
+   * sends each with the tab's company session, for that company only. Today's
+   * build: no request.
+   */
+
+  async listTenantMembers(tenantId: string, params: ListCompanyPageParams = {}): Promise<MembershipPage> {
+    return this.companies("listTenantMembers").listTenantMembers(tenantId, params);
+  }
+
+  async setTenantMemberRole(
+    tenantId: string,
+    userId: string,
+    role: KnownMembershipRole,
+    version: string,
+    idempotencyKey: string,
+  ): Promise<Membership> {
+    return this.companies("setTenantMemberRole").setTenantMemberRole(tenantId, userId, role, version, idempotencyKey);
+  }
+
+  async setTenantMemberState(
+    tenantId: string,
+    userId: string,
+    state: "ACTIVE" | "SUSPENDED",
+    version: string,
+    idempotencyKey: string,
+  ): Promise<Membership> {
+    return this.companies("setTenantMemberState").setTenantMemberState(tenantId, userId, state, version, idempotencyKey);
+  }
+
+  async removeTenantMember(tenantId: string, userId: string, version: string, idempotencyKey: string): Promise<TenantOperation> {
+    return this.companies("removeTenantMember").removeTenantMember(tenantId, userId, version, idempotencyKey);
+  }
+
+  async leaveTenant(tenantId: string, idempotencyKey: string): Promise<TenantOperation | null> {
+    return this.companies("leaveTenant").leaveTenant(tenantId, idempotencyKey);
+  }
+
+  async listTenantInvitations(tenantId: string, params: ListCompanyPageParams = {}): Promise<InvitationPage> {
+    return this.companies("listTenantInvitations").listTenantInvitations(tenantId, params);
+  }
+
+  async createTenantInvitation(tenantId: string, input: CreateInvitationInput, idempotencyKey: string): Promise<Invitation> {
+    return this.companies("createTenantInvitation").createTenantInvitation(tenantId, input, idempotencyKey);
+  }
+
+  async resendTenantInvitation(tenantId: string, invitationId: string, idempotencyKey: string): Promise<Invitation> {
+    return this.companies("resendTenantInvitation").resendTenantInvitation(tenantId, invitationId, idempotencyKey);
+  }
+
+  async revokeTenantInvitation(tenantId: string, invitationId: string, version: string, idempotencyKey: string): Promise<void> {
+    return this.companies("revokeTenantInvitation").revokeTenantInvitation(tenantId, invitationId, version, idempotencyKey);
+  }
+
+  async getTenantQuotas(tenantId: string): Promise<QuotaSnapshot> {
+    return this.companies("getTenantQuotas").getTenantQuotas(tenantId);
+  }
+
+  async reenterCompany(tenantId: string): Promise<void> {
+    return this.companies("reenterCompany").reenterCompany(tenantId);
+  }
+
   /** The session layer, or the refusal today's build gives a company operation — without a request. */
   private companies(operation: string): WebSessionClient {
     if (this.web === null) throw new TenancyUnavailableError(operation);
@@ -1489,6 +1566,14 @@ export class RestTaskaApi implements TaskaApi {
     const send = async (path: string, options: RequestOptions, bearer: string | null, signal?: AbortSignal) =>
       (await this.transmit<unknown>(path, options, bearer, signal)).data;
     const key = (idempotencyKey: string) => ({ "Idempotency-Key": idempotencyKey });
+    const ifMatch = (version: string) => ({ "If-Match": `"${version}"` });
+    const tenantPath = (tenantId: string) => `/tenants/${this.segment(tenantId)}`;
+    const page = (params: ListCompanyPageParams) => {
+      const search = new URLSearchParams();
+      if (params.cursor !== undefined) search.set("cursor", params.cursor);
+      if (params.limit !== undefined) search.set("limit", String(params.limit));
+      return this.query(search);
+    };
     return {
       startWebSession: (input, idempotencyKey) =>
         send(
@@ -1540,6 +1625,61 @@ export class RestTaskaApi implements TaskaApi {
           },
           bearer,
         ),
+      // TAS-502. Bodies are built field by field, in the blueprint's order,
+      // so a retry with the same key sends the same bytes; `If-Match` is the
+      // row's version, quoted (the yaml's `^"[0-9]+"$`).
+      listTenantMembers: (bearer, tenantId, params, signal) =>
+        send(`${tenantPath(tenantId)}/members${page(params)}`, {}, bearer, signal),
+      setTenantMemberRole: (bearer, tenantId, userId, role, version, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/members/${this.segment(userId)}/role`,
+          { method: "PATCH", body: { role }, headers: { ...key(idempotencyKey), ...ifMatch(version) } },
+          bearer,
+        ),
+      setTenantMemberState: (bearer, tenantId, userId, state, version, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/members/${this.segment(userId)}/state`,
+          { method: "PATCH", body: { state }, headers: { ...key(idempotencyKey), ...ifMatch(version) } },
+          bearer,
+        ),
+      removeTenantMember: (bearer, tenantId, userId, version, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/members/${this.segment(userId)}`,
+          { method: "DELETE", headers: { ...key(idempotencyKey), ...ifMatch(version) } },
+          bearer,
+        ),
+      leaveTenant: (bearer, tenantId, idempotencyKey) =>
+        send(`${tenantPath(tenantId)}/leave`, { method: "POST", body: { confirmed: true }, headers: key(idempotencyKey) }, bearer),
+      listTenantInvitations: (bearer, tenantId, params, signal) =>
+        send(`${tenantPath(tenantId)}/invitations${page(params)}`, {}, bearer, signal),
+      createTenantInvitation: (bearer, tenantId, input, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/invitations`,
+          {
+            method: "POST",
+            body: {
+              email: input.email,
+              role: input.role,
+              projectGrants: input.projectGrants.map((grant) => ({ projectId: grant.projectId, role: grant.role })),
+            },
+            headers: key(idempotencyKey),
+          },
+          bearer,
+        ),
+      resendTenantInvitation: (bearer, tenantId, invitationId, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/invitations/${this.segment(invitationId)}/resend`,
+          { method: "POST", headers: key(idempotencyKey) },
+          bearer,
+        ),
+      revokeTenantInvitation: async (bearer, tenantId, invitationId, version, idempotencyKey) => {
+        await send(
+          `${tenantPath(tenantId)}/invitations/${this.segment(invitationId)}`,
+          { method: "DELETE", headers: { ...key(idempotencyKey), ...ifMatch(version) } },
+          bearer,
+        );
+      },
+      getTenantQuotas: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/quotas`, {}, bearer, signal),
     };
   }
 
