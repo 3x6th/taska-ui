@@ -110,6 +110,7 @@ import type {
   ListTenantsParams,
   PlanVersionPage,
   Subscription,
+  Entitlement,
   Tenant,
   TenantOperation,
   TenantPage,
@@ -1594,6 +1595,11 @@ export class RestTaskaApi implements TaskaApi {
     return this.companies("getSubscription").getSubscription(tenantId);
   }
 
+  /** TAS-512: the session layer sends it with the tab's company session, for that company only. Today's build: no request. */
+  async getEntitlement(tenantId: string): Promise<Entitlement> {
+    return this.companies("getEntitlement").getEntitlement(tenantId);
+  }
+
   /** The session layer, or the refusal today's build gives a company operation — without a request. */
   private companies(operation: string): WebSessionClient {
     if (this.web === null) throw new TenancyUnavailableError(operation);
@@ -1744,6 +1750,8 @@ export class RestTaskaApi implements TaskaApi {
           bearer,
         ),
       getSubscription: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/subscription`, {}, bearer, signal),
+      // TAS-512.
+      getEntitlement: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/entitlement`, {}, bearer, signal),
     };
   }
 

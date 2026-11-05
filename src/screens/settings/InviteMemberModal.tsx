@@ -22,6 +22,7 @@ import { keyBadgeStyle } from "../../lib/format";
 import { isIndefinite, keyFor, type SentIntent } from "./companyMembers";
 import { COMPANY_INVITATIONS_KEY, COMPANY_MEMBERS_KEY } from "./companyMembersQuery";
 import { inviteHeadText, inviteRefusalWords } from "./companyMembersText";
+import { QUOTA_WRITE_META } from "./companyPlan";
 
 /** What the modal opens with: empty for «Invite a member», the expired row's for «Invite again» (§4.38). */
 export interface InviteDraft {
@@ -92,6 +93,8 @@ export function InviteMemberModal({
       if (intent.current && isIndefinite(error)) intent.current = { ...intent.current, open: true };
       if (refusalCode(error) === "QUOTA_EXCEEDED") onSeatsChanged();
     },
+    // A refused invitation re-reads the company's plan reads, the snapshot with them (TAS-512, B4).
+    meta: QUOTA_WRITE_META,
   });
 
   const trimmed = trimInvitationEmail(email);
@@ -146,6 +149,8 @@ export function InviteMemberModal({
         pending: (queryClient.getQueryData<Invitation[]>(COMPANY_INVITATIONS_KEY) ?? []).some(
           (row) => row.state === "PENDING" && sameInvitationEmail(row.email, sentEmail),
         ),
+        // A QUOTA_EXCEEDED quotes the seat limit only from the snapshot already read (§4.38, TAS-512).
+        seats,
       })
     : null;
 

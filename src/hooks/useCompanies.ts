@@ -2,7 +2,10 @@ import { QueryClient, useQuery } from "@tanstack/react-query";
 import { useEffect, useSyncExternalStore } from "react";
 import { taskaApi } from "../api/client";
 import type { Workspace } from "../api/TaskaApi";
+import type { Tenant } from "../api/tenants";
 import { onRefusedThisVisit, refusedThisVisit, tenantsQueryOptions } from "../lib/companies";
+import { companyMarker, type CompanyMarker } from "../lib/companyRestrictions";
+import { companyTenantKey } from "../screens/settings/companyGeneral";
 import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
 import { plansQueryOptions } from "../lib/plans";
 
@@ -56,6 +59,27 @@ export function useCompanyName(companyId: string | null): string | null {
   if (companyId === null) return null;
   const listed = companies.data?.find((tenant) => tenant.id === companyId)?.name ?? null;
   return listed ?? (workspace?.tenantId === companyId ? workspace.tenantName : null);
+}
+
+/**
+ * The tab's company's state marker (TAS-512, DESIGN.md §4.34): «blocked»,
+ * «paused» or «read-only», or `null`. From what the tab already holds — the
+ * company as last read (`["tenant", id]`, never fetched here) or its row of
+ * the reader's list, whichever answered last — so it changes in the frame
+ * they do, and asks the server nothing (art-director G8). Inert in today's
+ * build.
+ */
+export function useCompanyMarker(companyId: string | null): CompanyMarker | null {
+  const companies = useCompanies();
+  const tenant = useQuery<Tenant>(
+    { queryKey: companyTenantKey(companyId ?? ""), queryFn: () => taskaApi.getTenant(companyId ?? ""), enabled: false },
+    companyId === null ? inertClient : undefined,
+  );
+  if (companyId === null) return null;
+  const row = companies.data?.find((item) => item.id === companyId) ?? null;
+  const read = tenant.data ?? null;
+  const latest = read !== null && (row === null || tenant.dataUpdatedAt >= companies.dataUpdatedAt) ? read : row;
+  return companyMarker(latest?.restrictions);
 }
 
 /**

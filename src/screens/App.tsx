@@ -39,6 +39,7 @@ import { SettingsScreen } from "./settings/SettingsScreen";
 import { SettingsConnectedAppsSection } from "./settings/SettingsConnectedAppsSection";
 import { SettingsCompanySection } from "./settings/SettingsCompanySection";
 import { SettingsMembersSection } from "./settings/SettingsMembersSection";
+import { SettingsPlanSection } from "./settings/SettingsPlanSection";
 import { SettingsTokensSection } from "./settings/SettingsTokensSection";
 
 export interface ScreenProps {
@@ -199,9 +200,10 @@ export function App() {
                 <Route path="/settings/tokens" element={<SettingsTokensSection />} />
                 <Route path="/settings/connected-apps" element={<SettingsConnectedAppsSection />} />
                 <Route path="/settings/appearance" element={<SettingsAppearanceSection />} />
-                {/* The company itself (TAS-504, §4.39) and its members (TAS-502, §4.38) — this build only. */}
+                {/* The company itself (TAS-504, §4.39), its members (TAS-502, §4.38) and its plan (TAS-512, §4.40) — this build only. */}
                 <Route path="/settings/company" element={<SettingsCompanySection />} />
                 <Route path="/settings/members" element={<SettingsMembersSection />} />
+                <Route path="/settings/plan" element={<SettingsPlanSection />} />
               </Route>
             </Route>
             <Route path="*" element={<NotFoundScreen />} />

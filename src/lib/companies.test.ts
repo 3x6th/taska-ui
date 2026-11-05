@@ -72,6 +72,12 @@ describe("the reader's list (§4.33)", () => {
     expect(line(tenant("a", "A", "PROVISIONING"))).toBe("Being set up");
     expect(line(tenant("a", "A", "ACTIVE", ["OWNER_PAUSE", "PLATFORM_BLOCK"]))).toBe("Blocked by Taska");
     expect(line(tenant("a", "A", "ACTIVE", ["OWNER_PAUSE"]))).toBe("Paused by its owner");
+    // TAS-512: the three financial ones, «Read-only» first; several — the first in the table's order.
+    expect(line(tenant("a", "A", "ACTIVE", ["OVER_QUOTA", "PAYMENT_DISPUTE"]))).toBe("Read-only · payment disputed");
+    expect(line(tenant("a", "A", "ACTIVE", ["OVER_QUOTA", "PAYMENT_EXPIRED"]))).toBe("Read-only · paid period ended");
+    expect(line(tenant("a", "A", "ACTIVE", ["OVER_QUOTA"]))).toBe("Read-only · over plan limits");
+    expect(line(tenant("a", "A", "ACTIVE", ["PAYMENT_EXPIRED", "OWNER_PAUSE"]))).toBe("Paused by its owner");
+    expect(tenantGroup(tenant("a", "A", "ACTIVE", ["OVER_QUOTA"]), none)).toBe(1);
     expect(line(tenant("a", "A", "AWAITING_PAYMENT"))).toBe("Awaiting first payment");
     expect(line(tenant("a", "A"))).toBeNull();
     expect(line(tenant("a", "A", "HIBERNATING"))).toBe("HIBERNATING");
@@ -83,6 +89,9 @@ describe("the reader's list (§4.33)", () => {
     expect(switcherStateLabel(tenant("a", "A", "ACTIVE", ["OWNER_PAUSE"]))).toBe("Paused");
     expect(switcherStateLabel(tenant("a", "A", "ACTIVE", ["PLATFORM_BLOCK", "OWNER_PAUSE"]))).toBe("Blocked");
     expect(switcherStateLabel(tenant("a", "A", "AWAITING_PAYMENT"))).toBe("Awaiting payment");
+    // TAS-512: any of the three financial ones is «Read-only».
+    for (const code of ["PAYMENT_DISPUTE", "PAYMENT_EXPIRED", "OVER_QUOTA"]) expect(switcherStateLabel(tenant("a", "A", "ACTIVE", [code]))).toBe("Read-only");
+    expect(switcherStateLabel(tenant("a", "A", "ACTIVE", ["OWNER_PAUSE", "OVER_QUOTA"]))).toBe("Paused");
     expect(switcherStateLabel(tenant("a", "A"))).toBeNull();
   });
 });

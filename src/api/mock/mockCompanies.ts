@@ -101,6 +101,9 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   resumeTenant: "session",
   transferTenantOwnership: "session",
   getSubscription: "session",
+  // TAS-512: every member's plan read, with the tab's company session, picked
+  // by the session layer as for the REST leg.
+  getEntitlement: "session",
   getMeta: "account",
   listProjects: "tenant-read",
   createProject: "tenant-write",
@@ -241,6 +244,7 @@ type SessionMethods = Pick<
   | "resumeTenant"
   | "transferTenantOwnership"
   | "getSubscription"
+  | "getEntitlement"
 >;
 
 type AnyMethod = (...args: unknown[]) => unknown;
@@ -319,6 +323,7 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     transferTenantOwnership: (tenantId, newOwnerUserId, version, key) =>
       web.transferTenantOwnership(tenantId, newOwnerUserId, version, key),
     getSubscription: (tenantId) => web.getSubscription(tenantId),
+    getEntitlement: (tenantId) => web.getEntitlement(tenantId),
   };
 
   const api: Record<string, unknown> = {};
@@ -344,7 +349,7 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
         api[name] = (...args: unknown[]) =>
           web.call(
             "session",
-            (bearer) => server.serve(bearer, route, name, (store) => Promise.resolve(methodOf(apiFor(store), name)(...args))),
+            (bearer) => server.serve(bearer, route, name, (store) => Promise.resolve(methodOf(apiFor(store), name)(...args)), args),
             // The company's project content: a refusal is an answer about the
             // company (§4.35), and an answer lifts a pause's mark (TAS-504).
             { read: route === "tenant-read", content: route === "tenant-read" },

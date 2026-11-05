@@ -365,6 +365,15 @@ export interface Subscription {
   paidThrough: string | null;
   autopayState: AutopayState | null;
   renewalCancelled: boolean | null;
+  /**
+   * TAS-512: the plan version the subscription is scheduled to move to, read
+   * as the owner's announced terms (ask A47 — the blueprint does not say whose
+   * change it is). `null` when absent. `currentPeriodId` and `anchorDay` are
+   * not read: nothing draws them.
+   */
+  scheduledPlanVersionId: string | null;
+  /** When the scheduled plan applies — an instant, or `null` when absent or unreadable. */
+  scheduledEffectiveAt: string | null;
 }
 
 const instant = (value: unknown): string | null => {
@@ -372,7 +381,7 @@ const instant = (value: unknown): string | null => {
   return at === null || Number.isNaN(Date.parse(at)) ? null : at;
 };
 
-/** One wire `Subscription`: every field optional, an unknown `autopayState` kept as its string, an unreadable `paidThrough` dropped. */
+/** One wire `Subscription`: every field optional, an unknown `autopayState` kept as its string, an unreadable instant dropped. */
 export function toSubscription(wire: unknown): Subscription {
   const row = typeof wire === "object" && wire !== null ? (wire as Record<string, unknown>) : {};
   return {
@@ -383,7 +392,69 @@ export function toSubscription(wire: unknown): Subscription {
     paidThrough: instant(row.paidThrough),
     autopayState: text(row.autopayState),
     renewalCancelled: typeof row.renewalCancelled === "boolean" ? row.renewalCancelled : null,
+    scheduledPlanVersionId: text(row.scheduledPlanVersionId),
+    scheduledEffectiveAt: instant(row.scheduledEffectiveAt),
   };
+}
+
+/* ----------------------------------------- the company's entitlement (TAS-512) */
+
+/**
+ * `Entitlement` (`GET /tenants/{t}/billing/entitlement`, TAS-319; every member
+ * of the company) as the Plan page reads it (api-contract-guard §1, B1): the
+ * plan the company is on and its limits — of which only `TASK_LIFETIME` is
+ * drawn; the other three come from the quota snapshot (B2).
+ *
+ * **Kept on purpose, nothing more.** `validUntil` is the coverage's end and is
+ * money-adjacent — the owner's «Paid until» comes from the subscription only —
+ * so it is not read for anybody (B1, ask A52); `coveragePeriodId` and
+ * `features` are not read either (no capability is drawn, ask A30);
+ * `restrictions` come from `Tenant` (ask A48). The mapper's object has no
+ * field for any of them, so no screen can reach one.
+ */
+export interface Entitlement {
+  tenantId: string | null;
+  /** The entity version, a decimal string. */
+  version: string | null;
+  planVersionId: string | null;
+  limits: QuotaLimit[];
+}
+
+/** One wire `Entitlement`: every field optional, an unusable limit row dropped, an unknown kind kept as it came. */
+export function toEntitlement(wire: unknown): Entitlement {
+  const row = typeof wire === "object" && wire !== null ? (wire as Record<string, unknown>) : {};
+  return {
+    tenantId: text(row.tenantId),
+    version: typeof row.version === "string" && DECIMAL.test(row.version) ? row.version : null,
+    planVersionId: text(row.planVersionId),
+    limits: Array.isArray(row.limits)
+      ? row.limits.map(toQuotaLimit).filter((limit): limit is QuotaLimit => limit !== null)
+      : [],
+  };
+}
+
+/**
+ * A company read whose answer names another company (TAS-512,
+ * api-contract-guard B3): the read fails — nothing of it is drawn, under any
+ * company's name. The client's own rule, so its message is empty: no client
+ * words are ever shown as the server's, and it carries no status, code or
+ * request id for `apiErrorFacts` to find.
+ */
+export class ForeignCompanyAnswerError extends Error {
+  constructor() {
+    super("");
+    this.name = "ForeignCompanyAnswerError";
+  }
+}
+
+/**
+ * The answer, unless it names a company other than `tenantId` — a present
+ * `tenantId` that differs is `ForeignCompanyAnswerError`. An answer that names
+ * none is the requested company's: the session it went with is.
+ */
+export function ofCompany<T extends { tenantId: string | null }>(answer: T, tenantId: string): T {
+  if (answer.tenantId !== null && answer.tenantId !== tenantId) throw new ForeignCompanyAnswerError();
+  return answer;
 }
 
 /* -------------------------------------------------------- the company's name */

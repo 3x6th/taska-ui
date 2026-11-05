@@ -54,12 +54,13 @@ describe("the limits", () => {
         { kind: "PROJECT", limit: "1", unlimited: false },
       ],
     });
-    expect(planLimitsText(free)).toBe("1 project · 5 members · 100 MB storage · 50 issues per project · 1,000 API_CALLS");
-    expect(limitText({ kind: "SEAT", limit: "1", unlimited: false })).toBe("1 member");
+    // «seats», not «members» (TAS-512, art-director B10): a seat is also held by a suspended member or an invitation.
+    expect(planLimitsText(free)).toBe("1 project · 5 seats · 100 MB storage · 50 issues per project · 1,000 API_CALLS");
+    expect(limitText({ kind: "SEAT", limit: "1", unlimited: false })).toBe("1 seat");
     expect(limitText({ kind: "TASK_LIFETIME", limit: "1", unlimited: false })).toBe("1 issue per project");
     for (const [kind, words] of [
       ["PROJECT", "unlimited projects"],
-      ["SEAT", "unlimited members"],
+      ["SEAT", "unlimited seats"],
       ["STORAGE_BYTES", "unlimited storage"],
       ["TASK_LIFETIME", "unlimited issues"],
       ["API_CALLS", "unlimited API_CALLS"],

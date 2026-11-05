@@ -1,5 +1,6 @@
 import { apiErrorFacts, refusalCode, refusalRetryAfter } from "../../api/errors";
 import { freeSeats, type Invitation, type Membership, type Seats } from "../../api/tenantMembers";
+import { reasonedRefusal } from "../../lib/companyRestrictions";
 import { formatWait } from "../authText";
 import { formatDeadline } from "../companySetupText";
 
@@ -244,7 +245,13 @@ export function memberRefusalWords(
       break;
     case "READ_ONLY":
     case "CAPABILITY_DISABLED":
-      return { text: invitation ? "Invitations can’t be changed right now." : "Members can’t be changed right now.", words: null };
+      // TAS-512: a known reason in the refusal's own `reasons` names it (§4.35's clause).
+      return {
+        text:
+          reasonedRefusal(error, company, invitation ? "invitations can’t be changed." : "members can’t be changed.") ??
+          (invitation ? "Invitations can’t be changed right now." : "Members can’t be changed right now."),
+        words: null,
+      };
     case "SCOPE_DENIED":
       return { text: invitation ? "Only company admins can change invitations." : "Only company admins can change members.", words: null };
     // The action's own sentence only: the server's words for it may say
@@ -270,7 +277,7 @@ export function memberRefusalWords(
  */
 export function inviteRefusalWords(
   error: unknown,
-  known: { email: string; company: string | null; member: boolean; pending: boolean } | null = null,
+  known: { email: string; company: string | null; member: boolean; pending: boolean; seats?: Seats | null } | null = null,
 ): RefusalWords {
   const code = refusalCode(error);
   const { status, message } = apiErrorFacts(error);
@@ -282,8 +289,10 @@ export function inviteRefusalWords(
     return { text: "This invitation was not created.", words: null };
   }
   if (code === "QUOTA_EXCEEDED") {
+    // The limit only from the snapshot the page already read (§4.38, TAS-512) — never from the server's words.
+    const limit = known?.seats?.limit ?? null;
     return {
-      text: "All seats are in use, so this invitation was not created. Remove a member or revoke an invitation to free a seat.",
+      text: `${limit === null ? "All seats are" : limit === 1n ? "The 1 seat is" : `All ${limit} seats are`} in use, so this invitation was not created. Remove a member or revoke an invitation to free a seat.`,
       words: null,
     };
   }
@@ -291,7 +300,9 @@ export function inviteRefusalWords(
   if (code === "RATE_LIMITED") {
     return { text: `Too many invitations were sent just now. Try again in ${formatWait(refusalRetryAfter(error))}.`, words: null };
   }
-  if (code === "READ_ONLY" || code === "CAPABILITY_DISABLED") return { text: "Invitations can’t be sent right now.", words: null };
+  if (code === "READ_ONLY" || code === "CAPABILITY_DISABLED") {
+    return { text: reasonedRefusal(error, known?.company ?? null, "invitations can’t be sent.") ?? "Invitations can’t be sent right now.", words: null };
+  }
   if (isUnanswered(status)) {
     return { text: "Taska couldn’t confirm the invitation was created. Try again — it won’t create a second one.", words: message };
   }

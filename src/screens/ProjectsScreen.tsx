@@ -19,7 +19,9 @@ import { PendingValue, Unknown } from "../components/Unknown";
 import type { Project, ProjectStats } from "../domain/types";
 import { useUnanswered } from "../hooks/useUnanswered";
 import { PROJECT_STATS_KEY, projectStatsQueryOptions } from "../lib/boardQuery";
+import { companyWriteRefusalText } from "../lib/companyRestrictions";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
+import { QUOTA_WRITE_META } from "./settings/companyPlan";
 import type { ScreenProps } from "./App";
 
 export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
@@ -414,6 +416,8 @@ function ProjectCard({
 }
 
 function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  // The companies build (TAS-512): the company a quota or restriction refusal names (§4.40, §4.35).
+  const company = useCompanyName(useCompanyAddress()?.companyId ?? null);
   const queryClient = useQueryClient();
   // All three empty. Key and Name used to open as "API" and "API Gateway", and
   // the description as "REST facade over Taska services" — demo text pre-typed
@@ -466,6 +470,8 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
       await queryClient.invalidateQueries({ queryKey: PROJECT_STATS_KEY });
       onClose();
     },
+    // A refused project re-reads the company's quota snapshot too (TAS-512, B4).
+    meta: QUOTA_WRITE_META,
   });
 
   return (
@@ -474,7 +480,8 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         className="form-stack"
         onSubmit={(event) => {
           event.preventDefault();
-          if (canSubmit) create.mutate();
+          // In flight, a press asks nothing more (§4.1).
+          if (canSubmit && !create.isPending) create.mutate();
         }}
       >
         <label className="field">
@@ -527,13 +534,16 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         </div>
         {/* The request id under the sentence (§5.6, TAS-397). */}
         {create.isError && reportable(create.error) ? (
-          <ErrorNote requestId={apiErrorFacts(create.error).requestId}>{create.error.message}</ErrorNote>
+          <ErrorNote requestId={apiErrorFacts(create.error).requestId}>
+            {companyWriteRefusalText(create.error, "project", { company }) ?? create.error.message}
+          </ErrorNote>
         ) : null}
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">
             Cancel
           </button>
-          <button className="primary-button" disabled={!canSubmit || create.isPending} type="submit">
+          {/* In flight `aria-disabled`, not `disabled`: a refused create keeps focus on it (TAS-512, §4.40). */}
+          <button aria-disabled={create.isPending || undefined} className="primary-button create-project-submit" disabled={!canSubmit} type="submit">
             Create project
           </button>
         </div>

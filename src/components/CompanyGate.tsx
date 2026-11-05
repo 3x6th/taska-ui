@@ -25,6 +25,9 @@ import { CompanySetupScreen } from "../screens/CompanySetupScreen";
 import { NotFoundScreen } from "../screens/NotFoundScreen";
 import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
 import type { CompaniesRouteState } from "../screens/CompaniesScreen";
+import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey } from "../screens/settings/companyGeneral";
+import { COMPANY_QUOTAS_KEY } from "../screens/settings/companyMembersQuery";
+import { COMPANY_ENTITLEMENT_KEY, refreshAfterRefusal, type CompanyMutationMeta } from "../screens/settings/companyPlan";
 
 /*
  * The company session of a tab (TAS-500): the address names a company, this
@@ -214,6 +217,40 @@ export function CompanyGate({
   } else if ((entry.status === "closed" || entry.status === "refused") && session.sessionId !== null) {
     setSession(newSessionClient(null, session.generation + 1));
   }
+
+  // What makes the tab read its plan again (TAS-512, api-contract-guard B4):
+  // a write refused READ_ONLY, CAPABILITY_DISABLED or QUOTA_EXCEEDED anywhere
+  // under this company (`refreshAfterRefusal`), and a `Tenant` answer whose
+  // version or restrictions moved — the entitlement, the snapshot and the
+  // owner's subscription are invalidated, re-read where a page shows them.
+  // Never a poll. The upload's gateway legs, which are not mutations, call
+  // `refreshAfterRefusal` themselves.
+  const planClient = session.client;
+  useEffect(() => {
+    const tenantKey = companyTenantKey(companyId);
+    const signature = (tenant: Tenant | undefined) =>
+      tenant === undefined ? null : `${tenant.version ?? ""}|${[...tenant.restrictions].sort().join()}`;
+    let seen = signature(planClient.getQueryData<Tenant>(tenantKey));
+    const offMutations = planClient.getMutationCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "error") return;
+      const meta = event.mutation.options.meta as CompanyMutationMeta | undefined;
+      refreshAfterRefusal(event.action.error, { companyClient: planClient, accountClient, companyId, quotas: meta?.quotaWrite === true });
+    });
+    const offQueries = planClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "success") return;
+      const key = event.query.queryKey;
+      if (key.length !== tenantKey.length || key[0] !== tenantKey[0] || key[1] !== tenantKey[1]) return;
+      const now = signature(event.query.state.data as Tenant | undefined);
+      const moved = seen !== null && now !== null && now !== seen;
+      seen = now ?? seen;
+      if (!moved) return;
+      for (const queryKey of [COMPANY_ENTITLEMENT_KEY, COMPANY_QUOTAS_KEY, COMPANY_SUBSCRIPTION_KEY]) void planClient.invalidateQueries({ queryKey });
+    });
+    return () => {
+      offMutations();
+      offQueries();
+    };
+  }, [accountClient, companyId, planClient]);
 
   // The client a session has left is cancelled and cleared: none of its reads
   // may be retried under the next session's credential.

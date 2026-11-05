@@ -131,6 +131,11 @@ function fakeTransport() {
     getSubscription: vi.fn<B2bTransport["getSubscription"]>(async (_bearer, tenantId) => ({
       tenantId, planVersionId: "plan-team", version: "2", paidThrough: "2026-12-07T09:00:00Z", renewalCancelled: false, autopayState: "CONSENTED",
     })),
+    // TAS-512.
+    getEntitlement: vi.fn<B2bTransport["getEntitlement"]>(async (_bearer, tenantId) => ({
+      tenantId, version: "3", planVersionId: "plan-free", coveragePeriodId: "period-1", validFrom: "2026-05-01T09:00:00Z", validUntil: "2026-12-07T09:00:00Z",
+      restrictions: [], limits: [{ kind: "TASK_LIFETIME", limit: "50", unlimited: false }], features: ["projects.basic"], issuedAt: "2026-11-05T10:00:00Z",
+    })),
   };
 }
 
@@ -1417,6 +1422,9 @@ describe("the company's name, owner and pause (TAS-504, api-contract-guard §1)"
       paidThrough: "2026-12-07T09:00:00Z",
       autopayState: "CONSENTED",
       renewalCancelled: false,
+      // TAS-512: the announced terms, absent here.
+      scheduledPlanVersionId: null,
+      scheduledEffectiveAt: null,
     });
     expect(transport.getSubscription.mock.calls[0].slice(0, 2)).toEqual(["t1-access", NORTHWIND]);
     transport.getSubscription.mockResolvedValueOnce({ tenantId: NORTHWIND, planVersionId: "plan-free", version: "1", renewalCancelled: false, autopayState: "PAUSED_BY_BANK" });

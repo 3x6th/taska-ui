@@ -38,6 +38,37 @@ beforeEach(() => {
   ];
 });
 
+describe("the state marker (TAS-512, §4.34)", () => {
+  it("a paused, blocked or read-only company carries one word after its name and in its accessible name; nothing is disabled", async () => {
+    for (const [restrictions, word] of [
+      [["OWNER_PAUSE"], "paused"],
+      [["PLATFORM_BLOCK", "OWNER_PAUSE"], "blocked"],
+      [["OVER_QUOTA"], "read-only"],
+    ] as const) {
+      state.tenants = [tenant("n", "Northwind", "ACTIVE", [...restrictions]), tenant("g", "Globex", "ACTIVE", ["PAYMENT_EXPIRED"])];
+      const { wrapper } = companiesHarness({ companyId: "n", path: "/projects" });
+      const { unmount } = render(<CompanySwitcher />, { wrapper });
+      const trigger = await screen.findByRole("button", { name: `Northwind, ${word}, switch company` });
+      expect(trigger).not.toBeDisabled();
+      expect(trigger.querySelector(".company-marker")).toHaveTextContent(word);
+      fireEvent.click(trigger);
+      // The other company's row: §4.34's one right slot, «Read-only» for any financial one.
+      expect(within(screen.getByRole("dialog", { name: "Companies" })).getByRole("link", { name: /^Globex/ })).toHaveTextContent("GlobexRead-only");
+      unmount();
+    }
+  });
+
+  it("the company as the tab last read it wins over an older list row; an unknown code gives none", async () => {
+    state.tenants = [tenant("n", "Northwind", "ACTIVE", ["MYSTERY"])];
+    const { wrapper, client } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(<CompanySwitcher />, { wrapper });
+    expect(await screen.findByRole("button", { name: "Northwind, switch company" })).toBeInTheDocument();
+    await waitFor(() => expect(client.getQueryData(["tenants"])).toBeTruthy());
+    client.setQueryData(["tenant", "n"], { ...tenant("n", "Northwind", "ACTIVE", ["PAYMENT_DISPUTE"]), creationDeadline: null, ownerId: "o" });
+    expect(await screen.findByRole("button", { name: "Northwind, read-only, switch company" })).toBeInTheDocument();
+  });
+});
+
 describe("the company switcher", () => {
   it("names the tab's company and lists the first group, current one marked, with one state word", async () => {
     const { wrapper } = companiesHarness({ companyId: "n", path: "/projects" });

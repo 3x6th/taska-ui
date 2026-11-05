@@ -1,5 +1,6 @@
 import { apiErrorFacts, isB2bErrorCode, refusalCode, refusalReasons, refusalRetryAfter } from "../../api/errors";
 import { isKnownRestrictionCode } from "../../api/tenants";
+import { FINANCIAL_RESTRICTIONS, reasonedRefusal } from "../../lib/companyRestrictions";
 import { formatWait } from "../authText";
 import { formatDeadline } from "../companySetupText";
 
@@ -47,11 +48,13 @@ export interface StateLine {
 const STATE_ORDER = ["PLATFORM_BLOCK", "OWNER_PAUSE", "PAYMENT_DISPUTE", "PAYMENT_EXPIRED", "OVER_QUOTA"] as const;
 
 /**
- * §4.39's state lines, from `Tenant.restrictions` and nothing else. The three
- * financial ones carry no explanation — TAS-512's slot. `PENDING_FIRST_PAYMENT`
- * never reaches this page (§4.37 draws such a company's address), so it has no
- * line. «Paused by its owner», never «by you»: the owner who paused it may have
- * handed it over since (D244).
+ * §4.39's state lines, from `Tenant.restrictions` and nothing else — shared by
+ * General and Plan (TAS-512, §4.40), one wording on both. The three financial
+ * ones are explained by role (TAS-512): to the owner what they can do about
+ * it, to everybody else who can. `PENDING_FIRST_PAYMENT` never reaches these
+ * pages (§4.37 draws such a company's address), so it has no line. «Paused by
+ * its owner», never «by you»: the owner who paused it may have handed it over
+ * since (D244).
  */
 export function stateLines(restrictions: readonly string[], owner: boolean): StateLine[] {
   const line = (code: string): StateLine | null => {
@@ -67,11 +70,24 @@ export function stateLines(restrictions: readonly string[], owner: boolean): Sta
       case "OWNER_PAUSE":
         return { code, fact: "Paused by its owner.", explanation: "No one can change anything in it while it’s paused." };
       case "PAYMENT_DISPUTE":
-        return { code, fact: "A payment is disputed.", explanation: null };
+        return {
+          code,
+          fact: "A payment is disputed.",
+          explanation: owner
+            ? "Until it’s settled, nothing in it can be changed and no automatic payments are taken."
+            : "Until it’s settled, nothing in it can be changed.",
+        };
       case "PAYMENT_EXPIRED":
-        return { code, fact: "Its paid period has ended.", explanation: null };
+        return {
+          code,
+          fact: "Its paid period has ended.",
+          explanation: owner
+            ? "Nothing in it can be changed until you renew it. There’s no grace period, and it doesn’t move to a free plan on its own."
+            : "Nothing in it can be changed until its owner renews it.",
+        };
       case "OVER_QUOTA":
-        return { code, fact: "It’s over its plan’s limits.", explanation: null };
+        // Which limit is not said: the server does not say it (ask A46; art-director N2).
+        return { code, fact: "It’s over its plan’s limits.", explanation: "Nothing in it can be changed until it’s back within them." };
       case "PENDING_FIRST_PAYMENT":
         return null;
       default:
@@ -81,6 +97,22 @@ export function stateLines(restrictions: readonly string[], owner: boolean): Sta
   const known = STATE_ORDER.filter((code) => restrictions.includes(code));
   const unknown = restrictions.filter((code) => !(STATE_ORDER as readonly string[]).includes(code));
   return [...new Set([...known, ...unknown])].map(line).filter((item): item is StateLine => item !== null);
+}
+
+/**
+ * «Что ещё работает» (TAS-512, §4.39): one static sentence of the rule after
+ * the lines — only when a financial restriction is there and neither a block,
+ * a pause nor a code outside the dictionary is (they allow something else, and
+ * the contract does not list it). No capability is read and no control is
+ * switched off by it (api-contract-guard B6). The project deletion contracts §5
+ * also allows is not named: the UI has none.
+ */
+export function stillWorksText(restrictions: readonly string[], owner: boolean): string | null {
+  if (!restrictions.some((code) => FINANCIAL_RESTRICTIONS.includes(code))) return null;
+  if (restrictions.some((code) => code === "PLATFORM_BLOCK" || code === "OWNER_PAUSE" || !isKnownRestrictionCode(code))) return null;
+  return owner
+    ? "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t take payments or change plans yet."
+    : "Everything in it can still be read, admins can still remove members and revoke invitations, and you can still leave it.";
 }
 
 /* ------------------------------------------------------- the owner's zone */
@@ -144,9 +176,9 @@ export function renameRefusalWords(error: unknown, company: string | null): Refu
     case "READ_ONLY":
       if (reasons.includes("PLATFORM_BLOCK")) return { text: `Taska has blocked ${companyInside(company)}, so it can’t be renamed.`, words: null };
       if (reasons.includes("OWNER_PAUSE")) return { text: `${companyStart(company)} is paused. Resume it to rename it.`, words: null };
-      return { text: `${companyStart(company)} can’t be renamed right now.`, words: null };
+      return { text: reasonedRefusal(error, company, "it can’t be renamed.") ?? `${companyStart(company)} can’t be renamed right now.`, words: null };
     case "CAPABILITY_DISABLED":
-      return { text: `${companyStart(company)} can’t be renamed right now.`, words: null };
+      return { text: reasonedRefusal(error, company, "it can’t be renamed.") ?? `${companyStart(company)} can’t be renamed right now.`, words: null };
     case "OWNER_REQUIRED":
       return { text: `Only the owner of ${companyInside(company)} can rename it.`, words: null };
     default:
@@ -188,7 +220,12 @@ export function zoneRefusalWords(action: ZoneAction, error: unknown, company: st
           words: null,
         };
       }
-      return { text: pause ? `${companyStart(company)} can’t be paused right now.` : `${companyStart(company)} can’t be resumed right now.`, words: null };
+      return {
+        text:
+          reasonedRefusal(error, company, pause ? "it was not paused." : "it can’t be resumed.") ??
+          (pause ? `${companyStart(company)} can’t be paused right now.` : `${companyStart(company)} can’t be resumed right now.`),
+        words: null,
+      };
     case "CAPABILITY_DISABLED":
       if (pause) return { text: "Pausing companies isn’t available right now.", words: null };
       break;
@@ -238,7 +275,7 @@ export function transferRefusalWords(outcome: TransferOutcome, name: string, com
   switch (code) {
     case "READ_ONLY":
       if (reasons.includes("PLATFORM_BLOCK")) return { text: `Taska has blocked ${companyInside(company)}, so it was not transferred.`, words: null };
-      return { text: `${companyStart(company)} can’t be transferred right now.`, words: null };
+      return { text: reasonedRefusal(error, company, "it was not transferred.") ?? `${companyStart(company)} can’t be transferred right now.`, words: null };
     case "CAPABILITY_DISABLED":
       return { text: "Transferring companies isn’t available right now.", words: null };
     case "OWNER_REQUIRED":

@@ -1,8 +1,9 @@
 import { useId, useRef, useState, type MouseEvent } from "react";
 import { ArrowLeftRight, LogOut, Settings, ShieldCheck } from "lucide-react";
 import { COMPANIES_ROUTE } from "../lib/companies";
-import { useCompanyName } from "../hooks/useCompanies";
+import { useCompanyMarker, useCompanyName } from "../hooks/useCompanies";
 import { AddressLink } from "./CompanyRouter";
+import { CompanyMarkerWord } from "./CompanyMarkerWord";
 import { useCompanyAddress } from "../lib/companyAddress";
 import { Link, useLocation } from "react-router-dom";
 import type { User } from "../domain/types";
@@ -38,6 +39,8 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
   const address = useCompanyAddress();
   const companies = address !== null;
   const companyName = useCompanyName(address?.companyId ?? null);
+  // TAS-512 (§4.34): the company's state, after its name — the only place it is seen below 768.
+  const marker = useCompanyMarker(address?.companyId ?? null);
   // Read off the address rather than `getTenancy()`: only the companies build
   // has one, and so this component asks nothing of an API it does not need.
   const adminConsole = !companies;
@@ -109,7 +112,15 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                 {companies && address?.companyId ? (
                   <div className="user-profile-company-row">
                     <dt>Company</dt>
-                    <dd className="user-profile-company">{companyName ?? "This company"}</dd>
+                    <dd className="user-profile-company">
+                      {companyName ?? "This company"}
+                      {marker ? (
+                        <>
+                          {" "}
+                          <CompanyMarkerWord company={companyName} marker={marker} />
+                        </>
+                      ) : null}
+                    </dd>
                   </div>
                 ) : null}
                 <div>

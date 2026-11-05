@@ -75,6 +75,7 @@ import type {
   ListTenantsParams,
   PlanVersionPage,
   Subscription,
+  Entitlement,
   Tenant,
   TenantOperation,
   TenantPage,
@@ -653,6 +654,8 @@ interface MockUploadTicket {
   /** Epoch ms. Past it, leg 2 answers 403 — the store's answer for a stale signature. */
   expiresAt: number;
   behaviour: MockUploadBehaviour;
+  /** The size leg 1 was asked for — what the companies build's storage counts as reserved until it is confirmed (TAS-512). */
+  sizeBytes: number;
 }
 
 /** An object that has actually been PUT into this mock's stand-in bucket. */
@@ -4155,6 +4158,36 @@ export class MockTaskaStore {
     return user ? { displayName: user.displayName, email: user.email } : null;
   }
 
+  /**
+   * How many projects this store holds, archived ones included — the
+   * companies build's `PROJECT` usage (TAS-512, contracts §8: archived
+   * projects count too). Never called in today's build.
+   */
+  projectCount(): number {
+    return this.projects.length;
+  }
+
+  /**
+   * The companies build's `STORAGE_BYTES` usage (TAS-512): `used` — the bytes
+   * of every attachment row not deleted; `reserved` — the sizes leg 1 was
+   * asked for that no row holds yet and whose link has not expired. Never
+   * called in today's build.
+   */
+  storageUsage(): { used: bigint; reserved: bigint } {
+    const confirmed = new Set<string>();
+    let used = 0n;
+    for (const attachment of this.attachments) {
+      confirmed.add(attachment.objectKey);
+      if (attachment.deletedAt === null) used += BigInt(attachment.sizeBytes);
+    }
+    let reserved = 0n;
+    const at = Date.now();
+    for (const ticket of this.uploadTickets.values()) {
+      if (!confirmed.has(ticket.objectKey) && ticket.expiresAt > at) reserved += BigInt(ticket.sizeBytes);
+    }
+    return { used, reserved };
+  }
+
   /** Whether `projectId` is one of this store's projects and not archived — an invitation's grant may name it (TAS-502). */
   hasOpenProject(projectId: string): boolean {
     return this.projects.some((project) => project.id === projectId && !project.archivedAt);
@@ -6973,6 +7006,7 @@ export class MockTaskaStore {
         ? Date.now() - 60_000
         : Date.now() + ATTACHMENT_PRESIGNED_TTL_MS,
       behaviour,
+      sizeBytes: input.sizeBytes,
     });
 
     return { uploadUrl, objectKey };
@@ -9756,6 +9790,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async getSubscription(_tenantId: string): Promise<Subscription> {
     throw new TenancyUnavailableError("getSubscription");
+  }
+
+  async getEntitlement(_tenantId: string): Promise<Entitlement> {
+    throw new TenancyUnavailableError("getEntitlement");
   }
 
   async getMeta(): Promise<EnumDictionaries> {

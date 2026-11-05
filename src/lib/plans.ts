@@ -121,7 +121,8 @@ export function limitText(limit: QuotaLimit): string {
     case "PROJECT":
       return limit.unlimited || limit.limit === null ? "unlimited projects" : count(limit.limit, "project", "projects");
     case "SEAT":
-      return limit.unlimited || limit.limit === null ? "unlimited members" : count(limit.limit, "member", "members");
+      // «seats», not «members» (TAS-512): a seat is also held by a suspended member or a pending invitation (§4.36, §4.38).
+      return limit.unlimited || limit.limit === null ? "unlimited seats" : count(limit.limit, "seat", "seats");
     case "STORAGE_BYTES":
       return limit.unlimited || limit.limit === null ? "unlimited storage" : `${formatBytes(limit.limit)} storage`;
     case "TASK_LIFETIME":

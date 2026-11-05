@@ -11,7 +11,7 @@ import {
   switcherStateLabel,
   tenantGroup,
 } from "../lib/companies";
-import { useCompanies, useCompanyName, usePrefetchPlans, useRefusedThisVisit } from "../hooks/useCompanies";
+import { useCompanies, useCompanyMarker, useCompanyName, usePrefetchPlans, useRefusedThisVisit } from "../hooks/useCompanies";
 import { AddressLink } from "./CompanyRouter";
 import { useAppPath, useCompanyAddress } from "../lib/companyAddress";
 import { ErrorNote } from "./ErrorNote";
@@ -34,6 +34,8 @@ export function CompanySwitcher() {
   const companyId = address?.companyId ?? null;
   const companies = useCompanies();
   const name = useCompanyName(companyId);
+  // TAS-512 (§4.34): «blocked», «paused» or «read-only», so a member learns of it before a write is refused.
+  const marker = useCompanyMarker(companyId);
   const refused = useRefusedThisVisit();
   // A write of this tab in flight: the other companies wait (api-contract-guard §4).
   const writing = useIsMutating() > 0;
@@ -63,7 +65,7 @@ export function CompanySwitcher() {
         aria-controls={open ? popoverId : undefined}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label={`${name ?? "Company"}, switch company`}
+        aria-label={`${name ?? "Company"}${marker ? `, ${marker}` : ""}, switch company`}
         className="company-switcher-trigger"
         disabled={unread}
         onClick={() => setOpen((value) => !value)}
@@ -76,6 +78,11 @@ export function CompanySwitcher() {
         ) : (
           <span className={known ? "company-switcher-name" : "company-switcher-name is-unknown"}>{name ?? "Company"}</span>
         )}
+        {marker && !unread ? (
+          <span aria-hidden="true" className="company-marker">
+            {marker}
+          </span>
+        ) : null}
         <ChevronsUpDown aria-hidden="true" className="company-switcher-chevron" size={13} />
       </button>
 

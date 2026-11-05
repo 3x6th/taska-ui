@@ -23,23 +23,25 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * revoked one, a suspended membership or a paused company is refused here the
  * way the blueprint says the gateway will refuse it.
  *
- * **Shared by every tab** through `localStorage` `taska.mockServer.v4`: the
+ * **Shared by every tab** through `localStorage` `taska.mockServer.v5`: the
  * companies, memberships, sessions and tokens — since TAS-501 the FREE
  * ledger, the creations' operations and their durable receipts, since TAS-502
  * the invitations, the seat limits, the membership generation and the member
- * writes' durable receipts, and since TAS-504 each company's subscription —
- * read and written on every operation, so a second tab — or a duplicated one
- * — meets the same server. (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's;
- * each bump re-seeds, signing every mock account out once.)
+ * writes' durable receipts, since TAS-504 each company's subscription, and
+ * since TAS-512 each company's entitlement version, its scheduled plan, the
+ * quota kinds it is over and every project's lifetime issue counter — read
+ * and written on every operation, so a second tab — or a duplicated one —
+ * meets the same server. (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's, v4
+ * TAS-504's; each bump re-seeds, signing every mock account out once.)
  * Each company's projects and issues are this page's own, in memory, as
- * today's mock's are: they reset with a reload.
+ * today's mock's are: they reset with a reload — the lifetime counters do not.
  *
  * This narrows docs/ai/API-DIVERGENCE.md's "The mock has a session flag but no
  * session enforcement" for the companies build only; today's build's mock is
  * untouched and enforces nothing.
  */
 
-export const MOCK_SERVER_KEY = "taska.mockServer.v4";
+export const MOCK_SERVER_KEY = "taska.mockServer.v5";
 
 /**
  * `localStorage` key for the server's test hooks, as JSON — the seam
@@ -119,6 +121,23 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v4";
  *   the reader's notifications stay readable. Whether the directory should be
  *   the control plane there instead is ask A42.
  *
+ * The company's plan, usage and restrictions (TAS-512, api-contract-guard §5):
+ *
+ * - `refuseNext`, `delayMs` and `loseAnswer` take `getEntitlement` too, and
+ *   `loseAnswer` also `getTenantQuotas`;
+ * - `applyPlan`: `{[tenantId]: planVersionId}` — stands in for a plan change
+ *   (TAS-354 / TAS-483): applied once per value set — the plan swapped, the
+ *   seat limit set, the entitlement version moved, and `OVER_QUOTA` set with
+ *   every quota kind over its new limit; a FREE plan drops the paid period and
+ *   switches automatic payments off;
+ * - `taskLifetime`: `{[projectId]: n}` — a project's lifetime issue counter set
+ *   to `n`, once per value; past a finite `TASK_LIFETIME` the company is
+ *   `OVER_QUOTA`;
+ * - `paymentDispute`: `{[tenantId]: boolean}` — sets or lifts
+ *   `PAYMENT_DISPUTE`;
+ * - `clockOffsetMs` also applies a scheduled plan change once its
+ *   `scheduledEffectiveAt` has passed.
+ *
  * Everything time- or hook-driven is evaluated on every read of the server's
  * state: there are no timers.
  */
@@ -150,6 +169,9 @@ export interface MockTenantHooks {
   platformBlock?: Record<string, boolean>;
   ownerPauseEnabled?: boolean;
   ownershipTransferEnabled?: boolean;
+  applyPlan?: Record<string, string>;
+  taskLifetime?: Record<string, number>;
+  paymentDispute?: Record<string, boolean>;
 }
 
 /** The fixture companies' ids (fixed, `createdAt` ascending in this order). */
@@ -222,6 +244,9 @@ const MOCK_PLANS: readonly MockPlan[] = [
     limits: [
       { kind: "PROJECT", limit: "3", unlimited: false },
       { kind: "SEAT", limit: "25", unlimited: false },
+      // TAS-512: Umbrella is on this version, and its usage reads all four.
+      { kind: "STORAGE_BYTES", limit: "2000000000", unlimited: false },
+      { kind: "TASK_LIFETIME", unlimited: true },
     ],
     capabilities: ["projects.basic"],
     state: "RETIRED",
@@ -291,6 +316,9 @@ interface StoredSubscription {
   anchorDay?: number;
   renewalCancelled: boolean;
   autopayState: string;
+  /** TAS-512: an announced move to another plan version, applied once `scheduledEffectiveAt` has passed. */
+  scheduledPlanVersionId?: string;
+  scheduledEffectiveAt?: string;
 }
 
 interface StoredTenant {
@@ -311,6 +339,16 @@ interface StoredTenant {
   quotaVersion: number;
   /** The membership generation: moves with every change to a membership, and the members cursor is bound to it. */
   generation: number;
+  /** TAS-512: `Entitlement.version` — moves with the plan, a restriction or the coverage. Never on the `Tenant` wire. */
+  entitlementVersion: number;
+  /**
+   * TAS-512: the quota kinds a plan change left over their limits, and
+   * `TASK_LIFETIME` while a project's counter is past a finite one. `OVER_QUOTA`
+   * is in `restrictions` exactly while this is not empty. Never on the wire.
+   */
+  quotaBreach: string[];
+  /** TAS-512: the last `applyPlan` value applied, so one value is applied once. Never on the wire. */
+  appliedPlan?: string;
 }
 
 interface StoredMembership {
@@ -404,7 +442,7 @@ interface StoredCreation {
 }
 
 interface ServerState {
-  v: 4;
+  v: 5;
   tenants: StoredTenant[];
   memberships: StoredMembership[];
   sessions: StoredSession[];
@@ -432,6 +470,15 @@ interface ServerState {
    * seed — after a reload, or in another tab — leaves them out too.
    */
   cleared: Array<{ tenantId: string; userId: string; seq: number }>;
+  /**
+   * TAS-512: every project's lifetime issue counter (contracts §8): up by one
+   * when a new issue is stored, never down — deleting an issue frees nothing —
+   * and never derived from issue numbers. Keyed by project, with the company
+   * it belongs to. A project not here has created none.
+   */
+  taskLifetime: Record<string, { tenantId: string; count: number }>;
+  /** The `taskLifetime` hook's values already applied, by project — one value is applied once. */
+  lifetimeApplied: Record<string, number>;
 }
 
 /**
@@ -496,11 +543,15 @@ const REMOVE_OPERATION_TYPE = "removeTenantMember";
 const LEAVE_OPERATION_TYPE = "leaveTenant";
 /** The restrictions the RECOVERY policy allows remove and revoke under (access-matrix.json; api-contract-guard §2). */
 const RECOVERY_ALLOWED: ReadonlySet<string> = new Set(["PAYMENT_EXPIRED", "OVER_QUOTA"]);
-/** The SEAT limit of a plan of this mock's catalogue, a decimal string — `null` for unlimited. */
-const seatLimitOf = (planId: string): string | null => {
-  const seat = MOCK_PLANS.find((plan) => plan.id === planId)?.limits.find((limit) => limit.kind === "SEAT");
-  return seat && !seat.unlimited && seat.limit ? seat.limit : null;
+/** One limit of a plan of this mock's catalogue, a decimal string — `null` for an unlimited one or a kind it does not name. */
+const planLimitOf = (planId: string, kind: string): string | null => {
+  const limit = MOCK_PLANS.find((plan) => plan.id === planId)?.limits.find((item) => item.kind === kind);
+  return limit && !limit.unlimited && limit.limit ? limit.limit : null;
 };
+/** The SEAT limit of a plan of this mock's catalogue, a decimal string — `null` for unlimited. */
+const seatLimitOf = (planId: string): string | null => planLimitOf(planId, "SEAT");
+/** The quota kinds a plan change re-checks, in the snapshot's order then the entitlement's. */
+const BREACH_KINDS: readonly string[] = ["SEAT", "PROJECT", "STORAGE_BYTES", "TASK_LIFETIME"];
 
 /** How long a paid period the mock starts on a confirmed first payment lasts — its own choice (TAS-504). */
 const PAID_PERIOD_MS = 30 * DAY;
@@ -614,8 +665,20 @@ export type MockRouteKind = "tenant-read" | "tenant-write" | "tenant-self" | "ac
  * Stark, Wayne and Massive Dynamic have never been paid. Who may be the new
  * owner: Initech's Anna (ACTIVE member), Umbrella's Priya (ACTIVE admin) — and
  * Umbrella's Anna is SUSPENDED, refused.
+ *
+ * TAS-512 adds the plans' usage and their terms (api-contract-guard §5):
+ * Northwind (FREE) holds 3 projects against a limit of 1 and Globex (FREE) 3
+ * — the platform's bypass, which sets no `OVER_QUOTA` (contracts §8 «может»,
+ * ask A46); Northwind's lifetime counters are TAS 47, WEB 50 and MOB 12, so
+ * WEB refuses a new issue while it can still be edited, moved and commented
+ * on, and TAS takes three more. Umbrella is on Team v1 (€15, 25 seats, now
+ * retired) with a move to Team v2 announced for its paid-through — the notice
+ * was created ten days before the seed, so the first boundary after its 30
+ * days is that one — and RND at 50 on a plan without a task limit. The
+ * long-named company's renewal is cancelled; `applyPlan` moving it to FREE is
+ * AC2 — its LNG at 64 is then past the free limit. Initech's HLP is at 12.
  */
-function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships" | "freeLedger" | "invitations"> {
+function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships" | "freeLedger" | "invitations" | "taskLifetime"> {
   const at = (day: number) => `2026-05-${String(day).padStart(2, "0")}T09:00:00Z`;
   const iso = (ms: number) => new Date(ms).toISOString();
   const tenant = (
@@ -640,12 +703,14 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
     seatLimit,
     quotaVersion: 1,
     generation: 1,
+    entitlementVersion: 1,
+    quotaBreach: [],
   });
-  /** Team, paid `days` past the seed; the anchor is that day of the month. */
-  const paid = (days: number, autopayState: string): StoredSubscription => {
+  /** Team (v2 unless named), paid `days` past the seed; the anchor is that day of the month. */
+  const paid = (days: number, autopayState: string, planVersionId: string = MOCK_PLAN_IDS.team): StoredSubscription => {
     const through = new Date(seedAt + days * DAY);
     return {
-      planVersionId: MOCK_PLAN_IDS.team,
+      planVersionId,
       version: "2",
       paidThrough: through.toISOString(),
       anchorDay: through.getUTCDate(),
@@ -653,6 +718,7 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
       autopayState,
     };
   };
+  const umbrellaPaid = paid(45, "CONSENTED", MOCK_PLAN_IDS.teamRetired);
   const free = seatLimitOf(MOCK_PLAN_IDS.free);
   const freePlan = unpaid(MOCK_PLAN_IDS.free);
   const ids = MOCK_TENANT_IDS;
@@ -688,14 +754,20 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
       tenant(ids.northwind, "Northwind", anna, 1, "ACTIVE", [], free, freePlan),
       tenant(ids.globex, "Globex", priya, 2, "ACTIVE", [], free, freePlan),
       tenant(ids.initech, "Initech", sofia, 3, "ACTIVE", ["OWNER_PAUSE"], undefined, paid(32, "CONSENTED")),
-      tenant(ids.umbrella, "Umbrella", tom, 4, "ACTIVE", [], undefined, paid(45, "CONSENTED")),
+      // Team v1, with Team v2 announced for the first boundary after its notice — the paid-through (TAS-512).
+      tenant(ids.umbrella, "Umbrella", tom, 4, "ACTIVE", [], seatLimitOf(MOCK_PLAN_IDS.teamRetired), {
+        ...umbrellaPaid,
+        scheduledPlanVersionId: MOCK_PLAN_IDS.team,
+        scheduledEffectiveAt: umbrellaPaid.paidThrough,
+      }),
       // Blocked: no automatic payment is taken while it is (D145).
       tenant(ids.hooli, "Hooli", priya, 5, "ACTIVE", ["PLATFORM_BLOCK"], undefined, paid(38, "SUSPENDED")),
       {
         ...tenant(ids.massive, "Massive Dynamic", tom, 6, "AUTO_CLOSED", ["PENDING_FIRST_PAYMENT"]),
         creationDeadline: "2026-06-05T09:00:00Z",
       },
-      tenant(ids.longName, MOCK_LONG_TENANT_NAME, priya, 7, "ACTIVE", [], undefined, paid(50, "DISABLED")),
+      // TAS-512: its renewal is cancelled — read-only at the paid-through, never moved to FREE on its own (D213).
+      tenant(ids.longName, MOCK_LONG_TENANT_NAME, priya, 7, "ACTIVE", [], undefined, { ...paid(50, "DISABLED"), renewalCancelled: true }),
       {
         ...tenant(ids.stark, "Stark Industries", tom, 8, "AWAITING_PAYMENT", ["PENDING_FIRST_PAYMENT"]),
         createdAt: iso(seedAt - 20 * DAY),
@@ -771,8 +843,29 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
         version: 1,
       },
     ],
+    taskLifetime: Object.fromEntries(
+      MOCK_TASK_LIFETIME_SEED.map(([tenantId, projectId, count]) => [projectId, { tenantId, count }]),
+    ),
   };
 }
+
+/**
+ * The seeded lifetime issue counters (TAS-512, api-contract-guard §5) — the
+ * server's own numbers, not the stores' issue counts: a counter counts every
+ * issue the project ever created, deleted ones included.
+ */
+export const MOCK_TASK_LIFETIME_SEED: ReadonlyArray<readonly [tenantId: string, projectId: string, count: number]> = [
+  [MOCK_TENANT_IDS.northwind, MOCK_PROJECT_IDS.taska, 47],
+  [MOCK_TENANT_IDS.northwind, MOCK_PROJECT_IDS.web, 50],
+  [MOCK_TENANT_IDS.northwind, MOCK_PROJECT_IDS.mob, 12],
+  [MOCK_TENANT_IDS.globex, MOCK_PROJECT_IDS.ops, 3],
+  [MOCK_TENANT_IDS.globex, MOCK_TENANT_PROJECT_IDS.globexWeb, 2],
+  [MOCK_TENANT_IDS.globex, MOCK_TENANT_PROJECT_IDS.globexFinance, 1],
+  [MOCK_TENANT_IDS.initech, MOCK_TENANT_PROJECT_IDS.initechHelpdesk, 12],
+  [MOCK_TENANT_IDS.umbrella, MOCK_TENANT_PROJECT_IDS.umbrellaResearch, 50],
+  [MOCK_TENANT_IDS.hooli, MOCK_TENANT_PROJECT_IDS.hooliSearch, 1],
+  [MOCK_TENANT_IDS.longName, MOCK_TENANT_PROJECT_IDS.longNameProject, 64],
+];
 
 /**
  * Each company's projects. Northwind is today's seed's TAS, WEB and MOB — with
@@ -1001,6 +1094,7 @@ export class MockTenantServer {
       transferTenantOwnership: (bearer, tenantId, newOwnerUserId, version, key) =>
         this.transferTenantOwnership(bearer, tenantId, newOwnerUserId, version, key),
       getSubscription: (bearer, tenantId) => this.getSubscription(bearer, tenantId),
+      getEntitlement: (bearer, tenantId) => this.getEntitlement(bearer, tenantId),
     };
   }
 
@@ -1008,8 +1102,22 @@ export class MockTenantServer {
    * One data call: the bearer checked against `kind`, then `run` on the store
    * it opens — the company's for a company route, the account's for the
    * account's own — signed in as the bearer's account.
+   *
+   * Since TAS-512 three company writes meet the plan's quotas here, after the
+   * session's check (a restriction is `READ_ONLY` first) and before the store
+   * writes (api-contract-guard §5): `createIssue` — the project's own ACL,
+   * then its lifetime counter at or over a finite `TASK_LIFETIME` is 422
+   * `QUOTA_EXCEEDED` with no reasons, and a stored issue moves the counter up;
+   * `createProject` — 422 when `used + 1 > limit`; `createAttachmentUploadUrl`
+   * — 422 when `used + reserved + size > limit`. `args` are the method's.
    */
-  async serve<T>(bearer: string | null, kind: MockRouteKind, operation: string, run: (store: MockTaskaStore) => Promise<T>): Promise<T> {
+  async serve<T>(
+    bearer: string | null,
+    kind: MockRouteKind,
+    operation: string,
+    run: (store: MockTaskaStore) => Promise<T>,
+    args: readonly unknown[] = [],
+  ): Promise<T> {
     await this.delay(operation, 0);
     const { grant, members, cleared } = this.read((state) => {
       const granted = this.authorize(state, bearer, kind);
@@ -1029,7 +1137,64 @@ export class MockTenantServer {
     if (grant.tenantId !== null && store !== this.accountStore) this.applyClears(grant.tenantId, cleared);
     if (!store.restoreSession(grant.userId)) throw problem(401, "AUTHENTICATION_REQUIRED", "Invalid session");
     if (store !== this.accountStore) store.scopeDirectory(members);
-    return run(store);
+    if (grant.tenantId === null || store === this.accountStore) return run(store);
+    const counted = this.meetQuota(grant.tenantId, operation, args, store);
+    const answer = await run(store);
+    counted?.();
+    return answer;
+  }
+
+  /**
+   * The plan's quota in front of the three writes that use one (see `serve`),
+   * or `null` for any other operation. Answers what to record once the write
+   * has been stored.
+   */
+  private meetQuota(tenantId: string, operation: string, args: readonly unknown[], store: MockTaskaStore): (() => void) | null {
+    const exceeded = (title: string) => problem(422, "QUOTA_EXCEEDED", title);
+    const planOf = (state: ServerState) => state.tenants.find((item) => item.id === tenantId)?.subscription.planVersionId ?? "";
+    if (operation === "createIssue") {
+      const projectId = typeof args[0] === "string" ? args[0] : "";
+      // The project's own checks first: one that is not there stays the store's 404.
+      store.getProject(projectId);
+      this.read((state) => {
+        const limit = planLimitOf(planOf(state), "TASK_LIFETIME");
+        const count = state.taskLifetime[projectId]?.count ?? 0;
+        if (limit !== null && BigInt(count) >= BigInt(limit)) throw exceeded("The project has reached its plan's issue limit");
+      });
+      return () =>
+        this.write((state) => {
+          const entry = state.taskLifetime[projectId];
+          state.taskLifetime[projectId] = { tenantId, count: (entry?.count ?? 0) + 1 };
+        });
+    }
+    if (operation === "createProject") {
+      this.read((state) => {
+        const limit = planLimitOf(planOf(state), "PROJECT");
+        if (limit !== null && BigInt(store.projectCount()) + 1n > BigInt(limit)) throw exceeded("The tenant has reached its plan's project limit");
+      });
+      return () => this.bumpQuotaVersion(tenantId);
+    }
+    if (operation === "createAttachmentUploadUrl") {
+      const input = typeof args[2] === "object" && args[2] !== null ? (args[2] as { sizeBytes?: unknown }) : {};
+      const size = typeof input.sizeBytes === "number" && Number.isInteger(input.sizeBytes) && input.sizeBytes > 0 ? BigInt(input.sizeBytes) : 0n;
+      this.read((state) => {
+        const limit = planLimitOf(planOf(state), "STORAGE_BYTES");
+        const usage = store.storageUsage();
+        if (limit !== null && usage.used + usage.reserved + size > BigInt(limit)) throw exceeded("The tenant has reached its plan's storage limit");
+      });
+      return () => this.bumpQuotaVersion(tenantId);
+    }
+    if (operation === "confirmAttachmentUpload" || operation === "deleteAttachment" || operation === "archiveProject") {
+      return () => this.bumpQuotaVersion(tenantId);
+    }
+    return null;
+  }
+
+  private bumpQuotaVersion(tenantId: string): void {
+    this.write((state) => {
+      const tenant = state.tenants.find((item) => item.id === tenantId);
+      if (tenant) tenant.quotaVersion += 1;
+    });
   }
 
   /* ------------------------------------------------------------ the routes */
@@ -1262,6 +1427,8 @@ export class MockTenantServer {
         seatLimit: seatLimitOf(plan.id),
         quotaVersion: 1,
         generation: 1,
+        entitlementVersion: 1,
+        quotaBreach: [],
       };
       const operation: StoredOperation = {
         id: uuid(),
@@ -1678,32 +1845,63 @@ export class MockTenantServer {
       invitation.state = "REVOKED";
       invitation.version += 1;
       tenant.quotaVersion += 1;
+      // A seat freed may bring the company back within its plan (TAS-512).
+      this.reconcileBreaches(state, tenant);
       receipt.keep(null);
     });
   }
 
-  /** `GET …/quotas`: the SEAT row only (the mock has no PROJECT or STORAGE rows, TAS-512); never refused by a restriction. */
+  /**
+   * `GET …/quotas`: since TAS-512 the three rows the blueprint allows, SEAT,
+   * PROJECT and STORAGE_BYTES — PROJECT counts every project of the company,
+   * archived ones included; STORAGE_BYTES is the confirmed bytes, reserved
+   * the upload links not yet confirmed. Never refused by a restriction.
+   */
   private async getTenantQuotas(bearer: string | null, tenantId: string): Promise<unknown> {
     await this.delay("getTenantQuotas");
-    return this.read((state) => {
+    const answer = this.read((state) => {
       const { tenant } = this.authorizeMembers(state, bearer, tenantId, "getTenantQuotas", "SEATS");
       const seats = this.seatCounts(state, tenant);
+      const store = this.tenantStore(tenantId);
+      const storage = store.storageUsage();
+      const version = String(tenant.quotaVersion);
+      const limitOf = (limit: string | null) => (limit === null ? { unlimited: true } : { limit, unlimited: false });
+      const plan = tenant.subscription.planVersionId;
       return {
         tenantId,
-        version: String(tenant.quotaVersion),
+        version,
         quotas: [
+          // `QuotaUsage` requires `version` and `unlimited` (api-contract-guard N3).
+          { kind: "SEAT", used: seats.used.toString(), reserved: seats.reserved.toString(), ...limitOf(tenant.seatLimit), version },
+          { kind: "PROJECT", used: String(store.projectCount()), reserved: "0", ...limitOf(planLimitOf(plan, "PROJECT")), version },
           {
-            kind: "SEAT",
-            used: seats.used.toString(),
-            reserved: seats.reserved.toString(),
-            ...(tenant.seatLimit === null ? { unlimited: true } : { limit: tenant.seatLimit, unlimited: false }),
-            // `QuotaUsage` requires `version` and `unlimited` (api-contract-guard N3).
-            version: String(tenant.quotaVersion),
+            kind: "STORAGE_BYTES",
+            used: storage.used.toString(),
+            reserved: storage.reserved.toString(),
+            ...limitOf(planLimitOf(plan, "STORAGE_BYTES")),
+            version,
           },
         ],
         asOf: new Date(this.now()).toISOString(),
       };
     });
+    if (this.takeLostAnswer("getTenantQuotas")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /**
+   * `GET /tenants/{t}/billing/entitlement` (TAS-512, api-contract-guard §5):
+   * TAS-502's order of checks (the session, `TENANT_REQUIRED`, a `refuseNext`
+   * hook, the path, `TENANT_MISMATCH`, `TENANT_NOT_FOUND`, a company still
+   * being set up 409, the caller ACTIVE); any role; never refused by a
+   * restriction. The answer is the blueprint's whole `Entitlement` — the
+   * client keeps four fields of it.
+   */
+  private async getEntitlement(bearer: string | null, tenantId: string): Promise<unknown> {
+    await this.delay("getEntitlement");
+    const answer = this.read((state) => this.wireEntitlement(this.authorizeMembers(state, bearer, tenantId, "getEntitlement", "SEATS").tenant));
+    if (this.takeLostAnswer("getEntitlement")) throw new TypeError("Failed to fetch");
+    return answer;
   }
 
   /* ------------------------------- the company's name, owner and pause (TAS-504) */
@@ -2060,6 +2258,8 @@ export class MockTenantServer {
     tenant.generation += 1;
     tenant.quotaVersion += 1;
     this.cutOff(state, tenant, membership.userId);
+    // A seat freed may bring the company back within its plan (TAS-512).
+    this.reconcileBreaches(state, tenant);
   }
 
   /** The clears this page's store of `tenantId` has not applied yet, applied — once each. */
@@ -2191,13 +2391,23 @@ export class MockTenantServer {
    * (TAS-504: `getSubscription` is the owner's only).
    */
   private wireTenant(tenant: StoredTenant): unknown {
-    const { seatLimit: _seats, quotaVersion: _quota, generation: _generation, subscription: _subscription, ...rest } = tenant;
+    const {
+      seatLimit: _seats,
+      quotaVersion: _quota,
+      generation: _generation,
+      subscription: _subscription,
+      entitlementVersion: _entitlement,
+      quotaBreach: _breach,
+      appliedPlan: _applied,
+      ...rest
+    } = tenant;
     return { ...rest, restrictions: [...tenant.restrictions] };
   }
 
-  /** `Subscription`: `paidThrough` and `anchorDay` only when there is a paid period (ask A37). */
+  /** `Subscription`: `paidThrough` and `anchorDay` only when there is a paid period (ask A37), the scheduled plan only when one is announced. */
   private wireSubscription(tenant: StoredTenant): unknown {
-    const { planVersionId, version, paidThrough, anchorDay, renewalCancelled, autopayState } = tenant.subscription;
+    const { planVersionId, version, paidThrough, anchorDay, renewalCancelled, autopayState, scheduledPlanVersionId, scheduledEffectiveAt } =
+      tenant.subscription;
     return {
       tenantId: tenant.id,
       planVersionId,
@@ -2205,8 +2415,113 @@ export class MockTenantServer {
       ...(paidThrough === undefined ? {} : { paidThrough }),
       ...(anchorDay === undefined ? {} : { anchorDay }),
       renewalCancelled,
+      ...(scheduledPlanVersionId === undefined || scheduledEffectiveAt === undefined ? {} : { scheduledPlanVersionId, scheduledEffectiveAt }),
       autopayState,
     };
+  }
+
+  /**
+   * `Entitlement` as the blueprint has it (TAS-512): the subscription's plan,
+   * `validFrom` the paid period's start (the mock's 30 days before its end)
+   * else the company's creation, `validUntil` the paid-through only while
+   * there is one, every current restriction in order, the plan's limits and
+   * its capabilities as `features`, issued now.
+   */
+  private wireEntitlement(tenant: StoredTenant): unknown {
+    const plan = MOCK_PLANS.find((item) => item.id === tenant.subscription.planVersionId);
+    const through = tenant.subscription.paidThrough;
+    return {
+      tenantId: tenant.id,
+      version: String(tenant.entitlementVersion),
+      planVersionId: tenant.subscription.planVersionId,
+      validFrom: through === undefined ? tenant.createdAt : new Date(Date.parse(through) - PAID_PERIOD_MS).toISOString(),
+      ...(through === undefined ? {} : { validUntil: through }),
+      restrictions: orderedRestrictions(tenant.restrictions),
+      limits: (plan?.limits ?? []).map((limit) => ({ ...limit })),
+      features: [...(plan?.capabilities ?? [])],
+      issuedAt: new Date(this.now()).toISOString(),
+    };
+  }
+
+  /* ------------------------------------- the plan's quotas (TAS-512) */
+
+  /**
+   * Whether the company is within its plan's limit of `kind` (api-contract-
+   * guard §5): seats held (`used + reserved`), every project of its store,
+   * the confirmed bytes, and every project's lifetime counter. An unlimited or
+   * unnamed limit is always within.
+   */
+  private withinLimit(state: ServerState, tenant: StoredTenant, kind: string): boolean {
+    if (kind === "SEAT") {
+      if (tenant.seatLimit === null) return true;
+      const seats = this.seatCounts(state, tenant);
+      return seats.used + seats.reserved <= BigInt(tenant.seatLimit);
+    }
+    const limit = planLimitOf(tenant.subscription.planVersionId, kind);
+    if (limit === null) return true;
+    if (kind === "PROJECT") return BigInt(this.tenantStore(tenant.id).projectCount()) <= BigInt(limit);
+    if (kind === "STORAGE_BYTES") return this.tenantStore(tenant.id).storageUsage().used <= BigInt(limit);
+    if (kind === "TASK_LIFETIME") {
+      return Object.values(state.taskLifetime).every((entry) => entry.tenantId !== tenant.id || BigInt(entry.count) <= BigInt(limit));
+    }
+    return true;
+  }
+
+  /**
+   * `OVER_QUOTA` kept in step with the breached kinds: a kind leaves the
+   * breach once it is within its limit; `TASK_LIFETIME` joins it whenever a
+   * counter is past a finite limit; `OVER_QUOTA` is set exactly while one is
+   * left, and a change moves the company's and the entitlement's versions.
+   * Answers whether anything changed.
+   */
+  private reconcileBreaches(state: ServerState, tenant: StoredTenant): boolean {
+    const breach = tenant.quotaBreach.filter((kind) => !this.withinLimit(state, tenant, kind));
+    if (!breach.includes("TASK_LIFETIME") && !this.withinLimit(state, tenant, "TASK_LIFETIME")) breach.push("TASK_LIFETIME");
+    const ordered = BREACH_KINDS.filter((kind) => breach.includes(kind));
+    let changed = ordered.join() !== tenant.quotaBreach.join();
+    tenant.quotaBreach = ordered;
+    if (setRestriction(tenant, "OVER_QUOTA", ordered.length > 0)) {
+      tenant.entitlementVersion += 1;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * A plan applied (the `applyPlan` hook, standing in for TAS-354 / TAS-483):
+   * the subscription moves to it — a FREE one without a paid period or
+   * automatic payments, an announced change dropped either way — the seat
+   * limit follows, the entitlement version moves, and every kind over its new
+   * limit is breached (`reconcileBreaches` sets `OVER_QUOTA`).
+   */
+  private applyPlan(state: ServerState, tenant: StoredTenant, planVersionId: string): void {
+    const sub = tenant.subscription;
+    const version = nextVersion(sub.version);
+    tenant.subscription = isFreePlan(planVersionId)
+      ? { planVersionId, version, renewalCancelled: false, autopayState: "DISABLED" }
+      : {
+          planVersionId,
+          version,
+          ...(sub.paidThrough === undefined ? {} : { paidThrough: sub.paidThrough }),
+          ...(sub.anchorDay === undefined ? {} : { anchorDay: sub.anchorDay }),
+          renewalCancelled: sub.renewalCancelled,
+          autopayState: sub.autopayState,
+        };
+    tenant.seatLimit = seatLimitOf(planVersionId);
+    tenant.entitlementVersion += 1;
+    tenant.appliedPlan = planVersionId;
+    tenant.quotaBreach = BREACH_KINDS.filter((kind) => !this.withinLimit(state, tenant, kind));
+  }
+
+  /** The company a project belongs to, from the counters, else this page's stores. */
+  private tenantOfProject(state: ServerState, projectId: string): string | null {
+    const counted = state.taskLifetime[projectId]?.tenantId;
+    if (counted) return counted;
+    for (const [tenantId, seed] of Object.entries(TENANT_SEEDS)) {
+      if (seed.keep.some((item) => item.projectId === projectId) || seed.add.some((item) => item.id === projectId)) return tenantId;
+    }
+    for (const [tenantId, store] of this.stores) if (store.hasOpenProject(projectId)) return tenantId;
+    return null;
   }
 
   /** `Operation`; `asCreated` is develop's createTenant answer — PENDING, `updatedAt = createdAt` (ask A12). */
@@ -2336,14 +2651,15 @@ export class MockTenantServer {
       const raw = this.storage.getItem(MOCK_SERVER_KEY);
       if (raw !== null) {
         const parsed = JSON.parse(raw) as ServerState;
-        if (parsed && parsed.v === 4 && Array.isArray(parsed.tenants)) return parsed;
+        if (parsed && parsed.v === 5 && Array.isArray(parsed.tenants)) return parsed;
       }
     } catch {
       if (this.memory) return this.memory;
     }
     return {
-      v: 4,
+      v: 5,
       ...seedTenants(this.now()),
+      lifetimeApplied: {},
       sessions: [],
       access: {},
       refresh: {},
@@ -2396,6 +2712,7 @@ export class MockTenantServer {
           paidThrough: through.toISOString(),
           anchorDay: through.getUTCDate(),
         };
+        tenant.entitlementVersion += 1;
       }
       changed = true;
     };
@@ -2445,6 +2762,41 @@ export class MockTenantServer {
         changed = true;
       } else if (tenant.lifecycle === "AUTO_CLOSED" && late.has(tenant.id)) open(tenant, now);
     }
+    // TAS-512: the lifetime counters a hook sets, once per value.
+    const lifetimes = typeof hooks.taskLifetime === "object" && hooks.taskLifetime !== null ? hooks.taskLifetime : {};
+    for (const [projectId, count] of Object.entries(lifetimes)) {
+      if (typeof count !== "number" || !Number.isInteger(count) || count < 0 || state.lifetimeApplied[projectId] === count) continue;
+      const tenantId = this.tenantOfProject(state, projectId);
+      if (tenantId === null) continue;
+      state.taskLifetime[projectId] = { tenantId, count };
+      state.lifetimeApplied[projectId] = count;
+      changed = true;
+    }
+    // TAS-512: an announced plan once its date has passed, a plan the hook
+    // applies, a payment dispute, and the quota kinds a company is over.
+    const plans = typeof hooks.applyPlan === "object" && hooks.applyPlan !== null ? hooks.applyPlan : {};
+    const disputes = typeof hooks.paymentDispute === "object" && hooks.paymentDispute !== null ? hooks.paymentDispute : {};
+    for (const tenant of state.tenants) {
+      const sub = tenant.subscription;
+      if (sub.scheduledPlanVersionId !== undefined && sub.scheduledEffectiveAt !== undefined && Date.parse(sub.scheduledEffectiveAt) <= now) {
+        const { scheduledPlanVersionId: planVersionId, scheduledEffectiveAt: _at, ...kept } = sub;
+        tenant.subscription = { ...kept, planVersionId, version: nextVersion(sub.version) };
+        tenant.seatLimit = seatLimitOf(planVersionId);
+        tenant.entitlementVersion += 1;
+        changed = true;
+      }
+      const wanted = plans[tenant.id];
+      if (typeof wanted === "string" && wanted !== tenant.appliedPlan && MOCK_PLANS.some((plan) => plan.id === wanted)) {
+        this.applyPlan(state, tenant, wanted);
+        changed = true;
+      }
+      const dispute = disputes[tenant.id];
+      if (typeof dispute === "boolean" && setRestriction(tenant, "PAYMENT_DISPUTE", dispute)) {
+        tenant.entitlementVersion += 1;
+        changed = true;
+      }
+      if (this.reconcileBreaches(state, tenant)) changed = true;
+    }
     // TAS-504: the platform's block, and paid periods that have ended.
     const blocks = typeof hooks.platformBlock === "object" && hooks.platformBlock !== null ? hooks.platformBlock : {};
     for (const tenant of state.tenants) {
@@ -2452,6 +2804,8 @@ export class MockTenantServer {
       if (typeof block === "boolean" && setRestriction(tenant, "PLATFORM_BLOCK", block)) changed = true;
       const through = tenant.subscription.paidThrough;
       if (tenant.lifecycle === "ACTIVE" && through !== undefined && Date.parse(through) <= now && setRestriction(tenant, "PAYMENT_EXPIRED", true)) {
+        // TAS-512: the coverage ended, so the entitlement moves too.
+        tenant.entitlementVersion += 1;
         changed = true;
       }
     }

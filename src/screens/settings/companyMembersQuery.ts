@@ -1,6 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import { taskaApi } from "../../api/client";
 import { UnendedListError, readAllPages } from "../../api/tenantMembers";
+import { ForeignCompanyAnswerError } from "../../api/tenants";
 import { isIndefinite } from "./companyMembers";
 
 /*
@@ -17,10 +18,11 @@ export const COMPANY_QUOTAS_KEY = ["company-quotas"] as const;
 /**
  * One retry for an answer that never came; never for a refusal, which says the
  * same the second time — nor for a list that did not end, which would be 50
- * more pages to find it out again (api-contract-guard note 4).
+ * more pages to find it out again (api-contract-guard note 4), nor for an
+ * answer about another company (TAS-512, B3), which is an answer.
  */
 export const retryUnanswered = (failureCount: number, error: Error) =>
-  failureCount < 1 && !(error instanceof UnendedListError) && isIndefinite(error);
+  failureCount < 1 && !(error instanceof UnendedListError) && !(error instanceof ForeignCompanyAnswerError) && isIndefinite(error);
 
 /** Every member, all pages, before the first draw (§4.38). */
 export const companyMembersOptions = (tenantId: string) =>

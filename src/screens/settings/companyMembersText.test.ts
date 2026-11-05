@@ -149,6 +149,9 @@ describe("the refusal table, by Problem.code (§4.38 «Отказы»)", () => {
       "The invitation to kai@example.com has expired, so nothing was sent. Invite them again.",
     );
     expect(memberRefusalWords("suspend", refusal(403, "READ_ONLY"), who).text).toBe("Members can’t be changed right now.");
+    // TAS-512: a known reason in the refusal names itself — the clause of §4.35.
+    expect(memberRefusalWords("role", refusal(403, "READ_ONLY", { reasons: ["OVER_QUOTA"] }), who).text).toMatch(/ is over its plan’s limits, so members can’t be changed\.$/);
+    expect(memberRefusalWords("revoke", refusal(403, "READ_ONLY", { reasons: ["PLATFORM_BLOCK"] }), who).text).toMatch(/^Taska has blocked .*, so invitations can’t be changed\.$/);
     expect(memberRefusalWords("revoke", refusal(403, "CAPABILITY_DISABLED"), who).text).toBe("Invitations can’t be changed right now.");
     expect(memberRefusalWords("role", refusal(403, "SCOPE_DENIED"), who).text).toBe("Only company admins can change members.");
     expect(memberRefusalWords("resend", refusal(429, "RATE_LIMITED", { retryAfterSeconds: 30 }), who).text).toBe(
@@ -179,6 +182,15 @@ describe("the refusal table, by Problem.code (§4.38 «Отказы»)", () => {
       "Too many invitations were sent just now. Try again in 2 minutes.",
     );
     expect(inviteRefusalWords(refusal(403, "READ_ONLY")).text).toBe("Invitations can’t be sent right now.");
+    // TAS-512: the reason's clause; the seat limit quoted only from the snapshot read.
+    const sent = { email: "lin@example.com", company: "Northwind", member: false, pending: false };
+    expect(inviteRefusalWords(refusal(403, "READ_ONLY", { reasons: ["PAYMENT_DISPUTE"] }), sent).text).toBe(
+      "A payment for Northwind is disputed, so invitations can’t be sent.",
+    );
+    expect(inviteRefusalWords(refusal(422, "QUOTA_EXCEEDED"), { ...sent, seats: { used: 4n, reserved: 1n, limit: 5n } }).text).toBe(
+      "All 5 seats are in use, so this invitation was not created. Remove a member or revoke an invitation to free a seat.",
+    );
+    expect(inviteRefusalWords(refusal(422, "QUOTA_EXCEEDED"), { ...sent, seats: null }).text).toMatch(/^All seats are in use, so/);
     expect(inviteRefusalWords(refusal(502, "DEPENDENCY_UNAVAILABLE"))).toEqual({
       text: "Taska couldn’t confirm the invitation was created. Try again — it won’t create a second one.",
       words: "server words",

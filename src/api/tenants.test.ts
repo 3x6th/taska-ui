@@ -215,6 +215,9 @@ describe("the owner's subscription (TAS-504, api-contract-guard §1, M2)", () =>
       paidThrough: "2026-12-20T09:00:00Z",
       autopayState: "CONSENTED",
       renewalCancelled: false,
+      // TAS-512: the announced terms, absent here.
+      scheduledPlanVersionId: null,
+      scheduledEffectiveAt: null,
     });
     expect(toSubscription({ autopayState: "PAUSED_BY_BANK" })).toMatchObject({ paidThrough: null, autopayState: "PAUSED_BY_BANK", renewalCancelled: null });
     for (const paidThrough of ["not a date", "", 42, null, "2026-13-45T99:00:00Z"]) {

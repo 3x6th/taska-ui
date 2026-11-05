@@ -658,6 +658,9 @@ describe("the company's name, owner and pause on the wire (TAS-504, api-contract
       paidThrough: "2026-12-07T09:00:00Z",
       autopayState: "CONSENTED",
       renewalCancelled: false,
+      // TAS-512: the announced terms, absent here.
+      scheduledPlanVersionId: null,
+      scheduledEffectiveAt: null,
     });
     const read = sent.find((request) => request.url === `/api/v1/tenants/${NORTHWIND}/billing/subscription`);
     expect(read?.method).toBe("GET");

@@ -163,8 +163,8 @@ test("a paused company opens, reads, and refuses a write on that write alone", a
   await dialog.getByRole("textbox", { name: "Key", exact: true }).fill("NEW");
   await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("New work");
   await dialog.getByRole("button", { name: "Create project" }).click();
-  // The server's words and its request id, on the write — the company stays open.
-  await expect(dialog.getByText("The company is read-only")).toBeVisible();
+  // The refusal's reason in §4.35's words (TAS-512), on the write — the company stays open.
+  await expect(dialog.getByText("Initech is paused, so nothing in it can be changed.")).toBeVisible();
   await expect(page).toHaveURL(companyPath(COMPANY.initech));
   await expect(page.getByRole("heading", { name: /is paused|no longer have access/ })).toHaveCount(0);
 });
