@@ -3786,6 +3786,17 @@ h1 {
   margin: -5px 0;
 }
 
+/* «See Members» alone in the Owner row: §5.8's standalone link — a 28 target
+   whose 5 above and below are taken back. Inline-level, so the `dd`'s own line
+   still sets the row: as a block the row lost 0.8 (37.8 → 37.0, measured). */
+.company-general-facts .admin-note-link {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 28px;
+  margin: -5px 0;
+}
+
 /* The rename form in the `dd` (§5.9's recipe), no wider than it. */
 .company-general-rename-form {
   display: flex;
@@ -3982,8 +3993,11 @@ h1 {
 }
 
 /* The modal re-drawn by the company's new context while its transfer is
-   still out (§4.39 «В полёте»): it is not opening, so it does not pop in. */
-.modal.is-continued {
+   still out (§4.11 «Та же модалка, нарисованная заново», §4.39 «В полёте»):
+   it is not opening, so neither the panel's tk-pop nor the scrim's tk-fade
+   plays again — the scrim stays where it was on every frame. */
+.modal-layer.is-continued > .modal,
+.modal-layer.is-continued > .modal-backdrop {
   animation: none;
 }
 
@@ -4000,6 +4014,17 @@ h1 {
 
   .company-transfer-select {
     height: 44px;
+  }
+
+  /* «See Members»: 44 from its 28 without growing the row. */
+  .company-general-facts .admin-note-link {
+    position: relative;
+  }
+
+  .company-general-facts .admin-note-link::before {
+    position: absolute;
+    content: "";
+    inset: -8px -4px;
   }
 }
 

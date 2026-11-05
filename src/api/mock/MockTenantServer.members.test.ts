@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MemoryStorage } from "../../test/memoryStorage";
 import { WorkspaceClosedError, apiErrorFacts, refusalCode, refusalReasons, refusalViolations } from "../errors";
-import type { TaskaApi, WorkspaceClosedEvent } from "../TaskaApi";
+import type { TaskaApi, WorkspaceClosedEvent, WorkspaceRestrictedEvent } from "../TaskaApi";
 import { readAllPages, seatsOf, type Invitation, type Membership } from "../tenantMembers";
 import { createLocalLockManager } from "../webSession";
 import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore } from "./MockTaskaApi";
@@ -293,20 +293,26 @@ describe("restriction policies (NORMAL, RECOVERY, LEAVE, DIRECTORY)", () => {
     expect(companies.items.map((tenant) => tenant.name)).toEqual(["Northwind", "Globex"]);
   });
 
-  // TAS-504 changed this on purpose (art-director G1, ask A35): under a pause
-  // or a block the directory is the control plane — the owner chooses a new
-  // owner from it and a member reaches Leave — whatever the read flag says.
-  it("with the content-read flag off, a paused company's directory still reads, and its member can still leave", async () => {
+  // Since TAS-504 (api-contract-guard B2) the refusal no longer closes the
+  // company: it marks the tab, and the session stays — the rule itself is
+  // TAS-502's (DIRECTORY = CONTENT_READ; whether it should be the control
+  // plane is ask A42).
+  it("with the content-read flag off, a paused company's directory read is refused (DIRECTORY = CONTENT_READ) — marking the tab, not closing it", async () => {
     const I = MOCK_TENANT_IDS.initech;
     const { api, local } = await inCompany("anna@example.com", I);
     hooks(local, { contentReadUnderRestriction: false });
     const closed: WorkspaceClosedEvent[] = [];
+    const restricted: WorkspaceRestrictedEvent[] = [];
     api.onWorkspaceClosed((event) => closed.push(event));
-    await expect(api.listProjects()).rejects.toMatchObject({ code: "CAPABILITY_DISABLED", reasons: ["OWNER_PAUSE"] });
-    expect((await members(api, I)).map((item) => item.userId).sort()).toEqual([anna, sofia].sort());
+    api.onWorkspaceRestricted((event) => restricted.push(event));
+    const refused = await caught(members(api, I));
+    expect(facts(refused)).toEqual({ status: 403, code: "CAPABILITY_DISABLED" });
+    expect(refusalReasons(refused)).toEqual(["OWNER_PAUSE"]);
     expect(closed).toEqual([]);
+    expect(restricted.map((event) => [event.restricted, event.reasons])).toEqual([[true, ["OWNER_PAUSE"]]]);
+    expect(api.currentWorkspace()?.tenantId).toBe(I);
+    // Leaving is never refused by a restriction (LEAVE).
     await expect(api.leaveTenant(I, key())).resolves.toMatchObject({ state: "SUCCEEDED" });
-    expect(api.currentWorkspace()).toBeNull();
   });
 });
 

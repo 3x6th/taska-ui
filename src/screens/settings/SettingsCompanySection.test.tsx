@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useEffect } from "react";
-import { useLocation } from "react-router-dom";
+import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
 import type { Membership } from "../../api/tenantMembers";
@@ -409,6 +409,20 @@ describe("rename (§4.39 «Rename», B4)", () => {
     expect(field).toHaveAttribute("aria-invalid", "true");
   });
 
+  it("a new attempt takes the previous refusal away in the frame of the press", async () => {
+    const second = gate<unknown>();
+    state.answers = [() => Promise.reject(refusal(403, "READ_ONLY", ["OWNER_PAUSE"])), () => second.promise];
+    const field = await openForm();
+    fireEvent.change(field, { target: { value: "Umbrella Corp" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Umbrella is paused. Resume it to rename it.");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).not.toHaveAttribute("aria-disabled"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await act(async () => second.resolve({ ...state.tenant, name: "Umbrella Corp", version: "4" }));
+    await waitFor(() => expect(dd("Name")).toHaveTextContent("Umbrella Corp"));
+  });
+
   it("a lost answer: no re-read, and Save again sends the same key, version and body", async () => {
     state.answers = [() => Promise.reject(lost())];
     const field = await openForm();
@@ -503,10 +517,13 @@ describe("pause and resume (§4.39, B5, G7)", () => {
     ];
     const harness = renderSection();
     await ready();
+    state.listHold = new Promise(() => {});
     fireEvent.click(screen.getByRole("button", { name: "Pause company" }));
     fireEvent.click(within(document.querySelector(".company-general-pause-confirm") as HTMLElement).getByRole("button", { name: "Pause company" }));
     await waitFor(() => expect(state.reentered).toBe(1));
     expect(harness.client.getQueryData(["company-subscription"])).toBeUndefined();
+    // The list row follows the re-read before the re-entry (G2).
+    expect(harness.client.getQueryData<Tenant[]>(["tenants"])?.[0].ownerId).toBe("priya");
     await waitFor(() => expect(screen.queryByRole("button", { name: /Pause company|Resume company/ })).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByRole("heading", { name: "General" })).toHaveFocus());
     expect(status()).toBe("Only the owner of Umbrella can pause it.");
@@ -593,9 +610,16 @@ describe("transfer (§4.39, B4, art-director B6)", () => {
       },
     });
     const dialog = await screen.findByRole("dialog", { name: "Transfer ownership" });
-    expect(dialog.closest(".modal")).toHaveClass("is-continued");
+    // Neither the panel nor the scrim enters again (§4.11, art-director BLK-1).
+    expect(dialog.closest(".modal-layer")).toHaveClass("is-continued");
     expect(answer(dialog)).toHaveAttribute("aria-disabled", "true");
+    // Focus is where the reader left it — the answer in flight — not the select.
+    expect(answer(dialog)).toHaveFocus();
     expect(within(dialog).getByRole("combobox", { name: "New owner" })).toHaveValue("priya");
+    // ✕ and the scrim close nothing mid-transfer.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
+    expect(screen.getByRole("dialog", { name: "Transfer ownership" })).toBeInTheDocument();
     expect(state.calls).not.toContain("members");
     await act(async () => read.resolve(tenant({ ownerId: "priya", version: "4" })));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -659,11 +683,155 @@ describe("transfer (§4.39, B4, art-director B6)", () => {
     expect(answer(dialog)).toHaveAttribute("aria-disabled", "true");
   });
 
+  it("the new context's company could not be read: the modal goes, the failure says so aloud, no status, the route state dropped", async () => {
+    state.session = "ts-2";
+    state.tenantReads = [() => Promise.reject(refusal(403, "SCOPE_DENIED"))];
+    renderSection({
+      state: {
+        companyHandOver: {
+          fromSession: "ts-1",
+          recipient: { userId: "priya", name: "Priya Nair", email: "priya@example.com", role: "TENANT_ADMIN" },
+          status: "Priya Nair now owns Umbrella. You’re still an admin.",
+        },
+      },
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("This company’s details could not be loaded.");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(routeState).toBeNull());
+    expect(status()).toBe("");
+    expect(screen.getByRole("heading", { name: "General" })).toHaveFocus();
+    // Try again reads it; nothing says the transfer now — nothing confirmed it when it was said.
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await ready();
+    expect(status()).toBe("");
+  });
+
+  it("in flight, ✕ and the scrim close nothing; the answer is then said in the modal", async () => {
+    const sent = gate<unknown>();
+    state.answers = [() => sent.promise];
+    const dialog = await openModal();
+    choose(dialog, "priya");
+    fireEvent.click(answer(dialog));
+    await waitFor(() => expect(answer(dialog)).toHaveAttribute("aria-disabled", "true"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
+    expect(screen.getByRole("dialog", { name: "Transfer ownership" })).toBe(dialog);
+    await act(async () => sent.reject(refusal(403, "READ_ONLY", ["PAYMENT_EXPIRED"])));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Umbrella can’t be transferred right now.");
+  });
+
+  it("lost, then 403 OWNER_REQUIRED, and the re-read fails: unconfirmed — «Reload this page», no re-entry, the same key next time", async () => {
+    state.answers = [() => Promise.reject(lost()), () => Promise.reject(refusal(403, "OWNER_REQUIRED"))];
+    state.tenantReads = [() => Promise.resolve(tenant()), () => Promise.reject(refusal(403, "SCOPE_DENIED"))];
+    const dialog = await openModal();
+    choose(dialog, "priya");
+    fireEvent.click(answer(dialog));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "Taska couldn’t confirm the transfer. Reload this page to see who owns Umbrella.",
+    );
+    expect(within(dialog).queryByText(/Only the owner/)).not.toBeInTheDocument();
+    expect(state.reentered).toBe(0);
+    expect(status()).toBe("");
+    fireEvent.click(answer(dialog));
+    await waitFor(() => expect(state.writes).toHaveLength(3));
+    expect(state.writes[2]).toEqual(state.writes[0]);
+  });
+
+  it("lost, then 403 OWNER_REQUIRED, and the company is still the reader's: «still yours», never a success", async () => {
+    state.answers = [() => Promise.reject(lost()), () => Promise.reject(refusal(403, "OWNER_REQUIRED"))];
+    const dialog = await openModal();
+    choose(dialog, "priya");
+    fireEvent.click(answer(dialog));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "Taska couldn’t confirm the transfer, and Umbrella is still yours. Try again.",
+    );
+    expect(state.reentered).toBe(0);
+    expect(status()).toBe("");
+    expect(dd("Owner")).toHaveTextContent("You");
+    expect(routeState).toBeNull();
+  });
+
+  it("refused OWNER_REQUIRED and the re-read names somebody else (another tab's transfer): followed without a status (G6)", async () => {
+    state.answers = [
+      () => {
+        state.tenant = tenant({ ownerId: "sofia", version: "4" });
+        return Promise.reject(refusal(403, "OWNER_REQUIRED"));
+      },
+    ];
+    const harness = renderSection();
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "Transfer ownership" }));
+    const dialog = await screen.findByRole("dialog", { name: "Transfer ownership" });
+    await within(dialog).findByRole("combobox", { name: "New owner" });
+    state.listHold = new Promise(() => {});
+    choose(dialog, "priya");
+    fireEvent.click(answer(dialog));
+    await waitFor(() => expect(state.reentered).toBe(1));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // The list row follows the re-read before the re-entry (G2).
+    expect(harness.client.getQueryData<Tenant[]>(["tenants"])?.[0].ownerId).toBe("sofia");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "General" })).toHaveFocus());
+    expect(status()).toBe("");
+    expect(screen.queryByRole("button", { name: "Transfer ownership" })).not.toBeInTheDocument();
+    expect(routeState).toBeNull();
+  });
+
   it("Cancel closes and hands focus back to Transfer ownership; nothing is sent", async () => {
     const dialog = await openModal();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Transfer ownership" })).toHaveFocus();
     expect(state.writes).toEqual([]);
+  });
+});
+
+describe("a late answer after the reader moved away (release-reviewer F4)", () => {
+  let path = "";
+  function Path() {
+    const { pathname } = useLocation();
+    useEffect(() => {
+      path = pathname;
+    }, [pathname]);
+    return null;
+  }
+  function Away() {
+    const navigate = useNavigate();
+    return (
+      <button onClick={() => navigate("/settings/profile")} type="button">
+        Away
+      </button>
+    );
+  }
+
+  it("a G6 re-read that answers after the page is gone re-enters the company but never pulls the reader back", async () => {
+    const reread = gate<unknown>();
+    state.answers = [() => Promise.reject(refusal(403, "OWNER_REQUIRED"))];
+    state.tenantReads = [() => Promise.resolve(tenant()), () => reread.promise];
+    const harness = companiesHarness({ companyId: COMPANY, path: "/settings/company" });
+    render(
+      <div className="settings-area">
+        <h1 className="area-section-title" tabIndex={-1}>
+          General
+        </h1>
+        <Routes>
+          <Route path="/settings/company" element={<SettingsCompanySection />} />
+          <Route path="/settings/profile" element={<p>profile</p>} />
+        </Routes>
+        <Away />
+        <Path />
+      </div>,
+      { wrapper: harness.wrapper },
+    );
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "Pause company" }));
+    fireEvent.click(within(document.querySelector(".company-general-pause-confirm") as HTMLElement).getByRole("button", { name: "Pause company" }));
+    await waitFor(() => expect(state.calls.filter((call) => call === "tenant")).toHaveLength(2));
+    fireEvent.click(screen.getByRole("button", { name: "Away" }));
+    expect(await screen.findByText("profile")).toBeInTheDocument();
+    await act(async () => reread.resolve(tenant({ ownerId: "priya", version: "4" })));
+    await waitFor(() => expect(state.reentered).toBe(1));
+    await act(async () => {});
+    expect(path).toBe("/settings/profile");
+    expect(screen.getByText("profile")).toBeInTheDocument();
   });
 });

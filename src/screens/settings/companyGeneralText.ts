@@ -208,8 +208,13 @@ export function zoneRefusalWords(action: ZoneAction, error: unknown, company: st
 /** What the transfer's refusal is said from: the refusal, and what the re-reads after it found. */
 export interface TransferOutcome {
   error: unknown;
-  /** The answer was lost twice (no status, 408, 5xx) — `error` is the second loss. */
-  lostTwice: boolean;
+  /**
+   * Nobody knows whether it was applied (§4.39): the first answer was lost (no
+   * status, 408, 5xx) and its retry was lost too, or refused 403
+   * `OWNER_REQUIRED` — what the server answers the former owner once the first
+   * send did apply (ask A33) — and the re-read did not name the recipient.
+   */
+  unconfirmed: boolean;
   /** The re-read company still names the reader as its owner; `null` — the re-read failed. */
   stillMine: boolean | null;
   /** The recipient's state in the re-read members list; `null` — not in it, or the list was not read. */
@@ -219,7 +224,7 @@ export interface TransferOutcome {
 /** §4.39's transfer table. {Name} is the person chosen. */
 export function transferRefusalWords(outcome: TransferOutcome, name: string, company: string | null): RefusalWords {
   const { error } = outcome;
-  if (outcome.lostTwice) {
+  if (outcome.unconfirmed) {
     return outcome.stillMine === null
       ? { text: `Taska couldn’t confirm the transfer. Reload this page to see who owns ${companyInside(company)}.`, words: apiErrorFacts(error).message }
       : { text: `Taska couldn’t confirm the transfer, and ${companyInside(company)} is still yours. Try again.`, words: apiErrorFacts(error).message };

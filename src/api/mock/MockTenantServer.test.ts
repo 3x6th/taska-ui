@@ -273,10 +273,13 @@ describe("the session check in front of every data call (B7)", () => {
     expect(closed).toEqual([]);
     expect(restricted.map((event) => [event.tenantId, event.restricted, event.reasons])).toEqual([[MOCK_TENANT_IDS.initech, true, ["OWNER_PAUSE"]]]);
     expect(api.currentWorkspace()?.tenantSessionId).toBe(entered.tenantSessionId);
-    // The company itself, its members and the reader's notifications still answer with that session.
+    // The company itself and the reader's notifications still answer with that session; its members
+    // follow the content's rule (DIRECTORY = CONTENT_READ, ask A42) — refused, and the session still stays.
     await expect(api.getTenant(MOCK_TENANT_IDS.initech)).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"] });
-    await expect(api.listTenantMembers(MOCK_TENANT_IDS.initech)).resolves.toMatchObject({ items: expect.any(Array) });
+    await expect(api.listTenantMembers(MOCK_TENANT_IDS.initech)).rejects.toMatchObject({ code: "CAPABILITY_DISABLED", reasons: ["OWNER_PAUSE"] });
     await expect(api.listNotifications()).resolves.toBeTruthy();
+    expect(closed).toEqual([]);
+    expect(api.currentWorkspace()?.tenantSessionId).toBe(entered.tenantSessionId);
     // Northwind, with no restriction, reads as ever — and the mark goes with the switch.
     await api.enterCompany(MOCK_TENANT_IDS.northwind);
     expect(await projectKeys(api)).toEqual(["MOB", "TAS", "WEB"]);

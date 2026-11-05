@@ -230,10 +230,14 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
       queryClient.removeQueries({ queryKey: COMPANY_SUBSCRIPTION_KEY });
       const fromSession = taskaApi.currentWorkspace()?.tenantSessionId ?? null;
       const done: CompanyHandOver = { fromSession, recipient, status };
-      navigate(
-        { pathname: location.pathname, search: location.search },
-        { replace: true, state: { companyHandOver: done } satisfies CompanyGeneralRouteState },
-      );
+      // A late answer after the reader moved away re-enters all the same, but
+      // never pulls them back to this page.
+      if (mounted.current) {
+        navigate(
+          { pathname: location.pathname, search: location.search },
+          { replace: true, state: { companyHandOver: done } satisfies CompanyGeneralRouteState },
+        );
+      }
       try {
         await taskaApi.reenterCompany(companyId);
       } catch {
@@ -257,10 +261,12 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
       const reread = await rereadTenant();
       const reader = meIdRef.current;
       if (refusalCode(error) === "OWNER_REQUIRED" && reread !== null && reader !== null && reread.ownerId !== null && reread.ownerId !== reader) {
+        // The list row follows the answer before the re-entry (G2), as after a command.
+        applyTenant(reread);
         await handOverTo(null, null);
       }
     },
-    [handOverTo, rereadTenant],
+    [applyTenant, handOverTo, rereadTenant],
   );
 
   // The new context finishing a transfer begun before the re-entry: once its
@@ -268,14 +274,18 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
   // the same frame, and the status and focus follow.
   const ready =
     tenant !== null && (!me.isPending || me.isError) && (!owner || handingOver || subscription.isSuccess || subscription.isError);
+  const failedRead = tenantQuery.isError && tenant === null;
   const finished = useRef(false);
   useEffect(() => {
-    if (!continued || handOver === null || !ready || finished.current) return;
+    if (!continued || handOver === null || finished.current || (!ready && !failedRead)) return;
     finished.current = true;
-    finishHandOver(handOver, tenant);
-  }, [continued, finishHandOver, handOver, ready, tenant]);
-  const [continuedClosed, setContinuedClosed] = useState(false);
-  const continuedModal = continued && !ready && !continuedClosed && handOver?.recipient ? handOver.recipient : null;
+    // Read: the status and the owner's name, if the company confirms them. The
+    // read failed: the modal goes and the route state is dropped with no status
+    // and no name — nothing confirmed them; the failed read speaks instead (it
+    // mounts while the hand-over is still the route's, as an alert).
+    finishHandOver(ready ? handOver : { ...handOver, recipient: null, status: null }, ready ? tenant : null);
+  }, [continued, failedRead, finishHandOver, handOver, ready, tenant]);
+  const continuedModal = continued && !ready && !failedRead && handOver?.recipient ? handOver.recipient : null;
 
   /* ------------------------------------------------------------- rename */
 
@@ -355,6 +365,8 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
     }
     const sent: Sent<string> = { key: again ? previous.key : keyFor(null, name), version, body: name, open: false };
     renameIntent.current = sent;
+    // A new attempt takes the previous refusal away in the frame of the press, as pause and transfer do.
+    setRenameRefusal(null);
     rename.mutate(sent);
   };
 
@@ -448,7 +460,9 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
           reader !== null &&
           reread.ownerId !== reader
         ) {
-          // Somebody else's transfer (another tab): followed like one's own, without the status (G6).
+          // Somebody else's transfer (another tab): followed like one's own, without the status (G6);
+          // the list row follows the answer first (G2).
+          applyTenant(reread);
           await handOverTo(null, null);
           return;
         } else {
@@ -457,7 +471,8 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
           throw new TransferRefused(
             {
               error: refused,
-              lostTwice: lost && isLostAnswer(refused),
+              // A retry refused OWNER_REQUIRED after a loss says nothing either way (§4.39).
+              unconfirmed: lost && (isLostAnswer(refused) || refusalCode(refused) === "OWNER_REQUIRED"),
               stillMine: reread === null ? null : reread.ownerId === reader,
               recipientState: state,
             },
@@ -474,10 +489,10 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
     },
     onError: (error, sent) => {
       const outcome: TransferOutcome =
-        error instanceof TransferRefused ? error.outcome : { error, lostTwice: false, stillMine: null, recipientState: null };
+        error instanceof TransferRefused ? error.outcome : { error, unconfirmed: false, stillMine: null, recipientState: null };
       if (transferIntent.current) {
         // An outcome nobody knows keeps the intent — the same key again; anything else is a new one.
-        transferIntent.current = outcome.lostTwice || isIndefinite(outcome.error) ? { ...transferIntent.current, open: true } : null;
+        transferIntent.current = outcome.unconfirmed || isIndefinite(outcome.error) ? { ...transferIntent.current, open: true } : null;
       }
       const words = transferRefusalWords(outcome, sent.recipient.name, companyRef.current);
       const members = error instanceof TransferRefused ? error.members : null;
@@ -512,7 +527,7 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
 
   /* --------------------------------------------------------------- render */
 
-  const failed = tenantQuery.isError && tenant === null;
+  const failed = failedRead;
   const paused = tenant?.restrictions.includes("OWNER_PAUSE") ?? false;
   const paidThrough = owner ? (subscription.data?.paidThrough ?? null) : null;
   const lines = tenant !== null ? stateLines(tenant.restrictions, owner) : [];
@@ -632,7 +647,8 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
             </>
           ) : failed ? (
             <div className="company-general-failure">
-              <ApiNotice error={tenantQuery.error} live="off" words={false}>
+              {/* Found on arrival, not announced (§5.6) — unless it ends a transfer the reader is waiting on. */}
+              <ApiNotice error={tenantQuery.error} live={continued ? "alert" : "off"} words={false}>
                 {READ_FAILED_TEXT}
               </ApiNotice>
               <button
@@ -669,6 +685,8 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
           meId={meId}
           onChoose={(userId) => setTransfer((current) => (current === null ? current : { ...current, chosenId: userId }))}
           onClose={() => {
+            // ✕ and the scrim close nothing mid-transfer: its answer is still to be said here.
+            if (transferBusy || handingOver) return;
             setTransfer(null);
             transferButton.current?.focus();
           }}
@@ -685,7 +703,7 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
           frozen={continuedModal}
           meId={meId}
           onChoose={() => undefined}
-          onClose={() => setContinuedClosed(true)}
+          onClose={() => undefined}
           onConfirm={() => undefined}
           refusal={null}
         />

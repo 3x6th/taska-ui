@@ -367,14 +367,20 @@ export interface Subscription {
   renewalCancelled: boolean | null;
 }
 
-/** One wire `Subscription`: every field optional, an unknown `autopayState` kept as its string. */
+const instant = (value: unknown): string | null => {
+  const at = text(value);
+  return at === null || Number.isNaN(Date.parse(at)) ? null : at;
+};
+
+/** One wire `Subscription`: every field optional, an unknown `autopayState` kept as its string, an unreadable `paidThrough` dropped. */
 export function toSubscription(wire: unknown): Subscription {
   const row = typeof wire === "object" && wire !== null ? (wire as Record<string, unknown>) : {};
   return {
     tenantId: text(row.tenantId),
     planVersionId: text(row.planVersionId),
     version: text(row.version),
-    paidThrough: text(row.paidThrough),
+    // An instant the page can draw, or nothing: a value `Date` cannot read is not «Paid until» (api-contract-guard M2).
+    paidThrough: instant(row.paidThrough),
     autopayState: text(row.autopayState),
     renewalCancelled: typeof row.renewalCancelled === "boolean" ? row.renewalCancelled : null,
   };

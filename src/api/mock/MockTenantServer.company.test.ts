@@ -271,6 +271,17 @@ describe("pause and resume (TAS-480)", () => {
     expect(facts(await caught(api.transferTenantOwnership(IN, anna, "5", key())))).toEqual({ status: 403, code: "READ_ONLY", reasons: ["PAYMENT_EXPIRED"] });
   });
 
+  it("the owner-pause flag is checked before the receipt: a replay after it is switched off is refused; a resume replay never is", async () => {
+    const { api, hooks } = await inCompany("tom@example.com", UM);
+    const paused = key();
+    await expect(api.pauseTenant(UM, "3", paused)).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"], version: "4" });
+    const resumed = key();
+    await expect(api.resumeTenant(UM, "4", resumed)).resolves.toMatchObject({ restrictions: [], version: "5" });
+    hooks({ ownerPauseEnabled: false });
+    expect(facts(await caught(api.pauseTenant(UM, "3", paused)))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: [] });
+    await expect(api.resumeTenant(UM, "4", resumed)).resolves.toMatchObject({ restrictions: [], version: "5" });
+  });
+
   it("a lost pause is applied; the same key and version again replay its 200 (G7)", async () => {
     const { api, hooks } = await inCompany("tom@example.com", UM, (set) => set({ loseAnswer: ["pauseTenant"] }));
     const sent = key();
@@ -345,12 +356,12 @@ describe("ownership transfer (TAS-473)", () => {
   });
 });
 
-describe("a pause closes the projects, never the company (B2, G1, G5)", () => {
+describe("a pause closes the projects, never the company (B2, G5)", () => {
   for (const [email, role] of [
     ["sofia@example.com", "owner"],
     ["anna@example.com", "member"],
   ] as const) {
-    it(`with the read flag off, the ${role}'s content read is refused and marks the tab; members, notifications and the company still answer`, async () => {
+    it(`with the read flag off, the ${role}'s content and members reads are refused and mark the tab; notifications and the company still answer`, async () => {
       const { api } = await inCompany(email, IN, (set) => set({ contentReadUnderRestriction: false }));
       const closed: WorkspaceClosedEvent[] = [];
       const restricted: WorkspaceRestrictedEvent[] = [];
@@ -358,8 +369,13 @@ describe("a pause closes the projects, never the company (B2, G1, G5)", () => {
       api.onWorkspaceRestricted((event) => restricted.push(event));
       expect(facts(await caught(api.listProjects()))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: ["OWNER_PAUSE"] });
       expect(facts(await caught(api.searchIssues({ query: "printer", pageSize: 8 })))).toMatchObject({ code: "CAPABILITY_DISABLED" });
-      expect(restricted.map((event) => event.restricted)).toEqual([true, true]);
-      await expect(readAllPages((params) => api.listTenantMembers(IN, params))).resolves.toHaveLength(2);
+      // The directory follows the content's rule (DIRECTORY = CONTENT_READ; ask A42), and marks the tab too.
+      expect(facts(await caught(readAllPages((params) => api.listTenantMembers(IN, params))))).toEqual({
+        status: 403,
+        code: "CAPABILITY_DISABLED",
+        reasons: ["OWNER_PAUSE"],
+      });
+      expect(restricted.map((event) => event.restricted)).toEqual([true, true, true]);
       await expect(api.listNotifications()).resolves.toBeTruthy();
       await expect(api.getTenant(IN)).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"] });
       expect(closed).toEqual([]);

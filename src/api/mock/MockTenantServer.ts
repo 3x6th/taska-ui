@@ -113,9 +113,11 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v4";
  * - `clockOffsetMs` also ends paid periods: an ACTIVE company whose
  *   `paidThrough` has passed gets `PAYMENT_EXPIRED`, which a resume never
  *   lifts (D131);
- * - `contentReadUnderRestriction: false` closes content under a pause or a
- *   block only — the members list and the notifications stay readable (the
- *   control plane, asks A35 and G1).
+ * - `contentReadUnderRestriction: false` closes content — and the members
+ *   list with it (DIRECTORY inherits CONTENT_READ, access-matrix.json) — under
+ *   a pause or a block only, never under a dispute, an ended period or a quota;
+ *   the reader's notifications stay readable. Whether the directory should be
+ *   the control plane there instead is ask A42.
  *
  * Everything time- or hook-driven is evaluated on every read of the server's
  * state: there are no timers.
@@ -1889,10 +1891,10 @@ export class MockTenantServer {
    * membership ACTIVE, (3) a company admin where the route needs one, (4) the
    * route's restriction policy:
    *
-   * - `DIRECTORY` (the members list): refused 403 `CAPABILITY_DISABLED`
-   *   before the first payment only — since TAS-504 the control plane under a
-   *   pause or a block whatever the global read flag says (art-director G1,
-   *   ask A35), so the owner can choose a new owner and a member can leave;
+   * - `DIRECTORY` (the members list, CONTENT_READ's rule as `authorize` has
+   *   it): refused 403 `CAPABILITY_DISABLED` with the ordered restrictions
+   *   before the first payment, and under a pause or a block when the global
+   *   read flag is off (ask A42);
    * - `SEATS` and `LEAVE`: never;
    * - `ADMIN_READ` (the invitations list): none stated, so never;
    * - `NORMAL` (role, state, invite, resend): `READ_ONLY` under any restriction;
@@ -1927,8 +1929,11 @@ export class MockTenantServer {
       throw problem(403, "SCOPE_DENIED", "A tenant admin is required");
     }
     const restrictions = this.restrictionsOf(tenant);
-    if (policy === "DIRECTORY" && restrictions.includes("PENDING_FIRST_PAYMENT")) {
-      throw problem(403, "CAPABILITY_DISABLED", "The directory is not available", restrictions);
+    if (
+      policy === "DIRECTORY" &&
+      (restrictions.includes("PENDING_FIRST_PAYMENT") || (closesContent(restrictions) && !this.contentReadUnderRestriction()))
+    ) {
+      throw problem(403, "CAPABILITY_DISABLED", "The directory is not available", orderedRestrictions(restrictions));
     }
     if (policy === "NORMAL" && restrictions.length > 0) throw problem(403, "READ_ONLY", "The tenant is read-only", restrictions);
     if (policy === "RECOVERY" && restrictions.some((code) => !RECOVERY_ALLOWED.has(code))) {

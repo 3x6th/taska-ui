@@ -32,7 +32,8 @@ interface ModalProps {
   /**
    * The same dialog, drawn again by a new context of the page it belongs to —
    * Settings › General's transfer, still in flight across the company's
-   * re-entry (TAS-504, §4.39): it is not opening, so it does not pop in again.
+   * re-entry (TAS-504, §4.11, §4.39): it is not opening, so neither its panel
+   * nor its scrim enters again.
    */
   continued?: boolean;
 }
@@ -130,13 +131,13 @@ export function Modal({
   }, []);
 
   return (
-    <div className="modal-layer" role="presentation">
+    <div className={continued ? "modal-layer is-continued" : "modal-layer"} role="presentation">
       {/* Out of the Tab order (§7, TAS-299): a click on the scrim closes, and
           the keyboard's ways out are Close and Esc. As a stop it was reached by
           Shift+Tab from Close and drew its ring around the whole viewport. */}
       <button className="modal-backdrop" onClick={onClose} aria-label="Close modal" tabIndex={-1} type="button" />
       <section
-        className={continued ? "modal is-continued" : "modal"}
+        className="modal"
         role="dialog"
         aria-modal="true"
         aria-label={title}

@@ -116,7 +116,7 @@ describe("the pause and resume table (§4.39)", () => {
 describe("the transfer table (§4.39 «Transfer ownership»)", () => {
   const outcome = (error: unknown, extra: Partial<TransferOutcome> = {}): TransferOutcome => ({
     error,
-    lostTwice: false,
+    unconfirmed: false,
     stillMine: true,
     recipientState: "ACTIVE",
     ...extra,
@@ -144,12 +144,16 @@ describe("the transfer table (§4.39 «Transfer ownership»)", () => {
     expect(words(outcome(refusal(400, "BRAND_NEW")))).toEqual({ text: "Umbrella was not transferred.", words: "server words" });
   });
 
-  it("lost twice: still the reader's, or a re-read that failed too", () => {
-    expect(words(outcome(lost(), { lostTwice: true, stillMine: true }))).toEqual({
+  it("unconfirmed (lost twice, or lost and then OWNER_REQUIRED): still the reader's, or a re-read that failed too", () => {
+    expect(words(outcome(lost(), { unconfirmed: true, stillMine: true }))).toEqual({
       text: "Taska couldn’t confirm the transfer, and Umbrella is still yours. Try again.",
       words: "Failed to fetch",
     });
-    expect(words(outcome(lost(), { lostTwice: true, stillMine: null })).text).toBe(
+    expect(words(outcome(lost(), { unconfirmed: true, stillMine: null })).text).toBe(
+      "Taska couldn’t confirm the transfer. Reload this page to see who owns Umbrella.",
+    );
+    // The retry's OWNER_REQUIRED is not «Only the owner…» after a lost answer.
+    expect(words(outcome(refusal(403, "OWNER_REQUIRED"), { unconfirmed: true, stillMine: null })).text).toBe(
       "Taska couldn’t confirm the transfer. Reload this page to see who owns Umbrella.",
     );
   });

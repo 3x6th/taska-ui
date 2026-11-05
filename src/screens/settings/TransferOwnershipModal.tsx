@@ -105,10 +105,11 @@ export function TransferOwnershipModal({
       <div className="company-transfer-field">
         <label htmlFor={fieldId}>New owner</label>
         {/* A value, not text-work (§4.11): Esc still closes. */}
+        {/* Focused on open — not when the modal is drawn again mid-transfer, whose focus is its answer (§4.11). */}
         <select
           aria-describedby={hintId}
           aria-disabled={busy || undefined}
-          autoFocus
+          autoFocus={frozen === null}
           className="company-transfer-select"
           id={fieldId}
           onChange={(event) => {
@@ -170,6 +171,8 @@ export function TransferOwnershipModal({
           {/* §4.22's answer, not primary: for the reader this cannot be undone. Steadily unavailable until a choice. */}
           <button
             aria-disabled={busy || unavailable || undefined}
+            // Drawn again by the new context mid-transfer: focus stays where the reader left it, on the answer in flight.
+            autoFocus={frozen !== null}
             className={`secondary-button member-confirm-accept company-transfer-confirm${unavailable && !busy ? " is-unavailable" : ""}`}
             data-busy={busy || undefined}
             onClick={confirm}
