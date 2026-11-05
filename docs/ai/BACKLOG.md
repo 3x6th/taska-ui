@@ -4583,3 +4583,29 @@ A30–A41 went to Jira as comments on their owner stories.
 - **§4.35's restricted form could live inside the app shell**, since the session is kept — revisit only if the owner's
   «Back to projects» loop reads like being thrown out (art-director N5).
 
+### Left by TAS-504 review (company page, build review of `8f7e58f`, 2026-11-05)
+
+Non-blocking notes from the three roles (`docs/ai/reviews/TAS-504/`, git-ignored), left out of the fix round. Ask A42
+(DIRECTORY and INBOX under a content-closing restriction) and the amendments to A30, A32, A33, A37 went to TAS-480.
+
+- **The owner's cold load of General is depth 2**: `Workspace` carries no `userId`, though the session record has it
+  (guard L2).
+- **Answers are not checked against the requested company** (`tenantAnswer`, `getTenant`, `toSubscription` don't
+  compare `Tenant.id` / `Subscription.tenantId` with the path) — defence in depth; the request side is checked (L4).
+- **A definite getSubscription failure** (404 "No static resource" while TAS-314 is absent) re-reads on every focus
+  return under `refetchFailedOnFocus` — decide in the flag-on PR (L5).
+- **§4.37's `creationDeadline` keeps any string** — an unparseable value would crash `formatDeadline` the way
+  `paidThrough` did before its fix (guard M2's class).
+- **Focus after «Open company settings»** lands on `<body>`, as every arrival in Settings today; give Settings the
+  `focusHeading` route state «Choose a company» passes (art-director).
+- **The blocked-search notice is in the danger tint** though it is an answer, not a failure — revisit with TAS-512.
+- **§4.35's owner variant draws a blank plane until the account `/users/me`** on a cold load (~145 ms on the mock):
+  fill the account `["me"]` from the company client's (art-director).
+- **§4.11 describes a footer on `--surface-2` that no modal draws**: buttons are `.modal-actions` in the body —
+  bring the text and the product together in one decision.
+- **The mock's notifications stay readable under a flag-off pause or block**, contrary to the blueprint's INBOX
+  (older than TAS-504; ask A42).
+- **The mock seeds Hooli's autopay `SUSPENDED`** (the guard would prefer `CONSENTED`: a block stops attempts, not the
+  state) and turns the old owner's autopay off in the same write as a transfer (state-machines.md:38 does it through an
+  outbox).
+
