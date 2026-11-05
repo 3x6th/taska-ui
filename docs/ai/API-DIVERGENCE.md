@@ -2474,7 +2474,7 @@ Everything below is the entry as it stood, in the past tense.
   the blueprint (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6` has no such route; none in `openapi.yml`):
   `GET /api/v1/tenants/{tenantId}/activity?limit&cursor&actorUserId&kind…` (listTenantActivity) → `{items, nextCursor?}`,
   newest first, with the company session, for the company's admins and owner. The shape is the one posted on TAS-523 as
-  a labelled proposal on 2026-11-05. Backend: TAS-523 (To Do, no PR). develop `7ae29a1a` has no route, RPC,
+  a labelled proposal on 2026-11-05. Backend: TAS-523 (To Do, no PR). develop `7ae29a1a` — and `8ebcf0c1`, rechecked at the build review on 2026-11-05 — has no route, and no open PR names TAS-523; it has no RPC,
   access-matrix action or table for it, and the target data model has no company-scoped journal: the platform audit
   stays hidden from tenant roles (`target-data-model.md:26`, `:2327`; `access-control.md:55`), the tenant outbox is kept
   for replay only, and `tenant_operations` is mutable.
@@ -2487,22 +2487,28 @@ Everything below is the entry as it stood, in the past tense.
   added after one's own write; records are never sorted, merged, grouped, counted or hidden; pages are appended in
   server order.
 - **What the UI assumes where the proposal is open — each removable:**
-  - The rail's «Activity» is drawn only for a reader known to be an ACTIVE company admin or the owner — the cached
-    members list (`readerAccess`), else `Tenant.ownerId`; with neither it is not drawn, and no read is made for it. The
-    address is never gated: a member who opens it gets the server's 403 `SCOPE_DENIED`, drawn with its request id.
-    Removal: ask A26 (TAS-338).
+  - The rail's «Activity» is drawn only for a reader the tab already knows to be the owner or an ACTIVE company admin:
+    their own row of the cached members list (ACTIVE, and TENANT_ADMIN or `isOwner`), else `Tenant.ownerId` from the
+    cached `getTenant`, else from the reader's cached companies list — watched with `enabled: false`, so no read is made
+    for it — and always, as current, while `/company/activity` is open. The address is never gated: a member who opens
+    it gets the server's 403 `SCOPE_DENIED`, drawn with its request id. Removal: ask A26 (TAS-338).
   - Kind labels and the kind filter's options are this build's; an unknown kind reads «Other action», keeps its code,
     and is not offered as a filter. Removal: ask A28.
   - Names come from the record only: a missing name or email draws the unnamed-person fallback, never a members-list
-    lookup; a platform administrator without a name reads «Taska administrator»; the mark only on `platformAdmin: true`.
-  - An `outcome` other than `SUCCEEDED` (the proposal sends no other) is drawn as not done; an unknown target `type`
-    draws the target without its type.
+    lookup. An author with `platformAdmin: true` and neither a name nor an email is written «A Taska administrator» («a
+    Taska administrator» inside a sentence) with no mark; one with a name or an email carries the meta mark «Taska
+    administrator»; the mark only on `platformAdmin: true`.
+  - An `outcome` that is present and not `SUCCEEDED` (the proposal sends no other) is drawn «Not done: …»; a missing
+    `outcome` is drawn as done (art-director N1); an unknown target `type` draws the target without its type.
   - A 400 on a continuation page keeps the rows shown and offers «Start again from the newest»; on the first page with
     filters it offers clearing them.
 - **The client's own rules (not compensations):** a control-plane read — its refusal marks nothing and its success
   lifts no pause mark (TAS-504); `/company/activity` is not a content route and stays open under a pause or a block; a
   record naming another company fails the whole page (`ForeignCompanyAnswerError`, TAS-512); every re-read is the first
-  page only.
+  page only. One retry, for an answer that never came (no status, 408, 5xx) — never for a 429, whose wait is said, a
+  refusal, or another company's answer. The first page is re-read on return to the tab or on reconnect only when it
+  failed (`refetchFailedOnFocus`), never when it loaded, so the pages «Show more» added are dropped only by an entry,
+  «Try again», «Start again» or a change of filter.
 - **Mock answers** (`MockTenantServer.ts`, `taska.mockServer.v6`) — the mock's choices; each falls away with TAS-523:
   the invitations list's check order (TAS-502 `ADMIN_READ`; no restriction refuses it; PROVISIONING 409); a keyset
   cursor on (`createdAt`, the mock's sequence) bound to the reader, the company and the filters, without the 15-minute
@@ -2510,7 +2516,8 @@ Everything below is the entry as it stood, in the past tense.
   without name or email; a record only when a mock write takes effect — never on a replay, a no-op or a refusal; a
   removal's when its operation succeeds; a platform block or unblock when the `platformBlock` hook changes it; none for
   acceptance (no mock route), cancellation, plan, dispute or expiry; seeded records per company; no `DENIED`; the newest
-  500 kept; `refuseNext`, `delayMs` and `loseAnswer` take `listTenantActivity`.
+  500 kept; `refuseNext`, `delayMs` and `loseAnswer` take `listTenantActivity`; a malformed `tenantId` in the path is a 400
+  without a violation (the members routes' shared check; unreachable through the session layer).
 - **Turning the flag on** additionally needs TAS-523 deployed with this shape, or the frontend moved to the agreed one,
   and its dependencies TAS-321, TAS-323, TAS-333, TAS-335, TAS-336, TAS-339, TAS-473 and TAS-480.
 - **Removal:** delete when the route is in the vendored contract and the stand probe passes: an admin reads only their

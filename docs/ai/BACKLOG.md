@@ -4733,3 +4733,23 @@ shape went to TAS-523 as a comment («Предложение фронта, ве�
   stale-membership-generation refusals stand (asks A17/A18) (guard residual).
 - **Seconds on hover**: a `title` on the record's `<time>` with the full local time to the second would separate two
   actions in the same minute for pointer users (art-director N3, optional).
+
+### Left by TAS-524 review (the company Activity section, build review of `9974691`, 2026-11-05)
+
+Non-blocking notes of the three roles (`docs/ai/reviews/TAS-524/`, git-ignored); the blockers and the cheap notes went
+into the fix round.
+
+- **An empty appended page loses focus**: a «Show more» answered `{items: [], nextCursor: null}` replaces the focused
+  button with «No older activity.», focus falls to `<body>` and nothing is spoken (`CompanyActivitySection.tsx`); the
+  mock never hands out such a cursor, a backend that returns one for every full page would. Announce the end sentence
+  and focus the h1 (release-reviewer N3).
+- **Two ring shapes in one filter row**: the shared §5.8 `.admin-filter-chip-open` has no radius, so the kind chip's
+  open half rings square beside the author label's round ring — `.admin-filter-chip-open { border-radius: 20px 0 0
+  20px }`, `.admin-filter-chip-remove { border-radius: 0 20px 20px 0 }`, on Audit and Activity at once (art-director N2).
+- **«By Someone» / «By A Taska administrator» chips name nobody**: two nameless authors give identical chips; when the
+  {A} chain ends in a fallback word, show `shortKey` of the id in mono (art-director N3).
+- **Two scrollers at 320×568 in the Company zone** (and Settings): the document scrolls (659 on Activity, 611 General,
+  1139 Members) on top of the inner `.settings-plane` scroller (404). Pre-existing on the area recipe, found on TAS-524
+  (art-director).
+- **The mapper reads only `createdAt`**: if the backend ships the draft's `occurredAt`, every row reads «Time unknown» —
+  check the shape when TAS-523 is picked up (guard N3).
