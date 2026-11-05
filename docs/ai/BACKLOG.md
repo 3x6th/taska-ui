@@ -4676,3 +4676,6 @@ into the fix round.
   (art-director 7).
 - **Without A49** a plan change on the server shows only after a Tenant re-read, a refused write, a boundary or a reload
   (release-reviewer residual).
+- **`e2e/companies-tabs.spec.ts:272` flaked once** in the fix round's first gate (desktop: a modifier click in the
+  switcher popover opened no new page within 30 s; 30/30 alone) — possibly the same `tk-pop` animation cause as the
+  fixed `companies.spec.ts:146`; unverified (builder fix 1).
