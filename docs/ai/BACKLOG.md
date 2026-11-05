@@ -4753,3 +4753,14 @@ into the fix round.
   (art-director).
 - **The mapper reads only `createdAt`**: if the backend ships the draft's `occurredAt`, every row reads «Time unknown» —
   check the shape when TAS-523 is picked up (guard N3).
+- **A re-read that overlaps «Show more» still drops the appended pages** (R-1a): «Show more» in flight while a heal or
+  re-entry's own re-read is out (or pressed while it is) — 100 → 50, focus to body, silent; the window is one request's
+  latency. Fix: `hasPagesRef` also true while a continuation is busy, and «Show more» inert (aria-disabled + data-busy)
+  while the first page is fetching — the second half needs art-director and a §4.41 sentence (api-contract-guard
+  re-verdict 2).
+- **The Activity section's §6 focus heal is unpinned**: no test fails when the heal is narrowed to «no rows» or the
+  focus re-read is turned off; add the guard's P1 (cached rows, failed refresh, tab return → 1 read, notice gone) and P3
+  (failed first page, tab return → 1 read) as tests; the test named «re-reads a failed first page» checks only success
+  (api-contract-guard re-verdict 2).
+- **`companyActivityOptions`' `refetchOnReconnect` / `refetchOnWindowFocus` are dead for the section** (its useQuery
+  overrides both); say so in the comment or drop them (api-contract-guard re-verdict 2).

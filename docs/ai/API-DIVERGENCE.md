@@ -2507,7 +2507,8 @@ Everything below is the entry as it stood, in the past tense.
   record naming another company fails the whole page (`ForeignCompanyAnswerError`, TAS-512); every re-read is the first
   page only. One retry, for an answer that never came (no status, 408, 5xx) — never for a 429, whose wait is said, a
   refusal, or another company's answer. The first page is re-read on return to the tab or on reconnect only when it
-  failed (`refetchFailedOnFocus`), never when it loaded, so the pages «Show more» added are dropped only by an entry,
+  failed (`refetchFailedOnFocus`) and only while no «Show more» page is appended, never when it loaded, so the pages
+  «Show more» added are dropped only by an entry,
   «Try again», «Start again» or a change of filter.
 - **Mock answers** (`MockTenantServer.ts`, `taska.mockServer.v6`) — the mock's choices; each falls away with TAS-523:
   the invitations list's check order (TAS-502 `ADMIN_READ`; no restriction refuses it; PROVISIONING 409); a keyset
