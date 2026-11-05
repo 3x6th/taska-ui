@@ -149,7 +149,19 @@ test("«All companies» is 44 high at 820 and narrower, like the rows above it",
   await inCompany(page, "Northwind", COMPANY.northwind);
   await page.locator(".company-switcher-trigger").click();
   const dialog = page.getByRole("dialog", { name: "Companies" });
-  const heights = await dialog.getByRole("link").evaluateAll((links) => links.map((link) => link.getBoundingClientRect().height));
+  await expect(dialog.getByRole("link").first()).toBeVisible();
+  // Measured once the popover's entrance (`tk-pop`'s translateY) has run out,
+  // in one evaluate: mid-animation a 44 row reads 43.99998.
+  const heights = await dialog.evaluate(async (popover) => {
+    const moving = document
+      .getAnimations()
+      .filter((animation) => {
+        const target = (animation.effect as KeyframeEffect | null)?.target;
+        return target instanceof Element && (target === popover || target.contains(popover) || popover.contains(target));
+      });
+    await Promise.all(moving.map((animation) => animation.finished.catch(() => undefined)));
+    return [...popover.querySelectorAll("a[href]")].map((link) => link.getBoundingClientRect().height);
+  });
   expect(heights.length).toBeGreaterThan(1);
   for (const height of heights) expect(height).toBeGreaterThanOrEqual(44);
 });
@@ -163,8 +175,8 @@ test("a paused company opens, reads, and refuses a write on that write alone", a
   await dialog.getByRole("textbox", { name: "Key", exact: true }).fill("NEW");
   await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("New work");
   await dialog.getByRole("button", { name: "Create project" }).click();
-  // The server's words and its request id, on the write — the company stays open.
-  await expect(dialog.getByText("The company is read-only")).toBeVisible();
+  // The refusal's reason in §4.35's words (TAS-512), on the write — the company stays open.
+  await expect(dialog.getByText("Initech is paused, so nothing in it can be changed.")).toBeVisible();
   await expect(page).toHaveURL(companyPath(COMPANY.initech));
   await expect(page.getByRole("heading", { name: /is paused|no longer have access/ })).toHaveCount(0);
 });

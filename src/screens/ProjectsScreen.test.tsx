@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import type { ProjectRole } from "../domain/types";
 import { ProjectsScreen } from "./ProjectsScreen";
@@ -950,5 +950,104 @@ describe("New project", () => {
 
     fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New project" })).not.toBeInTheDocument());
+  });
+
+  it("brings Create project into the body's view on a refusal, the sentence above it (§4.40, art-director B2)", async () => {
+    api.createProject = vi.fn(() =>
+      Promise.reject(Object.assign(new Error("Refused"), { status: 422, code: "QUOTA_EXCEEDED", requestId: "req-q" })),
+    );
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      renderProjects();
+      const dialog = await openNewProject();
+      fireEvent.change(dialog.getByLabelText("Key"), { target: { value: "OPS" } });
+      fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Operations" } });
+      const button = dialog.getByRole("button", { name: "Create project" });
+      button.focus();
+      scroll.mockClear();
+      fireEvent.click(button);
+      expect(await dialog.findByText(/has reached its plan’s limit on projects/)).toBeVisible();
+      await waitFor(() => expect(scroll.mock.contexts).toContain(button));
+      expect(scroll.mock.calls[scroll.mock.contexts.indexOf(button)]).toEqual([{ block: "nearest" }]);
+      expect(button).toHaveFocus();
+      // The latch is let go when the create settles: the same press may be made again.
+      fireEvent.click(button);
+      await waitFor(() => expect(api.createProject).toHaveBeenCalledTimes(2));
+    } finally {
+      scroll.mockRestore();
+      delete api.createProject;
+    }
+  });
+});
+
+/**
+ * Create project in flight (§4.1; TAS-512 api-contract-guard B-1,
+ * release-reviewer M-3, L-1): the latch the submit sets before `mutate` and
+ * the `isPending` check are the only stop on a second create — there is no
+ * idempotency key on it. Against a create that never settles, so the flight
+ * is all there is: each way of pressing twice sends one create, and the
+ * button says it is out and keeps focus.
+ */
+describe("Create project in flight", () => {
+  const api = fakeApi as unknown as Record<string, unknown>;
+  let creates: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+    creates = vi.fn(() => new Promise(() => {}));
+    api.createProject = creates;
+  });
+  afterEach(() => {
+    delete api.createProject;
+  });
+
+  const filledForm = async () => {
+    renderProjects();
+    fireEvent.click(await screen.findByRole("button", { name: "New project" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "New project" }));
+    fireEvent.change(dialog.getByLabelText("Key"), { target: { value: "OPS" } });
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Operations" } });
+    const button = dialog.getByRole("button", { name: "Create project" });
+    button.focus();
+    return button;
+  };
+  /** What a browser does with Enter on a focused button and jsdom does not: activate it, a click. */
+  const pressEnter = (button: HTMLElement) => {
+    fireEvent.keyDown(button, { key: "Enter" });
+    fireEvent.click(button);
+  };
+  const outAndFocused = async (button: HTMLElement) => {
+    await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "true"));
+    // A later task, too: nothing was waiting to go out.
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    expect(creates).toHaveBeenCalledTimes(1);
+    expect(button).toHaveFocus();
+  };
+
+  it("a double click sends one", async () => {
+    const button = await filledForm();
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await outAndFocused(button);
+  });
+
+  it("a click, then Enter and Enter, sends one", async () => {
+    const button = await filledForm();
+    fireEvent.click(button);
+    pressEnter(button);
+    await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "true"));
+    pressEnter(button);
+    await outAndFocused(button);
+  });
+
+  it("two submits in one task send one", async () => {
+    const button = await filledForm();
+    const form = button.closest("form") as HTMLFormElement;
+    act(() => {
+      form.requestSubmit(button);
+      form.requestSubmit(button);
+    });
+    await outAndFocused(button);
   });
 });

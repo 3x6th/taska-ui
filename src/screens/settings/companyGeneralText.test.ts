@@ -6,6 +6,7 @@ import {
   pauseQuestion,
   renameRefusalWords,
   stateLines,
+  stillWorksText,
   transferConsequences,
   transferRefusalWords,
   zoneRefusalWords,
@@ -33,9 +34,14 @@ describe("the page's words", () => {
     expect(stateLines(["OVER_QUOTA", "MYSTERY", "OWNER_PAUSE", "PLATFORM_BLOCK", "PAYMENT_EXPIRED", "PAYMENT_DISPUTE"], true)).toEqual([
       { code: "PLATFORM_BLOCK", fact: "Blocked by Taska.", explanation: "No one can change anything in it, and only Taska can lift the block." },
       { code: "OWNER_PAUSE", fact: "Paused by its owner.", explanation: "No one can change anything in it while it’s paused." },
-      { code: "PAYMENT_DISPUTE", fact: "A payment is disputed.", explanation: null },
-      { code: "PAYMENT_EXPIRED", fact: "Its paid period has ended.", explanation: null },
-      { code: "OVER_QUOTA", fact: "It’s over its plan’s limits.", explanation: null },
+      // TAS-512: the three financial ones explained by role (§4.39).
+      { code: "PAYMENT_DISPUTE", fact: "A payment is disputed.", explanation: "Until it’s settled, nothing in it can be changed and no automatic payments are taken." },
+      {
+        code: "PAYMENT_EXPIRED",
+        fact: "Its paid period has ended.",
+        explanation: "Nothing in it can be changed until you renew it. There’s no grace period, and it doesn’t move to a free plan on its own.",
+      },
+      { code: "OVER_QUOTA", fact: "It’s over its plan’s limits.", explanation: "Nothing in it can be changed until it’s back within them." },
       { code: "MYSTERY", fact: "MYSTERY", explanation: null },
     ]);
     expect(stateLines(["PLATFORM_BLOCK"], false)[0].explanation).toBe("No one can change anything in it while it’s blocked.");
@@ -44,6 +50,24 @@ describe("the page's words", () => {
     // A company awaiting its first payment never reaches this page (§4.37).
     expect(stateLines(["PENDING_FIRST_PAYMENT"], true)).toEqual([]);
     expect(stateLines([], true)).toEqual([]);
+  });
+
+  it("TAS-512: the financial explanations by role, and «what still works» only when every restriction is financial", () => {
+    const others = Object.fromEntries(stateLines(["PAYMENT_DISPUTE", "PAYMENT_EXPIRED", "OVER_QUOTA"], false).map((line) => [line.code, line.explanation]));
+    expect(others).toEqual({
+      PAYMENT_DISPUTE: "Until it’s settled, nothing in it can be changed.",
+      PAYMENT_EXPIRED: "Nothing in it can be changed until its owner renews it.",
+      OVER_QUOTA: "Nothing in it can be changed until it’s back within them.",
+    });
+    expect(stillWorksText(["OVER_QUOTA"], true)).toBe(
+      "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t take payments or change plans yet.",
+    );
+    expect(stillWorksText(["PAYMENT_EXPIRED", "PAYMENT_DISPUTE"], false)).toBe(
+      "Everything in it can still be read, admins can still remove members and revoke invitations, and you can still leave it.",
+    );
+    for (const codes of [[], ["OWNER_PAUSE"], ["PAYMENT_EXPIRED", "OWNER_PAUSE"], ["OVER_QUOTA", "PLATFORM_BLOCK"], ["OVER_QUOTA", "MYSTERY"]]) {
+      expect(stillWorksText(codes, true), codes.join()).toBeNull();
+    }
   });
 
   it("the pause question names the end of the paid period only when the server sent one (D129, D130)", () => {
@@ -63,7 +87,9 @@ describe("the rename table (§4.39 «Rename»)", () => {
     expect(words(refusal(400, "VALIDATION_FAILED"))).toEqual({ text: "Taska didn’t accept this name.", words: null });
     expect(words(refusal(403, "READ_ONLY", ["OWNER_PAUSE", "PLATFORM_BLOCK"])).text).toBe("Taska has blocked Initech, so it can’t be renamed.");
     expect(words(refusal(403, "READ_ONLY", ["OWNER_PAUSE"])).text).toBe("Initech is paused. Resume it to rename it.");
-    expect(words(refusal(403, "READ_ONLY", ["PAYMENT_EXPIRED"])).text).toBe("Initech can’t be renamed right now.");
+    // TAS-512: another known reason names itself (§4.35's clause); none known — «right now».
+    expect(words(refusal(403, "READ_ONLY", ["PAYMENT_EXPIRED"])).text).toBe("Initech’s paid period has ended, so it can’t be renamed.");
+    expect(words(refusal(403, "READ_ONLY", ["MYSTERY"])).text).toBe("Initech can’t be renamed right now.");
     expect(words(refusal(403, "CAPABILITY_DISABLED")).text).toBe("Initech can’t be renamed right now.");
     expect(words(refusal(403, "OWNER_REQUIRED")).text).toBe("Only the owner of Initech can rename it.");
     expect(words(refusal(412, "VERSION_CONFLICT"))).toEqual({
@@ -87,7 +113,8 @@ describe("the pause and resume table (§4.39)", () => {
   it("pause", () => {
     const words = (error: unknown) => zoneRefusalWords("pause", error, "Hooli");
     expect(words(refusal(403, "READ_ONLY", ["PLATFORM_BLOCK"])).text).toBe("Taska has blocked Hooli, so it was not paused.");
-    expect(words(refusal(403, "READ_ONLY", ["PAYMENT_DISPUTE"])).text).toBe("Hooli can’t be paused right now.");
+    expect(words(refusal(403, "READ_ONLY", ["PAYMENT_DISPUTE"])).text).toBe("A payment for Hooli is disputed, so it was not paused.");
+    expect(words(refusal(403, "READ_ONLY")).text).toBe("Hooli can’t be paused right now.");
     expect(words(refusal(403, "CAPABILITY_DISABLED")).text).toBe("Pausing companies isn’t available right now.");
     expect(words(refusal(403, "OWNER_REQUIRED")).text).toBe("Only the owner of Hooli can pause it.");
     expect(words(refusal(412, "VERSION_CONFLICT")).text).toBe("Hooli changed while you were deciding, so it was not paused. Check it and try again.");
@@ -105,7 +132,8 @@ describe("the pause and resume table (§4.39)", () => {
     expect(words(refusal(403, "READ_ONLY", ["PLATFORM_BLOCK", "OWNER_PAUSE"])).text).toBe(
       "Taska has blocked this company, so it can’t be resumed until Taska lifts the block.",
     );
-    expect(words(refusal(403, "READ_ONLY", ["PAYMENT_DISPUTE"])).text).toBe("This company can’t be resumed right now.");
+    expect(words(refusal(403, "READ_ONLY", ["PAYMENT_DISPUTE"])).text).toBe("A payment for this company is disputed, so it can’t be resumed.");
+    expect(words(refusal(403, "READ_ONLY")).text).toBe("This company can’t be resumed right now.");
     expect(words(refusal(403, "OWNER_REQUIRED")).text).toBe("Only the owner of this company can resume it.");
     expect(words(refusal(412, "VERSION_CONFLICT")).text).toBe("This company changed elsewhere, so it was not resumed. Check it and try again.");
     expect(words(lost()).text).toBe("Taska couldn’t confirm that this company was resumed. Press Resume company again to check.");
@@ -125,7 +153,8 @@ describe("the transfer table (§4.39 «Transfer ownership»)", () => {
 
   it("by code, the recipient's state from the re-read list for a 409", () => {
     expect(words(outcome(refusal(403, "READ_ONLY", ["PLATFORM_BLOCK"]))).text).toBe("Taska has blocked Umbrella, so it was not transferred.");
-    expect(words(outcome(refusal(403, "READ_ONLY", ["PAYMENT_EXPIRED"]))).text).toBe("Umbrella can’t be transferred right now.");
+    expect(words(outcome(refusal(403, "READ_ONLY", ["PAYMENT_EXPIRED"]))).text).toBe("Umbrella’s paid period has ended, so it was not transferred.");
+    expect(words(outcome(refusal(403, "READ_ONLY", ["OVER_QUOTA"]))).text).toBe("Umbrella is over its plan’s limits, so it was not transferred.");
     expect(words(outcome(refusal(403, "CAPABILITY_DISABLED"))).text).toBe("Transferring companies isn’t available right now.");
     expect(words(outcome(refusal(403, "OWNER_REQUIRED"))).text).toBe("Only the owner of Umbrella can transfer it.");
     expect(words(outcome(refusal(404, "RESOURCE_NOT_FOUND"))).text).toBe("Priya Nair is no longer in Umbrella, so it was not transferred.");

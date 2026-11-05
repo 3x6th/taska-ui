@@ -123,16 +123,22 @@ export function tenantStateLine(tenant: Tenant, refusedThisVisit: ReadonlySet<st
   if (tenant.lifecycle === "PROVISIONING") return "Being set up";
   if (tenant.restrictions.includes("PLATFORM_BLOCK")) return "Blocked by Taska";
   if (tenant.restrictions.includes("OWNER_PAUSE")) return "Paused by its owner";
+  // TAS-512: the three financial ones, «Read-only» first — the fact alone does
+  // not say that nothing in the company can be changed (§4.33).
+  if (tenant.restrictions.includes("PAYMENT_DISPUTE")) return "Read-only · payment disputed";
+  if (tenant.restrictions.includes("PAYMENT_EXPIRED")) return "Read-only · paid period ended";
+  if (tenant.restrictions.includes("OVER_QUOTA")) return "Read-only · over plan limits";
   if (tenant.lifecycle === "AWAITING_PAYMENT") return "Awaiting first payment";
   if (tenant.lifecycle === null || tenant.lifecycle === "ACTIVE") return null;
   // A lifecycle this build does not know: the code as it came (§6, TAS-173).
   return isKnownTenantLifecycle(tenant.lifecycle) ? null : tenant.lifecycle;
 }
 
-/** The switcher row's one right slot (§4.34): «Blocked», «Paused», «Awaiting payment», or nothing. */
+/** The switcher row's one right slot (§4.34): «Blocked», «Paused», «Read-only» (any financial one, TAS-512), «Awaiting payment», or nothing. */
 export function switcherStateLabel(tenant: Tenant): string | null {
   if (tenant.restrictions.includes("PLATFORM_BLOCK")) return "Blocked";
   if (tenant.restrictions.includes("OWNER_PAUSE")) return "Paused";
+  if (["PAYMENT_DISPUTE", "PAYMENT_EXPIRED", "OVER_QUOTA"].some((code) => tenant.restrictions.includes(code))) return "Read-only";
   if (tenant.lifecycle === "AWAITING_PAYMENT") return "Awaiting payment";
   return null;
 }

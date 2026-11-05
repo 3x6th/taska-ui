@@ -3,6 +3,8 @@ import { useEffect, useSyncExternalStore } from "react";
 import { taskaApi } from "../api/client";
 import type { Workspace } from "../api/TaskaApi";
 import { onRefusedThisVisit, refusedThisVisit, tenantsQueryOptions } from "../lib/companies";
+import { companyMarker, type CompanyMarker } from "../lib/companyRestrictions";
+import { companyTenantOptions } from "../screens/settings/companyGeneral";
 import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
 import { plansQueryOptions } from "../lib/plans";
 
@@ -56,6 +58,33 @@ export function useCompanyName(companyId: string | null): string | null {
   if (companyId === null) return null;
   const listed = companies.data?.find((tenant) => tenant.id === companyId)?.name ?? null;
   return listed ?? (workspace?.tenantId === companyId ? workspace.tenantName : null);
+}
+
+/**
+ * The tab's company's state marker (TAS-512, DESIGN.md §4.34): «blocked»,
+ * «paused» or «read-only», or `null`. From what the tab already holds — the
+ * company as last read (`["tenant", id]`, never fetched here) or its row of
+ * the reader's list, whichever answered last — so it changes in the frame
+ * they do, and asks the server nothing (art-director G8). Inert in today's
+ * build.
+ *
+ * With the company read's own options (release-reviewer L-2): an observer's
+ * options become the query's, so a bare one would hand the next refetch of
+ * `["tenant", id]` — an invalidation's, while this is mounted — the client's
+ * default retry, and a definite refusal or another company's answer would be
+ * asked again (`retryUnanswered`).
+ */
+export function useCompanyMarker(companyId: string | null): CompanyMarker | null {
+  const companies = useCompanies();
+  const tenant = useQuery(
+    { ...companyTenantOptions(companyId ?? ""), enabled: false },
+    companyId === null ? inertClient : undefined,
+  );
+  if (companyId === null) return null;
+  const row = companies.data?.find((item) => item.id === companyId) ?? null;
+  const read = tenant.data ?? null;
+  const latest = read !== null && (row === null || tenant.dataUpdatedAt >= companies.dataUpdatedAt) ? read : row;
+  return companyMarker(latest?.restrictions);
 }
 
 /**

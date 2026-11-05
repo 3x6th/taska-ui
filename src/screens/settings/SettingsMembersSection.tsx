@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trash2, UserPlus } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Link } from "react-router-dom";
 import { taskaApi } from "../../api/client";
 import { apiErrorFacts, isWorkspaceClosed } from "../../api/errors";
 import {
@@ -414,7 +415,15 @@ function CompanyMembers({ companyId }: { companyId: string }) {
               ) : seatLine ? (
                 <div id={seatLineId}>
                   <p className="company-seats-line">{seatLine.text}</p>
-                  {seatLine.full ? <p className="company-seats-line">{SEATS_FULL_HINT}</p> : null}
+                  {seatLine.full ? (
+                    <p className="company-seats-line">
+                      {SEATS_FULL_HINT}{" "}
+                      {/* The plan's explanation (TAS-512, §4.38 → §4.40). */}
+                      <Link className="admin-note-link company-seats-plan-link" to="/settings/plan">
+                        See Plan
+                      </Link>
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -532,7 +541,6 @@ function CompanyMembers({ companyId }: { companyId: string }) {
           draft={inviting.draft}
           onClose={() => setInviting(null)}
           onInvited={onInvited}
-          onSeatsChanged={() => void reread({ quotas: true })}
           seats={seats}
         />
       ) : null}

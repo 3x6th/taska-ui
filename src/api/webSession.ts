@@ -28,7 +28,10 @@ import {
   type QuotaSnapshot,
 } from "./tenantMembers";
 import {
+  ForeignCompanyAnswerError,
+  ofCompany,
   toCreateTenantResult,
+  toEntitlement,
   toPlanVersionPage,
   toSubscription,
   toTenant,
@@ -36,6 +39,7 @@ import {
   toTenantPage,
   type CreateTenantInput,
   type CreateTenantResult,
+  type Entitlement,
   type ListBillingPlansParams,
   type ListTenantsParams,
   type PlanVersionPage,
@@ -191,6 +195,9 @@ export interface B2bTransport {
   ): Promise<unknown>;
   /** `GET /tenants/{tenantId}/billing/subscription` — 200 `Subscription`, the owner's read. */
   getSubscription(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
+
+  /** `GET /tenants/{tenantId}/billing/entitlement` with that company's WEB_TENANT — 200 `Entitlement`, every member's read (TAS-512). */
+  getEntitlement(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
 }
 
 /** `AccessSession` as this layer reads it: the four strings it needs, `tenantId` only on a company session. */
@@ -807,10 +814,15 @@ export class WebSessionClient {
     return result;
   }
 
-  /** `GET /tenants/{tenantId}` with the tab's company session — the never-opened card's read (DESIGN.md §4.37). */
+  /**
+   * `GET /tenants/{tenantId}` with the tab's company session — the never-opened
+   * card's read (DESIGN.md §4.37). An answer for another company is a failed
+   * read, and nothing of it is learnt (TAS-512, api-contract-guard B3).
+   */
   async getTenant(tenantId: string): Promise<Tenant> {
     const tenant = toTenant(await this.call("session", (bearer, signal) => this.transport.getTenant(bearer, tenantId, signal)));
     if (tenant === null) throw new Error("The answer held no company.");
+    if (tenant.id !== tenantId) throw new ForeignCompanyAnswerError();
     this.learnTenant(tenant);
     return tenant;
   }
@@ -1030,9 +1042,13 @@ export class WebSessionClient {
     );
   }
 
+  /** The snapshot — since TAS-512 its three rows; one that names another company is a failed read (B3). */
   async getTenantQuotas(tenantId: string): Promise<QuotaSnapshot> {
-    return toQuotaSnapshot(
-      await this.inCompany(tenantId, (bearer, signal) => this.transport.getTenantQuotas(bearer, tenantId, signal), { read: true }),
+    return ofCompany(
+      toQuotaSnapshot(
+        await this.inCompany(tenantId, (bearer, signal) => this.transport.getTenantQuotas(bearer, tenantId, signal), { read: true }),
+      ),
+      tenantId,
     );
   }
 
@@ -1074,10 +1090,31 @@ export class WebSessionClient {
     );
   }
 
-  /** The owner's read (B5). A control-plane read: its refusal is its own error and marks nothing. */
+  /**
+   * The owner's read (B5). A control-plane read: its refusal is its own error
+   * and marks nothing. An answer that names another company is a failed read
+   * (TAS-512, B3).
+   */
   async getSubscription(tenantId: string): Promise<Subscription> {
-    return toSubscription(
-      await this.inCompany(tenantId, (bearer, signal) => this.transport.getSubscription(bearer, tenantId, signal)),
+    return ofCompany(
+      toSubscription(await this.inCompany(tenantId, (bearer, signal) => this.transport.getSubscription(bearer, tenantId, signal))),
+      tenantId,
+    );
+  }
+
+  /**
+   * `GET /tenants/{tenantId}/billing/entitlement` (TAS-512, api-contract-guard
+   * §1): every member's read, with the tab's company session of that company
+   * only (`inCompany`). Control plane — **no `read` option**, so its refusal
+   * marks nothing and closes nothing beyond the closing codes every request
+   * has (B8). The answer is narrowed to what the Plan page draws
+   * (`toEntitlement` keeps no `validUntil`, B1); one that names another company
+   * is a failed read (B3).
+   */
+  async getEntitlement(tenantId: string): Promise<Entitlement> {
+    return ofCompany(
+      toEntitlement(await this.inCompany(tenantId, (bearer, signal) => this.transport.getEntitlement(bearer, tenantId, signal))),
+      tenantId,
     );
   }
 

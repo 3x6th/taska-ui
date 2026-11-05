@@ -19,7 +19,8 @@ async function openGeneral(page: Page, companyId: string) {
   await page.goto(companyPath(companyId, "/settings/profile"));
   const rail = page.getByRole("navigation", { name: "Settings" });
   const group = rail.getByRole("group", { name: "Company" });
-  await expect(group.getByRole("link")).toHaveText(["General", "Members"]);
+  // TAS-512: Plan stands third (§5.9).
+  await expect(group.getByRole("link")).toHaveText(["General", "Members", "Plan"]);
   await group.getByRole("link", { name: "General" }).click();
   await expect(page).toHaveURL(generalPath(companyId));
   await expect(page.getByRole("heading", { level: 1, name: /General/ })).toBeVisible();
@@ -139,13 +140,15 @@ test("AC4: Initech — renaming is refused under the pause; Sofia resumes; past 
   await expect(said(page)).toHaveText("Initech is paused.");
   await setHooks(page, { clockOffsetMs: 33 * DAY });
   await page.reload();
-  await expect(stateLines(page)).toHaveText([
-    "Paused by its owner. No one can change anything in it while it’s paused.",
-    "Its paid period has ended.",
-  ]);
+  // TAS-512: the financial line explained to the owner (§4.39) — and «what still works» only once nothing but it is left.
+  const expired = "Its paid period has ended. Nothing in it can be changed until you renew it. There’s no grace period, and it doesn’t move to a free plan on its own.";
+  await expect(stateLines(page)).toHaveText(["Paused by its owner. No one can change anything in it while it’s paused.", expired]);
   await page.getByRole("button", { name: "Resume company" }).click();
   await expect(said(page)).toHaveText("Initech is no longer paused.");
-  await expect(stateLines(page)).toHaveText(["Its paid period has ended."]);
+  await expect(stateLines(page)).toHaveText([
+    expired,
+    "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t take payments or change plans yet.",
+  ]);
 });
 
 test("Hooli is blocked: the owner is told only Taska can lift it, and every command is refused in the block's words", async ({ page }) => {

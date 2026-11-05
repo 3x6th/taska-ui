@@ -12,6 +12,11 @@ import {
 } from "@dnd-kit/core";
 import { infiniteQueryOptions, keepPreviousData, queryOptions, replaceEqualDeep, useInfiniteQuery, usePrefetchInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../hooks/useMutation";
+import { useCompanyMarker, useCompanyName } from "../hooks/useCompanies";
+import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
+import { companyWriteRefusalText, quotaRefusalText, writeRefusalText } from "../lib/companyRestrictions";
+import { CompanyMarkerWord } from "../components/CompanyMarkerWord";
+import { refreshAfterRefusal } from "./settings/companyPlan";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Shapes, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
 import {
   useEffect,
@@ -403,6 +408,10 @@ function issueCommentsOptions(projectId: string, issueId: string) {
 
 export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const { projectId = "", issueId } = useParams();
+  // The companies build (TAS-512, §4.34): the tab's company's state, after «Board» — there is no switcher on this bar.
+  const boardCompanyId = useCompanyAddress()?.companyId ?? null;
+  const boardCompany = useCompanyName(boardCompanyId);
+  const boardMarker = useCompanyMarker(boardCompanyId);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
@@ -1121,6 +1130,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           {project?.name ?? "Project"}
         </strong>
         <span className="muted-label">Board</span>
+        {boardMarker ? <CompanyMarkerWord company={boardCompany} marker={boardMarker} /> : null}
         {/* Beside the key and the name it edits, and before the spacer so it
             stays with them on the row they wrap onto below 820 (§4.13). Not in
             the trailing group: that group's order is fixed and its last member
@@ -5222,6 +5232,15 @@ function IssueAttachmentsSection({
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
 }) {
   const queryClient = useQueryClient();
+  // The companies build (TAS-512): the company a refusal names, and the plan reads an upload's refusal re-reads (B4).
+  const attachCompanyId = useCompanyAddress()?.companyId ?? null;
+  const attachCompany = useCompanyName(attachCompanyId);
+  const attachAccountClient = useAccountQueryClient();
+  const afterUploadRefusal = (error: unknown) => {
+    if (attachCompanyId !== null) {
+      refreshAfterRefusal(error, { companyClient: queryClient, accountClient: attachAccountClient, companyId: attachCompanyId, quotas: true });
+    }
+  };
   const fileInput = useRef<HTMLInputElement>(null);
   const [pending, setPending] = useState<{ fileName: string; sizeBytes: number; step: AttachmentUploadStep } | null>(null);
   /**
@@ -5435,11 +5454,15 @@ function IssueAttachmentsSection({
       ticket = await taskaApi.createAttachmentUploadUrl(projectId, issueId, candidate);
     } catch (error) {
       setPending(null);
-      // Not a mutation, so the board's listener does not hear it (§5.7).
+      // Not a mutation, so the board's listener does not hear it (§5.7) — nor the company's (TAS-512).
       rereadContextAfterRefusal(queryClient, projectId, error);
+      afterUploadRefusal(error);
       addNotice({
         tone: "error",
-        text: `${file.name} was not attached. ${refusalWords(error) ?? "The upload could not be prepared."}`,
+        // §4.40: the storage limit is this leg's 422 alone; §4.35: a restriction's reason, the prefix kept.
+        text:
+          quotaRefusalText(error, "attachment", { company: attachCompany, fileName: file.name }) ??
+          `${file.name} was not attached. ${writeRefusalText(error, attachCompany) ?? refusalWords(error) ?? "The upload could not be prepared."}`,
         requestId: apiErrorFacts(error).requestId,
       });
       return;
@@ -5522,9 +5545,10 @@ function IssueAttachmentsSection({
         return;
       }
       rereadContextAfterRefusal(queryClient, projectId, error);
+      afterUploadRefusal(error);
       addNotice({
         tone: "error",
-        text: `${file.name} was not attached. ${refusalWords(error) ?? "The upload could not be confirmed."}`,
+        text: `${file.name} was not attached. ${writeRefusalText(error, attachCompany) ?? refusalWords(error) ?? "The upload could not be confirmed."}`,
         requestId: apiErrorFacts(error).requestId,
       });
     }
@@ -7018,6 +7042,7 @@ function CreateIssueModal({
   onCreated: (issue: Issue) => void;
 }) {
   const queryClient = useQueryClient();
+  const formCompany = useCompanyName(useCompanyAddress()?.companyId ?? null);
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
   const meta = useMeta();
@@ -7187,6 +7212,17 @@ function CreateIssueModal({
     return null;
   };
 
+  /**
+   * A create is out (§4.1, TAS-512 api-contract-guard B-1, release-reviewer
+   * L-1): set by the submit itself, before `mutate`, and cleared when the create
+   * settles. `isPending` alone is not enough — react-query tells React on a
+   * timeout, so a second press inside the same task, or before that timeout,
+   * still reads the first as not sent, and there is no idempotency key on a
+   * create to make the second one harmless.
+   */
+  const createOut = useRef(false);
+  /** Where a refusal brings the modal body's view (§4.40 «Отказы квоты»). */
+  const submitRef = useRef<HTMLButtonElement>(null);
   const createIssue = useMutation({
     // From a column's "+", in that column's status (backend TAS-428); from
     // "New", no status — the server's `TODO`. A refusal (the type's workflow
@@ -7227,6 +7263,9 @@ function CreateIssueModal({
     onSuccess: async (issue) => {
       await invalidateBoard(queryClient, projectId);
       onCreated(issue);
+    },
+    onSettled: () => {
+      createOut.current = false;
     },
   });
 
@@ -7403,11 +7442,14 @@ function CreateIssueModal({
   const typeRefused = createIssue.isError
     ? typeRefusalSentence(createIssue.error, createIssue.variables?.label ?? "")
     : null;
+  // The companies build (TAS-512): a quota refusal says §4.40's sentence, a
+  // restriction §4.35's — the draft stays, the form stays editable, focus stays.
+  const companyRefused = createIssue.isError ? companyWriteRefusalText(createIssue.error, "issue", { company: formCompany, projectKey }) : null;
   const formNotice =
     dateNotice && !archived
       ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE
       : createIssue.isError && reportable(createIssue.error)
-        ? (typeRefused ?? refusalWords(createIssue.error) ?? createIssue.error.message)
+        ? (typeRefused ?? companyRefused ?? refusalWords(createIssue.error) ?? createIssue.error.message)
         : null;
   /**
    * The slot holds this form's `PROJECT_ARCHIVED` refusal, which says what the
@@ -7417,6 +7459,18 @@ function CreateIssueModal({
    * slot is showing it.
    */
   const archiveRefused = isProjectArchived(createIssue.error) && !(dateNotice && !archived);
+  /**
+   * Every new refusal of the create brings the submit into the modal body's
+   * view, the sentence standing right above it (§4.40 «Отказы квоты»,
+   * art-director B2): at once, no `behavior`, once the sentence is laid out.
+   * Not a type refusal — that one hands focus to the type select, and the view
+   * goes with focus. Each refusal is an error of its own, so the same sentence
+   * twice still scrolls.
+   */
+  const refusalInView = createIssue.isError && typeRefused === null ? createIssue.error : null;
+  useLayoutEffect(() => {
+    if (refusalInView !== null) submitRef.current?.scrollIntoView({ block: "nearest" });
+  }, [refusalInView]);
 
   /** Text-work holds `Esc` (§4.11): a box with something typed in it, archived to `readOnly` or not. */
   const unsavedText = (value: string) => (value !== "" ? "true" : undefined);
@@ -7480,7 +7534,11 @@ function CreateIssueModal({
             return;
           }
           clearDateNotice();
+          // In flight, a press asks nothing more (§4.1) — the latch for the
+          // press React has not yet heard the first one's flight for.
+          if (createIssue.isPending || createOut.current) return;
           if (summary.trim() && issueType && !noTypeHasStatus) {
+            createOut.current = true;
             createIssue.mutate({ type: issueType, label: issueTypeLabel(issueType, issueTypes) });
           }
         }}
@@ -7751,7 +7809,16 @@ function CreateIssueModal({
               Create issue
             </button>
           ) : (
-            <button className="primary-button" disabled={!summary.trim() || !issueType || createIssue.isPending} type="submit">
+            // In flight `aria-disabled` rather than `disabled` (§4.1): a disabled
+            // button drops focus, and a refused create keeps it where it was
+            // (TAS-512, §4.40 — the draft, the form and the focus stay).
+            <button
+              aria-disabled={createIssue.isPending || undefined}
+              className="primary-button create-issue-submit"
+              disabled={!summary.trim() || !issueType}
+              ref={submitRef}
+              type="submit"
+            >
               Create issue
             </button>
           )}

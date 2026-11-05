@@ -38,7 +38,6 @@ import {
   renamedStatus,
   resumeRowText,
   resumedStatus,
-  stateLines,
   transferRefusalWords,
   transferRowText,
   transferredStatus,
@@ -47,6 +46,7 @@ import {
   type TransferOutcome,
   type ZoneAction,
 } from "./companyGeneralText";
+import { CompanyStateBlock } from "./CompanyStateBlock";
 import { isIndefinite, keyFor } from "./companyMembers";
 import { companyMembersOptions } from "./companyMembersQuery";
 import { Strip } from "./SettingsMembersSection";
@@ -530,7 +530,6 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
   const failed = failedRead;
   const paused = tenant?.restrictions.includes("OWNER_PAUSE") ?? false;
   const paidThrough = owner ? (subscription.data?.paidThrough ?? null) : null;
-  const lines = tenant !== null ? stateLines(tenant.restrictions, owner) : [];
   const ownerRow = tenant?.ownerId ? cachedMembers.data?.find((member) => member.userId === tenant.ownerId) : undefined;
   const ownerName =
     knownOwner !== null && tenant?.ownerId === knownOwner.userId ? knownOwner.name : ownerRow ? memberName(ownerRow) : null;
@@ -542,16 +541,7 @@ function CompanyGeneral({ companyId }: { companyId: string }) {
           {ready ? (
             <>
               <p className="settings-lead">{leadText(company)}</p>
-              {lines.length > 0 ? (
-                <div className="company-general-states">
-                  {lines.map((line) => (
-                    <p className="company-general-state" key={line.code}>
-                      <span className="company-general-state-fact">{line.fact}</span>
-                      {line.explanation ? ` ${line.explanation}` : null}
-                    </p>
-                  ))}
-                </div>
-              ) : null}
+              {tenant !== null ? <CompanyStateBlock owner={owner} restrictions={tenant.restrictions} /> : null}
               {tenantQuery.isError ? (
                 <div className="company-general-refresh-failure">
                   <ApiNotice error={tenantQuery.error} live="off" words={false}>

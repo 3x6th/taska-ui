@@ -50,9 +50,10 @@ test("AC1: Nina creates a free company and lands in its Projects — no projects
   await expect(page.getByRole("radio")).toHaveCount(2);
   await expect(freePlan(page)).toBeChecked();
   await expect(teamPlan(page)).not.toBeChecked();
-  await expect(page.getByText("1 project · 5 members · 100 MB storage · 50 issues per project")).toBeVisible();
+  // «seats» since TAS-512 (§4.36, art-director B10).
+  await expect(page.getByText("1 project · 5 seats · 100 MB storage · 50 issues per project")).toBeVisible();
   await expect(page.getByText("€20 a month")).toBeVisible();
-  await expect(page.getByText("5 projects · 50 members · 5 GB storage · unlimited issues")).toBeVisible();
+  await expect(page.getByText("5 projects · 50 seats · 5 GB storage · unlimited issues")).toBeVisible();
   await expect(page.getByText("Nothing is charged now. The company opens once its first payment is confirmed.")).toBeVisible();
 
   // An empty name is said, and nothing is sent.

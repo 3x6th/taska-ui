@@ -6,6 +6,7 @@ import type {
   ListTenantsParams,
   PlanVersionPage,
   Subscription,
+  Entitlement,
   Tenant,
   TenantOperation,
   TenantPage,
@@ -1607,6 +1608,18 @@ export interface TaskaApi {
    * not the owner (api-contract-guard B5).
    */
   getSubscription(tenantId: string): Promise<Subscription>;
+  /**
+   * `GET /tenants/{tenantId}/billing/entitlement` (TAS-512) — every member's
+   * read of the plan the company is on and its limits, with the tab's company
+   * session of that company only (another company: `WorkspaceClosedError`, no
+   * request). Narrowed to `tenantId`, `version`, `planVersionId` and `limits`:
+   * `validUntil`, `coveragePeriodId` and `features` are never kept
+   * (api-contract-guard B1). An answer naming another company rejects
+   * (`ForeignCompanyAnswerError`, B3). Its refusal closes nothing but what
+   * every request's closing codes close. Today's build refuses it without a
+   * request (`TenancyUnavailableError`).
+   */
+  getEntitlement(tenantId: string): Promise<Entitlement>;
 
   /**
    * `GET /meta` — the enum dictionaries (backend TAS-217), read once per

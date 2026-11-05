@@ -99,7 +99,13 @@ describe("the fixtures (§7)", () => {
     expect(quotas).toMatchObject({
       tenantId: NW,
       version: expect.stringMatching(/^[0-9]+$/),
-      quotas: [{ kind: "SEAT", used: "4", reserved: "1", limit: "5", unlimited: false, version: expect.stringMatching(/^[0-9]+$/) }],
+      // TAS-512: the three rows the blueprint allows — Northwind's three projects against the FREE limit of 1
+      // (the platform's bypass, no OVER_QUOTA) and its seeded bytes of 100 MB.
+      quotas: [
+        { kind: "SEAT", used: "4", reserved: "1", limit: "5", unlimited: false, version: expect.stringMatching(/^[0-9]+$/) },
+        { kind: "PROJECT", used: "3", reserved: "0", limit: "1", unlimited: false, version: expect.stringMatching(/^[0-9]+$/) },
+        { kind: "STORAGE_BYTES", used: expect.stringMatching(/^[0-9]+$/), reserved: "0", limit: "100000000", unlimited: false, version: expect.stringMatching(/^[0-9]+$/) },
+      ],
     });
     const tenants = (await transport.listTenants(account.accessToken, {}, signal)) as { items: Record<string, unknown>[] };
     for (const tenant of tenants.items) {
@@ -108,9 +114,12 @@ describe("the fixtures (§7)", () => {
       expect(tenant).not.toHaveProperty("quotaVersion");
       // TAS-504: the subscription is the owner's read, never on the Tenant wire.
       expect(tenant).not.toHaveProperty("subscription");
+      // TAS-512: nor the entitlement's version or the quota bookkeeping.
+      expect(tenant).not.toHaveProperty("entitlementVersion");
+      expect(tenant).not.toHaveProperty("quotaBreach");
     }
-    // v4 since TAS-504's fresh seed (the subscriptions).
-    expect(JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}").v).toBe(4);
+    // v5 since TAS-512's fresh seed (the plans' usage and terms).
+    expect(JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}").v).toBe(5);
   });
 
   it("keeps TAS-500's directory: Northwind's ACTIVE people are Anna, Sofia and Tom", async () => {

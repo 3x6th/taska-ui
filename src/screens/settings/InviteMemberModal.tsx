@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { taskaApi } from "../../api/client";
-import { apiErrorFacts, refusalCode } from "../../api/errors";
+import { apiErrorFacts } from "../../api/errors";
 import {
   INVITATION_EMAIL_MAX,
   PROJECT_GRANT_ROLES,
@@ -22,6 +22,7 @@ import { keyBadgeStyle } from "../../lib/format";
 import { isIndefinite, keyFor, type SentIntent } from "./companyMembers";
 import { COMPANY_INVITATIONS_KEY, COMPANY_MEMBERS_KEY } from "./companyMembersQuery";
 import { inviteHeadText, inviteRefusalWords } from "./companyMembersText";
+import { QUOTA_WRITE_META } from "./companyPlan";
 
 /** What the modal opens with: empty for «Invite a member», the expired row's for «Invite again» (§4.38). */
 export interface InviteDraft {
@@ -56,7 +57,6 @@ export function InviteMemberModal({
   draft,
   onClose,
   onInvited,
-  onSeatsChanged,
 }: {
   companyId: string;
   company: string | null;
@@ -64,8 +64,6 @@ export function InviteMemberModal({
   draft: InviteDraft | null;
   onClose: () => void;
   onInvited: (invitation: Invitation) => void;
-  /** A `QUOTA_EXCEEDED`: the seats are read again (§4.38). */
-  onSeatsChanged: () => void;
 }) {
   const formId = useId();
   const queryClient = useQueryClient();
@@ -90,8 +88,11 @@ export function InviteMemberModal({
     },
     onError: (error) => {
       if (intent.current && isIndefinite(error)) intent.current = { ...intent.current, open: true };
-      if (refusalCode(error) === "QUOTA_EXCEEDED") onSeatsChanged();
     },
+    // A refused invitation re-reads the company's plan reads, the snapshot with them (TAS-512, B4):
+    // the seats a `QUOTA_EXCEEDED` makes the section read again are that one read — the gate's
+    // (`CompanyGate`), never a second of this dialog's own (api-contract-guard N2).
+    meta: QUOTA_WRITE_META,
   });
 
   const trimmed = trimInvitationEmail(email);
@@ -146,6 +147,8 @@ export function InviteMemberModal({
         pending: (queryClient.getQueryData<Invitation[]>(COMPANY_INVITATIONS_KEY) ?? []).some(
           (row) => row.state === "PENDING" && sameInvitationEmail(row.email, sentEmail),
         ),
+        // A QUOTA_EXCEEDED quotes the seat limit only from the snapshot already read (§4.38, TAS-512).
+        seats,
       })
     : null;
 

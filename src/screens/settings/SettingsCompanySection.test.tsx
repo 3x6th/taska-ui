@@ -717,7 +717,8 @@ describe("transfer (§4.39, B4, art-director B6)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
     expect(screen.getByRole("dialog", { name: "Transfer ownership" })).toBe(dialog);
     await act(async () => sent.reject(refusal(403, "READ_ONLY", ["PAYMENT_EXPIRED"])));
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Umbrella can’t be transferred right now.");
+    // TAS-512: the refusal's own reason names itself (§4.35's clause).
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Umbrella’s paid period has ended, so it was not transferred.");
   });
 
   it("lost, then 403 OWNER_REQUIRED, and the re-read fails: unconfirmed — «Reload this page», no re-entry, the same key next time", async () => {

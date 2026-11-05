@@ -34,6 +34,12 @@ export const PROJECT = {
   ops: "64d70a2b-72b0-4866-bdbf-4f71a416f9e4",
 } as const;
 
+/** TAS-512: the mock catalogue's plan ids (`MOCK_PLAN_IDS`). */
+export const PLAN = {
+  free: "7d2c4e1a-5b3f-4a6c-9e8d-0f1a2b3c4d01",
+  team: "7d2c4e1a-5b3f-4a6c-9e8d-0f1a2b3c4d02",
+} as const;
+
 export const ANNA = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
 
 export const companyPath = (companyId: string, rest = "/projects") => `${B2B}/c/${companyId}${rest}`;

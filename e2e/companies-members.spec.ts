@@ -47,6 +47,10 @@ test("an invitation holds a seat: a full Northwind refuses it, revoking Kai free
   await openMembers(page, COMPANY.northwind);
   await expect(seatLine(page)).toContainText("All 5 seats are in use · 1 held by an invitation");
   await expect(seatLine(page)).toContainText("To invite someone, remove a member or revoke an invitation.");
+  // TAS-512: the plan's explanation is one link away (§4.38 → §4.40), its target at least 28 high.
+  const seePlan = seatLine(page).getByRole("link", { name: "See Plan" });
+  await expect(seePlan).toHaveAttribute("href", "/c/" + COMPANY.northwind + "/settings/plan");
+  expect((await seePlan.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(28);
 
   // «Invite a member» is not disabled by the snapshot: the server's 422 decides.
   const invite = page.getByRole("button", { name: "Invite a member" });
@@ -54,8 +58,9 @@ test("an invitation holds a seat: a full Northwind refuses it, revoking Kai free
   const dialog = page.getByRole("dialog", { name: "Invite a member" });
   await dialog.getByLabel("Email").fill("lin@example.com");
   await dialog.getByRole("button", { name: "Send invitation" }).click();
+  // The limit quoted from the snapshot the page read (TAS-512, §4.38).
   await expect(dialog.getByRole("alert")).toHaveText(
-    "All seats are in use, so this invitation was not created. Remove a member or revoke an invitation to free a seat.",
+    "All 5 seats are in use, so this invitation was not created. Remove a member or revoke an invitation to free a seat.",
   );
   await expect(dialog.getByLabel("Email")).toHaveValue("lin@example.com");
   await dialog.getByRole("button", { name: "Cancel" }).click();

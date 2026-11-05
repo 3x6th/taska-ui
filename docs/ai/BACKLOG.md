@@ -4467,7 +4467,9 @@ asks A9–A16 went to Jira as comments on their owner stories.
 - **FREE for an unverified email**: the blueprint is silent.
 - **Who issues the INITIAL invoice**: L02's provisioning step «billing invoice» against `CreateInvoiceRequest`
   needing buyer, currency and method from the owner (TAS-337/475/513).
-- **A new FREE company on the mock does not enforce the one-project limit** (TAS-512's quotas).
+- **A new FREE company on the mock does not enforce the one-project limit** (TAS-512's quotas) — answered in TAS-512:
+  the first project is made, the second refused 422 (`MockTenantServer.plan.test`). Left: PROJECT usage counts the
+  page's in-memory store, so after a reload a new company accepts one more «first» project (release-reviewer D2).
 - **The Massive Dynamic fixture** is AUTO_CLOSED with a non-owner member, impossible under the invitation denial;
   harmless.
 - **A lost createTenant answer followed by a new tab** (not a reload) can create a second paid company: the key is
@@ -4529,9 +4531,9 @@ A17–A25 went to Jira as comments on their owner stories.
 - **A cursor invalidated by a concurrent change** is the same 400 as a forged one.
 - **A deleted account's name is a Russian placeholder** (contracts §10); ask for a flag and draw English words.
 - **Membership carries no `joinedAt` / `suspendedAt`** on the wire (the columns exist) — no «Member since» / «Suspended on».
-- **The mock's quota snapshot has only the SEAT row** (TAS-512 adds PROJECT and STORAGE).
+- **The mock's quota snapshot has only the SEAT row** (TAS-512 adds PROJECT and STORAGE) — answered in TAS-512.
 - **Members beyond 50 seats** need a filter; inviting several emails at once; the invitation row naming its projects;
-  §4.36 «5 members» vs §4.38 «seats» wording — align in TAS-512; ~150 Tab stops at 50 rows (roving focus if heavy);
+  §4.36 «5 members» vs §4.38 «seats» wording — aligned in TAS-512 («5 seats»); ~150 Tab stops at 50 rows (roving focus if heavy);
   My profile «Role · User» → «Taska role» in the B2B build (as the menu).
 - **Discoverability:** Members is reachable only through Settings (and the project Members dialog's empty search); a
   «Members» row in the switcher footer is the fallback if the owner finds it too deep.
@@ -4579,7 +4581,7 @@ A30–A41 went to Jira as comments on their owner stories.
   recorded dead end (guard N6).
 - **`autopayState`** belongs with the B2B dictionaries in `/meta` (guard N7, with A28).
 - **Members get no sign of a pause until a write fails** (read flag on): a word marker in the switcher trigger on the
-  platform-access marker recipe (§4.34) — TAS-512's (art-director N4).
+  platform-access marker recipe (§4.34) — TAS-512's (art-director N4). Answered in TAS-512 (the state marker).
 - **§4.35's restricted form could live inside the app shell**, since the session is kept — revisit only if the owner's
   «Back to projects» loop reads like being thrown out (art-director N5).
 
@@ -4592,13 +4594,16 @@ Non-blocking notes from the three roles (`docs/ai/reviews/TAS-504/`, git-ignored
   (guard L2).
 - **Answers are not checked against the requested company** (`tenantAnswer`, `getTenant`, `toSubscription` don't
   compare `Tenant.id` / `Subscription.tenantId` with the path) — defence in depth; the request side is checked (L4).
+  Partly answered in TAS-512: getTenant, getSubscription, getTenantQuotas and getEntitlement are checked; the four
+  commands' `tenantAnswer` (`webSession.ts:1121`) and `cancelTenantCreation` (`:840`) still are not (guard N5).
 - **A definite getSubscription failure** (404 "No static resource" while TAS-314 is absent) re-reads on every focus
   return under `refetchFailedOnFocus` — decide in the flag-on PR (L5).
 - **§4.37's `creationDeadline` keeps any string** — an unparseable value would crash `formatDeadline` the way
   `paidThrough` did before its fix (guard M2's class).
 - **Focus after «Open company settings»** lands on `<body>`, as every arrival in Settings today; give Settings the
   `focusHeading` route state «Choose a company» passes (art-director).
-- **The blocked-search notice is in the danger tint** though it is an answer, not a failure — revisit with TAS-512.
+- **The blocked-search notice is in the danger tint** though it is an answer, not a failure — not taken in TAS-512;
+  revisit with the next B2B story that touches search (release-reviewer D3).
 - **§4.35's owner variant draws a blank plane until the account `/users/me`** on a cold load (~145 ms on the mock):
   fill the account `["me"]` from the company client's (art-director).
 - **§4.11 describes a footer on `--surface-2` that no modal draws**: buttons are `.modal-actions` in the body —
@@ -4630,3 +4635,56 @@ Non-blocking notes from the three roles (`docs/ai/reviews/TAS-504/`, git-ignored
 - **`e2e/companies.spec.ts:146` («All companies» is 44 high) flaked once at 43.99999** on desktop in the TAS-504 gate
   (`03beade`); 10/10 on a re-run. Compare with a sub-pixel tolerance (`toBeGreaterThanOrEqual(43.5)` or round first),
   like the other layout measures in the suite.
+
+### Left by TAS-512 pre-build (company plan and usage, B2B blueprint `758f8fc6`, 2026-11-05)
+
+From the api-contract-guard design and the art-director ruling (`docs/ai/reviews/TAS-512/`, git-ignored). Backend asks
+A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS-483.
+
+- **«Paid until» is on both General and Plan** — later keep it only on Plan (touches TAS-504 tests) (art-director 1).
+- **Payments and invoices (TAS-513–516)**: owner-only rows on Plan, or a separate owner-only «Billing» item — decide then
+  (art-director 3).
+- **The price line is the catalogue's base price**; tax and FX belong to invoices (TAS-514) (guard N7).
+- **A definite failure of the new plan reads re-reads on every focus return** (guard N5; the L5 note of TAS-504).
+- **The «3 used · 1 allowed» projects line on Northwind and Globex** is the mock's platform-bypass fixture, not a UI
+  state; revisit when A46 says whether a bypass always sets OVER_QUOTA.
+
+### Left by TAS-512 review (company plan and usage, build review of `994ec25`, 2026-11-05)
+
+Non-blocking notes of the three roles (`docs/ai/reviews/TAS-512/`, git-ignored); the blockers and the cheap notes went
+into the fix round.
+
+- **develop moved past the pin** (`cb9a028c`: TAS-313 catalogue and TAS-314 subscriptions merged). Its
+  `ListBillingPlans` lists only the latest published version of each code, so a company on an older version reads
+  «This plan isn't in Taska's plan list.» and its owner sees no price — ask A43 is now required for the flag-on PR. Its
+  `PlanVersion.kind` FREE | PAID answers A16: `toPlanVersion` reads `kind`, the eligibility `isFreePlan` in
+  `CreateCompanyScreen.tsx:128-131` (TAS-501) switches to it, the mock catalogue sends `kind` and stops listing RETIRED
+  rows — in the pass that takes develop past `758f8fc6` (guard N1).
+- **The quota and restriction sentences** on New issue, New project and attachments are not gated on a company: inert
+  on the stand (`openapi.yml` has no `QUOTA_EXCEEDED`, `READ_ONLY` or `CAPABILITY_DISABLED`), but a legacy task limit
+  (TAS-460) would speak of «its plan's limit» (guard N4, art-director 8).
+- **`ForeignCompanyAnswerError` leaves no trace for a developer** — a `console.warn` with the requested and answered ids
+  (guard N6).
+- **A failed `/users/me` on Plan** (and General) shows the owner the non-owner page and lead with no ErrorNote (guard N7,
+  release-reviewer L-6; TAS-504's pattern).
+- **The mock's TASK_LIFETIME breach counts archived projects' counters** (L04 says live projects), and an archived
+  project at the limit answers 422 before the archived refusal (guard N8).
+- **A rename moves `Tenant.version`**, so the owner's subscription is re-read on General — by B4; asks A31 / A49 remove it
+  (guard N9).
+- **`.company-marker` duplicates `.admin-readonly`** (§5.8) with identical tokens — one shared class (art-director 6).
+- **«From Dec 20, 12:23: Team · version 2, €20 a month»** puts two colons together — reword when §4.40 is next opened
+  (art-director 7).
+- **Without A49** a plan change on the server shows only after a Tenant re-read, a refused write, a boundary or a reload
+  (release-reviewer residual).
+- **`e2e/companies-tabs.spec.ts:272` flaked once** in the fix round's first gate (desktop: a modifier click in the
+  switcher popover opened no new page within 30 s; 30/30 alone). Not the popover animation (Playwright waits for the
+  element to settle; the link doesn't move): more likely a slow `inCompany` under full-gate load eating the 30 s budget;
+  50/50 on head and base (release-reviewer wave 2). The fix round's gate also timed out once each in
+  `issue-types.spec.ts:580` and `notification-preferences.spec.ts:259` while a reviewer's Playwright ran in parallel —
+  90/90 alone.
+- **A focus-return or invalidation re-read of a failed Plan read** still unmounts its note and «Try again» and drops focus
+  to `<body>` (the freeze covers only Try again's own re-read, `SettingsPlanSection.tsx` `drawn()`): draw a read's last
+  failure while it re-reads without data, or refocus when its box returns (release-reviewer wave 2, low 1).
+- **Scroll-to-submit ignores where focus is**: Enter in Summary at a refusal scrolls the focused field out of the modal
+  body (scrollTop 65 at 1440×810, 381 at 320×568) — §4.40 says only when focus stays on the submit; scroll only when
+  the submit has focus (release-reviewer wave 2, low 2).

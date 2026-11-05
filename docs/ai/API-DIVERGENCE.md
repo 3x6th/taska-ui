@@ -2158,8 +2158,8 @@ Everything below is the entry as it stood, in the past tense.
   404, a suspended membership closes its tab. Before TAS-316 and TAS-340 the flag is **unsafe**, not merely early:
   a gateway that issues tenant sessions but does not scope data routes would show the same projects in every
   company's tab, and the UI cannot tell.
-- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v4` since
-  TAS-504; `v3` in TAS-502, `v2` in TAS-501, `v1` before it); this
+- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v5` since
+  TAS-512; `v4` in TAS-504, `v3` in TAS-502, `v2` in TAS-501, `v1` before it); this
   narrows "The mock has a session flag but no session enforcement" for the flag-on build only.
 - **Mock answers where the blueprint is silent** (`src/api/mock/MockTenantServer.ts`, `mockCompanies.ts`) — the
   mock's choices, not the blueprint's behaviour; each falls away with the ask named:
@@ -2336,6 +2336,72 @@ Everything below is the entry as it stood, in the past tense.
   «first Leave after being removed loops» fixed. The enabling PR
   carries the stand probe: invite → reserved + 1; resend → unchanged; revoke → − 1; suspend keeps used; remove frees
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
+- **Removal:** delete with the flag, after the probe.
+
+### TAS-512: the company plan, usage and the explanation of restrictions ship ahead of the gateway, on the B2B blueprint
+
+- **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`; none in `openapi.yml`):
+  `GET /api/v1/tenants/{tenantId}/billing/entitlement` (getEntitlement, every member, new), `GET …/quotas`
+  (getTenantQuotas, now SEAT, PROJECT and STORAGE_BYTES), `GET …/billing/subscription` (getSubscription, owner only,
+  now with `scheduledPlanVersionId` / `scheduledEffectiveAt`), `GET /api/v1/billing/plans` (listBillingPlans, the
+  public catalogue); the gateway's createIssue, createProject and attachment upload-url / delete refusals. Not called:
+  getTenantCapabilities (TAS-497), getProjectTaskQuota (one call per project), periods, invoices, checkout, autopay,
+  refunds, disputes, documents (TAS-513…516). Backend: TAS-313 (catalogue, In Progress), TAS-314, TAS-319, TAS-359,
+  TAS-460, TAS-483 (no PR); open PR #286 (TAS-320) creates billing-service with only a payment-provider port; develop
+  has no billing-service module, no quota tables, and `project_counters` holds only `next_issue_number`.
+- **Observed (2026-11-05, no token, api-contract-guard):** all answer 404 "No static resource" — subscription
+  `3d45180a-d1d5-4d76-ab9b-943c019bc802`, entitlement `1254e679-9026-49c1-b116-7fc0e691f510`, quotas
+  `9b07d425-33d3-4838-9f4a-5c1debd1c728`, capabilities `2e171805-0093-42bf-9cf0-7826068dff17`, task-quota
+  `fb8f784e-636d-4050-86d1-31a953218867`, periods `468e698b-aea3-463a-ad18-8880ebea8ced`, plans
+  `fdc3f69f-6142-43c6-a124-f4494f57734e`, getTenant `4aca38f8-21e5-480d-9532-e022b43d29de`; controls `GET /projects`
+  401 (`4e744137-b7fd-4c29-9131-edc43f7f504b`), `GET /project-stats` 401 (`0194a4c8-30e5-4723-a894-caa5579cda68`).
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. The plan's name and price come from joining the public catalogue
+  by `planVersionId` — a join of two published reads, not a correction of a backend answer. Removal: ask A43 (a plan
+  snapshot inside the billing answers).
+- **What the UI assumes where the blueprint is silent — each removable:**
+  - `scheduledPlanVersionId` / `scheduledEffectiveAt` are read as announced terms and shown to the owner only; no notice
+    type exists, and non-owners see no announced terms. Removal: ask A47.
+  - Current limits come from the quota snapshot (SEAT, PROJECT, STORAGE_BYTES) and `Entitlement.limits`
+    (TASK_LIFETIME), never from the catalogue; the catalogue's limits only for announced terms. Removal: asks A44, A48.
+  - Restrictions come from `Tenant.restrictions` only; which quota an `OVER_QUOTA` is about is not known. Removal: ask
+    A46.
+  - Every member reads the entitlement; the client keeps no `validUntil`. Removal: ask A52.
+  - Which quota a `QUOTA_EXCEEDED` refers to is taken from the refused action (issue, project, upload), never parsed
+    from the server's words. Removal: ask A50.
+  - No tasks-per-project usage is shown (it would need one call per project). Removal: ask A45.
+  - Plan reads stay `getTenantQuotas` `{read:true}` as TAS-502 has it; a financial `CAPABILITY_DISABLED` on it would close
+    the company. Removal: ask A51 (plan reads are control plane), in the flag-on PR at the latest.
+  - The client's own rules: an answer whose `tenantId` (or `Tenant.id`) differs from the requested company is a failed
+    read; plan reads are re-read on a `Tenant` version / restriction change, on a READ_ONLY / CAPABILITY_DISABLED /
+    QUOTA_EXCEEDED refusal and once at the `paidThrough` / `scheduledEffectiveAt` boundary (again after 60 s), never
+    polled. Removal of the boundary re-read: ask A49.
+- **Found on develop, recorded, not compensated:** no billing-service module; no quota tables in tenant-service; no
+  lifetime task counter (TAS-460); the model's restriction kinds (`target-data-model.md:266`) differ from the wire's
+  and lack `PENDING_FIRST_PAYMENT`; no plan-notice notification type.
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v5`): Northwind and Globex
+  (FREE) hold 3 projects against a limit of 1 without `OVER_QUOTA` (the platform bypass, contracts §8 «может»); PROJECT
+  used counts every project of the company, archived included; STORAGE used is confirmed bytes, reserved unconfirmed
+  upload grants; a lifetime task counter per project in shared storage, never decreased; createIssue checks the
+  restriction, then that the project exists, then the counter (422 `QUOTA_EXCEEDED`, reasons []) — the mock store has
+  no VIEWER check on createIssue; createProject 422 when used + 1 > limit; upload-url 422 when used + reserved + size >
+  limit; createProject and upload-url meet the quota before the store's own validation (duplicate key, over-size,
+  missing issue) — the real order is unmeasured (asks A50, A6); the invite refusal quotes the seat limit from the
+  cached quota snapshot, never from its words (ask A50); the mock catalogue lists RETIRED versions (see the addendum
+  below); Umbrella on Team v1 (25 seats) with an announced move to
+  Team v2 at its paid-through; hooks `applyPlan`, `taskLifetime`, `paymentDispute`; `OVER_QUOTA` lifts once every
+  breached kind is back within its limit.
+- **Turning the flag on** additionally needs TAS-313, TAS-314, TAS-319, TAS-322, TAS-324, TAS-347, TAS-460 and TAS-483
+  on the gateway and asks A46, A47 and A51 answered.
+- **Addendum (2026-11-05, build review, develop `cb9a028c`; scope frozen at `758f8fc6`, nothing taken into this pass):**
+  TAS-313 (catalogue) and TAS-314 (subscriptions) are merged, so «TAS-313 In Progress» and «no billing-service module»
+  above are true only at the pin. develop's `ListBillingPlans` lists only the latest published version of each code
+  (`billing-service/README.md:9`): against it a company on an older version (Umbrella on Team v1) reads «This plan isn't
+  in Taska's plan list.» and its owner sees no price — an honest failure, not compensated; ask A43 (a plan snapshot in
+  `Subscription` / `Entitlement`) is now required for the flag-on PR, not optional. The mock catalogue still lists
+  RETIRED rows, so the e2e «Team · version 1, €15» cannot happen against develop. develop adds `PlanVersion.kind`
+  FREE | PAID, which answers A16; the frontend follow-ups are in BACKLOG «Left by TAS-512 review». The subscription view
+  switches at a paid boundary without a write (`billing-service/SUBSCRIPTIONS.md`), which the boundary re-read already
+  expects; A49's ETag must be boundary-aware.
 - **Removal:** delete with the flag, after the probe.
 
 ### TAS-504: company name, owner transfer and pause ship ahead of the gateway, on the B2B blueprint
