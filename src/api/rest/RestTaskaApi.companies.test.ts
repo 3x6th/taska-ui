@@ -564,3 +564,148 @@ describe("members, invitations and seats on the wire (TAS-502, api-contract-guar
     expect(api.currentWorkspace()?.tenantId).toBe(NORTHWIND);
   });
 });
+
+/* ---------------------------------- the company's name, owner and pause (TAS-504) */
+
+const OWNER_B = "3a4b5c6d-7e8f-4a0b-8c1d-2e3f4a5b6c7d";
+const tenantWire = (extra: Record<string, unknown> = {}) => ({
+  id: NORTHWIND,
+  name: "Northwind",
+  ownerId: ANNA,
+  lifecycle: "ACTIVE",
+  restrictions: [],
+  createdAt: "2026-05-01T09:00:00Z",
+  version: "4",
+  ownerVersion: "1",
+  ...extra,
+});
+
+function companyGateway(extra?: (sent: Sent) => Response | undefined) {
+  return blueprintGateway((request) => {
+    const answer = extra?.(request);
+    if (answer) return answer;
+    const path = request.url.replace(/^\/api\/v1/, "");
+    const base = `/tenants/${NORTHWIND}`;
+    if (path === base && request.method === "PATCH") return json(200, tenantWire({ name: (request.body as { name: string }).name, version: "5" }));
+    if (path === base && request.method === "GET") return json(200, tenantWire());
+    if (path === `${base}/pause` && request.method === "PUT") return json(200, tenantWire({ restrictions: ["OWNER_PAUSE"], version: "5" }));
+    if (path === `${base}/pause` && request.method === "DELETE") return json(200, tenantWire({ version: "6" }));
+    if (path === `${base}/ownership-transfer`) return json(200, tenantWire({ ownerId: OWNER_B, ownerVersion: "2", version: "5" }));
+    if (path === `${base}/billing/subscription`) {
+      return json(200, { tenantId: NORTHWIND, planVersionId: "plan-team", version: "2", currentPeriodId: "period-1", paidThrough: "2026-12-07T09:00:00Z", anchorDay: 7, renewalCancelled: false, autopayState: "CONSENTED" });
+    }
+    return undefined;
+  });
+}
+
+describe("the company's name, owner and pause on the wire (TAS-504, api-contract-guard §1, §6 parity)", () => {
+  it("today's build refuses all five without a request", async () => {
+    const { fetch } = companyGateway();
+    const api = new RestTaskaApi("/api/v1");
+    for (const call of [
+      () => api.renameTenant(NORTHWIND, "Northwind Traders", "4", KEY),
+      () => api.pauseTenant(NORTHWIND, "4", KEY),
+      () => api.resumeTenant(NORTHWIND, "4", KEY),
+      () => api.transferTenantOwnership(NORTHWIND, OWNER_B, "4", KEY),
+      () => api.getSubscription(NORTHWIND),
+    ]) {
+      await expect(call()).rejects.toBeInstanceOf(TenancyUnavailableError);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("each command: the company session, the key, If-Match quoted, the bodies byte for byte, DELETE without one", async () => {
+    const { sent } = companyGateway();
+    const { api } = companiesApi();
+    await api.signIn({ email: "anna@example.com", password: "x" });
+    await api.enterCompany(NORTHWIND);
+    await expect(api.renameTenant(NORTHWIND, "Northwind Traders", "4", KEY)).resolves.toMatchObject({ name: "Northwind Traders", version: "5" });
+    await expect(api.pauseTenant(NORTHWIND, "5", KEY)).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"] });
+    await expect(api.resumeTenant(NORTHWIND, "5", KEY)).resolves.toMatchObject({ restrictions: [], version: "6" });
+    await expect(api.transferTenantOwnership(NORTHWIND, OWNER_B, "6", KEY)).resolves.toMatchObject({ ownerId: OWNER_B });
+
+    const at = (method: string, path: string) => sent.find((request) => request.method === method && request.url === `/api/v1/tenants/${NORTHWIND}${path}`);
+    const company = { Authorization: "Bearer t1-access" };
+    const rename = at("PATCH", "");
+    expect(rename?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY, "If-Match": '"4"', "Content-Type": "application/json" });
+    expect(JSON.stringify(rename?.body)).toBe('{"name":"Northwind Traders"}');
+    const pause = at("PUT", "/pause");
+    expect(pause?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY, "If-Match": '"5"' });
+    expect(JSON.stringify(pause?.body)).toBe('{"confirmed":true}');
+    const resume = at("DELETE", "/pause");
+    expect(resume?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY, "If-Match": '"5"' });
+    expect(resume?.body).toBeUndefined();
+    expect(resume?.headers["Content-Type"]).toBeUndefined();
+    const transfer = at("POST", "/ownership-transfer");
+    expect(transfer?.headers).toMatchObject({ ...company, "Idempotency-Key": KEY, "If-Match": '"6"' });
+    expect(JSON.stringify(transfer?.body)).toBe(`{"newOwnerUserId":"${OWNER_B}","confirmed":true}`);
+    // None of them is an account-session request.
+    expect(sent.filter((request) => request.url.includes(`/tenants/${NORTHWIND}`)).every((request) => request.headers.Authorization === "Bearer t1-access")).toBe(true);
+  });
+
+  it("the subscription: GET with the company session, read field by field — absent fields null, an unknown autopay state kept", async () => {
+    let answer: Record<string, unknown> | null = null;
+    const { sent } = companyGateway((request) =>
+      answer !== null && request.url.endsWith("/billing/subscription") ? json(200, answer) : undefined,
+    );
+    const { api } = companiesApi();
+    await api.signIn({ email: "anna@example.com", password: "x" });
+    await api.enterCompany(NORTHWIND);
+    await expect(api.getSubscription(NORTHWIND)).resolves.toEqual({
+      tenantId: NORTHWIND,
+      planVersionId: "plan-team",
+      version: "2",
+      paidThrough: "2026-12-07T09:00:00Z",
+      autopayState: "CONSENTED",
+      renewalCancelled: false,
+    });
+    const read = sent.find((request) => request.url === `/api/v1/tenants/${NORTHWIND}/billing/subscription`);
+    expect(read?.method).toBe("GET");
+    expect(read?.headers).toMatchObject({ Authorization: "Bearer t1-access" });
+    answer = { tenantId: NORTHWIND, planVersionId: "plan-free", version: "1", renewalCancelled: false, autopayState: "PAUSED_BY_BANK" };
+    await expect(api.getSubscription(NORTHWIND)).resolves.toMatchObject({ paidThrough: null, autopayState: "PAUSED_BY_BANK" });
+  });
+
+  it("a refusal's facts are the mock's: code, reasons, violations and the request id; none closes the company", async () => {
+    const answers = [
+      problem(403, "READ_ONLY", { reasons: ["OWNER_PAUSE"] }),
+      problem(400, "VALIDATION_FAILED", { violations: [{ field: "name", code: "INVALID", message: "name is invalid" }] }),
+      problem(412, "VERSION_CONFLICT", {}),
+      problem(403, "OWNER_REQUIRED", {}),
+    ];
+    companyGateway((request) => (request.method === "PATCH" ? (answers.shift() as Response) : undefined));
+    const { api } = companiesApi();
+    await api.signIn({ email: "anna@example.com", password: "x" });
+    await api.enterCompany(NORTHWIND);
+    const send = () => api.renameTenant(NORTHWIND, "X", "4", KEY).catch((error: unknown) => error);
+    const readOnly = await send();
+    expect([refusalCode(readOnly), refusalReasons(readOnly), apiErrorFacts(readOnly).requestId]).toEqual(["READ_ONLY", ["OWNER_PAUSE"], "rid-READ_ONLY"]);
+    expect(refusalViolations(await send()).map((item) => item.field)).toEqual(["name"]);
+    expect(apiErrorFacts(await send())).toMatchObject({ status: 412, code: "VERSION_CONFLICT" });
+    expect(refusalCode(await send())).toBe("OWNER_REQUIRED");
+    expect(api.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+  });
+
+  it("B2 on the wire: a project read refused for a pause marks the tab and keeps the session; /projects answering lifts it, /users/me does not", async () => {
+    let paused = true;
+    const { sent } = companyGateway((request) =>
+      paused && request.url === "/api/v1/projects" ? problem(403, "CAPABILITY_DISABLED", { reasons: ["OWNER_PAUSE"] }) : undefined,
+    );
+    const { api } = companiesApi();
+    const closed: unknown[] = [];
+    const restricted: Array<{ restricted: boolean; reasons: readonly string[] }> = [];
+    api.onWorkspaceClosed((event) => closed.push(event));
+    api.onWorkspaceRestricted((event) => restricted.push(event));
+    await api.signIn({ email: "anna@example.com", password: "x" });
+    await api.enterCompany(NORTHWIND);
+    await expect(api.listProjects()).rejects.toMatchObject({ status: 403, code: "CAPABILITY_DISABLED" });
+    expect(closed).toEqual([]);
+    expect(restricted).toEqual([{ tenantId: NORTHWIND, restricted: true, reasons: ["OWNER_PAUSE"], requestId: "rid-CAPABILITY_DISABLED" }]);
+    expect(sent.some((request) => request.method === "DELETE" && request.url.startsWith("/api/v1/auth/tenant-sessions/"))).toBe(false);
+    await api.getCurrentUser();
+    expect(restricted).toHaveLength(1);
+    paused = false;
+    await api.listProjects();
+    expect(restricted.at(-1)).toMatchObject({ restricted: false });
+  });
+});

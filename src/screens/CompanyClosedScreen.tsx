@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { ApiNotice } from "../components/ApiNotice";
 import { AddressLink } from "../components/CompanyRouter";
 import { RequestId } from "../components/RequestId";
 import type { Tenant } from "../api/tenants";
-import { COMPANIES_ROUTE, closedCompanyWords } from "../lib/companies";
+import { COMPANIES_ROUTE, closedCompanyReason, closedCompanyWords } from "../lib/companies";
 
 /**
  * DESIGN.md §4.35 (TAS-500): the company cannot be opened — its entry was
@@ -16,6 +17,12 @@ import { COMPANIES_ROUTE, closedCompanyWords } from "../lib/companies";
  * table's last row, a code outside it with no list row to read a reason from,
  * which is said in the server's words with the request id beside them: that is
  * a failure the reader will pass on (§4.18 «Request id»).
+ *
+ * Since TAS-504 it is also the paused or blocked company's statement on its
+ * content routes (the session kept, api-contract-guard B2): to its owner —
+ * `owner`, the list row's `ownerId` — the pause's and the block's rows say so,
+ * and the way on is the company's settings, where Resume is, with «Choose a
+ * company» beside it; no «Log out» — it is one step away in the profile menu.
  */
 export function CompanyClosedScreen({
   name,
@@ -23,6 +30,7 @@ export function CompanyClosedScreen({
   tenant = null,
   onLogout,
   logoutPending = false,
+  owner = false,
 }: {
   name: string | null;
   refusal: { code: string | null; reasons: readonly string[]; message: string | null; requestId: string | null };
@@ -30,10 +38,14 @@ export function CompanyClosedScreen({
   tenant?: Tenant | null;
   onLogout: () => void;
   logoutPending?: boolean;
+  /** The reader owns the company (TAS-504) — its pause and its block are said to them in their own words. */
+  owner?: boolean;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
-  const words = closedCompanyWords(name, refusal, tenant);
+  const reason = closedCompanyReason(refusal, tenant);
+  const ownersRow = owner && (reason === "PLATFORM_BLOCK" || reason === "OWNER_PAUSE");
+  const words = closedCompanyWords(name, refusal, tenant, ownersRow);
   const text = words.text ?? refusal.message;
   const requestId = words.text === null ? refusal.requestId : null;
 
@@ -49,14 +61,25 @@ export function CompanyClosedScreen({
             <RequestId value={requestId} />
           </p>
         ) : null}
-        <div className="issue-key-actions">
-          <AddressLink className="primary-button notfound-action" path={COMPANIES_ROUTE} state={{ focusHeading: true }}>
-            Choose a company
-          </AddressLink>
-          <button className="secondary-button" disabled={logoutPending} onClick={onLogout} type="button">
-            {logoutPending ? "Logging out…" : "Log out"}
-          </button>
-        </div>
+        {ownersRow ? (
+          <div className="issue-key-actions">
+            <Link className="primary-button notfound-action" to="/settings/company">
+              Open company settings
+            </Link>
+            <AddressLink className="secondary-button company-closed-secondary" path={COMPANIES_ROUTE} state={{ focusHeading: true }}>
+              Choose a company
+            </AddressLink>
+          </div>
+        ) : (
+          <div className="issue-key-actions">
+            <AddressLink className="primary-button notfound-action" path={COMPANIES_ROUTE} state={{ focusHeading: true }}>
+              Choose a company
+            </AddressLink>
+            <button className="secondary-button" disabled={logoutPending} onClick={onLogout} type="button">
+              {logoutPending ? "Logging out…" : "Log out"}
+            </button>
+          </div>
+        )}
       </div>
     </main>
   );

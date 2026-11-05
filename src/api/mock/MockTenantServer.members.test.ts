@@ -106,8 +106,11 @@ describe("the fixtures (§7)", () => {
       expect(tenant).not.toHaveProperty("seatLimit");
       expect(tenant).not.toHaveProperty("generation");
       expect(tenant).not.toHaveProperty("quotaVersion");
+      // TAS-504: the subscription is the owner's read, never on the Tenant wire.
+      expect(tenant).not.toHaveProperty("subscription");
     }
-    expect(JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}").v).toBe(3);
+    // v4 since TAS-504's fresh seed (the subscriptions).
+    expect(JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}").v).toBe(4);
   });
 
   it("keeps TAS-500's directory: Northwind's ACTIVE people are Anna, Sofia and Tom", async () => {
@@ -290,14 +293,20 @@ describe("restriction policies (NORMAL, RECOVERY, LEAVE, DIRECTORY)", () => {
     expect(companies.items.map((tenant) => tenant.name)).toEqual(["Northwind", "Globex"]);
   });
 
-  it("with the content-read flag off, a paused company's directory read closes it (DIRECTORY = CONTENT_READ)", async () => {
+  // TAS-504 changed this on purpose (art-director G1, ask A35): under a pause
+  // or a block the directory is the control plane — the owner chooses a new
+  // owner from it and a member reaches Leave — whatever the read flag says.
+  it("with the content-read flag off, a paused company's directory still reads, and its member can still leave", async () => {
     const I = MOCK_TENANT_IDS.initech;
     const { api, local } = await inCompany("anna@example.com", I);
     hooks(local, { contentReadUnderRestriction: false });
     const closed: WorkspaceClosedEvent[] = [];
     api.onWorkspaceClosed((event) => closed.push(event));
-    await expect(members(api, I)).rejects.toBeInstanceOf(WorkspaceClosedError);
-    expect(closed.map((event) => event.reason)).toEqual(["CAPABILITY_DISABLED"]);
+    await expect(api.listProjects()).rejects.toMatchObject({ code: "CAPABILITY_DISABLED", reasons: ["OWNER_PAUSE"] });
+    expect((await members(api, I)).map((item) => item.userId).sort()).toEqual([anna, sofia].sort());
+    expect(closed).toEqual([]);
+    await expect(api.leaveTenant(I, key())).resolves.toMatchObject({ state: "SUCCEEDED" });
+    expect(api.currentWorkspace()).toBeNull();
   });
 });
 

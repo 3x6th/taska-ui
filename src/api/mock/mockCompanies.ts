@@ -71,6 +71,7 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   onWorkspaceClosed: "session",
   onWorkspacePending: "session",
   onWorkspaceLeft: "session",
+  onWorkspaceRestricted: "session",
   lastCompanyHint: "session",
   // TAS-501: the session layer picks their credentials, as for the REST leg —
   // none for the plans, the account's for creating, the company session for
@@ -93,6 +94,13 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   revokeTenantInvitation: "session",
   getTenantQuotas: "session",
   reenterCompany: "session",
+  // TAS-504: the company's name, owner and pause, with the tab's company
+  // session, picked by the session layer as for the REST leg.
+  renameTenant: "session",
+  pauseTenant: "session",
+  resumeTenant: "session",
+  transferTenantOwnership: "session",
+  getSubscription: "session",
   getMeta: "account",
   listProjects: "tenant-read",
   createProject: "tenant-write",
@@ -210,6 +218,7 @@ type SessionMethods = Pick<
   | "onWorkspaceClosed"
   | "onWorkspacePending"
   | "onWorkspaceLeft"
+  | "onWorkspaceRestricted"
   | "lastCompanyHint"
   | "listBillingPlans"
   | "createTenant"
@@ -227,6 +236,11 @@ type SessionMethods = Pick<
   | "revokeTenantInvitation"
   | "getTenantQuotas"
   | "reenterCompany"
+  | "renameTenant"
+  | "pauseTenant"
+  | "resumeTenant"
+  | "transferTenantOwnership"
+  | "getSubscription"
 >;
 
 type AnyMethod = (...args: unknown[]) => unknown;
@@ -281,6 +295,7 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     onWorkspaceClosed: (listener) => web.onWorkspaceClosed(listener),
     onWorkspacePending: (listener) => web.onWorkspacePending(listener),
     onWorkspaceLeft: (listener) => web.onWorkspaceLeft(listener),
+    onWorkspaceRestricted: (listener) => web.onWorkspaceRestricted(listener),
     lastCompanyHint: () => web.lastCompanyHint(),
     listBillingPlans: (params) => web.listBillingPlans(params),
     createTenant: (input, key) => web.createTenant(input, key),
@@ -298,6 +313,12 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     revokeTenantInvitation: (tenantId, invitationId, version, key) => web.revokeTenantInvitation(tenantId, invitationId, version, key),
     getTenantQuotas: (tenantId) => web.getTenantQuotas(tenantId),
     reenterCompany: (tenantId) => web.reenterCompany(tenantId),
+    renameTenant: (tenantId, name, version, key) => web.renameTenant(tenantId, name, version, key),
+    pauseTenant: (tenantId, version, key) => web.pauseTenant(tenantId, version, key),
+    resumeTenant: (tenantId, version, key) => web.resumeTenant(tenantId, version, key),
+    transferTenantOwnership: (tenantId, newOwnerUserId, version, key) =>
+      web.transferTenantOwnership(tenantId, newOwnerUserId, version, key),
+    getSubscription: (tenantId) => web.getSubscription(tenantId),
   };
 
   const api: Record<string, unknown> = {};
@@ -324,7 +345,9 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
           web.call(
             "session",
             (bearer) => server.serve(bearer, route, name, (store) => Promise.resolve(methodOf(apiFor(store), name)(...args))),
-            { read: route === "tenant-read" },
+            // The company's project content: a refusal is an answer about the
+            // company (§4.35), and an answer lifts a pause's mark (TAS-504).
+            { read: route === "tenant-read", content: route === "tenant-read" },
           );
     }
   }

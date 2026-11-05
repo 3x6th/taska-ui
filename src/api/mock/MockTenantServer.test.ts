@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MemoryStorage } from "../../test/memoryStorage";
 import { TenancyUnavailableError, WorkspaceClosedError, apiErrorFacts, refusalCode, refusalReasons } from "../errors";
-import { TENANCY_WITHHELD_OPERATIONS, type TaskaApi, type WorkspaceClosedEvent } from "../TaskaApi";
+import { TENANCY_WITHHELD_OPERATIONS, type TaskaApi, type WorkspaceClosedEvent, type WorkspaceRestrictedEvent } from "../TaskaApi";
 import { readAllTenants } from "../tenants";
 import { WEB_SESSION_KEY, createLocalLockManager } from "../webSession";
 import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore } from "./MockTaskaApi";
@@ -253,19 +253,34 @@ describe("the session check in front of every data call (B7)", () => {
     await expect(api.markAllNotificationsRead()).resolves.toEqual(expect.objectContaining({ updatedCount: expect.any(Number) }));
   });
 
-  it("with the content-read flag off, a paused company's read closes it with its restriction (ask A2c)", async () => {
+  // TAS-504 (api-contract-guard B2) changed this on purpose: the refusal used
+  // to close the company and revoke its session, which stranded the owner on
+  // «Initech is paused» with no way to Resume. Now the projects are closed,
+  // the company is not.
+  it("with the content-read flag off, a paused company's read is refused with its restriction and marks the tab — the session stays (ask A2c, B2)", async () => {
     const { open, local } = browser();
     const { api } = open();
     await signedIn(api, "anna@example.com");
     local.setItem(MOCK_TENANT_HOOKS_KEY, JSON.stringify({ contentReadUnderRestriction: false }));
     const closed: WorkspaceClosedEvent[] = [];
+    const restricted: WorkspaceRestrictedEvent[] = [];
     api.onWorkspaceClosed((event) => closed.push(event));
-    await api.enterCompany(MOCK_TENANT_IDS.initech);
-    await expect(api.listProjects()).rejects.toBeInstanceOf(WorkspaceClosedError);
-    expect(closed.map((event) => [event.reason, event.reasons])).toEqual([["CAPABILITY_DISABLED", ["OWNER_PAUSE"]]]);
-    // Northwind, with no restriction, reads as ever.
+    api.onWorkspaceRestricted((event) => restricted.push(event));
+    const entered = await api.enterCompany(MOCK_TENANT_IDS.initech);
+    const refused = await caught(api.listProjects());
+    expect(refusalCode(refused)).toBe("CAPABILITY_DISABLED");
+    expect(refusalReasons(refused)).toEqual(["OWNER_PAUSE"]);
+    expect(closed).toEqual([]);
+    expect(restricted.map((event) => [event.tenantId, event.restricted, event.reasons])).toEqual([[MOCK_TENANT_IDS.initech, true, ["OWNER_PAUSE"]]]);
+    expect(api.currentWorkspace()?.tenantSessionId).toBe(entered.tenantSessionId);
+    // The company itself, its members and the reader's notifications still answer with that session.
+    await expect(api.getTenant(MOCK_TENANT_IDS.initech)).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"] });
+    await expect(api.listTenantMembers(MOCK_TENANT_IDS.initech)).resolves.toMatchObject({ items: expect.any(Array) });
+    await expect(api.listNotifications()).resolves.toBeTruthy();
+    // Northwind, with no restriction, reads as ever — and the mark goes with the switch.
     await api.enterCompany(MOCK_TENANT_IDS.northwind);
     expect(await projectKeys(api)).toEqual(["MOB", "TAS", "WEB"]);
+    expect(restricted.at(-1)).toMatchObject({ tenantId: MOCK_TENANT_IDS.initech, restricted: false });
   });
 
   it("a suspended membership is refused at entry and not listed", async () => {

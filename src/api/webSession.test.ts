@@ -13,7 +13,7 @@ import {
   type B2bTransport,
   type LockManagerLike,
 } from "./webSession";
-import type { WorkspaceClosedEvent, WorkspaceLeftEvent, WorkspacePendingEvent } from "./TaskaApi";
+import type { WorkspaceClosedEvent, WorkspaceLeftEvent, WorkspacePendingEvent, WorkspaceRestrictedEvent } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
 
 /*
@@ -114,6 +114,22 @@ function fakeTransport() {
     revokeTenantInvitation: vi.fn<B2bTransport["revokeTenantInvitation"]>(async () => undefined),
     getTenantQuotas: vi.fn<B2bTransport["getTenantQuotas"]>(async (_bearer, tenantId) => ({
       tenantId, version: "1", quotas: [{ kind: "SEAT", used: "4", reserved: "1", limit: "5", unlimited: false }], asOf: "2026-11-05T10:00:00Z",
+    })),
+    // TAS-504.
+    renameTenant: vi.fn<B2bTransport["renameTenant"]>(async (_bearer, tenantId, name) => ({
+      id: tenantId, name, ownerId: USER, lifecycle: "ACTIVE", restrictions: [], createdAt: "2026-05-01T09:00:00Z", version: "5",
+    })),
+    pauseTenant: vi.fn<B2bTransport["pauseTenant"]>(async (_bearer, tenantId) => ({
+      id: tenantId, name: "Northwind", ownerId: USER, lifecycle: "ACTIVE", restrictions: ["OWNER_PAUSE"], createdAt: "2026-05-01T09:00:00Z", version: "5",
+    })),
+    resumeTenant: vi.fn<B2bTransport["resumeTenant"]>(async (_bearer, tenantId) => ({
+      id: tenantId, name: "Northwind", ownerId: USER, lifecycle: "ACTIVE", restrictions: [], createdAt: "2026-05-01T09:00:00Z", version: "6",
+    })),
+    transferTenantOwnership: vi.fn<B2bTransport["transferTenantOwnership"]>(async (_bearer, tenantId, newOwnerUserId) => ({
+      id: tenantId, name: "Northwind", ownerId: newOwnerUserId, lifecycle: "ACTIVE", restrictions: [], createdAt: "2026-05-01T09:00:00Z", version: "5",
+    })),
+    getSubscription: vi.fn<B2bTransport["getSubscription"]>(async (_bearer, tenantId) => ({
+      tenantId, planVersionId: "plan-team", version: "2", paidThrough: "2026-12-07T09:00:00Z", renewalCancelled: false, autopayState: "CONSENTED",
     })),
   };
 }
@@ -502,16 +518,18 @@ describe("refusals (§5)", () => {
     expect(transport.createTenantSession).toHaveBeenCalledTimes(1);
   });
 
-  it("a read refused CAPABILITY_DISABLED with reasons closes the company with them; the same refusal of a write does not", async () => {
+  // TAS-504 (api-contract-guard B2) narrowed this on purpose: a pause or a
+  // block keeps the company (the next describe); any other reason closes it.
+  it("a read refused CAPABILITY_DISABLED with another reason closes the company with them; the same refusal of a write does not", async () => {
     const { client, closed } = await inNorthwind();
-    const paused = () => refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE"]);
-    const write = client.call("session", async () => Promise.reject(paused()));
+    const disputed = () => refusal(403, "CAPABILITY_DISABLED", ["PAYMENT_DISPUTE"]);
+    const write = client.call("session", async () => Promise.reject(disputed()));
     await expect(write).rejects.toMatchObject({ code: "CAPABILITY_DISABLED" });
     expect(closed).toEqual([]);
-    await expect(client.call("session", async () => Promise.reject(paused()), { read: true })).rejects.toBeInstanceOf(
+    await expect(client.call("session", async () => Promise.reject(disputed()), { read: true })).rejects.toBeInstanceOf(
       WorkspaceClosedError,
     );
-    expect(closed.map((event) => [event.reason, event.reasons])).toEqual([["CAPABILITY_DISABLED", ["OWNER_PAUSE"]]]);
+    expect(closed.map((event) => [event.reason, event.reasons])).toEqual([["CAPABILITY_DISABLED", ["PAYMENT_DISPUTE"]]]);
     expect(client.currentWorkspace()).toBeNull();
   });
 
@@ -1122,9 +1140,15 @@ describe("a company's members, invitations and seats (TAS-502)", () => {
       expect(left.map((event) => event.tenantId)).toEqual([NORTHWIND]);
     });
 
-    it("N2: only MEMBERSHIP_INACTIVE and TENANT_NOT_FOUND say «left» — a pause's CAPABILITY_DISABLED still closes", async () => {
+    // TAS-504 (B2): a pause no longer closes at all — and it is never «left».
+    it("N2: only MEMBERSHIP_INACTIVE and TENANT_NOT_FOUND say «left» — a pause keeps the company, another reason closes it", async () => {
       const { client, closed, left } = await lostLeave();
-      await expect(readRefused(client, refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE"]))).rejects.toBeInstanceOf(
+      const paused = refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE"]);
+      await expect(readRefused(client, paused)).rejects.toBe(paused);
+      expect(left).toEqual([]);
+      expect(closed).toEqual([]);
+      expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+      await expect(readRefused(client, refusal(403, "CAPABILITY_DISABLED", ["PAYMENT_DISPUTE"]))).rejects.toBeInstanceOf(
         WorkspaceClosedError,
       );
       expect(left).toEqual([]);
@@ -1249,5 +1273,194 @@ describe("a company's members, invitations and seats (TAS-502)", () => {
     await client.reenterCompany(NORTHWIND);
     expect(client.currentWorkspace()).toBeNull();
     expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+  });
+});
+
+describe("a pause or a block closes the projects, not the company (TAS-504, api-contract-guard B2)", () => {
+  async function inNorthwind() {
+    const local = new MemoryStorage();
+    signedIn(local);
+    const tab = openTab({ local });
+    await tab.client.enterCompany(NORTHWIND);
+    const closed: WorkspaceClosedEvent[] = [];
+    const pending: WorkspacePendingEvent[] = [];
+    const restricted: WorkspaceRestrictedEvent[] = [];
+    tab.client.onWorkspaceClosed((event) => closed.push(event));
+    tab.client.onWorkspacePending((event) => pending.push(event));
+    tab.client.onWorkspaceRestricted((event) => restricted.push(event));
+    return { ...tab, local, closed, pending, restricted };
+  }
+  const contentRead = (client: WebSessionClient, error: unknown) =>
+    client.call("session", async () => Promise.reject(error), { read: true, content: true });
+
+  for (const reasons of [["OWNER_PAUSE"], ["PLATFORM_BLOCK"], ["PLATFORM_BLOCK", "OWNER_PAUSE", "PAYMENT_EXPIRED"]]) {
+    it(`a content read refused CAPABILITY_DISABLED ${reasons.join(", ")} keeps the session, revokes nothing, marks the tab and rejects as refused`, async () => {
+      const { client, transport, closed, pending, restricted } = await inNorthwind();
+      // A request already out when the refusal lands is not discarded: the epoch did not move.
+      let release!: (value: string) => void;
+      const inFlight = client.call("session", () => new Promise<string>((resolve) => (release = resolve)));
+      const refused = refusal(403, "CAPABILITY_DISABLED", reasons);
+      await expect(contentRead(client, refused)).rejects.toBe(refused);
+      release("answered");
+      await expect(inFlight).resolves.toBe("answered");
+      expect(restricted).toEqual([{ tenantId: NORTHWIND, restricted: true, reasons, requestId: "rid-CAPABILITY_DISABLED" }]);
+      expect(closed).toEqual([]);
+      expect(pending).toEqual([]);
+      expect(client.currentWorkspace()?.tenantSessionId).toBe("ts-1");
+      expect(transport.revokeTenantSession).not.toHaveBeenCalled();
+      // The company's own reads still go with the same session.
+      await client.getSubscription(NORTHWIND);
+      expect(transport.getSubscription.mock.calls[0][0]).toBe("t1-access");
+    });
+  }
+
+  it("PENDING_FIRST_PAYMENT beside a pause is the never-opened company's (TAS-501), not this mark", async () => {
+    const { client, pending, restricted, closed } = await inNorthwind();
+    await expect(contentRead(client, refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE", "PENDING_FIRST_PAYMENT"]))).rejects.toMatchObject({
+      code: "CAPABILITY_DISABLED",
+    });
+    expect(pending.map((event) => event.reasons)).toEqual([["OWNER_PAUSE", "PENDING_FIRST_PAYMENT"]]);
+    expect(restricted).toEqual([]);
+    expect(closed).toEqual([]);
+  });
+
+  it("a write refused the same way is that write's refusal and marks nothing; a lapsed membership still closes", async () => {
+    const { client, restricted, closed } = await inNorthwind();
+    await expect(client.call("session", async () => Promise.reject(refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE"])))).rejects.toMatchObject({
+      code: "CAPABILITY_DISABLED",
+    });
+    expect(restricted).toEqual([]);
+    await expect(contentRead(client, refusal(403, "MEMBERSHIP_INACTIVE", ["OWNER_PAUSE"]))).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(closed.map((event) => event.reason)).toEqual(["MEMBERSHIP_INACTIVE"]);
+  });
+
+  it("the mark is lifted by a Tenant answer without either reason — never by one that still carries one", async () => {
+    const { client, transport, restricted } = await inNorthwind();
+    await contentRead(client, refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE"])).catch(() => undefined);
+    transport.getTenant.mockResolvedValueOnce({ id: NORTHWIND, name: "Northwind", ownerId: USER, lifecycle: "ACTIVE", restrictions: ["OWNER_PAUSE"], version: "4" });
+    await client.getTenant(NORTHWIND);
+    transport.pauseTenant.mockClear();
+    await client.pauseTenant(NORTHWIND, "4", "key-pause");
+    expect(restricted.map((event) => event.restricted)).toEqual([true]);
+    // The owner's own resume answers the company without the pause.
+    await client.resumeTenant(NORTHWIND, "5", "key-resume");
+    expect(restricted.at(-1)).toEqual({ tenantId: NORTHWIND, restricted: false, reasons: [], requestId: null });
+    // Said once: another answer without a mark to lift says nothing.
+    await client.resumeTenant(NORTHWIND, "6", "key-resume-2");
+    expect(restricted.map((event) => event.restricted)).toEqual([true, false]);
+  });
+
+  it("…and by a content read that answers — not by a read of the reader's own routes", async () => {
+    const { client, restricted } = await inNorthwind();
+    await contentRead(client, refusal(403, "CAPABILITY_DISABLED", ["PLATFORM_BLOCK"])).catch(() => undefined);
+    await client.call("session", async () => "me", { read: true });
+    await client.call("session", async () => "notifications");
+    expect(restricted.map((event) => event.restricted)).toEqual([true]);
+    await client.call("session", async () => "projects", { read: true, content: true });
+    expect(restricted.map((event) => event.restricted)).toEqual([true, false]);
+  });
+
+  it("…and by anything that takes the company from the tab; a re-entry of the same company keeps it", async () => {
+    const { client, restricted } = await inNorthwind();
+    await contentRead(client, refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE"])).catch(() => undefined);
+    await client.reenterCompany(NORTHWIND);
+    expect(restricted.map((event) => event.restricted)).toEqual([true]);
+    await client.enterCompany(GLOBEX);
+    expect(restricted.map((event) => [event.tenantId, event.restricted])).toEqual([
+      [NORTHWIND, true],
+      [NORTHWIND, false],
+    ]);
+    await contentRead(client, refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE"])).catch(() => undefined);
+    await client.signOut();
+    expect(restricted.map((event) => [event.tenantId, event.restricted]).slice(2)).toEqual([
+      [GLOBEX, true],
+      [GLOBEX, false],
+    ]);
+  });
+});
+
+describe("the company's name, owner and pause (TAS-504, api-contract-guard §1)", () => {
+  async function inNorthwind() {
+    const local = new MemoryStorage();
+    signedIn(local);
+    const tab = openTab({ local });
+    await tab.client.enterCompany(NORTHWIND);
+    const closed: WorkspaceClosedEvent[] = [];
+    tab.client.onWorkspaceClosed((event) => closed.push(event));
+    return { ...tab, local, closed };
+  }
+
+  it("every command goes with the tab's company session, the caller's key and version; the answer is a Tenant", async () => {
+    const { client, transport } = await inNorthwind();
+    await expect(client.renameTenant(NORTHWIND, "Northwind Traders", "4", "key-rename")).resolves.toMatchObject({
+      id: NORTHWIND,
+      name: "Northwind Traders",
+      version: "5",
+    });
+    // The new name is the tab's at once (the switcher, the title, the menu read it, §4.39).
+    expect(client.currentWorkspace()?.tenantName).toBe("Northwind Traders");
+    await expect(client.pauseTenant(NORTHWIND, "5", "key-pause")).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"] });
+    await expect(client.resumeTenant(NORTHWIND, "6", "key-resume")).resolves.toMatchObject({ restrictions: [] });
+    await expect(client.transferTenantOwnership(NORTHWIND, "user-b", "7", "key-transfer")).resolves.toMatchObject({ ownerId: "user-b" });
+    expect(transport.renameTenant.mock.calls[0]).toEqual(["t1-access", NORTHWIND, "Northwind Traders", "4", "key-rename"]);
+    expect(transport.pauseTenant.mock.calls[0]).toEqual(["t1-access", NORTHWIND, "5", "key-pause"]);
+    expect(transport.resumeTenant.mock.calls[0]).toEqual(["t1-access", NORTHWIND, "6", "key-resume"]);
+    expect(transport.transferTenantOwnership.mock.calls[0]).toEqual(["t1-access", NORTHWIND, "user-b", "7", "key-transfer"]);
+  });
+
+  it("the subscription: the company session, paidThrough as sent or null, an unknown autopay state kept", async () => {
+    const { client, transport } = await inNorthwind();
+    await expect(client.getSubscription(NORTHWIND)).resolves.toEqual({
+      tenantId: NORTHWIND,
+      planVersionId: "plan-team",
+      version: "2",
+      paidThrough: "2026-12-07T09:00:00Z",
+      autopayState: "CONSENTED",
+      renewalCancelled: false,
+    });
+    expect(transport.getSubscription.mock.calls[0].slice(0, 2)).toEqual(["t1-access", NORTHWIND]);
+    transport.getSubscription.mockResolvedValueOnce({ tenantId: NORTHWIND, planVersionId: "plan-free", version: "1", renewalCancelled: false, autopayState: "PAUSED_BY_BANK" });
+    await expect(client.getSubscription(NORTHWIND)).resolves.toMatchObject({ paidThrough: null, autopayState: "PAUSED_BY_BANK" });
+  });
+
+  it("a call for a company the tab does not hold is refused without a request", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    await expect(client.renameTenant(GLOBEX, "X", "1", "k")).rejects.toBeInstanceOf(WorkspaceClosedError);
+    await expect(client.pauseTenant(GLOBEX, "1", "k")).rejects.toBeInstanceOf(WorkspaceClosedError);
+    await expect(client.resumeTenant(GLOBEX, "1", "k")).rejects.toBeInstanceOf(WorkspaceClosedError);
+    await expect(client.transferTenantOwnership(GLOBEX, "user-b", "1", "k")).rejects.toBeInstanceOf(WorkspaceClosedError);
+    await expect(client.getSubscription(GLOBEX)).rejects.toBeInstanceOf(WorkspaceClosedError);
+    for (const route of [transport.renameTenant, transport.pauseTenant, transport.resumeTenant, transport.transferTenantOwnership, transport.getSubscription]) {
+      expect(route).not.toHaveBeenCalled();
+    }
+    expect(closed).toEqual([]);
+  });
+
+  it("a 401 renews the company family and sends the same command again: the same key, body and version", async () => {
+    const { client, transport } = await inNorthwind();
+    transport.transferTenantOwnership.mockImplementationOnce(async () => {
+      throw refusal(401, "AUTHENTICATION_REQUIRED");
+    });
+    await client.transferTenantOwnership(NORTHWIND, "user-b", "7", "key-transfer");
+    expect(transport.transferTenantOwnership.mock.calls.map((call) => call.slice(1))).toEqual([
+      [NORTHWIND, "user-b", "7", "key-transfer"],
+      [NORTHWIND, "user-b", "7", "key-transfer"],
+    ]);
+    expect(transport.transferTenantOwnership.mock.calls.map((call) => call[0])).toEqual(["t1-access", "rts-1-access"]);
+  });
+
+  it("a refusal is the command's own: READ_ONLY, OWNER_REQUIRED and a subscription read refused for a pause close and mark nothing", async () => {
+    const { client, transport, closed } = await inNorthwind();
+    const restricted: WorkspaceRestrictedEvent[] = [];
+    client.onWorkspaceRestricted((event) => restricted.push(event));
+    transport.renameTenant.mockRejectedValueOnce(refusal(403, "READ_ONLY", ["OWNER_PAUSE"]));
+    await expect(client.renameTenant(NORTHWIND, "X", "4", "k")).rejects.toMatchObject({ code: "READ_ONLY", reasons: ["OWNER_PAUSE"] });
+    transport.pauseTenant.mockRejectedValueOnce(refusal(403, "OWNER_REQUIRED"));
+    await expect(client.pauseTenant(NORTHWIND, "4", "k")).rejects.toMatchObject({ code: "OWNER_REQUIRED" });
+    transport.getSubscription.mockRejectedValueOnce(refusal(403, "CAPABILITY_DISABLED", ["OWNER_PAUSE"]));
+    await expect(client.getSubscription(NORTHWIND)).rejects.toMatchObject({ code: "CAPABILITY_DISABLED" });
+    expect(closed).toEqual([]);
+    expect(restricted).toEqual([]);
+    expect(client.currentWorkspace()?.tenantSessionId).toBe("ts-1");
   });
 });

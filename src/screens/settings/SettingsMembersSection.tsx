@@ -628,7 +628,8 @@ function Controls({
 }
 
 /** §4.22's strip under a row: the true sentence, Cancel first and focused, the answer edged in `--danger`. */
-function Strip({
+/** §4.22's strip, Cancel first — shared with Settings › General's pause question (TAS-504). */
+export function Strip({
   id,
   sentence,
   answer,
@@ -1329,7 +1330,7 @@ function LeaveZone({
           aria-controls={asking ? id : undefined}
           aria-disabled={busy || undefined}
           aria-expanded={asking}
-          className="secondary-button compact-button company-leave-button"
+          className="secondary-button compact-button strip-trigger company-leave-button"
           onClick={() => {
             if (busy) return;
             if (asking) onCancel();

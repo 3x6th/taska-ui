@@ -37,6 +37,7 @@ import { SettingsAppearanceSection } from "./settings/SettingsAppearanceSection"
 import { SettingsProfileSection } from "./settings/SettingsProfileSection";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { SettingsConnectedAppsSection } from "./settings/SettingsConnectedAppsSection";
+import { SettingsCompanySection } from "./settings/SettingsCompanySection";
 import { SettingsMembersSection } from "./settings/SettingsMembersSection";
 import { SettingsTokensSection } from "./settings/SettingsTokensSection";
 
@@ -198,7 +199,8 @@ export function App() {
                 <Route path="/settings/tokens" element={<SettingsTokensSection />} />
                 <Route path="/settings/connected-apps" element={<SettingsConnectedAppsSection />} />
                 <Route path="/settings/appearance" element={<SettingsAppearanceSection />} />
-                {/* The company's members (TAS-502, §4.38) — this build only. */}
+                {/* The company itself (TAS-504, §4.39) and its members (TAS-502, §4.38) — this build only. */}
+                <Route path="/settings/company" element={<SettingsCompanySection />} />
                 <Route path="/settings/members" element={<SettingsMembersSection />} />
               </Route>
             </Route>

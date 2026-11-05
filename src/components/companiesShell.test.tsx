@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TaskaApi, Workspace, WorkspaceLeftEvent, WorkspacePendingEvent } from "../api/TaskaApi";
+import type { TaskaApi, Workspace, WorkspaceLeftEvent, WorkspacePendingEvent, WorkspaceRestrictedEvent } from "../api/TaskaApi";
 import type { User } from "../domain/types";
 import { Route, Routes } from "react-router-dom";
 import { NotFoundScreen } from "../screens/NotFoundScreen";
@@ -20,6 +20,8 @@ const { fakeApi, state } = vi.hoisted(() => {
     order: [] as string[],
     pending: new Set<(event: WorkspacePendingEvent) => void>(),
     left: new Set<(event: WorkspaceLeftEvent) => void>(),
+    restricted: new Set<(event: WorkspaceRestrictedEvent) => void>(),
+    me: "o",
     closed: [] as unknown[],
     enterError: null as Error | null,
   };
@@ -37,7 +39,11 @@ const { fakeApi, state } = vi.hoisted(() => {
       state.pending.add(listener);
       return () => state.pending.delete(listener);
     },
-    getCurrentUser: async () => ({ id: "o", email: "o@example.com", displayName: "O", status: "ACTIVE" }),
+    onWorkspaceRestricted: (listener: (event: WorkspaceRestrictedEvent) => void) => {
+      state.restricted.add(listener);
+      return () => state.restricted.delete(listener);
+    },
+    getCurrentUser: async () => ({ id: state.me, email: `${state.me}@example.com`, displayName: "O", status: "ACTIVE" }),
     getTenant: () => new Promise(() => {}),
     listBillingPlans: async () => ({ items: [], nextCursor: null }),
     listTenants: async () => ({ items: state.tenants, nextCursor: null }),
@@ -74,6 +80,8 @@ beforeEach(() => {
   state.order = [];
   state.pending.clear();
   state.left.clear();
+  state.restricted.clear();
+  state.me = "o";
   state.enterError = null;
 });
 
@@ -202,6 +210,80 @@ describe("a company that has never opened (TAS-501, DESIGN.md §4.37)", () => {
     } finally {
       (fakeApi as unknown as { listTenants: unknown }).listTenants = list;
     }
+  });
+});
+
+describe("a paused or blocked company keeps its session (TAS-504, api-contract-guard B2, §4.35)", () => {
+  const gate = () => (
+    <Routes>
+      <Route element={<CompanyGate logoutPending={false} onLogout={() => {}} theme="light" toggleTheme={() => {}} />}>
+        <Route path="/projects" element={<p>page</p>} />
+        <Route path="/browse/:issueKey" element={<p>issue</p>} />
+        <Route path="/settings/company" element={<p>company settings</p>} />
+      </Route>
+    </Routes>
+  );
+  const restrict = (reasons: string[], restricted = true, tenantId = "n") =>
+    act(() => {
+      for (const listener of state.restricted) listener({ tenantId, restricted, reasons, requestId: "rid" });
+    });
+
+  it("replaces the content routes with the member's statement — Choose a company and Log out — and lifts it on the word", async () => {
+    state.me = "member";
+    state.tenants = [tenant("n", "Northwind")];
+    const { wrapper } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(gate(), { wrapper });
+    expect(await screen.findByText("page")).toBeInTheDocument();
+    restrict(["OWNER_PAUSE"], true, "g");
+    expect(screen.getByText("page")).toBeInTheDocument();
+    restrict(["OWNER_PAUSE"]);
+    const heading = await screen.findByRole("heading", { level: 1, name: "Northwind is paused" });
+    expect(heading).toHaveFocus();
+    expect(screen.getByText("Its owner has paused it, so its projects can’t be opened right now.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Choose a company" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open company settings" })).not.toBeInTheDocument();
+    expect(screen.queryByText("page")).not.toBeInTheDocument();
+    restrict([], false);
+    expect(await screen.findByText("page")).toBeInTheDocument();
+  });
+
+  it("the owner: their own words, Open company settings first and Choose a company — Settings is never replaced", async () => {
+    state.tenants = [tenant("n", "Northwind")];
+    const { wrapper } = companiesHarness({ companyId: "n", path: "/projects" });
+    render(gate(), { wrapper });
+    await screen.findByText("page");
+    restrict(["OWNER_PAUSE"]);
+    expect(await screen.findByRole("heading", { level: 1, name: "Northwind is paused" })).toBeInTheDocument();
+    expect(screen.getByText("Its projects can’t be opened while it’s paused. You can resume it in its settings.")).toBeInTheDocument();
+    const links = screen.getAllByRole("link").map((node) => node.textContent);
+    expect(links).toEqual(["Open company settings", "Choose a company"]);
+    expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Open company settings" }));
+    expect(await screen.findByText("company settings")).toBeInTheDocument();
+  });
+
+  it("both reasons say the block's line; /browse is a content route too", async () => {
+    state.tenants = [tenant("n", "Northwind")];
+    const { wrapper } = companiesHarness({ companyId: "n", path: "/browse/TAS-1" });
+    render(gate(), { wrapper });
+    await screen.findByText("issue");
+    restrict(["OWNER_PAUSE", "PLATFORM_BLOCK"]);
+    expect(await screen.findByRole("heading", { level: 1, name: "Northwind is blocked" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Taska has blocked this company, so its projects can’t be opened right now. Only Taska can lift the block."),
+    ).toBeInTheDocument();
+  });
+
+  it("on Settings nothing is replaced", async () => {
+    state.tenants = [tenant("n", "Northwind")];
+    const { wrapper } = companiesHarness({ companyId: "n", path: "/settings/company" });
+    render(gate(), { wrapper });
+    await screen.findByText("company settings");
+    restrict(["PLATFORM_BLOCK"]);
+    await act(async () => {});
+    expect(screen.getByText("company settings")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /blocked/ })).not.toBeInTheDocument();
   });
 });
 
