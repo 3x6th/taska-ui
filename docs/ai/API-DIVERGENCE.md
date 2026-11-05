@@ -2158,8 +2158,8 @@ Everything below is the entry as it stood, in the past tense.
   404, a suspended membership closes its tab. Before TAS-316 and TAS-340 the flag is **unsafe**, not merely early:
   a gateway that issues tenant sessions but does not scope data routes would show the same projects in every
   company's tab, and the UI cannot tell.
-- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v5` since
-  TAS-512; `v4` in TAS-504, `v3` in TAS-502, `v2` in TAS-501, `v1` before it); this
+- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v6` since
+  TAS-524; `v5` in TAS-512, `v4` in TAS-504, `v3` in TAS-502, `v2` in TAS-501, `v1` before it); this
   narrows "The mock has a session flag but no session enforcement" for the flag-on build only.
 - **Mock answers where the blueprint is silent** (`src/api/mock/MockTenantServer.ts`, `mockCompanies.ts`) — the
   mock's choices, not the blueprint's behaviour; each falls away with the ask named:
@@ -2467,6 +2467,55 @@ Everything below is the entry as it stood, in the past tense.
   A34, A35 and A36 answered**; a platform that runs with the read flag off (default on, D82) also needs A42, or its
   owners cannot pick a transfer recipient and its members cannot reach Leave under a pause.
 - **Removal:** delete with the flag, after the probe.
+
+### TAS-524: the company's activity ships ahead of the gateway, on a contract proposed by the frontend, awaiting TAS-523 — not in the blueprint
+
+- **Endpoint** — contract proposed by the frontend, awaiting [TAS-523](https://jira.ozero.dev/browse/TAS-523) — not in
+  the blueprint (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6` has no such route; none in `openapi.yml`):
+  `GET /api/v1/tenants/{tenantId}/activity?limit&cursor&actorUserId&kind…` (listTenantActivity) → `{items, nextCursor?}`,
+  newest first, with the company session, for the company's admins and owner. The shape is the one posted on TAS-523 as
+  a labelled proposal on 2026-11-05. Backend: TAS-523 (To Do, no PR). develop `7ae29a1a` has no route, RPC,
+  access-matrix action or table for it, and the target data model has no company-scoped journal: the platform audit
+  stays hidden from tenant roles (`target-data-model.md:26`, `:2327`; `access-control.md:55`), the tenant outbox is kept
+  for replay only, and `tenant_operations` is mutable.
+- **Observed (2026-11-05, no token, api-contract-guard):** 404 "No static resource"
+  (`f91a5cee-298a-4421-aa26-a54da11b6fa5`); control `GET /api/v1/projects` 401 (`470c9632-178c-46d1-9489-e5e83409af95`).
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. Off: no `/company` routes (DESIGN.md §5.10), and
+  `listTenantActivity` is refused without a request (`TenancyUnavailableError`) in both implementations. On:
+  `RestTaskaApi` calls exactly the proposed route; on the stand the section shows the 404 as its error. No journal is
+  derived on the client — not from members, invitations, `Tenant` versions, operations or notifications; no record is
+  added after one's own write; records are never sorted, merged, grouped, counted or hidden; pages are appended in
+  server order.
+- **What the UI assumes where the proposal is open — each removable:**
+  - The rail's «Activity» is drawn only for a reader known to be an ACTIVE company admin or the owner — the cached
+    members list (`readerAccess`), else `Tenant.ownerId`; with neither it is not drawn, and no read is made for it. The
+    address is never gated: a member who opens it gets the server's 403 `SCOPE_DENIED`, drawn with its request id.
+    Removal: ask A26 (TAS-338).
+  - Kind labels and the kind filter's options are this build's; an unknown kind reads «Other action», keeps its code,
+    and is not offered as a filter. Removal: ask A28.
+  - Names come from the record only: a missing name or email draws the unnamed-person fallback, never a members-list
+    lookup; a platform administrator without a name reads «Taska administrator»; the mark only on `platformAdmin: true`.
+  - An `outcome` other than `SUCCEEDED` (the proposal sends no other) is drawn as not done; an unknown target `type`
+    draws the target without its type.
+  - A 400 on a continuation page keeps the rows shown and offers «Start again from the newest»; on the first page with
+    filters it offers clearing them.
+- **The client's own rules (not compensations):** a control-plane read — its refusal marks nothing and its success
+  lifts no pause mark (TAS-504); `/company/activity` is not a content route and stays open under a pause or a block; a
+  record naming another company fails the whole page (`ForeignCompanyAnswerError`, TAS-512); every re-read is the first
+  page only.
+- **Mock answers** (`MockTenantServer.ts`, `taska.mockServer.v6`) — the mock's choices; each falls away with TAS-523:
+  the invitations list's check order (TAS-502 `ADMIN_READ`; no restriction refuses it; PROVISIONING 409); a keyset
+  cursor on (`createdAt`, the mock's sequence) bound to the reader, the company and the filters, without the 15-minute
+  expiry; ties broken by that sequence, not by `id`; names snapshotted at write; Mark (GLOBAL_ADMIN, not a member)
+  without name or email; a record only when a mock write takes effect — never on a replay, a no-op or a refusal; a
+  removal's when its operation succeeds; a platform block or unblock when the `platformBlock` hook changes it; none for
+  acceptance (no mock route), cancellation, plan, dispute or expiry; seeded records per company; no `DENIED`; the newest
+  500 kept; `refuseNext`, `delayMs` and `loseAnswer` take `listTenantActivity`.
+- **Turning the flag on** additionally needs TAS-523 deployed with this shape, or the frontend moved to the agreed one,
+  and its dependencies TAS-321, TAS-323, TAS-333, TAS-335, TAS-336, TAS-339, TAS-473 and TAS-480.
+- **Removal:** delete when the route is in the vendored contract and the stand probe passes: an admin reads only their
+  company; a member gets 403; another company's session is refused; each action appears once after it is done; a filter
+  without a match is an empty page.
 
 ### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log
 

@@ -4716,3 +4716,20 @@ Non-blocking notes (`docs/ai/reviews/TAS-522/`, git-ignored).
 - **A lost leave answer, then «Back to projects» within 20 s** draws the left company's projects from cache (Projects
   inside `STALE_TIME_MS` reads nothing, so «no longer a member» is not met until the next read). Predates TAS-522; the
   switcher path made it reachable in e2e (builder, release-reviewer).
+
+### Left by TAS-524 pre-build (the company Activity section, a contract proposed on TAS-523, 2026-11-05)
+
+From the api-contract-guard design and the art-director ruling (`docs/ai/reviews/TAS-524/`, git-ignored). The wire
+shape went to TAS-523 as a comment («Предложение фронта, версия 2»).
+
+- **A non-owner admin sees no «Activity» in the rail** until Members has been opened in the tab (the role comes only
+  from the cached members list or `Tenant.ownerId`); the address works. No probe read — ask A26 (TAS-338) removes it
+  (art-director N2, guard residual).
+- **Keyset paging can miss a record committed late with an earlier `createdAt`**; «Start again from the newest» shows it.
+  The backend narrows it by stamping at the last statement (guard N2).
+- **Activity kinds and their English labels belong in ask A28** (B2B dictionaries in `/meta`), so a new kind gets a
+  label and a filter option without a frontend release (guard N3).
+- **A demoted admin's next Activity read could close the company** instead of drawing 403 while develop's
+  stale-membership-generation refusals stand (asks A17/A18) (guard residual).
+- **Seconds on hover**: a `title` on the record's `<time>` with the full local time to the second would separate two
+  actions in the same minute for pointer users (art-director N3, optional).
