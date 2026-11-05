@@ -327,7 +327,10 @@ function CompanyMembers({ companyId }: { companyId: string }) {
       });
     },
     onError: (error) => {
-      const indefinite = isIndefinite(error);
+      // A 401 reaching here had its renewal fail for want of an answer, or its
+      // re-selection refused with no lost leave to read as left: nothing is
+      // known, and the session layer keeps a retry's record (N3) — as unanswered.
+      const indefinite = isIndefinite(error) || apiErrorFacts(error).status === 401;
       if (leaveIntent.current && indefinite) leaveIntent.current = { ...leaveIntent.current, open: true };
       setAsking(null);
       const words = leaveRefusalWords(error, company);
@@ -871,6 +874,9 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
         // The row's controls come back: focus to its Remove (X2).
         focusRemove.current = true;
       } else {
+        // Still under way: polling resumes and «Check again» goes, in a row
+        // with no controls — focus by the 202's rule (X2). MANUAL_REVIEW keeps the button.
+        if (operation.state !== "MANUAL_REVIEW") ctx.focusAfterLeaving(rowKey);
         setRemoval({ ...removal, operation, startedAt: Date.now(), stopped: operation.state === "MANUAL_REVIEW" });
         setChecks((value) => value + 1);
       }

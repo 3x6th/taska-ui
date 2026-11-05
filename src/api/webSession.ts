@@ -859,7 +859,9 @@ export class WebSessionClient {
         // A 401 whose refresh got no answer says nothing either (L-a): the leave stays as open as it was.
         const unrenewed = status === 401 && retry && !refusedBySelection;
         if (session !== null && (unanswered || unrenewed)) {
-          this.lostLeaves.set(idempotencyKey, record ?? { tenantId, tenantSessionId: session, after: this.sent });
+          // Lost again, the record moves on to now: a request sent before this
+          // loss — while the retry was out — proves nothing by its 2xx (N2).
+          this.lostLeaves.set(idempotencyKey, { tenantId, tenantSessionId: session, after: this.sent });
         } else if (status !== 429) {
           this.lostLeaves.delete(idempotencyKey);
         }

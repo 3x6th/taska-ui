@@ -308,7 +308,8 @@ export function leaveRefusalWords(error: unknown, company: string | null): Refus
   const { status, message } = apiErrorFacts(error);
   if (code === "LAST_ADMIN") return { text: `You’re the only active admin, so you didn’t leave ${companyInside(company)}.`, words: null };
   if (code === "OWNER_MEMBERSHIP_PROTECTED") return { text: `You own ${companyInside(company)}, so you didn’t leave it.`, words: null };
-  if (error !== null && isUnanswered(status) && code !== "RATE_LIMITED") {
+  // A 401 too: its renewal got no answer, or nothing says it was applied (release-reviewer N3).
+  if (error !== null && (isUnanswered(status) || status === 401) && code !== "RATE_LIMITED") {
     return { text: `Taska couldn’t confirm that you left ${companyInside(company)}. Press Leave company again to check.`, words: message };
   }
   // INVALID_STATE's words may say «tenant» (§4.33), as in the rows' table: the sentence and the id only.

@@ -420,6 +420,29 @@ describe("leaving (api-contract-guard B-1, B6)", () => {
     expect(go).toHaveBeenCalledWith("/companies", { replace: true, state: { focusHeading: true, left: { name: "Umbrella" } } });
   });
 
+  it("a 401 on the leave is unanswered too: the same key next time, «couldn't confirm», no re-read (release-reviewer N3)", async () => {
+    state.me = "sofia";
+    state.leave = [
+      () => Promise.reject(Object.assign(new Error("w"), { status: 401, code: "TOKEN_REVOKED", requestId: "rid", details: null, reasons: [] })),
+      () => Promise.resolve(null),
+    ];
+    const { go } = renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Leave company" }));
+    const before = state.calls.length;
+    fireEvent.click(within(document.querySelector(".company-leave-confirm") as HTMLElement).getByRole("button", { name: "Leave company" }));
+    await waitFor(() =>
+      expect(document.querySelector(".company-leave .error-note")).toHaveTextContent(
+        "Taska couldn’t confirm that you left Umbrella. Press Leave company again to check.",
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(state.calls.slice(before)).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Leave company" }));
+    fireEvent.click(within(document.querySelector(".company-leave-confirm") as HTMLElement).getByRole("button", { name: "Leave company" }));
+    await waitFor(() => expect(go).toHaveBeenCalled());
+    expect(state.leaveKeys[1]).toBe(state.leaveKeys[0]);
+  });
+
   it("a definite refusal re-reads and takes a new key next time", async () => {
     state.me = "sofia";
     state.leave = [
@@ -490,6 +513,16 @@ describe("a removal's operation (§4.38)", () => {
     await waitFor(() => expect(remove).toHaveFocus());
     expect(rowOf("Sofia Reyes").querySelector(".error-note")).toHaveTextContent("Sofia Reyes was not removed.");
     expect(rowOf("Sofia Reyes").querySelector(".error-note")).toHaveTextContent("DEPENDENCY_UNAVAILABLE · operation op-1");
+  });
+
+  it("an operation still under way on «Check again» resumes polling and hands focus on — never to <body> (X2)", async () => {
+    const check = await stoppedRemoval();
+    state.operation = [() => Promise.resolve({ id: "op-1", state: "RUNNING" })];
+    fireEvent.click(check);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Check again" })).not.toBeInTheDocument());
+    // After Sofia comes Tom, the owner, with no control: the row before her, Priya's, takes focus.
+    expect(screen.getByRole("combobox", { name: "Role of Priya Nair" })).toHaveFocus();
+    expect(rowOf("Sofia Reyes")).toHaveTextContent("Being removed");
   });
 
   it("pressing «Check again» twice sends one read (release-reviewer L-c)", async () => {

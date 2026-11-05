@@ -1060,6 +1060,45 @@ describe("a company's members, invitations and seats (TAS-502)", () => {
       expect(closed.map((event) => event.reason)).toEqual(["TENANT_NOT_FOUND"]);
     });
 
+    it("N4: a 2xx of a request sent before the loss — in flight when it was lost — proves nothing", async () => {
+      const tab = await inNorthwind();
+      const left: WorkspaceLeftEvent[] = [];
+      tab.client.onWorkspaceLeft((event) => left.push(event));
+      const inFlight = gate<string>();
+      const sendRead = vi.fn(() => inFlight.promise);
+      const read = tab.client.call("session", sendRead, { read: true });
+      await vi.waitFor(() => expect(sendRead).toHaveBeenCalled());
+      tab.transport.leaveTenant.mockImplementationOnce(async () => {
+        throw refusal(503, "DEPENDENCY_UNAVAILABLE");
+      });
+      await expect(tab.client.leaveTenant(NORTHWIND, "key-leave")).rejects.toMatchObject({ status: 503 });
+      inFlight.resolve("an answer from before");
+      await expect(read).resolves.toBe("an answer from before");
+      await expect(readRefused(tab.client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(tab.closed).toEqual([]);
+      expect(left.map((event) => event.tenantId)).toEqual([NORTHWIND]);
+    });
+
+    it("N2: a retry lost again moves the record on — a read sent while the retry was out proves nothing", async () => {
+      const { client, transport, closed, left } = await lostLeave();
+      const retry = gate<unknown>();
+      transport.leaveTenant.mockImplementationOnce(() => retry.promise);
+      const leaving = client.leaveTenant(NORTHWIND, "key-leave");
+      await vi.waitFor(() => expect(transport.leaveTenant).toHaveBeenCalledTimes(2));
+      const inFlight = gate<string>();
+      const sendRead = vi.fn(() => inFlight.promise);
+      const read = client.call("session", sendRead, { read: true });
+      // The read is sent before the retry's answer is lost.
+      await vi.waitFor(() => expect(sendRead).toHaveBeenCalled());
+      retry.reject(new TypeError("Failed to fetch"));
+      await expect(leaving).rejects.toBeInstanceOf(TypeError);
+      inFlight.resolve("sent while the retry was out");
+      await expect(read).resolves.toBe("sent while the retry was out");
+      await expect(readRefused(client, inactive())).rejects.toBeInstanceOf(WorkspaceClosedError);
+      expect(closed).toEqual([]);
+      expect(left.map((event) => event.tenantId)).toEqual([NORTHWIND]);
+    });
+
     it("P1: a retry answered 429 keeps it — a later 404 retry is «left»", async () => {
       const { client, transport } = await lostLeave();
       transport.leaveTenant.mockImplementationOnce(async () => {

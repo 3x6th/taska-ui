@@ -204,6 +204,10 @@ describe("the refusal table, by Problem.code (§4.38 «Отказы»)", () => {
     expect(leaveRefusalWords(refusal(409, "INVALID_STATE"), "Globex")).toEqual({ text: "You didn’t leave Globex.", words: null });
     expect(leaveRefusalWords(refusal(400, "SOMETHING_NEW"), "Globex")).toEqual({ text: "You didn’t leave Globex.", words: "server words" });
     expect(leaveRefusalWords(null, "Globex").text).toBe("You didn’t leave Globex.");
+    // A 401 that reached the screen is unanswered too (release-reviewer N3).
+    expect(leaveRefusalWords(refusal(401, "TOKEN_REVOKED"), "Globex").text).toBe(
+      "Taska couldn’t confirm that you left Globex. Press Leave company again to check.",
+    );
   });
 
   it("resend's status keeps the expiry as sent", () => {
