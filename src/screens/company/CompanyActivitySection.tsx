@@ -436,6 +436,12 @@ function CompanyActivity({ companyId }: { companyId: string }) {
   const cursorRefused = moreError !== null && isActivityRefused(moreError);
   const moreStatus = moreError === null ? null : apiErrorFacts(moreError).status;
 
+  // A failure's box above the focused «Show more» pushes it down, out of the view: brought back, no animation (§4.9 «Отказ»).
+  const moreRef = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (moreError !== null && !cursorRefused) moreRef.current?.scrollIntoView({ block: "nearest" });
+  }, [moreError, cursorRefused]);
+
   return (
     <div className="settings-plane" ref={plane}>
       <div className="settings-column company-activity">
@@ -522,6 +528,7 @@ function CompanyActivity({ companyId }: { companyId: string }) {
                       className="secondary-button compact-button list-more-button"
                       data-busy={more?.busy || undefined}
                       onClick={showMore}
+                      ref={moreRef}
                       type="button"
                     >
                       Show more

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
@@ -24,6 +24,8 @@ const { fakeApi, rail } = vi.hoisted(() => {
     owner: "priya",
     members: null as null | Array<Record<string, unknown>>,
     activityCalls: 0,
+    membersCalls: 0,
+    tenantCalls: 0,
   };
   const known: Record<string, unknown> = {
     hasSession: () => true,
@@ -57,7 +59,14 @@ const { fakeApi, rail } = vi.hoisted(() => {
     }),
     getMeta: async () => ({ issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null }),
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0, unreadCount: 0 }),
-    listTenantMembers: () => (rail.members === null ? new Promise(() => {}) : Promise.resolve({ items: rail.members, nextCursor: null })),
+    listTenantMembers: () => {
+      rail.membersCalls += 1;
+      return rail.members === null ? new Promise(() => {}) : Promise.resolve({ items: rail.members, nextCursor: null });
+    },
+    getTenant: () => {
+      rail.tenantCalls += 1;
+      return new Promise(() => {});
+    },
     listTenantActivity: () => {
       rail.activityCalls += 1;
       return new Promise(() => {});
@@ -110,6 +119,8 @@ afterEach(() => {
   rail.owner = "priya";
   rail.members = null;
   rail.activityCalls = 0;
+  rail.membersCalls = 0;
+  rail.tenantCalls = 0;
 });
 
 describe("the Company zone (TAS-522, §5.10)", () => {
@@ -292,6 +303,17 @@ describe("the rail's «Activity» (TAS-524, §4.41 «Где», api-contract-guar
     expect(activity).toHaveAttribute("href", "/company/activity");
     expect(activity.querySelector("svg.lucide-scroll-text")).not.toBeNull();
     expect(rail.activityCalls).toBe(0);
+    expect(rail.membersCalls).toBe(0);
+    // One read of the company — the screen's own (it is made with no Activity in the rail too); the rail adds none.
+    expect(rail.tenantCalls).toBe(1);
+    // The same on Plan: the rail's owner reads nothing the section did not ask for.
+    cleanup();
+    rail.tenantCalls = 0;
+    renderInCompany("/company/plan");
+    await waitFor(() => expect(railLinks()).toEqual(["General", "Members", "Plan", "Activity", "Back to projects"]));
+    expect(rail.activityCalls).toBe(0);
+    expect(rail.membersCalls).toBe(0);
+    expect(rail.tenantCalls).toBe(1);
   });
 
   it("an Admin known from the cached members list — once Members has been read", async () => {

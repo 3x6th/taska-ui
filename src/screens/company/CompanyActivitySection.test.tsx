@@ -1,3 +1,4 @@
+import { onlineManager } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -424,6 +425,74 @@ describe("«Show more» and the end (§4.41 «Подвал»)", () => {
     expect(screen.queryByRole("button", { name: /Show more|Filter/ })).not.toBeInTheDocument();
     await waitFor(() => expect(heading()).toHaveFocus());
     expect(status()).toHaveTextContent("Only the admins and the owner of Northwind can see its activity.");
+  });
+
+  it("a reconnect or a return to the tab re-reads a failed first page and nothing else: «Show more» pages stay", async () => {
+    renderActivity();
+    fireEvent.click(await screen.findByRole("button", { name: "Show more activity" }));
+    await waitFor(() => expect(rows()).toHaveLength(100));
+    expect(state.calls).toHaveLength(2);
+    act(() => onlineManager.setOnline(false));
+    act(() => onlineManager.setOnline(true));
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await act(async () => {});
+    expect(state.calls).toHaveLength(2);
+    expect(rows()).toHaveLength(100);
+  });
+
+  it("a failed continuation and a reconnect: no read, its note stays", async () => {
+    state.answer = (params) => (params.cursor === undefined ? page(long(0, 50), "c-1") : refusal(409, "INVALID_STATE"));
+    renderActivity();
+    fireEvent.click(await screen.findByRole("button", { name: "Show more activity" }));
+    expect(await note("More activity could not be loaded.")).toBeInTheDocument();
+    expect(state.calls).toHaveLength(2);
+    act(() => onlineManager.setOnline(false));
+    act(() => onlineManager.setOnline(true));
+    await act(async () => {});
+    expect(state.calls).toHaveLength(2);
+    expect(screen.getByText("More activity could not be loaded.", { selector: ".error-note-sentence" })).toBeInTheDocument();
+    expect(rows()).toHaveLength(50);
+  });
+
+  it("a failed first page and a reconnect: one read", async () => {
+    state.answer = () => refusal(409, "INVALID_STATE");
+    renderActivity();
+    await screen.findByRole("button", { name: "Try again" });
+    expect(state.calls).toHaveLength(1);
+    act(() => onlineManager.setOnline(false));
+    act(() => onlineManager.setOnline(true));
+    await waitFor(() => expect(state.calls).toHaveLength(2));
+  });
+
+  describe("a failed continuation brings «Show more» back into view", () => {
+    const scrolled = vi.fn();
+    beforeEach(() => {
+      scrolled.mockClear();
+      Element.prototype.scrollIntoView = scrolled;
+    });
+
+    it.each([
+      [503, "UNAVAILABLE"],
+      [429, "RATE_LIMITED"],
+    ])("a %i: scrollIntoView on the button, no animation", async (status, code) => {
+      state.answer = (params) => (params.cursor === undefined ? page(long(0, 50), "c-1") : refusal(status, code));
+      renderActivity();
+      const more = await screen.findByRole("button", { name: "Show more activity" });
+      fireEvent.click(more);
+      await waitFor(() => expect(scrolled).toHaveBeenCalled());
+      expect(scrolled).toHaveBeenCalledWith({ block: "nearest" });
+      expect(scrolled.mock.contexts.at(-1)).toBe(screen.getByRole("button", { name: "Show more activity" }));
+    });
+
+    it("a 400 is unchanged: «Start again» takes focus, nothing scrolled", async () => {
+      state.answer = (params) => (params.cursor === undefined ? page(long(0, 50), "c-1") : refusal(400, "VALIDATION_FAILED"));
+      renderActivity();
+      fireEvent.click(await screen.findByRole("button", { name: "Show more activity" }));
+      await screen.findByRole("button", { name: "Start again from the newest" });
+      expect(scrolled).not.toHaveBeenCalled();
+    });
   });
 
   it("with filters the end reads «No older activity matches these filters.»", async () => {

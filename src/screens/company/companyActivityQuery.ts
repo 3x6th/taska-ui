@@ -3,6 +3,7 @@ import { taskaApi } from "../../api/client";
 import { apiErrorFacts, isWorkspaceClosed } from "../../api/errors";
 import { ACTIVITY_PAGE_SIZE, activityKindsParam, type ListTenantActivityParams } from "../../api/tenantActivity";
 import { ForeignCompanyAnswerError } from "../../api/tenants";
+import { refetchFailedOnFocus } from "../../lib/queryClient";
 
 /*
  * Company › Activity's read (TAS-524, api-contract-guard B1, B4, B7), on the
@@ -90,6 +91,9 @@ export const companyActivityOptions = (companyId: string, filters: ActivityFilte
     queryFn: () => taskaApi.listTenantActivity(companyId, activityParams(filters)),
     staleTime: 0,
     retry: retryActivity,
+    // The client's rule, carried by the query: a reconnect or a return to the tab reads only a failed first page, never drops «Show more» pages.
+    refetchOnReconnect: refetchFailedOnFocus,
+    refetchOnWindowFocus: refetchFailedOnFocus,
     // A re-read is a new first page, never the old one with its continuation's place kept.
     structuralSharing: false,
   });
