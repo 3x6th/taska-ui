@@ -136,6 +136,10 @@ function fakeTransport() {
       tenantId, version: "3", planVersionId: "plan-free", coveragePeriodId: "period-1", validFrom: "2026-05-01T09:00:00Z", validUntil: "2026-12-07T09:00:00Z",
       restrictions: [], limits: [{ kind: "TASK_LIFETIME", limit: "50", unlimited: false }], features: ["projects.basic"], issuedAt: "2026-11-05T10:00:00Z",
     })),
+    // TAS-524.
+    listTenantActivity: vi.fn<B2bTransport["listTenantActivity"]>(async (_bearer, tenantId) => ({
+      items: [{ id: "record-1", tenantId, createdAt: "2026-11-05T10:00:00Z", actor: { userId: USER, platformAdmin: false }, kind: "TENANT_PAUSED", target: { type: "TENANT", id: tenantId }, outcome: "SUCCEEDED" }],
+    })),
   };
 }
 

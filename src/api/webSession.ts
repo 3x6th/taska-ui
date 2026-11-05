@@ -13,6 +13,12 @@ import type {
 import { TRANSPORT_FAILURE_REASON } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
 import {
+  ofCompanyActivity,
+  toCompanyActivityPage,
+  type CompanyActivityPage,
+  type ListTenantActivityParams,
+} from "./tenantActivity";
+import {
   toInvitation,
   toInvitationPage,
   toMembership,
@@ -198,6 +204,14 @@ export interface B2bTransport {
 
   /** `GET /tenants/{tenantId}/billing/entitlement` with that company's WEB_TENANT — 200 `Entitlement`, every member's read (TAS-512). */
   getEntitlement(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
+
+  /**
+   * `GET /tenants/{tenantId}/activity?limit&actorUserId&kind…&cursor` with that
+   * company's WEB_TENANT — 200 `ActivityPage`, the admins' and the owner's read
+   * (TAS-524; proposed on TAS-523, not in the blueprint). `kind` goes repeated,
+   * sorted and de-duplicated (`activitySearch`).
+   */
+  listTenantActivity(bearer: string | null, tenantId: string, params: ListTenantActivityParams, signal: AbortSignal): Promise<unknown>;
 }
 
 /** `AccessSession` as this layer reads it: the four strings it needs, `tenantId` only on a company session. */
@@ -405,8 +419,9 @@ const CLOSING_CODES: ReadonlySet<string> = new Set([
 /**
  * The restrictions whose content refusal keeps the company (TAS-504,
  * api-contract-guard B2): a pause and a block close the company's projects,
- * not the company — its settings, its own reads and the owner's Resume go on
- * with the same session (DESIGN.md §4.35).
+ * not the company — Settings or the Company zone (§5.10), its own reads and
+ * the owner's Resume in Company › General go on with the same session
+ * (DESIGN.md §4.35).
  */
 const CONTENT_CLOSING_REASONS: readonly string[] = ["OWNER_PAUSE", "PLATFORM_BLOCK"];
 
@@ -1114,6 +1129,24 @@ export class WebSessionClient {
   async getEntitlement(tenantId: string): Promise<Entitlement> {
     return ofCompany(
       toEntitlement(await this.inCompany(tenantId, (bearer, signal) => this.transport.getEntitlement(bearer, tenantId, signal))),
+      tenantId,
+    );
+  }
+
+  /**
+   * `GET /tenants/{tenantId}/activity` (TAS-524, api-contract-guard B1–B3):
+   * the company's log, with the tab's company session of that company only
+   * (`inCompany`). Control plane — **no `read` and no `content` option**, as
+   * `getEntitlement`: its refusal marks nothing (a pause or a block never
+   * closes it) and its success lifts no pause mark; only the closing codes
+   * every request has close the company. A record that names another company
+   * fails the whole page (`ForeignCompanyAnswerError`).
+   */
+  async listTenantActivity(tenantId: string, params: ListTenantActivityParams = {}): Promise<CompanyActivityPage> {
+    return ofCompanyActivity(
+      toCompanyActivityPage(
+        await this.inCompany(tenantId, (bearer, signal) => this.transport.listTenantActivity(bearer, tenantId, params, signal)),
+      ),
       tenantId,
     );
   }

@@ -118,8 +118,8 @@ describe("the fixtures (§7)", () => {
       expect(tenant).not.toHaveProperty("entitlementVersion");
       expect(tenant).not.toHaveProperty("quotaBreach");
     }
-    // v5 since TAS-512's fresh seed (the plans' usage and terms).
-    expect(JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}").v).toBe(5);
+    // v6 since TAS-524's fresh seed (the companies' activity logs).
+    expect(JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}").v).toBe(6);
   });
 
   it("keeps TAS-500's directory: Northwind's ACTIVE people are Anna, Sofia and Tom", async () => {

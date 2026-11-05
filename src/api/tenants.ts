@@ -376,7 +376,8 @@ export interface Subscription {
   scheduledEffectiveAt: string | null;
 }
 
-const instant = (value: unknown): string | null => {
+/** An instant as sent, or `null` for one that is absent, empty or not something `Date` can read (TAS-504; TAS-524's records too). */
+export const instant = (value: unknown): string | null => {
   const at = text(value);
   return at === null || Number.isNaN(Date.parse(at)) ? null : at;
 };

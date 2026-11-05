@@ -4727,3 +4727,51 @@ Non-blocking notes (`docs/ai/reviews/TAS-522/`, git-ignored).
 - **The comment beside the 768 rule in `styles.css`** («at any width one of the two is there») is false on the board at
   ≥768, where neither the switcher nor the menu row draws — say «in the shared bar» (release-reviewer, phone-row
   review 2).
+
+### Left by TAS-524 pre-build (the company Activity section, a contract proposed on TAS-523, 2026-11-05)
+
+From the api-contract-guard design and the art-director ruling (`docs/ai/reviews/TAS-524/`, git-ignored). The wire
+shape went to TAS-523 as a comment («Предложение фронта, версия 2»).
+
+- **A non-owner admin sees no «Activity» in the rail** until Members has been opened in the tab (the role comes only
+  from the cached members list or `Tenant.ownerId`); the address works. No probe read — ask A26 (TAS-338) removes it
+  (art-director N2, guard residual).
+- **Keyset paging can miss a record committed late with an earlier `createdAt`**; «Start again from the newest» shows it.
+  The backend narrows it by stamping at the last statement (guard N2).
+- **Activity kinds and their English labels belong in ask A28** (B2B dictionaries in `/meta`), so a new kind gets a
+  label and a filter option without a frontend release (guard N3).
+- **A demoted admin's next Activity read could close the company** instead of drawing 403 while develop's
+  stale-membership-generation refusals stand (asks A17/A18) (guard residual).
+- **Seconds on hover**: a `title` on the record's `<time>` with the full local time to the second would separate two
+  actions in the same minute for pointer users (art-director N3, optional).
+
+### Left by TAS-524 review (the company Activity section, build review of `9974691`, 2026-11-05)
+
+Non-blocking notes of the three roles (`docs/ai/reviews/TAS-524/`, git-ignored); the blockers and the cheap notes went
+into the fix round.
+
+- **An empty appended page loses focus**: a «Show more» answered `{items: [], nextCursor: null}` replaces the focused
+  button with «No older activity.», focus falls to `<body>` and nothing is spoken (`CompanyActivitySection.tsx`); the
+  mock never hands out such a cursor, a backend that returns one for every full page would. Announce the end sentence
+  and focus the h1 (release-reviewer N3).
+- **Two ring shapes in one filter row**: the shared §5.8 `.admin-filter-chip-open` has no radius, so the kind chip's
+  open half rings square beside the author label's round ring — `.admin-filter-chip-open { border-radius: 20px 0 0
+  20px }`, `.admin-filter-chip-remove { border-radius: 0 20px 20px 0 }`, on Audit and Activity at once (art-director N2).
+- **«By Someone» / «By A Taska administrator» chips name nobody**: two nameless authors give identical chips; when the
+  {A} chain ends in a fallback word, show `shortKey` of the id in mono (art-director N3).
+- **Two scrollers at 320×568 in the Company zone** (and Settings): the document scrolls (659 on Activity, 611 General,
+  1139 Members) on top of the inner `.settings-plane` scroller (404). Pre-existing on the area recipe, found on TAS-524
+  (art-director).
+- **The mapper reads only `createdAt`**: if the backend ships the draft's `occurredAt`, every row reads «Time unknown» —
+  check the shape when TAS-523 is picked up (guard N3).
+- **A re-read that overlaps «Show more» still drops the appended pages** (R-1a): «Show more» in flight while a heal or
+  re-entry's own re-read is out (or pressed while it is) — 100 → 50, focus to body, silent; the window is one request's
+  latency. Fix: `hasPagesRef` also true while a continuation is busy, and «Show more» inert (aria-disabled + data-busy)
+  while the first page is fetching — the second half needs art-director and a §4.41 sentence (api-contract-guard
+  re-verdict 2).
+- **The Activity section's §6 focus heal is unpinned**: no test fails when the heal is narrowed to «no rows» or the
+  focus re-read is turned off; add the guard's P1 (cached rows, failed refresh, tab return → 1 read, notice gone) and P3
+  (failed first page, tab return → 1 read) as tests; the test named «re-reads a failed first page» checks only success
+  (api-contract-guard re-verdict 2).
+- **`companyActivityOptions`' `refetchOnReconnect` / `refetchOnWindowFocus` are dead for the section** (its useQuery
+  overrides both); say so in the comment or drop them (api-contract-guard re-verdict 2).

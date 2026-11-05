@@ -90,6 +90,7 @@ import type {
   MembershipPage,
   QuotaSnapshot,
 } from "../tenantMembers";
+import type { CompanyActivityPage, ListTenantActivityParams } from "../tenantActivity";
 import {
   ATTACHMENT_BUCKET,
   ATTACHMENT_MAX_SIZE_BYTES,
@@ -9794,6 +9795,11 @@ export class MockTaskaApi implements TaskaApi {
 
   async getEntitlement(_tenantId: string): Promise<Entitlement> {
     throw new TenancyUnavailableError("getEntitlement");
+  }
+
+  /** TAS-524: the company's log — the companies build only; today's build refuses it without a request. */
+  async listTenantActivity(_tenantId: string, _params?: ListTenantActivityParams): Promise<CompanyActivityPage> {
+    throw new TenancyUnavailableError("listTenantActivity");
   }
 
   async getMeta(): Promise<EnumDictionaries> {

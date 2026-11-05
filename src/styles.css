@@ -4188,6 +4188,205 @@ h1 {
   }
 }
 
+/* ---------- Company › Activity (TAS-524, §4.41) ---------- */
+
+/* Lead → 14 → the filter row → 14 → the list → 14 → the foot, in the 560
+   column on --bg; nothing here widens it, and nothing scrolls sideways. */
+.company-activity-filters {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+/* §5.8's popover, anchored to the row's left edge: the row stands left, and
+   `right: 0` would put the popover on the rail at 1440 and off the left of
+   the screen at 320. */
+.company-activity-filters .admin-filter-popover {
+  right: auto;
+  left: 0;
+}
+
+/* The author chip's label is not a button — there is nothing in it to edit —
+   but it has the open half's place and type, and takes focus from script. */
+.company-activity-chip .company-activity-chip-label {
+  display: inline-block;
+  height: 28px;
+  border-radius: 20px;
+  padding: 0 4px 0 11px;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.company-activity-chip-id {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.company-activity-list {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* §4.38's row without its grid: a hairline between rows only, no hover. */
+.company-activity-row {
+  padding: 8px 0;
+}
+
+/* The ring of a scripted focus is not clipped at the scroll edge. */
+.company-activity-row[tabindex],
+.company-activity-foot > button {
+  scroll-margin-block: 8px;
+}
+
+.company-activity-row + .company-activity-row {
+  border-top: 1px solid var(--border);
+}
+
+.company-activity-sentence {
+  margin: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.company-activity-named {
+  color: var(--fg);
+  font-weight: 550;
+}
+
+.company-activity-not-done {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* The author: the name's own colour and weight, a quiet underline that turns
+   to the text's colour on hover and focus — never the accent, which is the
+   applied filter's (§4.41). The ring is §7's, rounded 3. */
+.company-activity-actor {
+  position: relative;
+  border-radius: 3px;
+  color: var(--fg);
+  font-weight: 550;
+  text-decoration-line: underline;
+  text-decoration-color: var(--fg-3);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.company-activity-actor:hover,
+.company-activity-actor:focus-visible {
+  text-decoration-color: currentColor;
+}
+
+/* 28 high without moving the line (§1): the inline link alone is 27. */
+.company-activity-actor::before {
+  position: absolute;
+  inset: -6px 0;
+  content: "";
+}
+
+.company-activity-meta {
+  margin: 2px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.company-activity-mark {
+  color: var(--fg-2);
+  font-weight: 600;
+}
+
+.company-activity-code {
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* §5.6's skeleton in the row's shape: the sentence's bar and the meta's. */
+.company-activity-skeleton .company-activity-skeleton-sentence {
+  display: block;
+  width: 300px;
+  max-width: 100%;
+  height: 13px;
+  margin: 3px 0;
+}
+
+.company-activity-skeleton .company-activity-skeleton-meta {
+  display: block;
+  width: 100px;
+  height: 11px;
+  margin-top: 6px;
+}
+
+.company-activity-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.company-activity-foot > .error-note {
+  align-self: stretch;
+  margin: 0;
+}
+
+.company-activity-end {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.company-activity-empty {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+  text-wrap: pretty;
+}
+
+.company-activity > .company-activity-empty,
+.company-activity-empty-block,
+.company-activity-failure {
+  margin-top: 14px;
+}
+
+.company-activity-empty-block,
+.company-activity-failure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.company-activity-failure > .api-notice {
+  align-self: stretch;
+}
+
+@media (max-width: 820px) {
+  /* 44 high, its width the name's (§7's open entry for TAS-524). */
+  .company-activity-actor::before {
+    inset: -13.5px 0;
+  }
+
+  .company-activity-state-button {
+    min-height: 44px;
+  }
+}
+
 /* ---------- Data section ---------- */
 
 .admin-data {
