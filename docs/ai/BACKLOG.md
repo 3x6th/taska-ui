@@ -4608,4 +4608,25 @@ Non-blocking notes from the three roles (`docs/ai/reviews/TAS-504/`, git-ignored
 - **The mock seeds Hooli's autopay `SUSPENDED`** (the guard would prefer `CONSENTED`: a block stops attempts, not the
   state) and turns the old owner's autopay off in the same write as a transfer (state-machines.md:38 does it through an
   outbox).
-
+- **No test pins that a financial restriction alone, with the read flag off, leaves the mock's directory readable**
+  (guard R2: "any restriction + flag off" survived) — one line for `listTenantMembers` in the "ended period alone"
+  test.
+- **At ≤559 the focus ring of «See Members» cuts ~7 px into «Owner»** above it — `margin:0 0 -10px;
+  align-items:flex-start` in that range keeps the row and the 44 target (art-director re-check 1).
+- **A one-frame «See Members» flash before the recipient's name after a transfer** (3 of 11 runs): the name is set in
+  a `useEffect` after paint — `useLayoutEffect`, or derive it from the hand-over while rendering (2).
+- **The failed-re-read notice after a transfer loses `role="alert"` 8 ms after mounting** (its `continued` comes from
+  route state cleared in the same step) — key it on a local flag, so a screen reader announces it (3).
+- **The failed-re-read path after a transfer drops the status** although the 200 confirmed it — keep «{Name} now owns
+  {Company}. You’re still an admin.» and drop only the Owner name, as the failed re-entry path does (4).
+- **✕ during the transfer shows no inactive sign** (`aria-disabled` absent, pointer cursor) — make it «в полёте» §4.1
+  (5; the behaviour itself is in §4.39).
+- **The unconfirmed transfer prints the server's words after a 403** (`companyGeneralText.ts:229-231`) — on the mock
+  «Only the owner can change the tenant», with «tenant» (§4.33) and against «couldn’t confirm»; show words only for a
+  lost answer (release-reviewer 2).
+- **A transfer lost twice whose re-read names a third owner** ends with no alert, status or re-entry, and the sentence
+  table says «still yours» when the re-read is not the reader's — follow G6 for any other non-null owner, «still
+  yours» only when it is the reader's (release-reviewer 3; needs a concurrent transfer and two lost answers).
+- **`e2e/companies.spec.ts:146` («All companies» is 44 high) flaked once at 43.99999** on desktop in the TAS-504 gate
+  (`03beade`); 10/10 on a re-run. Compare with a sub-pixel tolerance (`toBeGreaterThanOrEqual(43.5)` or round first),
+  like the other layout measures in the suite.

@@ -2398,7 +2398,8 @@ Everything below is the entry as it stood, in the past tense.
   under a flag-off pause or block (the mock's tenant-self routes, older than TAS-504), contrary to the blueprint's INBOX
   (ask A42).
 - **Turning the flag on** additionally needs TAS-333, TAS-473, TAS-480 and TAS-314 on the gateway and **asks A31, A32,
-  A34, A35 and A36 answered**.
+  A34, A35 and A36 answered**; a platform that runs with the read flag off (default on, D82) also needs A42, or its
+  owners cannot pick a transfer recipient and its members cannot reach Leave under a pause.
 - **Removal:** delete with the flag, after the probe.
 
 ### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log
