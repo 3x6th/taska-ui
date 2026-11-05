@@ -4630,3 +4630,17 @@ Non-blocking notes from the three roles (`docs/ai/reviews/TAS-504/`, git-ignored
 - **`e2e/companies.spec.ts:146` («All companies» is 44 high) flaked once at 43.99999** on desktop in the TAS-504 gate
   (`03beade`); 10/10 on a re-run. Compare with a sub-pixel tolerance (`toBeGreaterThanOrEqual(43.5)` or round first),
   like the other layout measures in the suite.
+
+### Left by TAS-512 pre-build (company plan and usage, B2B blueprint `758f8fc6`, 2026-11-05)
+
+From the api-contract-guard design and the art-director ruling (`docs/ai/reviews/TAS-512/`, git-ignored). Backend asks
+A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS-483.
+
+- **«Paid until» is on both General and Plan** — later keep it only on Plan (touches TAS-504 tests) (art-director 1).
+- **Payments and invoices (TAS-513–516)**: owner-only rows on Plan, or a separate owner-only «Billing» item — decide then
+  (art-director 3).
+- **The price line is the catalogue's base price**; tax and FX belong to invoices (TAS-514) (guard N7).
+- **A definite failure of the new plan reads re-reads on every focus return** (guard N5; the L5 note of TAS-504).
+- **The «3 used · 1 allowed» projects line on Northwind and Globex** is the mock's platform-bypass fixture, not a UI
+  state; revisit when A46 says whether a bypass always sets OVER_QUOTA.
+

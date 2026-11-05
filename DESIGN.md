@@ -3027,6 +3027,9 @@ B4). Обычный клик входит в этой вкладке; модиф
 | `PROVISIONING` | «Being set up» | вторая |
 | `PLATFORM_BLOCK` в `restrictions` | «Blocked by Taska» | первая |
 | `OWNER_PAUSE` в `restrictions` | «Paused by its owner» | первая |
+| `PAYMENT_DISPUTE` в `restrictions` | «Read-only · payment disputed» | первая |
+| `PAYMENT_EXPIRED` в `restrictions` | «Read-only · paid period ended» | первая |
+| `OVER_QUOTA` в `restrictions` | «Read-only · over plan limits» | первая |
 | `AWAITING_PAYMENT` | «Awaiting first payment» | первая |
 | `ACTIVE` | — | первая |
 | `lifecycle` вне словаря | код как есть (§6) | первая |
@@ -3034,8 +3037,7 @@ B4). Обычный клик входит в этой вкладке; модиф
 После паузы, снятия или переименования в этой вкладке строка берётся из ответа команды в том же кадре, затем список перечитывается (§4.39); другие вкладки узнают при своём следующем чтении списка, опроса нет.
 
 Строки `PROVISIONING`, `AWAITING_PAYMENT`, `OWNER_CANCELLED`, `AUTO_CLOSED` ведут на адрес компании, где
-рисуется карточка §4.37 (TAS-501). Группа — только порядок и цвет имени, не допуск. Финансовые ограничения строки здесь не дают — их
-слот у TAS-512. Ролей «Admin»/«Member» и состояния членства нет: `TenantPage` их не несёт, чтения
+рисуется карточка §4.37 (TAS-501). Группа — только порядок и цвет имени, не допуск. Финансовые ограничения (TAS-512) — три строки таблицы выше; несколько сразу — первая по порядку таблицы. «Read-only» стоит первым словом: факт («paid period ended») сам не говорит, что в компании ничего нельзя менять. Ролей «Admin»/«Member» и состояния членства нет: `TenantPage` их не несёт, чтения
 на строку нет никогда (довод §4.4); придут в списке — встают метой на место «Owner», раскладка та же.
 
 **Порядок.** Первая группа, затем вторая; внутри — по имени (`localeCompare`, `sensitivity:'base'`),
@@ -3091,6 +3093,7 @@ Platform access (вход в компанию без членства) — не 
   `aria-haspopup="dialog"`, `aria-expanded`, `aria-controls`. Имя ещё не известно —
   `.value-skeleton` 96×13 (`--surface-3`) и `disabled`, как аватар §4.16; не прочиталось — «Company»
   `--fg-2`.
+- **Маркер состояния** (TAS-512, закрывает TAS-504 N4). Компания вкладки с `PLATFORM_BLOCK`, `OWNER_PAUSE` или одним из трёх финансовых ограничений несёт одно слово рецептом `read-only` §5.8 (10.5 моно `--fg-2`, `1px --border`, radius 6, padding 2 7). Места — те же три, что у platform access: в триггере после имени, в баре доски после «Board», в меню профиля после имени в «Company». Без маркера на доске и телефоне участник узнал бы о состоянии только отказом: триггера нет ни на доске, ни ниже 768. Слово — первое подходящее: `blocked`, `paused`, `read-only`; код вне словаря маркера не даёт, клиент не знает, что он запрещает. Маркер `flex:none`, `gap:6`; имя сжимается многоточием в прежних `max-width:240`. Имя доступа триггера — «{Company}, paused, switch company»; в баре доски и в меню перед словом визуально скрытое «{Company} is» (там маркер — не контрол). Заголовок документа не меняется: это состояние компании, а не режим доступа. Данные — строка списка и `["tenant", id]`, нового чтения нет; маркер меняется в том кадре, где меняются они. Без цвета: смысл несёт слово (§7), `--danger` значит «разрушительное». Вместе с platform access (TAS-510) — сначала он, затем этот. Больше в рабочей области ничего не помечается и не выключается: «New», «+», drag и формы остаются как были, отказ говорит запись (§4.35).
 - **Поповер** — рецепт §4.12: `--surface`, `1px --border`, radius 13, `--shadow-pop`,
   `tk-pop var(--dur-enter)`, `role="dialog"`, `aria-label="Companies"`, padding 6;
   `top:calc(100% + 6px); left:0`, ширина `min(312px, 100vw − 2 × --bar-gutter)`. Закрытие — общий
@@ -3099,7 +3102,7 @@ Platform access (вход в компанию без членства) — не 
     `<a href="/c/{companyId}/projects">`, height 32 (≤ 820 — 44, как строки §4.20), padding 0 9,
     radius 8, `gap:8`; имя 12.5/550 `--fg`, многоточие, `title`; один правый слот: у текущей —
     `Check` 14 `--fg-2` + `aria-current="true"`, иначе 11 `--fg-2` «Paused» / «Blocked» /
-    «Awaiting payment» или пусто. Hover — `--surface-3`. Кольцо — исключение 1 §7.
+    «Read-only» (любое из трёх финансовых, TAS-512) / «Awaiting payment» или пусто; порядок — §4.33. Hover — `--surface-3`. Кольцо — исключение 1 §7.
   - Пока у вкладки в полёте запись, строки других компаний — `aria-disabled="true"`,
     `cursor:progress`, без подписи: запись компании A не должна доехать, когда на экране уже B
     (api-contract-guard §4). Текущая строка и «All companies» не меняются.
@@ -3134,8 +3137,19 @@ Platform access (вход в компанию без членства) — не 
 компании чистится, набранное не сохраняется — некуда. Фокус — на `h1` (`tabIndex=-1`, исключение 4
 §7). **Отказ чтения** с `CAPABILITY_DISABLED` и непустыми `reasons` — этот экран со строкой по причине, не
 §4.18: это ответ о компании, а не «нет такой страницы» (api-contract-guard N2). **Пауза и блокировка компанию не закрывают** (TAS-504, api-contract-guard B2). Отказ чтения с `CAPABILITY_DISABLED`, чьи `reasons` называют `OWNER_PAUSE` или `PLATFORM_BLOCK` и не называют `PENDING_FIRST_PAYMENT`, оставляет сессию компании и её кэш, а вкладку помечает «содержимое закрыто». Пометка заменяет этим экраном только маршруты содержимого — Projects, доску, задачу, `/browse/…`; Settings, в том числе «General» (§4.39), рисуется как обычно и пометкой не заменяется никогда, иначе владелец не дошёл бы до «Resume company». Поиск бара под пометкой отвечает в своей панели `ApiNotice` «{Company} is paused, so its issues can’t be searched right now.» / «{Company} is blocked, so its issues can’t be searched right now.» + id, без слов сервера, и страницу не заменяет. Пометку снимает ответ `Tenant` без этих причин (своё снятие паузы, перечитывание компании) или удачное чтение содержимого; экран переспрашивает сервер перезагрузкой и новым входом в компанию (ask A35). Остальные причины закрывают, как раньше: какие ещё причины несёт отказ чтения, контракт не сказал (ask A2c в TAS-316). **Отказ записи** (`READ_ONLY`, `CAPABILITY_DISABLED` с `reasons`) компанию не закрывает: он
-показывается на этом действии его обычным отказом (§5.6), со словами сервера и id; объяснение
-ограничений — слот TAS-512 (api-contract-guard §5).
+показывается на этом действии его обычным отказом (§5.6), с id; вместо слов сервера — фраза причины ниже (TAS-512).
+
+**Фраза причины записи** (TAS-512). `READ_ONLY` или `CAPABILITY_DISABLED` с непустыми `reasons` говорит не словами сервера (в них бывает «tenant»), а фразой первой знакомой причины по порядку §4.39. Свой префикс места остаётся («{file} was not attached.» §4.25), `X-Request-Id` — как обычно. Причина берётся только из `reasons` отказа, не из кэша строки списка. Знакомой причины нет — слова сервера, как раньше.
+
+| Причина | Фраза |
+| --- | --- |
+| `PLATFORM_BLOCK` | «Taska has blocked {Company}, so nothing in it can be changed.» |
+| `OWNER_PAUSE` | «{Company} is paused, so nothing in it can be changed.» |
+| `PAYMENT_DISPUTE` | «A payment for {Company} is disputed, so nothing in it can be changed until it’s settled.» |
+| `PAYMENT_EXPIRED` | «{Company}’s paid period has ended, so nothing in it can be changed.» |
+| `OVER_QUOTA` | «{Company} is over its plan’s limits, so nothing in it can be changed.» |
+
+У действий со своей фразой «… right now» (§4.38, §4.39) знакомая причина становится её первой частью: *оборот причины* + «, so » + своё следствие действия. Примеры: «{Company}’s paid period has ended, so it can’t be renamed.», «A payment for {Company} is disputed, so it was not transferred.», «{Company} is over its plan’s limits, so members can’t be changed.». Обороты: `PLATFORM_BLOCK` — «Taska has blocked {Company}», `OWNER_PAUSE` — «{Company} is paused», `PAYMENT_DISPUTE` — «A payment for {Company} is disputed», `PAYMENT_EXPIRED` — «{Company}’s paid period has ended», `OVER_QUOTA` — «{Company} is over its plan’s limits». Строки §4.39 со своими словами для `PLATFORM_BLOCK` и `OWNER_PAUSE` не меняются. {Company} — «This company» / «this company», как выше.
 
 **Анатомия.** `h1` 22/700 `--fg`; текст 13/400 `--fg-2`, `max-width:340`, `text-wrap:pretty`; ряд
 `gap:8; margin-top:14`: primary-ссылка «Choose a company» (`/companies`) и secondary «Log out».
@@ -3208,8 +3222,8 @@ Projects и Settings входа нет. Вход из компании клад�
     — пусто. Цена — из `Money` строкой minor units, без float (§6): `amountMinor / 10^exponent`, символ валюты —
     `Intl.NumberFormat('en', {style:'currency'})`, без «.00» у целой суммы.
   - Вторая — лимиты одной строкой 11.5/400 `--fg-2` через « · », в порядке PROJECT, SEAT, STORAGE_BYTES,
-    TASK_LIFETIME: «1 project · 5 members · 100 MB storage · 50 issues per project»; `unlimited` — «unlimited
-    projects / members / storage / issues»; байты — десятичные (100 000 000 — «100 MB», 5 000 000 000 —
+    TASK_LIFETIME: «1 project · 5 seats · 100 MB storage · 50 issues per project»; `unlimited` — «unlimited
+    projects / seats / storage / issues» (TAS-512: `SEAT` считает и приостановленных участников, и ждущие приглашения, §4.38, а «members» обещало бы меньше; одно слово на одно понятие с Members и Plan, §4.40); байты — десятичные (100 000 000 — «100 MB», 5 000 000 000 —
     «5 GB»), не больше одного знака после точки; `kind` вне словаря — `{limit} {KIND}` как есть (§6).
   - У плана с ненулевой ценой — третья строка 11.5 `--fg-2`: «Nothing is charged now. The company opens once
     its first payment is confirmed.» Срок оплаты здесь не называется: его снимок даёт только созданная
@@ -3355,7 +3369,7 @@ time…»). Не «can no longer be opened»: позднее подтвержд�
 
 **Места** — только владельцу и Admin. Участнику строки нет, и запрос квот для неё не уходит. Строка стоит под лидом через 8: 12.5/400 `--fg-2`, `tabular-nums`. Числа — из `SEAT` снимка квот как есть; клиент их не выводит из списка.
 - Обычно: «{used+reserved} of {limit} seats in use». При `reserved > 0` добавляется « · {reserved} held by invitations» (при единице — «1 held by an invitation»).
-- Мест нет (`used+reserved ≥ limit`): «All {limit} seats are in use» (при лимите 1 — «The 1 seat is in use»; если больше лимита — «{n} of {limit} seats in use») и тот же хвост. Второй строкой: «To invite someone, remove a member or revoke an invitation.» Объяснение плана — слот TAS-512.
+- Мест нет (`used+reserved ≥ limit`): «All {limit} seats are in use» (при лимите 1 — «The 1 seat is in use»; если больше лимита — «{n} of {limit} seats in use») и тот же хвост. Второй строкой: «To invite someone, remove a member or revoke an invitation.» За второй строкой — ссылка `.admin-note-link` «See Plan» на `/c/{companyId}/settings/plan` (§4.40), рецепт «See Members» §4.39 (`display:inline-flex; min-height:28; margin:-5px 0`; ≤820 — `::before` до 44).
 - `unlimited`: «{n} seats in use · no limit» (при одном — «1 seat in use · no limit») и тот же хвост.
 - В полёте — `.value-skeleton` 200×13.
 - Отказ чтения — `ErrorNote` «Seat usage could not be loaded.» + id, не живая. Приглашать это не мешает: решает сервер.
@@ -3433,7 +3447,7 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 | `VERSION_CONFLICT` | «{Name} was changed elsewhere, so nothing changed. The list now shows the latest.» | то же | то же | «This invitation changed elsewhere, so nothing changed. The list now shows the latest.» |
 | `RESOURCE_NOT_FOUND` | «{Name} is no longer in {Company}.» | то же | то же | «This invitation no longer exists.» |
 | `INVITATION_EXPIRED` | — | — | — | «The invitation to {email} has expired, so nothing was sent. Invite them again.» |
-| `READ_ONLY`, `CAPABILITY_DISABLED` | «Members can’t be changed right now.» | то же | то же | «Invitations can’t be changed right now.» |
+| `READ_ONLY`, `CAPABILITY_DISABLED` | знакомая причина в `reasons` — оборот §4.35 + «, so members can’t be changed.»; без неё — «Members can’t be changed right now.» | то же | то же | оборот + «, so invitations can’t be changed.»; без неё — «Invitations can’t be changed right now.» |
 | `SCOPE_DENIED` | «Only company admins can change members.» | то же | то же | «Only company admins can change invitations.» |
 | `INVALID_STATE` | фраза «прочее» этого действия + id, без слов сервера (участник не активен, приглашение уже не ждёт; в словах бывает «tenant») | то же | то же | то же |
 | `RATE_LIMITED` | — | — | — | «An email to {email} was queued moments ago. Try again in {wait}.» (§4.31) |
@@ -3448,7 +3462,7 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 - **Футер.** Cancel и primary «Send invitation». В полёте — `aria-disabled`, подписи прежние.
 - **Повтор.** Ключ идемпотентности — один на попытку. 5xx, 408 и сеть — «Taska couldn’t confirm the invitation was created. Try again — it won’t create a second one.» + слова + id; повтор — тем же ключом и телом.
 - **201.** Модалка закрывается, фокус на «Invite a member». Строка из ответа встаёт первой в «Pending invitations» в том же кадре, затем перечитываются список и места. Статус: «{email} is invited. The email is queued, and the invitation holds a seat until {date}.» Слово — «queued».
-- **Отказы** — `ErrorNote` в конце тела, `live="alert"`, перемонтируется на каждую попытку; введённое остаётся: `QUOTA_EXCEEDED` — «All seats are in use, so this invitation was not created. Remove a member or revoke an invitation to free a seat.» + id, места перечитываются; `VALIDATION_FAILED` — «Taska didn’t accept this email or one of the chosen projects.» + id; `RATE_LIMITED` — «Too many invitations were sent just now. Try again in {wait}.»; `READ_ONLY`, `CAPABILITY_DISABLED` — «Invitations can’t be sent right now.» + id; `INVALID_STATE` — без слов сервера: если прочитанный список показывает причину — «{email} is already a member of {Company}, so no invitation was created.» / «{email} already has a pending invitation to {Company}, so no new one was created.», иначе «This invitation was not created.» + id; прочее — «This invitation was not created.» + слова + id.
+- **Отказы** — `ErrorNote` в конце тела, `live="alert"`, перемонтируется на каждую попытку; введённое остаётся: `QUOTA_EXCEEDED` — «All seats are in use, so this invitation was not created. Remove a member or revoke an invitation to free a seat.» (при прочитанном снимке мест — «All {limit} seats are in use, so…», число только из снимка) + id, места перечитываются; `VALIDATION_FAILED` — «Taska didn’t accept this email or one of the chosen projects.» + id; `RATE_LIMITED` — «Too many invitations were sent just now. Try again in {wait}.»; `READ_ONLY`, `CAPABILITY_DISABLED` — знакомая причина — оборот §4.35 + «, so invitations can’t be sent.», без неё — «Invitations can’t be sent right now.» + id; `INVALID_STATE` — без слов сервера: если прочитанный список показывает причину — «{email} is already a member of {Company}, so no invitation was created.» / «{email} already has a pending invitation to {Company}, so no new one was created.», иначе «This invitation was not created.» + id; прочее — «This invitation was not created.» + слова + id.
 - **«Invite again»** открывает ту же модалку с почтой, ролью и грантами проектов, которые ещё существуют.
 
 **Истечение на открытой странице.** Когда местные часы проходят самый ранний `expiresAt`, приглашения и места перечитываются один раз и ещё раз через 60 с, затем — нет. Строка, которая всё ещё `PENDING`, вместо всей второй строки говорит «Expired · releasing its seat»; `EXPIRED` клиент не ставит сам.
@@ -3482,12 +3496,12 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 | --- | --- | --- | --- |
 | `PLATFORM_BLOCK` | «Blocked by Taska.» | « No one can change anything in it, and only Taska can lift the block.» | « No one can change anything in it while it’s blocked.» |
 | `OWNER_PAUSE` | «Paused by its owner.» | « No one can change anything in it while it’s paused.» | то же |
-| `PAYMENT_DISPUTE` | «A payment is disputed.» | — | — |
-| `PAYMENT_EXPIRED` | «Its paid period has ended.» | — | — |
-| `OVER_QUOTA` | «It’s over its plan’s limits.» | — | — |
+| `PAYMENT_DISPUTE` | «A payment is disputed.» | « Until it’s settled, nothing in it can be changed and no automatic payments are taken.» | « Until it’s settled, nothing in it can be changed.» |
+| `PAYMENT_EXPIRED` | «Its paid period has ended.» | « Nothing in it can be changed until you renew it. There’s no grace period, and it doesn’t move to a free plan on its own.» | « Nothing in it can be changed until its owner renews it.» |
+| `OVER_QUOTA` | «It’s over its plan’s limits.» | « Nothing in it can be changed until it’s back within them.» | то же |
 | вне словаря | код как есть (§6) | — | — |
 
-Пояснения трёх финансовых — слот TAS-512, в той же строке после факта. `PENDING_FIRST_PAYMENT` сюда не доходит: адрес такой компании рисует §4.37. «Paused by its owner», а не «by you»: передача под паузой разрешена (D244), и новый владелец мог её не ставить.
+**Что ещё работает** (TAS-512) — после строк тем же рецептом пояснения (12.5/400 `--fg-2`, `gap:4`), один раз, и только если в `restrictions` есть финансовое ограничение и нет `PLATFORM_BLOCK`, `OWNER_PAUSE` и кодов вне словаря: при них разрешённое другое, и контракт его не перечисляет. Владельцу — «Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t take payments or change plans yet.»; остальным — «Everything in it can still be read, admins can still remove members and revoke invitations, and you can still leave it.» Источник — contracts §5: финансовый READ_ONLY сохраняет чтение, удаление участников, отзыв приглашений, удаление проекта и уход; удаления проекта в UI нет, поэтому оно не называется. Capabilities не читаются (ask A30), и ни одна кнопка по этому правилу не выключается. Блок «Состояние» — общий компонент с §4.40, слова одни. `PENDING_FIRST_PAYMENT` сюда не доходит: адрес такой компании рисует §4.37. «Paused by its owner», а не «by you»: передача под паузой разрешена (D244), и новый владелец мог её не ставить.
 
 **Факты** — `<dl>` рецепта My profile (§5.9): сетка `140px 1fr`, `dt` 11.5/550 `--fg-2`, `dd` 13/400 `--fg`, строка `padding:9 0`, волосяная линия между строками; уже 560 — стопкой. Через 22 под лидом или состоянием.
 - **Name** — `Tenant.name` целиком, `overflow-wrap:anywhere`, без многоточия (довод §4.16). Владельцу — карандаш §5.9 сразу за текстом: ряд flex, `gap:8; align-items:flex-start`, имя `flex:0 1 auto; min-width:0`; ghost icon-button 28, radius 7, `Pencil` 14, `--fg-2`, hover `--surface-2` + `--fg`, `aria-label` «Rename company», `title` «Rename»; ≤820 — `::before` `inset:-8px`.
@@ -3504,7 +3518,7 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 | Код | Пауза | Снятие |
 | --- | --- | --- |
 | `READ_ONLY` с `PLATFORM_BLOCK` | «Taska has blocked {Company}, so it was not paused.» | «Taska has blocked {Company}, so it can’t be resumed until Taska lifts the block.» |
-| `READ_ONLY` с другой причиной | «{Company} can’t be paused right now.» | «{Company} can’t be resumed right now.» |
+| `READ_ONLY` с другой причиной | оборот §4.35 + «, so it was not paused.»; без знакомой — «{Company} can’t be paused right now.» | оборот + «, so it can’t be resumed.»; без знакомой — «{Company} can’t be resumed right now.» |
 | `CAPABILITY_DISABLED` | «Pausing companies isn’t available right now.» (D93, D94) | — |
 | `OWNER_REQUIRED` | «Only the owner of {Company} can pause it.» | «Only the owner of {Company} can resume it.» |
 | 412 | «{Company} changed while you were deciding, so it was not paused. Check it and try again.» | «{Company} changed elsewhere, so it was not resumed. Check it and try again.» |
@@ -3524,7 +3538,7 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 | 400 `VALIDATION_FAILED` | «Taska didn’t accept this name.»; `aria-invalid` на поле |
 | 403 `READ_ONLY` с `PLATFORM_BLOCK` | «Taska has blocked {Company}, so it can’t be renamed.» |
 | 403 `READ_ONLY` с `OWNER_PAUSE` | «{Company} is paused. Resume it to rename it.» |
-| 403 `READ_ONLY` с другой причиной, `CAPABILITY_DISABLED` | «{Company} can’t be renamed right now.» (объяснение — TAS-512) |
+| 403 `READ_ONLY` с другой причиной, `CAPABILITY_DISABLED` | знакомая причина — оборот §4.35 + «, so it can’t be renamed.»; иначе «{Company} can’t be renamed right now.» |
 | 403 `OWNER_REQUIRED` | «Only the owner of {Company} can rename it.»; страница следует перечитанной компании |
 | 412 | «{Company} changed while you were editing, so it was not renamed. Check it and save again.» Набранное остаётся; сам клиент с новой версией не повторяет |
 | 429 | «Too many attempts. Try again in {wait}.» |
@@ -3547,7 +3561,7 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 | Код | Текст (+ id всегда) |
 | --- | --- |
 | 403 `READ_ONLY` с `PLATFORM_BLOCK` | «Taska has blocked {Company}, so it was not transferred.» |
-| 403 `READ_ONLY` с другой причиной | «{Company} can’t be transferred right now.» (TAS-512) |
+| 403 `READ_ONLY` с другой причиной | оборот §4.35 + «, so it was not transferred.»; без знакомой — «{Company} can’t be transferred right now.» |
 | 403 `CAPABILITY_DISABLED` | «Transferring companies isn’t available right now.» |
 | 403 `OWNER_REQUIRED` (не после потерянного ответа) | «Only the owner of {Company} can transfer it.»; страница следует перечитанной компании |
 | 404 `RESOURCE_NOT_FOUND` | «{Name} is no longer in {Company}, so it was not transferred.»; выбор снимается, если человека нет в перечитанном списке |
@@ -3566,6 +3580,66 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 **Ширины** (оценка до сборки, build review меряет). ≥900 — колонка 560, `dl` 140 + 420. ≤820 — карандаш, кнопки зоны и полосы, Save/Cancel, select и ряд кнопок модалки — 44 своими рецептами. ≤560 — `dl` стопкой, кнопка зоны под предложением. 390×844 и 320×568 — имя в 120 знаков переносится целиком, карандаш справа у первой строки; модалка — ширина §2.7 (288 на 320), длинные варианты select обрезает сам браузер. Полоса рельса прибавляет пункт ≈ 95; текущий прокручивается в видимую часть (§5.8).
 
 **Цвет и движение.** Новых токенов нет; контрасты — §4.38 (`--fg` 16.56 / 17.13, `--fg-2` 6.73 / 7.35 на `--bg`; полоса 15.72 / 16.38). Акцента в покое нет. Строки состояния, кнопки зоны и полоса появляются без анимации; модалка — §4.11 (`tk-pop var(--dur-enter)`).
+
+### 4.40 План компании (TAS-512)
+Только сборка B2B. Решение art-director 2026-11-05 до сборки, сведённое с api-contract-guard (`docs/ai/API-DIVERGENCE.md` «TAS-512»). Числа — только сервера: лимиты `SEAT`, `PROJECT` и `STORAGE_BYTES` — из снимка квот, `TASK_LIFETIME` — из `Entitlement.limits`, из каталога — никогда, кроме объявленных условий. Деньги — только владельцу. Capabilities не читаются (ask A30, A21). От бесплатности плана поведение не зависит (A16, A48). Команд на странице нет.
+
+**Где.** Settings → группа «Company» → «Plan» (`Gauge` 15), третьим после General и Members (§5.9); `/c/{companyId}/settings/plan`. Видит каждый участник любой роли. Входы — рельс и «See Plan» строки мест §4.38; в меню профиля, переключателе, на Projects и в формах создания входа нет. Шапка — рецепт §5.9 («Settings ›» + «Plan»), заголовок документа — «{Company} — Taska». Слово — §4.33, а также «plan», «seats», «storage», «paid period», «automatic payments». «Billing» и «Subscription» подписью не служат: участник денег здесь не видит. Никогда «tenant», «workspace», «team»; имя плана из каталога — данные сервера и печатается как пришло.
+
+**Кому что.** Различаются только владелец (`ownerId` = читатель, §4.39) и остальные. Admin от Member здесь не отличается: роли в списке компаний нет, а чтения участников ради неё нет.
+
+**Лид** `.settings-lead` 12.5/400 `--fg-2`: владельцу — «The plan {Company} is on and what it uses.»; остальным — то же и « Its price and payments are shown only to its owner.» {Company} — как в §4.39.
+
+**Состояние** — блок §4.39 тем же компонентом и теми же словами (факт, пояснение по роли, «Что ещё работает»), через 8 под лидом, только если есть что сказать.
+
+**План** — `<dl>` рецепта §4.39 «Факты» (сетка `140px 1fr`, `dt` 11.5/550 `--fg-2`, `dd` 13/400 `--fg`, строка `padding:9 0`, волосяная линия между строками; уже 560 — стопкой), через 22 под лидом или состоянием. Строки по порядку, только те, что пришли:
+- **Plan** — всем. Имя плана по `Entitlement.planVersionId` из каталога (`planName`, §4.36) и, если пришла версия, « · version {version}» 13/400 `--fg-2`. Каталог ответил, но id в нём нет — `dd` 13/400 `--fg-2` «This plan isn’t in Taska’s plan list.», никогда «Free». Если `Subscription.planVersionId` ≠ `Entitlement.planVersionId`, рисуется план entitlement (A47).
+- **Price** — владельцу: цена плана из каталога словами §4.36 («€20 a month», «€20»). Цена нулевая или нечитаемая — строки нет. Это базовая цена каталога, без налога и курса (TAS-514).
+- **Paid until** — владельцу: `Subscription.paidThrough` форматом §4.37 («Dec 4, 14:32»; другой год — с годом), `<time dateTime>`; прошедшая дата — как есть; не пришла — строки нет. Никогда `Entitlement.validUntil`.
+- **Renewal** — владельцу и только при `renewalCancelled = true`: «Cancelled», второй строкой 11.5/400 `--fg-2` «When the paid period ends, {Company} becomes read-only. It doesn’t move to a free plan on its own.» (D213).
+- **Automatic payments** — владельцу и только вместе с Paid until: `CONSENTED` — «On», `DISABLED` — «Off», `SUSPENDED` — «Suspended», вне словаря — как пришло (§6). Только факт, без пояснения.
+- **Announced change** — владельцу и только при `scheduledPlanVersionId` и `scheduledEffectiveAt`: «From {date}: {name} · version {v}, {price}» (дата §4.37, `<time>`; без цены — без неё). Второй строкой 11.5/400 `--fg-2` — лимиты этой версии строкой §4.36. Это единственное место, где лимиты берутся из каталога, и подпись `dt` говорит, что они объявленные, а не действующие. id нет в каталоге — «From {date}, the plan changes.» Остальным объявленных условий и обязательного уведомления нет (A47).
+
+**Usage** — всем. `h2` «Usage» 12/600 `--fg-2` рецептом подписи группы §4.38 (22 сверху, 4 до строк), затем `<dl>` того же рецепта, у `dd` `tabular-nums`. Порядок §4.36: `PROJECT`, `SEAT`, `STORAGE_BYTES`, `TASK_LIFETIME`, затем незнакомые виды как пришли.
+- **Projects** — «{used} used · {limit} allowed», второй строкой 11.5/400 `--fg-2` «Archived projects count too.» (contracts §8).
+- **Seats** — «{used+reserved} in use · {limit} allowed», второй строкой «Suspended members and pending invitations hold seats too.» (§4.38). Хвоста «held by invitations» нет: роль читателя здесь неизвестна, а приглашения видят только админы.
+- **Storage** — «{used} used · {limit} allowed» (`formatBytes`, §4.36); при `reserved > 0` — « · {reserved} being uploaded».
+- **Issues per project** — только лимит, без расхода (A45): «{limit} allowed», второй строкой «Deleted issues still count.» (contracts §8).
+- `unlimited` — «{used} used · no limit» / «{n} in use · no limit» / «No limit». Вид вне словаря — `dt` как пришёл, `dd` по тому же шаблону.
+- **Один шаблон для любых чисел.** Ниже лимита, ровно на нём и выше — одни слова. «3 used · 1 allowed» говорит правду и при обходе лимита администратором платформы без `OVER_QUOTA` (contracts §8, «может»; фикстуры Northwind и Globex) и не утверждает состояния, которого сервер не прислал. Нет «full», «over», «left», процентов, «N days left», полос и шкал заполнения, цвета у чисел; `--danger` и акцента здесь нет. Шкала была бы второй сущностью рядом с числом и вычисленной долей, а ограничение, если оно есть, говорит блок «Состояние». Порог в 50 задач ничего не помечает.
+
+**Загрузка.** Содержимое ждёт `getTenant`, `getEntitlement`, `getTenantQuotas`, каталог (обычно уже в кэше аккаунта, §4.36), а у владельца ещё `getSubscription`; отказ — тоже итог. До того — шапка, пять строк-скелетов `dl` (`.value-skeleton` 60×11 и 160×13) и скрытый `role="status"` «Loading plan». Ни лида, ни Usage, без спиннера.
+
+**Отказы чтения.** У каждого чтения своя `ErrorNote` §5.6 + id, не живая, на месте строк, которые оно кормит; остальные строки рисуются. Никогда «Free», «unlimited», «0».
+
+| Чтение | Где и текст | Каких строк нет |
+| --- | --- | --- |
+| `getTenant` (не закрывающий) | на месте «Состояния»: «This company’s state could not be loaded.» | Состояние |
+| `getEntitlement` | первой в «План»: «This company’s plan could not be loaded.» | Plan, Price, Issues per project |
+| каталог | первой в «План»: «Plan details could not be loaded.» | Plan, Price, Announced change |
+| `getSubscription` (владелец) | в «План» после Plan / Price: «Payment details could not be loaded.» | Paid until, Renewal, Automatic payments, Announced change |
+| `getTenantQuotas` | первой в Usage: «Usage could not be loaded.» | Projects, Seats, Storage |
+
+`OWNER_REQUIRED` у `getSubscription` — как в §4.39: кто владелец, решает перечитанная компания. Через 8 под первой `ErrorNote` — один secondary compact «Try again» (29; ≤820 — 44). Он перечитывает только отказавшие чтения; в полёте `aria-disabled`, `cursor:progress`, подпись прежняя. Удача — фокус на `h1`; отказ, который остался, перемонтирует свою коробку. Фоновое перечитывание не удалось — значения остаются, а над первым `dl` встаёт `ApiNotice` «The plan could not be refreshed. The last loaded details are shown.» (§4.39).
+
+**Перечитывание** — только по правилам api-contract-guard B4: другая версия или другие ограничения в ответе `Tenant`; отказ `READ_ONLY`, `CAPABILITY_DISABLED` или `QUOTA_EXCEEDED`; местные часы прошли `paidThrough` или `scheduledEffectiveAt` (один раз, ещё раз через 60 с, затем нет). Опроса нет. Ответ чужой компании не рисуется. Строки меняются на месте, без анимации и подсветки.
+
+**Отказы квоты в формах создания.** `422 QUOTA_EXCEEDED` — отказ самого действия. Вид квоты определяется действием, а не словами сервера. Рецепт отказа места (§5.6): набранное остаётся, форма не становится read-only, кнопка записи на месте, фокус не уходит. Заранее ничего не выключается и не помечается.
+
+| Действие | Текст (+ id) |
+| --- | --- |
+| New issue (модалка и «+» колонки) | «{KEY} has reached its plan’s limit on issues, so this issue was not created. Deleted issues still count, and existing issues can still be edited, moved and commented on.» |
+| New project | «{Company} has reached its plan’s limit on projects, so this project was not created. Archived projects count too.» |
+| Вложение (§4.25) | «{file} was not attached. {Company} has reached its plan’s storage limit.» |
+| Invite a member | §4.38 |
+
+`READ_ONLY` с `OVER_QUOTA` у тех же действий говорит фраза причины §4.35, а не эти.
+
+**Клавиатура.** Рельс → (Try again). Страница только читает, других остановок нет. `h1` — `tabIndex=-1`, фокус на нём при входе из рельса (§5.9).
+
+**Ширины** (оценка до сборки, build review меряет). ≥900 — колонка 560, `dl` 140 + 420; самая длинная строка («4 in use · 5 allowed») помещается в одну строку. ≤560 — `dl` стопкой. 390×844 (колонка 362) и 320×568 (292): вторые строки и Announced change переносятся (`text-wrap:pretty`), страница прокручивается. Полоса рельса прибавляет пункт примерно на 70; текущий раздел прокручивается в видимую часть (§5.8).
+
+**Цвет и движение.** Новых токенов нет. Акцента на странице нет ни в покое, ни у действий: страница только читает. Контраст — как в §4.38 (`--fg` 16.56 / 17.13, `--fg-2` 6.73 / 7.35 на `--bg`); маркер §4.34 — `--fg-2` на `--surface` 7.26 / 6.75. Ничего не анимируется, кроме пульсации `.value-skeleton`, которая уже есть в списке §3.
 
 ## 5. Patterns
 
@@ -4734,7 +4808,7 @@ history: прямая ссылка и перезагрузка обязаны д
 сессии (§5.1), ролевого гейта нет: это свой профиль и свой вид, `VIEWER` владеет ими так же, как
 `ADMIN`; пустой плоскости `--bg` на время чтения профиля тоже нет.
 
-**Сборка B2B — группа «Company»** (TAS-502). Под личными разделами рельса — разделитель `1px --border` (`margin:9 0`) и подпись «Company» 11.5/550 `--fg-2` (Field label §2.3), padding `0 9 4`. В группе — «General» (`Building2` 15), `/c/{companyId}/settings/company` (§4.39), затем «Members» (`Users` 15), `/c/{companyId}/settings/members` (§4.38): сначала сама компания, потом её люди; TAS-512 встанет третьим. Группа — оговорка к «области читателя о себе»: её разделы — о компании вкладки, и туда же встанет TAS-512. Группу видит любая роль компании; без флага её нет. Ниже 900 подпись визуально скрыта (`role="group"` с `aria-labelledby`), а между группами полосы стоит разделитель 1×18 `--border` (§4.13). Группа в полосе — `position: relative`: иначе скрытая подпись выходит из прокрутки рельса и раздвигает страницу (на 320 — до 475).
+**Сборка B2B — группа «Company»** (TAS-502). Под личными разделами рельса — разделитель `1px --border` (`margin:9 0`) и подпись «Company» 11.5/550 `--fg-2` (Field label §2.3), padding `0 9 4`. В группе — «General» (`Building2` 15), `/c/{companyId}/settings/company` (§4.39), затем «Members» (`Users` 15), `/c/{companyId}/settings/members` (§4.38), затем «Plan» (`Gauge` 15), `/c/{companyId}/settings/plan` (§4.40): сначала сама компания, потом её люди, потом её план. Группа — оговорка к «области читателя о себе»: её разделы — о компании вкладки. Группу видит любая роль компании; без флага её нет. Ниже 900 подпись визуально скрыта (`role="group"` с `aria-labelledby`), а между группами полосы стоит разделитель 1×18 `--border` (§4.13). Группа в полосе — `position: relative`: иначе скрытая подпись выходит из прокрутки рельса и раздвигает страницу (на 320 — до 475).
 
 **Рельс.** Рецепт §5.8: 168, `--surface`, правая граница `1px --border`, padding `13 9`; пункт —
 иконка 15 + 12/600, padding `6 9`, radius 8, `--fg-2`, hover и активный — `--surface-2` + `--fg`,
@@ -5494,6 +5568,7 @@ e2e). Другое значение останавливает dev-сервер,
   нет; цель — вся строка `label`, а не кружок 14.
 - **Открыто в TAS-502** (решение art-director 2026-11-04, до сборки): select роли в строках Members (§4.38) и в строках проектов модалки приглашения — 29 на 390. У `select` нет `::before`, поэтому тот же долг, что у select'а участников проекта (TAS-158). Остальные контролы раздела ниже 820 — 44, строки проектов — 44.
 - **Открыто в TAS-504** (решение art-director 2026-11-05, до сборки): новых долгов нет — карандаш, кнопки зоны и полосы паузы, Save/Cancel переименования, select и футер модалки передачи ниже 820 — 44 своими рецептами (§4.38, §5.9, §4.11); build review меряет. Триггер полосы паузы носит рамку ответа, пока вопрос открыт; триггеры Leave company (TAS-502), Archive project и Cancel creation сведены с ним в один класс `.strip-trigger` (TAS-504). N5 закрыт: §4.35 остаётся вне shell.
+- **Открыто в TAS-512** (решение art-director 2026-11-05, до сборки): новых долгов нет — «Try again» и «See Plan» ниже 820 — 44 своими рецептами; маркер состояния §4.34 без цвета, смысл несёт слово. Пункты рельса ниже 820 — 29, долг §7 тот же.
 - Поповер уведомлений: `aria-expanded` на триггере, счётчик непрочитанных в `aria-label`.
 - Иконки-кнопки без текста — обязателен `aria-label`.
 - Drag & drop дублируется кнопками переходов (клавиатурный путь).
