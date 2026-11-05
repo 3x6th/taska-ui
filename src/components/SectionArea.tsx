@@ -76,12 +76,13 @@ export function SectionArea({
   }, [current]);
 
   useEffect(() => {
-    // An arrival that asks for the heading (`state.focusHeading`): the
-    // switcher's «Manage company» (§4.34, §5.10), as «All companies» puts it on
-    // the picker's. The popover it came from has closed and taken focus with
-    // it, so without this focus would fall to <body>. Per navigation rather
-    // than per mount, so it holds when the area is already on screen — even
-    // on the very section the link lands on, where no section changes.
+    // An arrival that asks for the heading (`state.focusHeading`): «Manage
+    // company» in the switcher (§4.34) or, below 768, in the profile menu
+    // (§4.16, §5.10), as «All companies» puts it on the picker's. The popover
+    // it came from has closed and taken focus with it, so without this focus
+    // would fall to <body>. Per navigation rather than per mount, so it holds
+    // when the area is already on screen — even on the very section the link
+    // lands on, where no section changes.
     if (focusHeading) headingRef.current?.focus();
   }, [location.key, focusHeading]);
 

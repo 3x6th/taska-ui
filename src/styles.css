@@ -11958,7 +11958,7 @@ button.attachment-open:hover:not(:disabled) {
 
 /* The shared bar after the logo (§4.13): a 1×18 divider and the switcher, at
    768 and wider. Below, the bar is as it was — no slack at 390 — and «Switch
-   company» in the profile menu is the way there. */
+   company» and «Manage company» in the profile menu are the way there. */
 .topbar-company {
   display: flex;
   flex: 0 1 auto;
@@ -11976,6 +11976,17 @@ button.attachment-open:hover:not(:disabled) {
 
 @media (max-width: 767px) {
   .topbar-company {
+    display: none;
+  }
+}
+
+/* The profile menu's «Manage company» (TAS-522, §4.16, §5.10) is the
+   switcher's row on the screen that has no switcher: at 768 and wider, where
+   the switcher is drawn, the menu does not repeat it — the same breakpoint, so
+   at any width one of the two is there. Two classes, so the base row's
+   `display: flex` cannot win by order. */
+@media (min-width: 768px) {
+  .user-profile-link.user-profile-manage {
     display: none;
   }
 }

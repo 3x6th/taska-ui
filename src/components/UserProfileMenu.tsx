@@ -1,6 +1,7 @@
 import { useId, useRef, useState, type MouseEvent } from "react";
-import { ArrowLeftRight, LogOut, Settings, ShieldCheck } from "lucide-react";
+import { ArrowLeftRight, LogOut, Settings, Settings2, ShieldCheck } from "lucide-react";
 import { COMPANIES_ROUTE } from "../lib/companies";
+import { COMPANY_ZONE, inCompanyZone } from "../screens/company/sections";
 import { useCompanyMarker, useCompanyName } from "../hooks/useCompanies";
 import { AddressLink } from "./CompanyRouter";
 import { CompanyMarkerWord } from "./CompanyMarkerWord";
@@ -69,6 +70,18 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     setOpen(false);
     triggerRef.current?.focus();
+  };
+
+  /**
+   * «Manage company» (TAS-522, §4.16, §5.10), the switcher's row (§4.34) on
+   * the narrow screen that has no switcher: a modified click is `followLink`'s
+   * — a new tab, this menu left open. A plain one closes the menu in the frame
+   * of the click and leaves focus to the zone, whose heading takes it from the
+   * link's state; the trigger does not, unlike the rows above.
+   */
+  const followManage = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    setOpen(false);
   };
 
   const person = user;
@@ -155,7 +168,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
             // out, and that leaving is still possible.
             <p className="user-profile-unknown">Your profile could not be loaded.</p>
           )}
-          {/* One divider above the three rows — this block's own top border —
+          {/* One divider above the rows — this block's own top border —
               and none between them: Log out is already set apart by
               `--danger` (§4.16, art-director's ruling 6 on TAS-380). */}
           <div className="user-profile-actions">
@@ -169,6 +182,25 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                 <ArrowLeftRight aria-hidden="true" size={15} />
                 Switch company
               </AddressLink>
+            ) : null}
+            {/* The tab's company's zone (TAS-522, §5.10), for every role, in a
+                tab that has a company. Drawn below 768 only, where the bar has
+                no switcher and so no «Manage company» of its own — at 768 and
+                wider the CSS takes it out, `display: none`, the accessibility
+                tree included. A router link inside the company's prefix, as
+                the switcher's is; inside the zone it says so with
+                `aria-current` alone, as Settings does. */}
+            {companies && address?.companyId ? (
+              <Link
+                aria-current={inCompanyZone(location.pathname) ? "page" : undefined}
+                className="user-profile-link user-profile-manage"
+                onClick={followManage}
+                state={{ focusHeading: true }}
+                to={COMPANY_ZONE}
+              >
+                <Settings2 aria-hidden="true" size={15} />
+                Manage company
+              </Link>
             ) : null}
             {/* Every reader, and even when the profile did not load: Appearance
                 needs no profile, and My profile says for itself that it could

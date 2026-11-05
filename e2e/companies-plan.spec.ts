@@ -18,8 +18,9 @@ const planPath = (companyId: string) => companyPath(companyId, "/company/plan");
 
 /**
  * Opens Company › Plan as a reader does — third in the zone's rail, after
- * General and Members: «Manage company» and the rail, or the zone's address
- * on a phone (TAS-522). Moving from General to Plan puts focus on the heading.
+ * General and Members: «Manage company» (the switcher's, or the profile menu's
+ * on a phone) and the rail (TAS-522). Moving from General to Plan puts focus
+ * on the heading.
  */
 async function openPlan(page: Page, companyId: string) {
   await openCompanyZone(page, companyId, "Plan");
@@ -176,7 +177,7 @@ test("AC4: a late billing answer of Umbrella is never drawn once the tab is in N
   await switchCompany(page, "Northwind", isMobile);
   await expect(page).toHaveURL(companyPath(COMPANY.northwind));
   // Within the page: a reload would drop Umbrella's late answers by itself.
-  await openCompanyZone(page, COMPANY.northwind, "Plan", { inApp: true });
+  await openCompanyZone(page, COMPANY.northwind, "Plan");
   await expect(page).toHaveURL(planPath(COMPANY.northwind));
   // Northwind's own plan, once its own slow read answers — and past Umbrella's delay, nothing of Umbrella's.
   await expect(fact(page, "Plan")).toHaveText("Free · version 1", { timeout: 10_000 });
@@ -345,7 +346,7 @@ test("a refused write re-reads the company without a reload: the marker says «r
     await expect(page.locator(".company-switcher-trigger .company-marker")).toHaveText("read-only");
   }
   // The company was invalidated with it: Plan reads it again and says the dispute.
-  await openCompanyZone(page, COMPANY.northwind, "Plan", { inApp: true });
+  await openCompanyZone(page, COMPANY.northwind, "Plan");
   await expect(page).toHaveURL(planPath(COMPANY.northwind));
   await expect(page.getByText("A payment is disputed.")).toBeVisible();
 });

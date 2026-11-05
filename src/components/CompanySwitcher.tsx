@@ -28,8 +28,8 @@ let focusTriggerOnMount = false;
 /**
  * DESIGN.md §4.34 «Переключатель компании» (TAS-500, the companies build
  * only): in the shared bar after the logo, at 768 and wider (the CSS hides it
- * below — the profile menu's «Switch company» is the way there). The company
- * is the tab's, and switching changes this tab alone.
+ * below — the profile menu's «Switch company» and «Manage company» are the way
+ * there). The company is the tab's, and switching changes this tab alone.
  */
 export function CompanySwitcher() {
   const address = useCompanyAddress();
