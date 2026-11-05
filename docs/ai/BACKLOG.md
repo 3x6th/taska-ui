@@ -4702,3 +4702,17 @@ From the art-director ruling (`docs/ai/reviews/TAS-522/`, git-ignored).
   `.user-profile-link` with §4.16 and §4.34 together (art-director N1).
 - **«Back to projects» is clipped in the Company strip** (18 at 390, 88 at 320) — accepted under §5.8; the fix is the
   strip scroll indication already listed for every strip (art-director N2).
+
+### Left by TAS-522 review (the company admin zone, build review of `ce82362`, 2026-11-05)
+
+Non-blocking notes (`docs/ai/reviews/TAS-522/`, git-ignored).
+
+- **Unprefixed addresses lose their hash**: `CompanyGate.tsx` `ResolveCompanyAddress` builds the path from pathname and
+  search only, so `/settings/plan?y=2#h` lands on `/c/…/company/plan?y=2` (also `/settings/*` before TAS-522); prefixed
+  old addresses keep it. Add `${location.hash}` and one unit case (release-reviewer 1, builder).
+- **`focusHeading` stays in the history entry**: a reload or Back/Forward into the «Manage company» entry focuses the
+  zone's h1 again; harmless (CompaniesScreen does the same) — consume the flag on arrival if it ever matters
+  (release-reviewer 2).
+- **A lost leave answer, then «Back to projects» within 20 s** draws the left company's projects from cache (Projects
+  inside `STALE_TIME_MS` reads nothing, so «no longer a member» is not met until the next read). Predates TAS-522; the
+  switcher path made it reachable in e2e (builder, release-reviewer).
