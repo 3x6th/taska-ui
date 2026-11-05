@@ -2382,12 +2382,26 @@ Everything below is the entry as it stood, in the past tense.
   (FREE) hold 3 projects against a limit of 1 without `OVER_QUOTA` (the platform bypass, contracts §8 «может»); PROJECT
   used counts every project of the company, archived included; STORAGE used is confirmed bytes, reserved unconfirmed
   upload grants; a lifetime task counter per project in shared storage, never decreased; createIssue checks the
-  restriction, then the ACL, then the counter (422 `QUOTA_EXCEEDED`, reasons []); createProject 422 when used + 1 >
-  limit; upload-url 422 when used + reserved + size > limit; Umbrella on Team v1 (25 seats) with an announced move to
+  restriction, then that the project exists, then the counter (422 `QUOTA_EXCEEDED`, reasons []) — the mock store has
+  no VIEWER check on createIssue; createProject 422 when used + 1 > limit; upload-url 422 when used + reserved + size >
+  limit; createProject and upload-url meet the quota before the store's own validation (duplicate key, over-size,
+  missing issue) — the real order is unmeasured (asks A50, A6); the invite refusal quotes the seat limit from the
+  cached quota snapshot, never from its words (ask A50); the mock catalogue lists RETIRED versions (see the addendum
+  below); Umbrella on Team v1 (25 seats) with an announced move to
   Team v2 at its paid-through; hooks `applyPlan`, `taskLifetime`, `paymentDispute`; `OVER_QUOTA` lifts once every
   breached kind is back within its limit.
 - **Turning the flag on** additionally needs TAS-313, TAS-314, TAS-319, TAS-322, TAS-324, TAS-347, TAS-460 and TAS-483
   on the gateway and asks A46, A47 and A51 answered.
+- **Addendum (2026-11-05, build review, develop `cb9a028c`; scope frozen at `758f8fc6`, nothing taken into this pass):**
+  TAS-313 (catalogue) and TAS-314 (subscriptions) are merged, so «TAS-313 In Progress» and «no billing-service module»
+  above are true only at the pin. develop's `ListBillingPlans` lists only the latest published version of each code
+  (`billing-service/README.md:9`): against it a company on an older version (Umbrella on Team v1) reads «This plan isn't
+  in Taska's plan list.» and its owner sees no price — an honest failure, not compensated; ask A43 (a plan snapshot in
+  `Subscription` / `Entitlement`) is now required for the flag-on PR, not optional. The mock catalogue still lists
+  RETIRED rows, so the e2e «Team · version 1, €15» cannot happen against develop. develop adds `PlanVersion.kind`
+  FREE | PAID, which answers A16; the frontend follow-ups are in BACKLOG «Left by TAS-512 review». The subscription view
+  switches at a paid boundary without a write (`billing-service/SUBSCRIPTIONS.md`), which the boundary re-read already
+  expects; A49's ETag must be boundary-aware.
 - **Removal:** delete with the flag, after the probe.
 
 ### TAS-504: company name, owner transfer and pause ship ahead of the gateway, on the B2B blueprint
