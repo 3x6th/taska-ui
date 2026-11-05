@@ -4556,5 +4556,11 @@ asks A26 (TAS-338) and A27 (TAS-315) went to Jira; A28 (the B2B dictionaries in 
   because the invitations read waits for the reader's role (art-director; A26 would remove the wait). Option: for
   admins, draw the groups once invitations answer or fail.
 - **The 2-minute removal stop lands on the first poll after 120 s**, up to ~10 s late (art-director: fine).
+- **A first Leave after being suspended or removed by someone else loops on «Press Leave company again»** (release-reviewer
+  R3-1, from round 3's 401-as-unanswered rule): the 401 → refused refresh → MEMBERSHIP_INACTIVE re-selection is suppressed
+  by the leaving flag, there is no lost-leave record, and the screen neither re-reads nor closes; only navigating away
+  shows §4.35. Fix before the flag goes on: count a 401 as unanswered only on a retry (`leaveIntent.current?.open`), in
+  the screen and in `leaveRefusalWords`. Flag-on only; taken to BACKLOG on the owner's speed rule after clean verdicts.
+- **No test pins that MANUAL_REVIEW keeps focus on «Check again»** (dropping its guard leaves the screen tests green).
 - **The full gate on `a0fcfec` failed 43 unrelated mobile specs** while a reviewer ran mutations in place in the
   worktree; `--last-failed` on the clean tree passed 43/43. Briefs now ask for mutations in a `git archive` copy.

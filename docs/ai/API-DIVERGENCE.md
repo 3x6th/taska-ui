@@ -2328,7 +2328,8 @@ Everything below is the entry as it stood, in the past tense.
   names suspend and remove as the generation-revoking changes).
 - **Turning the flag on** additionally needs TAS-321, TAS-322, TAS-323, TAS-335 and TAS-339 on the gateway and **asks
   A17–A20 answered** (without A17 and A18 an admin's own company closes on ordinary member changes), with A27 decided
-  together with A18 (a stale generation refused at the edge would also refuse a lost leave's replay). The enabling PR
+  together with A18 (a stale generation refused at the edge would also refuse a lost leave's replay), and BACKLOG's
+  «first Leave after being removed loops» fixed. The enabling PR
   carries the stand probe: invite → reserved + 1; resend → unchanged; revoke → − 1; suspend keeps used; remove frees
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
 - **Removal:** delete with the flag, after the probe.
