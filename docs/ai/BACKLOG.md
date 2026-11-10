@@ -4738,10 +4738,25 @@ Rulings in `docs/ai/reviews/TAS-513-*.md` (git-ignored); the divergence entries 
 - **No billing-profile endpoint** (TAS-356): the buyer's details for an invoice have no read or write in the
   blueprint. TAS-514 (documents and the buyer form) needs it or ask A53's answer.
 - **TAS-514 wires invoice lines, buyer, seller and documents** into the invoice page: the mapper drops them today, so
-  the page has no «Items» (art-director B5 vs the guard's §1 — ruled at build review).
+  the page has no «Items». Ruled at build review 2026-11-11: both roles keep them out until TAS-514; then read
+  `lines[]` (maxItems 100) every field optional.
+- **The invoice period is not on the wire**: `period_starts_at` / `period_ends_at` exist in billing-service
+  (`0003-invoices.sql:21`) but not in the blueprint or the proto, so neither the list nor the invoice says which period
+  an invoice pays for (TAS-514, backend ask).
 - **RENEWAL and PLAN_CHANGE creation by the owner**: the UI pays only invoices the server issued; who issues a
   plan change, and whether the owner ever calls `createInvoice`, waits for A53 and TAS-514.
 - **Stripe and the `#` fragment**: whether `success_url` keeps `#/billing/return` is unverified — one sandbox probe
   before the flag-on PR; if it drops it, A54 (per-checkout return URL) becomes blocking.
 - **A payment returned on another device** has no attempt record to route by; Billing shows its state, the return
   screen says «We can't find a payment started in this browser». Accepted; removal is A54.
+- **A `getCheckout` failure other than not-found never surfaces its request id** (`companyBilling.ts:418-448`): the
+  block keeps «Confirming» and the reads go on. Needs a ruled `ErrorNote` under the block (api-contract-guard F8).
+- **Records that reached the provider accumulate until sign-out** when their invoices are never read again: the
+  return screen's «several» list grows, and `/billing/cancel` marks only the newest. They close on an invoice read as
+  PAID/EXPIRED/VOID and on the company opening; A54 removes the guesswork (api-contract-guard).
+- **Voice in two §4.41 lines** (art-director, optional): «We’re confirming this payment with the bank.» →
+  «Taska is confirming…», «We can’t find a payment…» → «Taska can’t find…». Kept as built in TAS-513.
+- **The list does not re-read while a row reads `confirming`**: only the invoice page polls; the row updates on the
+  next visit or reload (release-reviewer, by design until A57 + A58 give the list one read).
+- **bfcache restore of the invoice page has component tests only**: Playwright's Chromium gives a fresh `back_forward`
+  load even with the cache allowed; check once in Safari / iOS when the flag goes on (release-reviewer).
