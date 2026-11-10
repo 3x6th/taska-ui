@@ -1,4 +1,5 @@
 import type { AccessTokenScopes } from "./accessTokens";
+import type { Checkout, Invoice, InvoicePage, ReturnTarget } from "./billing";
 import type {
   CreateTenantInput,
   CreateTenantResult,
@@ -1620,6 +1621,41 @@ export interface TaskaApi {
    * request (`TenancyUnavailableError`).
    */
   getEntitlement(tenantId: string): Promise<Entitlement>;
+
+  /*
+   * A company's invoices and their hosted checkout (TAS-513), on the B2B
+   * blueprint's routes — none of them on the stand (docs/ai/API-DIVERGENCE.md
+   * «TAS-513»). The owner's only: 403 `OWNER_REQUIRED` for anybody else, and a
+   * screen never asks for a reader who is not `getTenant().ownerId`
+   * (api-contract-guard §7). Each goes with the tab's company session of that
+   * company only (another company: `WorkspaceClosedError`, no request); an
+   * answer naming another company — or another invoice or checkout than the
+   * one asked for — rejects (`ForeignCompanyAnswerError`). Control plane: a
+   * refusal marks nothing. **Nothing here is payment evidence but
+   * `Invoice.state = PAID`** — a checkout's `SUCCEEDED` is an observation, and
+   * a return address says nothing at all. No `createInvoice`: the INITIAL
+   * invoice of a paid company is the server's to issue (A53, TAS-514). Today's
+   * build refuses all four without a request (`TenancyUnavailableError`).
+   */
+
+  /** `GET /tenants/{tenantId}/billing/invoices` — one page, as sent (`readAllInvoices` follows the cursor). */
+  listInvoices(tenantId: string, params?: ListCompanyPageParams): Promise<InvoicePage>;
+  /** `GET /tenants/{tenantId}/billing/invoices/{invoiceId}`. Narrowed: no buyer, seller, lines, FX or wire details. */
+  getInvoice(tenantId: string, invoiceId: string): Promise<Invoice>;
+  /**
+   * `POST /tenants/{tenantId}/billing/invoices/{invoiceId}/checkout` — body
+   * exactly `{returnTarget, confirmed: true}`, the caller's `Idempotency-Key`,
+   * one per payment attempt and the same on every retry of it
+   * (`src/api/checkoutAttempt.ts`). 201 `Checkout`, whose page address lives
+   * only inside the opaque `CheckoutRedirect`. Refusals: 403 `OWNER_REQUIRED`
+   * / `READ_ONLY` / `CAPABILITY_DISABLED`, 409 `INVALID_STATE` (not payable,
+   * or another attempt is active — A57) / `IDEMPOTENCY_CONFLICT`, 422
+   * `CONFIRMATION_REQUIRED`, 429, 503 `POLICY_NOT_CONFIGURED` /
+   * `DEPENDENCY_UNAVAILABLE` (A60).
+   */
+  createCheckout(tenantId: string, invoiceId: string, returnTarget: ReturnTarget, idempotencyKey: string): Promise<Checkout>;
+  /** `GET /tenants/{tenantId}/billing/checkout/{checkoutId}` — the checkout as the server has it now. */
+  getCheckout(tenantId: string, checkoutId: string): Promise<Checkout>;
 
   /**
    * `GET /meta` — the enum dictionaries (backend TAS-217), read once per

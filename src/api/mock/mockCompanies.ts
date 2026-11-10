@@ -1,3 +1,4 @@
+import { appUrl } from "../../lib/appLinks";
 import { TenancyUnavailableError } from "../errors";
 import { B2B_TENANCY, type TaskaApi } from "../TaskaApi";
 import { WebSessionClient, type LockManagerLike } from "../webSession";
@@ -104,6 +105,12 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   // TAS-512: every member's plan read, with the tab's company session, picked
   // by the session layer as for the REST leg.
   getEntitlement: "session",
+  // TAS-513: the owner's invoices and checkout, with the tab's company session,
+  // picked by the session layer as for the REST leg.
+  listInvoices: "session",
+  getInvoice: "session",
+  createCheckout: "session",
+  getCheckout: "session",
   getMeta: "account",
   listProjects: "tenant-read",
   createProject: "tenant-write",
@@ -245,6 +252,10 @@ type SessionMethods = Pick<
   | "transferTenantOwnership"
   | "getSubscription"
   | "getEntitlement"
+  | "listInvoices"
+  | "getInvoice"
+  | "createCheckout"
+  | "getCheckout"
 >;
 
 type AnyMethod = (...args: unknown[]) => unknown;
@@ -263,6 +274,9 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     accountStore,
     latencyMs: options.latencyMs,
     now: options.now,
+    // TAS-513: the stand-in payment page is this app's own route, in the
+    // build's routing scheme (`/#/mock-checkout/…` on a hash build).
+    checkoutUrl: (token) => appUrl(`/mock-checkout/${encodeURIComponent(token)}`),
   });
   const web = new WebSessionClient({
     transport: server.transport(),
@@ -271,6 +285,8 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     locks: options.locks,
     ownershipWaitMs: options.ownershipWaitMs,
     events: options.events === undefined ? window : options.events,
+    // The mock's payment page is on this origin — accepted here, and only here.
+    redirectPolicy: (url) => url.protocol === "https:" || url.origin === window.location.origin,
   });
   const apis = new Map<MockTaskaStore, MockTaskaApi>();
   const apiFor = (store: MockTaskaStore) => {
@@ -324,6 +340,10 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
       web.transferTenantOwnership(tenantId, newOwnerUserId, version, key),
     getSubscription: (tenantId) => web.getSubscription(tenantId),
     getEntitlement: (tenantId) => web.getEntitlement(tenantId),
+    listInvoices: (tenantId, params) => web.listInvoices(tenantId, params),
+    getInvoice: (tenantId, invoiceId) => web.getInvoice(tenantId, invoiceId),
+    createCheckout: (tenantId, invoiceId, returnTarget, key) => web.createCheckout(tenantId, invoiceId, returnTarget, key),
+    getCheckout: (tenantId, checkoutId) => web.getCheckout(tenantId, checkoutId),
   };
 
   const api: Record<string, unknown> = {};

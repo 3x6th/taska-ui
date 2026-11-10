@@ -29,10 +29,11 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * the invitations, the seat limits, the membership generation and the member
  * writes' durable receipts, since TAS-504 each company's subscription, and
  * since TAS-512 each company's entitlement version, its scheduled plan, the
- * quota kinds it is over and every project's lifetime issue counter — read
- * and written on every operation, so a second tab — or a duplicated one —
- * meets the same server. (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's, v4
- * TAS-504's; each bump re-seeds, signing every mock account out once.)
+ * quota kinds it is over and every project's lifetime issue counter, and
+ * since TAS-513 each company's invoices and their checkouts — read and written
+ * on every operation, so a second tab — or a duplicated one — meets the same
+ * server. (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's, v4 TAS-504's, v5
+ * TAS-512's; each bump re-seeds, signing every mock account out once.)
  * Each company's projects and issues are this page's own, in memory, as
  * today's mock's are: they reset with a reload — the lifetime counters do not.
  *
@@ -41,7 +42,7 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * untouched and enforces nothing.
  */
 
-export const MOCK_SERVER_KEY = "taska.mockServer.v5";
+export const MOCK_SERVER_KEY = "taska.mockServer.v6";
 
 /**
  * `localStorage` key for the server's test hooks, as JSON — the seam
@@ -138,6 +139,32 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v5";
  * - `clockOffsetMs` also applies a scheduled plan change once its
  *   `scheduledEffectiveAt` has passed.
  *
+ * The company's invoices and their hosted checkout (TAS-513,
+ * api-contract-guard §5 and its addendum) — **all payment state is here**,
+ * none in a screen:
+ *
+ * - `refuseNext`, `delayMs` and `loseAnswer` take `listInvoices`,
+ *   `getInvoice`, `createCheckout` and `getCheckout` — a lost `createCheckout`
+ *   has made its checkout, so the same key answers it again;
+ * - `checkoutOff`: `{status, code, reasons?}` — every `createCheckout` refused
+ *   so for as long as it is set (503 `POLICY_NOT_CONFIGURED`, the stand's
+ *   default; 403 `CAPABILITY_DISABLED` with or without `reasons`);
+ * - `settlementDelayMs` (default 2500): how long after the provider's success
+ *   the server settles — the invoice PAID, the company opened or its paid
+ *   period moved on — so a checkout `SUCCEEDED` is seen before `PAID`;
+ * - `checkoutTtlMs` (default 30 minutes): a checkout's life; a cancelled one
+ *   stays PENDING until then, and is EXPIRED after (A56);
+ * - `resolveCheckout`: `{[invoiceId]: "SUCCEEDED" | "FAILED"}` — the provider's
+ *   late answer for the invoice's open or UNKNOWN checkout, once per checkout;
+ * - `clockOffsetMs` also expires an OPEN invoice at its `dueAt`, and its open
+ *   checkouts with it.
+ *
+ * The stand-in payment page (`/mock-checkout/{token}`, the mock build only)
+ * reads its checkout by an opaque token only this server maps back
+ * (`mockCheckoutPage`) and reports the provider's outcome
+ * (`observeMockCheckout`) — neither is on `TaskaApi`, as a provider webhook is
+ * on no gateway route.
+ *
  * Everything time- or hook-driven is evaluated on every read of the server's
  * state: there are no timers.
  */
@@ -172,6 +199,10 @@ export interface MockTenantHooks {
   applyPlan?: Record<string, string>;
   taskLifetime?: Record<string, number>;
   paymentDispute?: Record<string, boolean>;
+  checkoutOff?: MockRefusalHook;
+  settlementDelayMs?: number;
+  checkoutTtlMs?: number;
+  resolveCheckout?: Record<string, string>;
 }
 
 /** The fixture companies' ids (fixed, `createdAt` ascending in this order). */
@@ -275,6 +306,23 @@ const MOCK_PLANS: readonly MockPlan[] = [
     publishedAt: "2026-05-01T00:00:00Z",
   },
 ];
+
+/**
+ * The fixture invoices (TAS-513), fixed ids: what the server has issued for
+ * the seeded paid companies — each one's INITIAL, and Umbrella's RENEWAL.
+ */
+export const MOCK_INVOICE_IDS = {
+  initechInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e01",
+  umbrellaInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e02",
+  hooliInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e03",
+  massiveInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e04",
+  longNameInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e05",
+  /** Stark Industries' first payment: OPEN, due at its creation deadline. */
+  starkInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e06",
+  wayneInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e07",
+  /** Umbrella's renewal onto Team v2: OPEN, due a week after its paid-through. */
+  umbrellaRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e08",
+} as const;
 
 /** The projects the fixture companies add of their own (fixed ids). Globex's WEB shares its key with Northwind's. */
 export const MOCK_TENANT_PROJECT_IDS = {
@@ -446,8 +494,61 @@ interface StoredCreation {
   operationId: string;
 }
 
+interface StoredMoney {
+  amountMinor: string;
+  currency: string;
+  exponent: number;
+}
+
+/**
+ * An invoice (TAS-513) — issued by the server only: the INITIAL one when a
+ * paid company is created (the mock's answer to A53), a RENEWAL by its
+ * calendar. Never written by a client: there is no `createInvoice` here.
+ */
+interface StoredInvoice {
+  id: string;
+  tenantId: string;
+  number: string;
+  purpose: string;
+  state: string;
+  planVersionId: string;
+  total: StoredMoney;
+  allocated: StoredMoney;
+  remaining: StoredMoney;
+  issuedAt: string;
+  dueAt: string;
+  paymentMethod: string;
+  version: number;
+  replacesInvoiceId?: string;
+}
+
+/**
+ * A hosted checkout (TAS-513). `token` is the stand-in page's opaque key — on
+ * the wire only inside `redirectUrl`, never in a receipt. The provider's
+ * observation lands at `observeAt` (a 3-D Secure success that comes later);
+ * the server settles at `settleAt`, after a `SUCCEEDED` — two steps, so a
+ * success is seen before the invoice is PAID.
+ */
+interface StoredCheckout {
+  id: string;
+  tenantId: string;
+  invoiceId: string;
+  actorId: string;
+  returnTarget: string;
+  state: string;
+  createdAt: string;
+  expiresAt: string;
+  token: string;
+  observeAt?: string;
+  observe?: string;
+  settleAt?: string;
+  settled?: boolean;
+  /** `resolveCheckout` has answered for it. */
+  resolved?: boolean;
+}
+
 interface ServerState {
-  v: 5;
+  v: 6;
   tenants: StoredTenant[];
   memberships: StoredMembership[];
   sessions: StoredSession[];
@@ -484,6 +585,18 @@ interface ServerState {
   taskLifetime: Record<string, { tenantId: string; count: number }>;
   /** The `taskLifetime` hook's values already applied, by project — one value is applied once. */
   lifetimeApplied: Record<string, number>;
+  /** TAS-513. */
+  invoices: StoredInvoice[];
+  /** The next invoice number's sequence. */
+  invoiceSeq: number;
+  checkouts: StoredCheckout[];
+  /**
+   * `createCheckout`'s receipts — durable, `{actor}:{tenant}:{key}`: the same
+   * key with the same body answers the checkout it made, as it is now; with
+   * another body, 409 `IDEMPOTENCY_CONFLICT`. The answer itself is never kept:
+   * it carries the page's address.
+   */
+  checkoutReceipts: Record<string, { hash: string; checkoutId: string }>;
 }
 
 /**
@@ -561,12 +674,49 @@ const BREACH_KINDS: readonly string[] = ["SEAT", "PROJECT", "STORAGE_BYTES", "TA
 /** How long a paid period the mock starts on a confirmed first payment lasts — its own choice (TAS-504). */
 const PAID_PERIOD_MS = 30 * DAY;
 
+/** TAS-513, the mock's own choices: a checkout's life, the settlement's delay, and a late 3-D Secure success. */
+const CHECKOUT_TTL_MS = 30 * MINUTE;
+const DEFAULT_SETTLEMENT_DELAY_MS = 2500;
+const LATE_SUCCESS_MS = 20_000;
+/** The checkouts the server's unique index counts as active for their invoice (`payment_attempts_invoice_active_uniq`). */
+const ACTIVE_CHECKOUT_STATES: ReadonlySet<string> = new Set(["CREATED", "PENDING", "UNKNOWN", "SUCCEEDED"]);
+const OPEN_CHECKOUT_STATES: ReadonlySet<string> = new Set(["CREATED", "PENDING"]);
+
+const money = (amountMinor: string, currency = "EUR", exponent = 2): StoredMoney => ({ amountMinor, currency, exponent });
+const zeroOf = (total: StoredMoney): StoredMoney => ({ ...total, amountMinor: "0" });
+const planPrice = (planVersionId: string): StoredMoney => {
+  const price = MOCK_PLANS.find((plan) => plan.id === planVersionId)?.price;
+  return price ? { ...price } : money("0");
+};
+const invoiceNumber = (seq: number) => `TSK-2026-${String(seq).padStart(5, "0")}`;
+
+/** The outcomes the stand-in payment page offers (art-director B12). */
+export type MockCheckoutOutcome = "succeeds" | "fails" | "cancel" | "unknown" | "succeedsLater";
+
+/** What the stand-in payment page draws of its checkout — no address, no key. */
+export interface MockCheckoutPage {
+  checkoutId: string;
+  company: string | null;
+  invoiceNumber: string | null;
+  amount: StoredMoney | null;
+  /** Whether it still takes an outcome: CREATED or PENDING, and not expired. */
+  open: boolean;
+}
+
 /** Sets or lifts one restriction, kept in `RESTRICTION_ORDER`; a change moves the company's version. */
 function setRestriction(tenant: StoredTenant, code: string, on: boolean): boolean {
   if (tenant.restrictions.includes(code) === on) return false;
   tenant.restrictions = orderedRestrictions(on ? [...tenant.restrictions, code] : tenant.restrictions.filter((item) => item !== code));
   tenant.version = nextVersion(tenant.version);
   return true;
+}
+
+/** An invoice paid in full (TAS-513): everything allocated, nothing left, a new version. */
+function markPaid(invoice: StoredInvoice): void {
+  invoice.state = "PAID";
+  invoice.allocated = { ...invoice.total };
+  invoice.remaining = zeroOf(invoice.total);
+  invoice.version += 1;
 }
 
 /** A subscription with no paid period: FREE, or a paid plan before its first payment (TAS-504). */
@@ -683,7 +833,9 @@ export type MockRouteKind = "tenant-read" | "tenant-write" | "tenant-self" | "ac
  * long-named company's renewal is cancelled; `applyPlan` moving it to FREE is
  * AC2 — its LNG at 64 is then past the free limit. Initech's HLP is at 12.
  */
-function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships" | "freeLedger" | "invitations" | "taskLifetime"> {
+function seedTenants(
+  seedAt: number,
+): Pick<ServerState, "tenants" | "memberships" | "freeLedger" | "invitations" | "taskLifetime" | "invoices" | "invoiceSeq"> {
   const at = (day: number) => `2026-05-${String(day).padStart(2, "0")}T09:00:00Z`;
   const iso = (ms: number) => new Date(ms).toISOString();
   const tenant = (
@@ -851,6 +1003,57 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
     taskLifetime: Object.fromEntries(
       MOCK_TASK_LIFETIME_SEED.map(([tenantId, projectId, count]) => [projectId, { tenantId, count }]),
     ),
+    // TAS-513: what the server issued — every paid company's INITIAL, and the
+    // RENEWAL of Umbrella onto the Team v2 announced for its paid-through.
+    invoices: [
+      seedInvoice(1001, MOCK_INVOICE_IDS.initechInitial, ids.initech, "INITIAL", "PAID", MOCK_PLAN_IDS.team, at(3), DAY * 30),
+      seedInvoice(1002, MOCK_INVOICE_IDS.umbrellaInitial, ids.umbrella, "INITIAL", "PAID", MOCK_PLAN_IDS.teamRetired, at(4), DAY * 30),
+      seedInvoice(1003, MOCK_INVOICE_IDS.hooliInitial, ids.hooli, "INITIAL", "PAID", MOCK_PLAN_IDS.team, at(5), DAY * 30),
+      seedInvoice(1004, MOCK_INVOICE_IDS.massiveInitial, ids.massive, "INITIAL", "EXPIRED", MOCK_PLAN_IDS.team, at(6), DAY * 30),
+      seedInvoice(1005, MOCK_INVOICE_IDS.longNameInitial, ids.longName, "INITIAL", "PAID", MOCK_PLAN_IDS.team, at(7), DAY * 30),
+      seedInvoice(1006, MOCK_INVOICE_IDS.starkInitial, ids.stark, "INITIAL", "OPEN", MOCK_PLAN_IDS.team, iso(seedAt - 20 * DAY), CREATION_WINDOW_MS),
+      seedInvoice(1007, MOCK_INVOICE_IDS.wayneInitial, ids.wayne, "INITIAL", "VOID", MOCK_PLAN_IDS.team, iso(seedAt - 5 * DAY), CREATION_WINDOW_MS),
+      seedInvoice(
+        1008,
+        MOCK_INVOICE_IDS.umbrellaRenewal,
+        ids.umbrella,
+        "RENEWAL",
+        "OPEN",
+        MOCK_PLAN_IDS.team,
+        iso(seedAt - DAY),
+        Date.parse(umbrellaPaid.paidThrough ?? iso(seedAt)) + 7 * DAY - (seedAt - DAY),
+      ),
+    ],
+    invoiceSeq: 1009,
+  };
+}
+
+/** One seeded invoice: PAID ones fully allocated, the rest with all of it still to pay. */
+function seedInvoice(
+  seq: number,
+  id: string,
+  tenantId: string,
+  purpose: string,
+  state: string,
+  planVersionId: string,
+  issuedAt: string,
+  dueInMs: number,
+): StoredInvoice {
+  const total = planPrice(planVersionId);
+  return {
+    id,
+    tenantId,
+    number: invoiceNumber(seq),
+    purpose,
+    state,
+    planVersionId,
+    total,
+    allocated: state === "PAID" ? { ...total } : zeroOf(total),
+    remaining: state === "PAID" ? zeroOf(total) : { ...total },
+    issuedAt,
+    dueAt: new Date(Date.parse(issuedAt) + dueInMs).toISOString(),
+    paymentMethod: "PSP",
+    version: state === "OPEN" ? 1 : 2,
   };
 }
 
@@ -1043,13 +1246,22 @@ export interface MockTenantServerOptions {
   latencyMs?: number;
   /** The clock, for tests. */
   now?: () => number;
+  /**
+   * TAS-513: the stand-in payment page's address for a checkout's token — the
+   * app's own `/mock-checkout/{token}`, in the build's routing scheme.
+   */
+  checkoutUrl?: (token: string) => string;
 }
+
+const defaultCheckoutUrl = (token: string) =>
+  new URL(`/mock-checkout/${encodeURIComponent(token)}`, globalThis.location?.origin ?? "http://localhost").href;
 
 export class MockTenantServer {
   private readonly storage: Storage;
   private readonly accountStore: MockTaskaStore;
   private readonly latencyMs: number;
   private readonly now: () => number;
+  private readonly checkoutUrl: (token: string) => string;
   /** This page's company stores, built on first use from `TENANT_SEEDS`. */
   private readonly stores = new Map<string, MockTaskaStore>();
   /** Used only when `storage` refuses (a locked-down profile): the state then lives as long as the page. */
@@ -1062,6 +1274,7 @@ export class MockTenantServer {
     this.accountStore = options.accountStore;
     this.latencyMs = options.latencyMs ?? 80;
     this.now = options.now ?? Date.now;
+    this.checkoutUrl = options.checkoutUrl ?? defaultCheckoutUrl;
     // Nina is today's seed's BLOCKED account; here she is the account without
     // a company, so she has to be able to sign in.
     this.accountStore.overrideAccountStatus(MOCK_ACCOUNT_IDS.nina, "ACTIVE");
@@ -1100,6 +1313,10 @@ export class MockTenantServer {
         this.transferTenantOwnership(bearer, tenantId, newOwnerUserId, version, key),
       getSubscription: (bearer, tenantId) => this.getSubscription(bearer, tenantId),
       getEntitlement: (bearer, tenantId) => this.getEntitlement(bearer, tenantId),
+      listInvoices: (bearer, tenantId, params) => this.listInvoices(bearer, tenantId, params),
+      getInvoice: (bearer, tenantId, invoiceId) => this.getInvoice(bearer, tenantId, invoiceId),
+      createCheckout: (bearer, tenantId, invoiceId, returnTarget, key) => this.createCheckout(bearer, tenantId, invoiceId, returnTarget, key),
+      getCheckout: (bearer, tenantId, checkoutId) => this.getCheckout(bearer, tenantId, checkoutId),
     };
   }
 
@@ -1456,6 +1673,27 @@ export class MockTenantServer {
       });
       state.operations.push(operation);
       if (free) state.freeLedger[grant.userId] = tenant.id;
+      // TAS-513: a paid company's first invoice, issued by the server with the
+      // company — the blueprint names no issuer (A53); due at its deadline.
+      if (!free) {
+        const total = { ...plan.price };
+        state.invoices.push({
+          id: uuid(),
+          tenantId: tenant.id,
+          number: invoiceNumber(state.invoiceSeq),
+          purpose: "INITIAL",
+          state: "OPEN",
+          planVersionId: plan.id,
+          total,
+          allocated: zeroOf(total),
+          remaining: { ...total },
+          issuedAt: createdAt,
+          dueAt: tenant.creationDeadline ?? new Date(createdMs + CREATION_WINDOW_MS).toISOString(),
+          paymentMethod: "PSP",
+          version: 1,
+        });
+        state.invoiceSeq += 1;
+      }
       state.creations[receiptKey] = { hash, tenantId: tenant.id, operationId: operation.id };
       // A zero `stepMs` finishes provisioning in the same answer.
       this.evaluate(state);
@@ -2054,6 +2292,258 @@ export class MockTenantServer {
     });
     if (this.takeLostAnswer("getSubscription")) throw new TypeError("Failed to fetch");
     return answer;
+  }
+
+  /* --------------------------------- invoices and hosted checkout (TAS-513) */
+
+  /*
+   * api-contract-guard §5 and its addendum: the company's own session of
+   * exactly this company and its owner only (403 `OWNER_REQUIRED` for anybody
+   * else, a company admin included), never stopped by a restriction to read;
+   * a payment refused under a platform block (`READ_ONLY`) only. The checks:
+   * (1) a bearer and a company session of this company (`authorizeControl`,
+   * which takes a `refuseNext` hook first), (2) the owner, (3) a company still
+   * being set up 409 — then each route's own.
+   */
+
+  private authorizeBilling(state: ServerState, bearer: string | null, tenantId: string, operation: string): { session: StoredSession; tenant: StoredTenant } {
+    const granted = this.authorizeControl(state, bearer, tenantId, operation);
+    if (granted.tenant.ownerId !== granted.session.userId) {
+      throw problem(403, "OWNER_REQUIRED", "Only the owner can see the company's invoices and payments");
+    }
+    if (granted.tenant.lifecycle === "PROVISIONING") throw problem(409, "INVALID_STATE", "The company is still being set up");
+    return granted;
+  }
+
+  /** `GET /tenants/{t}/billing/invoices` — newest first, `limit` 1–100 (default 50), the cursor bound to the reader and the company. */
+  private async listInvoices(bearer: string | null, tenantId: string, params: ListCompanyPageParams): Promise<unknown> {
+    await this.delay("listInvoices");
+    const answer = this.read((state) => {
+      const { session } = this.authorizeBilling(state, bearer, tenantId, "listInvoices");
+      const limit = this.pageLimit(params);
+      const bound = `${session.userId}:invoices:${tenantId}`;
+      const offset = params.cursor === undefined ? 0 : this.readCursor(params.cursor, bound);
+      const listed = state.invoices
+        .filter((invoice) => invoice.tenantId === tenantId)
+        .sort((a, b) => (a.issuedAt < b.issuedAt ? 1 : a.issuedAt > b.issuedAt ? -1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const items = listed.slice(offset, offset + limit).map((invoice) => this.wireInvoice(state, invoice));
+      const next = offset + limit;
+      return next < listed.length ? { items, nextCursor: this.writeCursor(next, bound) } : { items };
+    });
+    if (this.takeLostAnswer("listInvoices")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /** `GET /tenants/{t}/billing/invoices/{i}` — another company's, or none, is 404 `RESOURCE_NOT_FOUND`. */
+  private async getInvoice(bearer: string | null, tenantId: string, invoiceId: string): Promise<unknown> {
+    await this.delay("getInvoice");
+    const answer = this.read((state) => {
+      this.authorizeBilling(state, bearer, tenantId, "getInvoice");
+      if (!UUID_PATTERN.test(invoiceId)) throw problem(400, "VALIDATION_FAILED", "invoiceId must be a UUID");
+      const invoice = state.invoices.find((item) => item.id === invoiceId && item.tenantId === tenantId);
+      if (!invoice) throw problem(404, "RESOURCE_NOT_FOUND", "Invoice not found");
+      return this.wireInvoice(state, invoice);
+    });
+    if (this.takeLostAnswer("getInvoice")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /**
+   * `POST /tenants/{t}/billing/invoices/{i}/checkout` `{returnTarget,
+   * confirmed: true}` — after the access checks: the `checkoutOff` hook, the
+   * key (a canonical UUID), its durable receipt (the same body answers the
+   * checkout it made, **as it is now**; another body 409
+   * `IDEMPOTENCY_CONFLICT`), the body, the invoice (404), a platform block
+   * (403 `READ_ONLY`), the invoice payable — OPEN, PSP, nothing paid yet, due
+   * in the future (`PaymentAttemptStore.accept`, PR #323), else 409
+   * `INVALID_STATE` — and no other active attempt of it (409 `INVALID_STATE`
+   * with no pointer back, A57). 201 `Checkout`, CREATED, its page address
+   * while it is open.
+   */
+  private async createCheckout(bearer: string | null, tenantId: string, invoiceId: string, returnTarget: string, key: string): Promise<unknown> {
+    await this.delay("createCheckout");
+    const answer = this.write((state) => {
+      const { session, tenant } = this.authorizeBilling(state, bearer, tenantId, "createCheckout");
+      const off = this.hooks().checkoutOff;
+      if (off && typeof off.status === "number" && typeof off.code === "string") {
+        throw problem(off.status, off.code, off.title ?? "Online payment is not available", Array.isArray(off.reasons) ? off.reasons : []);
+      }
+      if (!CANONICAL_KEY.test(key)) throw problem(400, "VALIDATION_FAILED", "Idempotency-Key must be a canonical UUID");
+      if (!UUID_PATTERN.test(invoiceId)) throw problem(400, "VALIDATION_FAILED", "invoiceId must be a UUID");
+      const receiptKey = `${session.userId}:${tenantId}:${key}`;
+      const hash = JSON.stringify({ invoiceId, returnTarget, confirmed: true });
+      const receipt = state.checkoutReceipts[receiptKey];
+      if (receipt) {
+        if (receipt.hash !== hash) throw problem(409, "IDEMPOTENCY_CONFLICT", "The key was used for another request");
+        const made = state.checkouts.find((item) => item.id === receipt.checkoutId);
+        if (made) return this.wireCheckout(made);
+      }
+      if (returnTarget !== "BILLING" && returnTarget !== "CREATION") {
+        throw invalid("Invalid request", [{ field: "returnTarget", code: "INVALID", message: "returnTarget must be BILLING or CREATION" }]);
+      }
+      const invoice = state.invoices.find((item) => item.id === invoiceId && item.tenantId === tenantId);
+      if (!invoice) throw problem(404, "RESOURCE_NOT_FOUND", "Invoice not found");
+      if (tenant.restrictions.includes("PLATFORM_BLOCK")) {
+        throw problem(403, "READ_ONLY", "The tenant is read-only", orderedRestrictions(tenant.restrictions));
+      }
+      const now = this.lifecycleNow();
+      const payable =
+        invoice.state === "OPEN" &&
+        invoice.paymentMethod === "PSP" &&
+        invoice.remaining.amountMinor === invoice.total.amountMinor &&
+        Date.parse(invoice.dueAt) > now;
+      if (!payable) throw problem(409, "INVALID_STATE", "The invoice cannot be paid");
+      if (state.checkouts.some((item) => item.invoiceId === invoiceId && ACTIVE_CHECKOUT_STATES.has(item.state) && !item.settled)) {
+        throw problem(409, "INVALID_STATE", "Another payment of this invoice is in progress");
+      }
+      const ttl = this.hooks().checkoutTtlMs;
+      const life = typeof ttl === "number" && Number.isFinite(ttl) && ttl > 0 ? ttl : CHECKOUT_TTL_MS;
+      const checkout: StoredCheckout = {
+        id: uuid(),
+        tenantId,
+        invoiceId,
+        actorId: session.userId,
+        returnTarget,
+        state: "CREATED",
+        createdAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + life).toISOString(),
+        token: `mcs_${uuid().replace(/-/g, "")}`,
+      };
+      state.checkouts.push(checkout);
+      state.checkoutReceipts[receiptKey] = { hash, checkoutId: checkout.id };
+      return this.wireCheckout(checkout);
+    });
+    if (this.takeLostAnswer("createCheckout")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /** `GET /tenants/{t}/billing/checkout/{c}` — this company's checkout as it is now; another's, or none, is 404. */
+  private async getCheckout(bearer: string | null, tenantId: string, checkoutId: string): Promise<unknown> {
+    await this.delay("getCheckout");
+    const answer = this.read((state) => {
+      this.authorizeBilling(state, bearer, tenantId, "getCheckout");
+      if (!UUID_PATTERN.test(checkoutId)) throw problem(400, "VALIDATION_FAILED", "checkoutId must be a UUID");
+      const checkout = state.checkouts.find((item) => item.id === checkoutId && item.tenantId === tenantId);
+      if (!checkout) throw problem(404, "RESOURCE_NOT_FOUND", "Checkout not found");
+      return this.wireCheckout(checkout);
+    });
+    if (this.takeLostAnswer("getCheckout")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /**
+   * The stand-in payment page's read of its checkout, by the opaque token
+   * only this server maps back — not a gateway route, and not on `TaskaApi`.
+   * Opening it is the provider's session starting: CREATED becomes PENDING.
+   * `null` for a token that names nothing.
+   */
+  mockCheckoutPage(token: string): MockCheckoutPage | null {
+    return this.write((state) => {
+      const checkout = state.checkouts.find((item) => item.token === token);
+      if (!checkout) return null;
+      const invoice = state.invoices.find((item) => item.id === checkout.invoiceId);
+      const tenant = state.tenants.find((item) => item.id === checkout.tenantId);
+      const open = this.checkoutOpen(checkout);
+      if (open && checkout.state === "CREATED") checkout.state = "PENDING";
+      return {
+        checkoutId: checkout.id,
+        company: tenant?.name ?? null,
+        invoiceNumber: invoice?.number ?? null,
+        amount: invoice ? { ...invoice.total } : null,
+        open,
+      };
+    });
+  }
+
+  /**
+   * The provider's observation of the stand-in page's outcome (art-director
+   * B12, api-contract-guard addendum) — a webhook in the real thing, so on no
+   * gateway route. A success is SUCCEEDED, then **settled later**
+   * (`settlementDelayMs`); a failure FAILED; a cancel changes nothing — the
+   * checkout stays PENDING until it expires (A56); «unknown» is UNKNOWN until
+   * `resolveCheckout` answers; a late success stays PENDING for 20 s first.
+   * A checkout no longer open takes no outcome. Answers where the page goes
+   * back to: the static return address, or the cancel one.
+   */
+  observeMockCheckout(token: string, outcome: MockCheckoutOutcome): "return" | "cancel" {
+    this.write((state) => {
+      const checkout = state.checkouts.find((item) => item.token === token);
+      if (!checkout || !this.checkoutOpen(checkout)) return;
+      const now = this.lifecycleNow();
+      switch (outcome) {
+        case "succeeds":
+          checkout.state = "SUCCEEDED";
+          checkout.settleAt = new Date(now + this.settlementDelayMs()).toISOString();
+          break;
+        case "fails":
+          checkout.state = "FAILED";
+          break;
+        case "unknown":
+          checkout.state = "UNKNOWN";
+          break;
+        case "succeedsLater":
+          checkout.state = "PENDING";
+          checkout.observe = "SUCCEEDED";
+          checkout.observeAt = new Date(now + LATE_SUCCESS_MS).toISOString();
+          break;
+        case "cancel":
+          checkout.state = "PENDING";
+          break;
+      }
+    });
+    return outcome === "cancel" ? "cancel" : "return";
+  }
+
+  private checkoutOpen(checkout: StoredCheckout): boolean {
+    return OPEN_CHECKOUT_STATES.has(checkout.state) && Date.parse(checkout.expiresAt) > this.lifecycleNow();
+  }
+
+  private settlementDelayMs(): number {
+    const delay = this.hooks().settlementDelayMs;
+    return typeof delay === "number" && Number.isFinite(delay) && delay >= 0 ? delay : DEFAULT_SETTLEMENT_DELAY_MS;
+  }
+
+  /**
+   * `Invoice` as the blueprint has it — buyer, seller and lines included, which
+   * the client never reads (api-contract-guard §1); `matchedUnallocated` zero:
+   * this mock has no partial wire payment.
+   */
+  private wireInvoice(state: ServerState, invoice: StoredInvoice): unknown {
+    const tenant = state.tenants.find((item) => item.id === invoice.tenantId);
+    const plan = MOCK_PLANS.find((item) => item.id === invoice.planVersionId);
+    const { version, replacesInvoiceId, ...rest } = invoice;
+    return {
+      ...rest,
+      total: { ...invoice.total },
+      allocated: { ...invoice.allocated },
+      remaining: { ...invoice.remaining },
+      buyer: {
+        kind: "BUSINESS",
+        name: tenant?.name ?? "Mock buyer",
+        email: "billing@example.com",
+        address: { country: "ES", postalCode: "28001", city: "Madrid", line1: "1 Mock Street" },
+      },
+      seller: {
+        legalName: "Taska Mock S.L.",
+        registrationId: "MOCK-0000",
+        address: { country: "ES", postalCode: "28001", city: "Madrid", line1: "2 Mock Street" },
+      },
+      lines: [{ description: `${plan?.name ?? "Plan"} plan`, quantity: 1, net: { ...invoice.total }, taxes: [], total: { ...invoice.total } }],
+      version: String(version),
+      ...(replacesInvoiceId === undefined ? {} : { replacesInvoiceId }),
+      matchedUnallocated: zeroOf(invoice.total),
+    };
+  }
+
+  /** `Checkout`: the page's address only while it is open — CREATED or PENDING, unexpired (A59). */
+  private wireCheckout(checkout: StoredCheckout): unknown {
+    return {
+      id: checkout.id,
+      invoiceId: checkout.invoiceId,
+      state: checkout.state,
+      expiresAt: checkout.expiresAt,
+      ...(this.checkoutOpen(checkout) ? { redirectUrl: this.checkoutUrl(checkout.token) } : {}),
+    };
   }
 
   /** Checks (1)–(9) for the four commands — see the block comment above. */
@@ -2656,14 +3146,16 @@ export class MockTenantServer {
       const raw = this.storage.getItem(MOCK_SERVER_KEY);
       if (raw !== null) {
         const parsed = JSON.parse(raw) as ServerState;
-        if (parsed && parsed.v === 5 && Array.isArray(parsed.tenants)) return parsed;
+        if (parsed && parsed.v === 6 && Array.isArray(parsed.tenants)) return parsed;
       }
     } catch {
       if (this.memory) return this.memory;
     }
     return {
-      v: 5,
+      v: 6,
       ...seedTenants(this.now()),
+      checkouts: [],
+      checkoutReceipts: {},
       lifetimeApplied: {},
       sessions: [],
       access: {},
@@ -2759,8 +3251,15 @@ export class MockTenantServer {
       if (tenant) tenant.quotaVersion += 1;
       changed = true;
     }
+    // TAS-513: the provider's observations, their settlement, and what expires.
+    if (this.evaluatePayments(state, now, open)) changed = true;
     for (const tenant of state.tenants) {
-      if (tenant.lifecycle === "AWAITING_PAYMENT" && confirmed.has(tenant.id)) open(tenant, now);
+      if (tenant.lifecycle === "AWAITING_PAYMENT" && confirmed.has(tenant.id)) {
+        // The hook stands in for this path's settlement: the first invoice is paid with it.
+        const first = state.invoices.find((item) => item.tenantId === tenant.id && item.purpose === "INITIAL" && item.state === "OPEN");
+        if (first) markPaid(first);
+        open(tenant, now);
+      }
       else if (tenant.lifecycle === "AWAITING_PAYMENT" && tenant.creationDeadline && Date.parse(tenant.creationDeadline) <= now) {
         tenant.lifecycle = "AUTO_CLOSED";
         tenant.version = nextVersion(tenant.version);
@@ -2815,6 +3314,84 @@ export class MockTenantServer {
       }
     }
     return changed;
+  }
+
+  /**
+   * TAS-513's two steps (api-contract-guard §5.2–5.3), on the lifecycle clock:
+   * a late observation lands (`observeAt`), `resolveCheckout` answers an open
+   * or UNKNOWN checkout once, an open checkout past `expiresAt` is EXPIRED, and
+   * a SUCCEEDED one is **settled** at `settleAt` — its invoice PAID in full,
+   * then the company opened (INITIAL) or its paid period moved on and
+   * `PAYMENT_EXPIRED` lifted (RENEWAL, PLAN_CHANGE): from the current end when
+   * it is still ahead, else from the settlement (D247). Then an OPEN invoice
+   * past `dueAt` is EXPIRED, with its open checkouts. Answers whether anything
+   * changed.
+   */
+  private evaluatePayments(state: ServerState, now: number, open: (tenant: StoredTenant, paidAt?: number) => void): boolean {
+    const hooks = this.hooks();
+    const resolve = typeof hooks.resolveCheckout === "object" && hooks.resolveCheckout !== null ? hooks.resolveCheckout : {};
+    const settleDelay = this.settlementDelayMs();
+    let changed = false;
+    for (const checkout of state.checkouts) {
+      if (checkout.observeAt !== undefined && checkout.state === "PENDING" && Date.parse(checkout.observeAt) <= now) {
+        const at = Date.parse(checkout.observeAt);
+        checkout.state = checkout.observe ?? "SUCCEEDED";
+        if (checkout.state === "SUCCEEDED") checkout.settleAt = new Date(at + settleDelay).toISOString();
+        delete checkout.observeAt;
+        delete checkout.observe;
+        changed = true;
+      }
+      const wanted = resolve[checkout.invoiceId];
+      if (!checkout.resolved && (wanted === "SUCCEEDED" || wanted === "FAILED") && (OPEN_CHECKOUT_STATES.has(checkout.state) || checkout.state === "UNKNOWN")) {
+        checkout.state = wanted;
+        checkout.resolved = true;
+        delete checkout.observeAt;
+        delete checkout.observe;
+        if (wanted === "SUCCEEDED") checkout.settleAt = new Date(now + settleDelay).toISOString();
+        changed = true;
+      }
+      if (OPEN_CHECKOUT_STATES.has(checkout.state) && checkout.observeAt === undefined && Date.parse(checkout.expiresAt) <= now) {
+        checkout.state = "EXPIRED";
+        changed = true;
+      }
+      if (checkout.state === "SUCCEEDED" && !checkout.settled && checkout.settleAt !== undefined && Date.parse(checkout.settleAt) <= now) {
+        checkout.settled = true;
+        changed = true;
+        const invoice = state.invoices.find((item) => item.id === checkout.invoiceId);
+        if (invoice && invoice.state === "OPEN") this.settle(state, invoice, Date.parse(checkout.settleAt), open);
+      }
+    }
+    for (const invoice of state.invoices) {
+      if (invoice.state !== "OPEN" || Date.parse(invoice.dueAt) > now) continue;
+      invoice.state = "EXPIRED";
+      invoice.version += 1;
+      for (const checkout of state.checkouts) {
+        if (checkout.invoiceId === invoice.id && OPEN_CHECKOUT_STATES.has(checkout.state)) checkout.state = "EXPIRED";
+      }
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** A settled invoice's effects (see `evaluatePayments`). */
+  private settle(state: ServerState, invoice: StoredInvoice, at: number, open: (tenant: StoredTenant, paidAt?: number) => void): void {
+    markPaid(invoice);
+    const tenant = state.tenants.find((item) => item.id === invoice.tenantId);
+    if (!tenant) return;
+    if (invoice.purpose === "INITIAL") {
+      // A timely first payment opens it; one confirmed after an automatic close
+      // reopens only a company whose deadline it met (D216) — never a cancelled one.
+      const timely = tenant.creationDeadline === undefined || at <= Date.parse(tenant.creationDeadline);
+      if (tenant.lifecycle === "AWAITING_PAYMENT" || (tenant.lifecycle === "AUTO_CLOSED" && timely)) open(tenant, at);
+      return;
+    }
+    const sub = tenant.subscription;
+    const through = sub.paidThrough === undefined ? Number.NaN : Date.parse(sub.paidThrough);
+    const from = Number.isFinite(through) && through > at ? through : at;
+    const end = new Date(from + PAID_PERIOD_MS);
+    tenant.subscription = { ...sub, version: nextVersion(sub.version), paidThrough: end.toISOString(), anchorDay: end.getUTCDate() };
+    tenant.entitlementVersion += 1;
+    setRestriction(tenant, "PAYMENT_EXPIRED", false);
   }
 
   private save(state: ServerState): void {
