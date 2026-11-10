@@ -27,6 +27,18 @@ const checkoutsOf = (page: Page, invoiceId: string) =>
     return (state.checkouts ?? []).filter((checkout) => checkout.invoiceId === id).length;
   }, invoiceId);
 
+/** This browser's attempt records — `taska.checkout.*` in the shared storage. */
+const attemptsOf = (page: Page) =>
+  page.evaluate(() =>
+    Object.keys(window.localStorage)
+      .filter((key) => key.startsWith("taska.checkout."))
+      .map((key) => JSON.parse(window.localStorage.getItem(key) ?? "{}") as { invoiceId?: string; checkoutId?: string; key?: string }),
+  );
+
+/** How many keys of `createCheckout` reached the mock server — its durable receipts. */
+const checkoutKeysSent = (page: Page) =>
+  page.evaluate(() => Object.keys((JSON.parse(window.localStorage.getItem("taska.mockServer.v6") ?? "{}") as { checkoutReceipts?: object }).checkoutReceipts ?? {}).length);
+
 const invoiceStateOf = (page: Page, invoiceId: string) =>
   page.evaluate((id) => {
     const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v6") ?? "{}") as { invoices?: Array<{ id: string; state: string }> };
@@ -103,28 +115,67 @@ test("the bank doesn’t answer: no Pay while it is UNKNOWN, and the late answer
   await expect(stateBlock(page)).toHaveText("Paid. Invoice TSK-2026-01008 is paid in full.", { timeout: 15_000 });
 });
 
-test("a double click, and two tabs pressing at once, make one checkout", async ({ page }) => {
+test("a double click, and two tabs pressing at once, make one checkout: one key, both tabs on the same payment page, the record kept", async ({ page }) => {
   await inCompany(page, "Umbrella", COMPANY.umbrella, "tom@example.com");
   await openCompanyZone(page, COMPANY.umbrella, "Billing");
   const second = await page.context().newPage();
   await second.goto(companyPath(COMPANY.umbrella, "/company/billing"));
   await expect(renewalRow(second).getByRole("button", { name: "Pay" })).toBeVisible();
   await expect(renewalRow(page).getByRole("button", { name: "Pay" })).toBeVisible();
+  // The first answer is slow: the second tab presses while it is out (release-reviewer N2).
+  await setHooks(page, { delayMs: { createCheckout: 800 } });
   const press = () => {
     const button = document.querySelector<HTMLButtonElement>(".company-invoice-row .company-billing-pay");
     button?.click();
     button?.click();
   };
   await Promise.all([page.evaluate(press), second.evaluate(press)]);
-  await expect(page).toHaveURL(/\/mock-checkout\//);
-  await expect.poll(() => checkoutsOf(page, INVOICE.umbrellaRenewal)).toBe(1);
-  const url = page.url();
-  // The other tab either went to the same page or no longer offers Pay — never a second checkout.
-  await expect
-    .poll(async () => second.url() === url || (await renewalRow(second).getByRole("button", { name: "Pay" }).count()) === 0)
-    .toBe(true);
+  await expect(page).toHaveURL(/\/mock-checkout\/mcs_[0-9a-f]+$/);
+  // A second key would have been refused 409 and left that tab where it was.
+  await expect.poll(() => second.url(), { timeout: 10_000 }).toBe(page.url());
+  expect(await checkoutKeysSent(page)).toBe(1);
   expect(await checkoutsOf(page, INVOICE.umbrellaRenewal)).toBe(1);
+  const records = await attemptsOf(page);
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({ invoiceId: INVOICE.umbrellaRenewal, checkoutId: expect.any(String) });
   await second.close();
+});
+
+test("Back from the payment page reads as leaving it: «You left the payment page.», focus on «Return to payment»", async ({ page }) => {
+  await inCompany(page, "Umbrella", COMPANY.umbrella, "tom@example.com");
+  await page.goto(renewalPath);
+  await page.getByRole("button", { name: "Pay €20.00" }).click();
+  await expect(mockPage(page)).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(renewalPath);
+  await expect(stateBlock(page)).toHaveText("You left the payment page. The invoice is still unpaid.");
+  await expect(page.getByRole("button", { name: "Return to payment" })).toBeFocused();
+  await expect(page.getByRole("button", { name: /^Pay/ })).toHaveCount(0);
+  // Which way the page came back: restored from the back/forward cache, or loaded afresh by Back.
+  const how = await page.evaluate(() => (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.type ?? "unknown");
+  test.info().annotations.push({ type: "back", description: how === "back_forward" ? "fresh load by Back" : `restored (${how})` });
+  console.log(`TAS-513 N3: the page came back by ${how === "back_forward" ? "a fresh load (back_forward)" : `the back/forward cache (${how})`}`);
+  expect((await attemptsOf(page))[0]).toMatchObject({ leftAt: expect.any(String) });
+});
+
+test("a direct load of Billing at 320 brings its rail link into the strip once the owner's item joins it", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await inCompany(page, "Umbrella", COMPANY.umbrella, "tom@example.com");
+  await page.goto(companyPath(COMPANY.umbrella, "/company/billing"));
+  const link = page.getByRole("navigation", { name: "Company" }).getByRole("link", { name: "Billing" });
+  await expect(link).toHaveAttribute("aria-current", "page");
+  await page.evaluate(() => document.fonts.ready);
+  // In one evaluate: the link's right edge against the strip's (release-reviewer N7).
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const strip = document.querySelector<HTMLElement>('nav[aria-label="Company"]');
+        const current = strip?.querySelector<HTMLElement>('[aria-current="page"]');
+        if (!strip || !current) return Number.POSITIVE_INFINITY;
+        return current.getBoundingClientRect().right - strip.getBoundingClientRect().right;
+      }),
+    )
+    .toBeLessThanOrEqual(0.5);
 });
 
 test("a return address that says «success» is never a payment: no record — nothing to show; an open checkout — «Confirming», never «Paid»", async ({ page }) => {
@@ -193,6 +244,37 @@ test("a member who is not the owner has no Billing, and no billing request goes 
   await expect(page.getByText("Invoices and payments for Umbrella are shown only to its owner.")).toBeVisible();
   const hooks = await page.evaluate(() => JSON.parse(window.localStorage.getItem("taska.mockTenantHooks") ?? "{}") as { refuseNext?: Record<string, unknown> });
   expect(Object.keys(hooks.refuseNext ?? {}).sort()).toEqual(["getInvoice", "listInvoices"]);
+});
+
+test("B1: the card's payment settled before the return lands — the app shell, Billing says «paid», no record is left", async ({ page }) => {
+  await signIn(page, "tom@example.com");
+  await setHooks(page, { settlementDelayMs: 0 });
+  await companyRow(page, /^Stark Industries/).click();
+  await expect(page).toHaveURL(companyPath(COMPANY.stark));
+  await page.getByRole("button", { name: "Pay €20.00" }).click();
+  await expect(mockPage(page)).toBeVisible();
+  await page.getByRole("button", { name: "Payment succeeds" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Projects" })).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => attemptsOf(page)).toEqual([]);
+  await page.goto(companyPath(COMPANY.stark, "/company/billing"));
+  const row = page.locator(".company-invoice-row").filter({ has: page.getByRole("link", { name: "TSK-2026-01006" }) });
+  await expect(row).toContainText("paid");
+  await expect(row).not.toContainText("confirming");
+  expect(await attemptsOf(page)).toEqual([]);
+});
+
+test("B1: the list read before the settlement says «confirming»; read after it, «paid» — and the record is gone", async ({ page }) => {
+  await payRenewal(page, { settlementDelayMs: 4000 });
+  await page.getByRole("button", { name: "Payment succeeds" }).click();
+  await expect(page).toHaveURL(renewalPath);
+  await page.goto(companyPath(COMPANY.umbrella, "/company/billing"));
+  await expect(renewalRow(page)).toContainText("confirming");
+  // The mock settles on its next read once the delay has passed (no timers): wait it out, then read again.
+  await page.waitForTimeout(4500);
+  await page.reload();
+  await expect(renewalRow(page)).toContainText("paid");
+  await expect(renewalRow(page)).not.toContainText("confirming");
+  await expect.poll(() => attemptsOf(page)).toEqual([]);
 });
 
 test("the never-opened card: Pay its first invoice, and the company opens once the server confirms it", async ({ page }) => {
