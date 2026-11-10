@@ -51,6 +51,8 @@ export function CompanyScreen({ theme, toggleTheme, onLogout, logoutPending }: S
   const [headingItem, setHeadingItem] = useState<string | null>(null);
   const [headingDescribedBy, setHeadingDescribedBy] = useState<string | null>(null);
   const outlet = useMemo<CompanyZoneOutlet>(() => ({ setHeadingItem, setHeadingDescribedBy }), []);
+  // One list per answer, so the rail's scroll-into-view runs when Billing joins it and not on every render (N7).
+  const rail = useMemo(() => railSections(owner), [owner]);
 
   return (
     <main className="page-shell">
@@ -67,7 +69,7 @@ export function CompanyScreen({ theme, toggleTheme, onLogout, logoutPending }: S
         headingDescribedBy={headingDescribedBy}
         item={headingItem}
         name="Company"
-        sections={railSections(owner)}
+        sections={rail}
       >
         <Outlet context={outlet} />
       </SectionArea>

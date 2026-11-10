@@ -64,10 +64,15 @@ export function SectionArea({
     // sits at the top of an area that does not scroll the page, so only the
     // strip does. No `behavior`, so it jumps rather than glides, with or
     // without reduced motion; and no focus moves — the heading below takes it.
+    //
+    // And when the list itself changes (TAS-513, release-reviewer N7): the
+    // Company zone's owner-only Billing joins the rail once the owner is known,
+    // so a direct load of it would otherwise have scrolled before its link was
+    // there. Callers pass a stable list (a constant, or memoised).
     railRef.current
       ?.querySelector<HTMLElement>('[aria-current="page"]')
       ?.scrollIntoView({ inline: "nearest", block: "nearest" });
-  }, [current.id]);
+  }, [current.id, sections]);
 
   useEffect(() => {
     // Moving between sections replaces the whole body while the keyboard stays
