@@ -118,9 +118,16 @@ export function invoiceMetaText(invoice: Invoice, now: Date = new Date()): strin
 /** «Invoice {number}», or «Invoice» for one the server sent without a number. */
 export const invoiceTitle = (invoice: Pick<Invoice, "number"> | null) => (invoice?.number ? `Invoice ${invoice.number}` : "Invoice");
 
-/** The status marker's word (B9); an unresolved attempt reads `confirming` over it. Never `overdue`. */
+/** The invoice states the server has ended: nothing a local record says outranks them (release-reviewer B1). */
+export const ENDED_INVOICE_STATES: ReadonlySet<string> = new Set(["PAID", "EXPIRED", "VOID"]);
+
+/**
+ * The status marker's word (B9); an unresolved attempt reads `confirming` over
+ * it — **never over PAID, EXPIRED or VOID**: the server's ended state wins
+ * over any local record (release-reviewer B1). Never `overdue`.
+ */
 export function statusWord(state: string | null, confirming = false): string | null {
-  if (confirming) return "confirming";
+  if (confirming && !ENDED_INVOICE_STATES.has(state ?? "")) return "confirming";
   switch (state) {
     case "OPEN":
       return "unpaid";
@@ -238,7 +245,9 @@ export function watchedPaymentState(input: {
   }
   if (state === "FAILED") return failedState();
   if (state === "EXPIRED") return expiredState();
-  if ((state === "CREATED" || state === "PENDING") && left) {
+  // Back from the provider — the cancel address, or Back itself (the orchestrator's N3) — before the checkout
+  // has answered too: a SUCCEEDED, UNKNOWN or ended one still overrides it the moment it does.
+  if ((state === null || state === "CREATED" || state === "PENDING") && left) {
     return { kind: "left", fact: "You left the payment page.", explanation: "The invoice is still unpaid.", action: "return" };
   }
   if (state === null || state === "CREATED" || state === "PENDING" || state === "SUCCEEDED") {
@@ -364,11 +373,21 @@ export function payRefusalWords(
 
 /**
  * The refusals after which the attempt's key is never sent again
- * (api-contract-guard §2): the server will answer it the same way. A transport
- * loss, a 5xx, a 503 `DEPENDENCY_UNAVAILABLE` and a 429 keep it — Pay again
+ * (api-contract-guard §2; release-reviewer N4): definitive answers before
+ * anything was created — 403 `OWNER_REQUIRED`, `CAPABILITY_DISABLED`,
+ * `READ_ONLY`; 409 `INVALID_STATE`, `IDEMPOTENCY_CONFLICT`; 503
+ * `POLICY_NOT_CONFIGURED` — so the next Pay is a fresh key. A transport loss,
+ * a 5xx, a 408, a 429 and a 503 `DEPENDENCY_UNAVAILABLE` keep it: Pay again
  * sends the same key.
  */
 export function closesAttempt(error: unknown): boolean {
   const code = refusalCode(error);
-  return code === "OWNER_REQUIRED" || code === "INVALID_STATE" || code === "IDEMPOTENCY_CONFLICT" || code === "POLICY_NOT_CONFIGURED";
+  return (
+    code === "OWNER_REQUIRED" ||
+    code === "CAPABILITY_DISABLED" ||
+    code === "READ_ONLY" ||
+    code === "INVALID_STATE" ||
+    code === "IDEMPOTENCY_CONFLICT" ||
+    code === "POLICY_NOT_CONFIGURED"
+  );
 }

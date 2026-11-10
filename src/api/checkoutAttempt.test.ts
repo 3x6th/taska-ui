@@ -3,6 +3,7 @@ import { MemoryStorage } from "../test/memoryStorage";
 import {
   checkoutAttemptKey,
   clearCheckoutAttempt,
+  closeCreationAttempts,
   clearCheckoutAttempts,
   listCheckoutAttempts,
   markLeft,
@@ -136,5 +137,36 @@ describe("the account's records", () => {
     clearCheckoutAttempts(storage, USER);
     expect(readCheckoutAttempt(storage, USER, T, I)).toBeNull();
     expect(storage.getItem(checkoutAttemptKey("other", T, I))).not.toBeNull();
+  });
+});
+
+describe("closing (release-reviewer B1, N2)", () => {
+  const write = (storage: MemoryStorage, userId: string, tenantId: string, invoiceId: string, returnTarget: "BILLING" | "CREATION", key = "k") =>
+    storage.setItem(
+      checkoutAttemptKey(userId, tenantId, invoiceId),
+      JSON.stringify({ v: 1, userId, tenantId, invoiceId, key, returnTarget, startedAt: "2026-11-11T09:00:00Z", checkoutId: "co" }),
+    );
+
+  it("a refusal of one key never closes the record another tab has written since", () => {
+    const storage = new MemoryStorage();
+    write(storage, USER, T, I, "BILLING", "live-key");
+    clearCheckoutAttempt(storage, USER, T, I, "refused-key");
+    expect(readCheckoutAttempt(storage, USER, T, I)?.key).toBe("live-key");
+    clearCheckoutAttempt(storage, USER, T, I, "live-key");
+    expect(readCheckoutAttempt(storage, USER, T, I)).toBeNull();
+  });
+
+  it("a company no longer never-opened loses its CREATION records — whoever's — and keeps its others", () => {
+    const storage = new MemoryStorage();
+    write(storage, USER, T, "initial", "CREATION");
+    write(storage, "other", T, "initial", "CREATION");
+    write(storage, USER, T, "renewal", "BILLING");
+    write(storage, USER, "elsewhere", "initial", "CREATION");
+    expect(closeCreationAttempts(storage, T)).toBe(true);
+    expect(readCheckoutAttempt(storage, USER, T, "initial")).toBeNull();
+    expect(storage.getItem(checkoutAttemptKey("other", T, "initial"))).toBeNull();
+    expect(readCheckoutAttempt(storage, USER, T, "renewal")).not.toBeNull();
+    expect(readCheckoutAttempt(storage, USER, "elsewhere", "initial")).not.toBeNull();
+    expect(closeCreationAttempts(storage, T)).toBe(false);
   });
 });

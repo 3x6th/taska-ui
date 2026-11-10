@@ -7,6 +7,7 @@ import { useCompanyAddress } from "../../lib/companyAddress";
 import { InvoiceMarker } from "./BillingParts";
 import {
   BILLING_LOADING_TEXT,
+  ENDED_INVOICE_STATES,
   INVOICES_EMPTY_TEXT,
   INVOICES_READ_FAILED,
   OPENING_PAYMENT_LABEL,
@@ -21,7 +22,7 @@ import {
   primaryPayable,
   statusWord,
 } from "./billingText";
-import { companyInvoicesOptions, unresolved, useBillingReader, useCheckoutAttempts, usePayInvoice } from "./companyBilling";
+import { closeAttempt, companyInvoicesOptions, unresolved, useBillingReader, useCheckoutAttempts, usePayInvoice } from "./companyBilling";
 import { apiErrorFacts } from "../../api/errors";
 
 /**
@@ -43,6 +44,29 @@ function CompanyBilling({ companyId }: { companyId: string }) {
   const attempts = useCheckoutAttempts(reader.meId, companyId);
   const press = usePayInvoice({ companyId, userId: reader.meId, returnTarget: "BILLING", company: reader.company });
   const retryButton = useRef<HTMLButtonElement>(null);
+
+  // The server's ended state closes the record (release-reviewer B1): an invoice
+  // read PAID, EXPIRED or VOID leaves no attempt of it behind — the invoice
+  // page's rule (`INVOICE_ENDED`), on the list too.
+  const ended = (invoices.data ?? []).filter((invoice) => ENDED_INVOICE_STATES.has(invoice.state ?? "")).map((invoice) => invoice.id);
+  useEffect(() => {
+    for (const invoiceId of ended) {
+      const record = attempts.get(invoiceId);
+      if (record) closeAttempt(record.userId, companyId, invoiceId, record.key);
+    }
+    // `ended` is derived from the list's answer, `attempts` from the records.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ended.join(), attempts, companyId]);
+
+  // Back from the provider left a payment (N3): no «Return to payment» here — focus goes to its invoice's link.
+  const returnFocusHandled = useRef(0);
+  useEffect(() => {
+    if (press.returnFocusRequest <= returnFocusHandled.current || press.returnFocusInvoice === null) return;
+    const link = document.querySelector<HTMLElement>(`[data-invoice-link="${CSS.escape(press.returnFocusInvoice)}"]`);
+    if (link === null) return;
+    returnFocusHandled.current = press.returnFocusRequest;
+    link.focus();
+  });
   /**
    * «Try again» in flight: the failure it was pressed against stays drawn, the
    * button where it was, until the re-read answers (§4.40's mechanics) —
@@ -119,7 +143,11 @@ function CompanyBilling({ companyId }: { companyId: string }) {
                   return (
                     <li className="company-invoice-row" key={invoice.id}>
                       <div className="company-invoice-text">
-                        <Link className="company-invoice-number" to={`/company/billing/${encodeURIComponent(invoice.id)}`}>
+                        <Link
+                          className="company-invoice-number"
+                          data-invoice-link={invoice.id}
+                          to={`/company/billing/${encodeURIComponent(invoice.id)}`}
+                        >
                           {invoice.number ?? "Invoice"}
                         </Link>
                         <p className="company-invoice-meta">

@@ -88,6 +88,8 @@ describe("the money and the row (B3)", () => {
     ]);
     expect(statusWord("OPEN", true)).toBe("confirming");
     expect(statusWord("DRAFT")).toBeNull();
+    // The server's ended state wins over any local record (release-reviewer B1).
+    expect(["PAID", "EXPIRED", "VOID"].map((state) => statusWord(state, true))).toEqual(["paid", "expired", "void"]);
   });
 });
 
@@ -138,6 +140,8 @@ describe("the payment's state (B7)", () => {
       explanation: "The invoice is still unpaid.",
       action: "return",
     });
+    // Before the checkout has answered — Back from the provider (N3) — it reads as left already.
+    expect(watched({ checkout: null, left: true })).toMatchObject({ kind: "left", action: "return" });
     // The hint never overrides the server: a success or a payment wins.
     expect(watched({ checkout: checkout("SUCCEEDED"), left: true }).kind).toBe("confirming");
     expect(watched({ invoice: invoice({ state: "PAID" }), checkout: checkout("PENDING"), left: true }).kind).toBe("paid");
@@ -191,9 +195,13 @@ describe("the refusals of Pay (B8, decision 8)", () => {
     );
   });
 
-  it("closes the attempt only on the refusals the server repeats for its key", () => {
-    expect(["OWNER_REQUIRED", "INVALID_STATE", "IDEMPOTENCY_CONFLICT", "POLICY_NOT_CONFIGURED"].map((code) => closesAttempt(refusal(409, code)))).toEqual([true, true, true, true]);
-    expect(["DEPENDENCY_UNAVAILABLE", "RATE_LIMITED", "CAPABILITY_DISABLED"].map((code) => closesAttempt(refusal(503, code)))).toEqual([false, false, false]);
+  it("closes the attempt on the definitive refusals — the next Pay is a fresh key — and keeps it when nothing was said (N4)", () => {
+    const closing = ["OWNER_REQUIRED", "CAPABILITY_DISABLED", "READ_ONLY", "INVALID_STATE", "IDEMPOTENCY_CONFLICT", "POLICY_NOT_CONFIGURED"];
+    expect(closing.map((code) => closesAttempt(refusal(403, code)))).toEqual(closing.map(() => true));
+    expect(closesAttempt(refusal(503, "DEPENDENCY_UNAVAILABLE"))).toBe(false);
+    expect(closesAttempt(refusal(429, "RATE_LIMITED"))).toBe(false);
+    expect(closesAttempt(refusal(500, "INTERNAL"))).toBe(false);
+    expect(closesAttempt(refusal(408, "TIMEOUT"))).toBe(false);
     expect(closesAttempt(refusal(null, "TRANSPORT"))).toBe(false);
   });
 });

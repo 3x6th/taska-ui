@@ -12,6 +12,8 @@ export const BILLING_CANCEL_ROUTE = "/billing/cancel";
 
 export const NO_ATTEMPT_TEXT = "We can’t find a payment started in this browser — open Billing to see its state.";
 export const SEVERAL_ATTEMPTS_TEXT = "More than one payment was started in this browser. Choose the one you came back from.";
+/** The account could not be read on the way back, so no record could be (release-reviewer N6). */
+export const CHECK_FAILED_TEXT = "Taska couldn’t check this payment.";
 /** «This payment belongs to {Company}.» — the company's name is the link (api-contract-guard §3). */
 export const BELONGS_TO_TEXT = "This payment belongs to";
 

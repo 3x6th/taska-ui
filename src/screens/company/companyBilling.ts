@@ -7,6 +7,7 @@ import {
   browserCheckoutLocks,
   checkoutAttemptKey,
   clearCheckoutAttempt,
+  markLeft,
   readCheckoutAttempt,
   withCheckoutAttempt,
   type CheckoutAttempt,
@@ -142,11 +143,44 @@ export function useCheckoutAttempts(userId: string | null, tenantId: string): Re
 export const unresolved = (record: CheckoutAttempt | undefined | null): record is CheckoutAttempt & { checkoutId: string } =>
   record !== undefined && record !== null && record.checkoutId !== undefined;
 
-export function closeAttempt(userId: string, tenantId: string, invoiceId: string): void {
+/**
+ * Closes the record of `key` — and only while the record still holds that key
+ * (release-reviewer N2): what is closed is the attempt the server answered
+ * about, never another tab's live one written since.
+ */
+export function closeAttempt(userId: string, tenantId: string, invoiceId: string, key: string): void {
   const storage = storageOf();
   if (storage === null) return;
-  clearCheckoutAttempt(storage, userId, tenantId, invoiceId);
+  clearCheckoutAttempt(storage, userId, tenantId, invoiceId, key);
   notifyAttempts();
+}
+
+/** This document was loaded by Back or Forward — the provider's page left without the back/forward cache. */
+function loadedByHistory(): boolean {
+  try {
+    const entry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+    return entry?.type === "back_forward";
+  } catch {
+    return false;
+  }
+}
+
+/** The attempts this document has already marked as left on its load — once each. */
+const leftOnLoad = new Set<string>();
+
+/**
+ * Back from the provider is the cancel address's hint too (the orchestrator's
+ * N3): an attempt that has a checkout and no `leftAt` gets one — whether the
+ * page came back from the back/forward cache (`pageshow` persisted) or was
+ * loaded afresh by Back. A wording hint only: a SUCCEEDED or PAID still wins.
+ * Answers whether it marked anything.
+ */
+function markLeftOnBack(record: CheckoutAttempt | null): boolean {
+  const storage = storageOf();
+  if (storage === null || !unresolved(record) || record.leftAt !== undefined) return false;
+  markLeft(storage, record);
+  notifyAttempts();
+  return true;
 }
 
 /* ------------------------------------------------------------ the press */
@@ -165,8 +199,11 @@ export interface PayRefusal {
  * the same click twice or another tab (the record's lock) —, the attempt's
  * key read or created before anything leaves, and the payment page opened in
  * this tab with `location.assign`. In flight from the press until the page
- * unloads; Back from the provider (`pageshow` persisted) makes it idle again,
- * re-reads, and puts focus back on the button pressed.
+ * unloads. Back from the provider makes it idle again and re-reads; when the
+ * attempt had a checkout it is marked as left (N3) and `returnFocusRequest`
+ * moves — the page puts focus on «Return to payment» — otherwise focus goes
+ * back on the button pressed. `checkBackOnLoad` is the same for a page that
+ * Back loaded afresh (no back/forward cache).
  */
 export function usePayInvoice(options: {
   companyId: string;
@@ -184,6 +221,10 @@ export function usePayInvoice(options: {
   const refusals = useRef(0);
   const [inProgress, setInProgress] = useState<string | null>(null);
   const pressed = useRef<HTMLElement | null>(null);
+  const pressedInvoice = useRef<string | null>(null);
+  /** Moves when Back from the provider left an attempt with a checkout: the page focuses «Return to payment». */
+  const [returnFocusRequest, setReturnFocusRequest] = useState(0);
+  const [returnFocusInvoice, setReturnFocusInvoice] = useState<string | null>(null);
 
   const reread = useCallback(
     (invoiceId: string) => {
@@ -200,30 +241,57 @@ export function usePayInvoice(options: {
       setPending(null);
       void queryClient.invalidateQueries({ queryKey: COMPANY_INVOICES_KEY });
       void queryClient.invalidateQueries({ queryKey: ["company-invoice"] });
+      const storage = storageOf();
+      const invoiceId = pressedInvoice.current;
+      const record = storage !== null && userId !== null && invoiceId !== null ? readCheckoutAttempt(storage, userId, companyId, invoiceId) : null;
+      // Marked now, or already (a second Back after «Return to payment»): either way it reads as left.
+      if (invoiceId !== null && unresolved(record)) {
+        markLeftOnBack(record);
+        setReturnFocusInvoice(invoiceId);
+        setReturnFocusRequest((value) => value + 1);
+        return;
+      }
       pressed.current?.focus();
     };
     window.addEventListener("pageshow", onShow);
     return () => window.removeEventListener("pageshow", onShow);
-  }, [queryClient]);
+  }, [queryClient, userId, companyId]);
+
+  /** Back loaded this page afresh (no back/forward cache): the same hint, once per attempt and document. */
+  const checkBackOnLoad = useCallback((record: CheckoutAttempt | null) => {
+    if (!unresolved(record) || !loadedByHistory()) return;
+    const id = `${record.tenantId}:${record.invoiceId}:${record.checkoutId}`;
+    if (leftOnLoad.has(id)) return;
+    leftOnLoad.add(id);
+    markLeftOnBack(record);
+    setReturnFocusInvoice(record.invoiceId);
+    setReturnFocusRequest((value) => value + 1);
+  }, []);
 
   const pay = async (invoice: Invoice, trigger: HTMLElement | null) => {
     const storage = storageOf();
     if (pendingRef.current || userId === null || storage === null) return;
     pendingRef.current = true;
     pressed.current = trigger;
+    pressedInvoice.current = invoice.id;
     setPending(invoice.id);
     setRefusal(null);
     setInProgress(null);
     let checkout: Checkout;
+    /** The key this press sent: a refusal closes its record only while the record still holds it (N2). */
+    let sentKey: string | null = null;
     try {
       checkout = await withCheckoutAttempt(
         { storage, locks: browserCheckoutLocks(), userId, tenantId: companyId, invoiceId: invoice.id, returnTarget },
-        (key, target) => taskaApi.createCheckout(companyId, invoice.id, target, key),
+        (key, target) => {
+          sentKey = key;
+          return taskaApi.createCheckout(companyId, invoice.id, target, key);
+        },
       );
     } catch (error) {
       pendingRef.current = false;
       setPending(null);
-      if (closesAttempt(error)) closeAttempt(userId, companyId, invoice.id);
+      if (closesAttempt(error) && sentKey !== null) closeAttempt(userId, companyId, invoice.id, sentKey);
       else notifyAttempts();
       reread(invoice.id);
       const code = refusalCode(error);
@@ -266,7 +334,28 @@ export function usePayInvoice(options: {
     }
   };
 
-  return { pay, pending, refusal, inProgress };
+  /** «Return to payment» is leaving for the provider too: Back from there is handled as Back from a Pay. */
+  const noteLeaving = useCallback((invoiceId: string, trigger: HTMLElement | null) => {
+    pressedInvoice.current = invoiceId;
+    pressed.current = trigger;
+  }, []);
+
+  return { pay, pending, refusal, inProgress, returnFocusRequest, returnFocusInvoice, checkBackOnLoad, noteLeaving };
+}
+
+/** Calls `onRestore` when the page comes back from the back/forward cache — a control left in flight becomes idle again. */
+export function useRestoredFromCache(onRestore: () => void): void {
+  const latest = useRef(onRestore);
+  useEffect(() => {
+    latest.current = onRestore;
+  });
+  useEffect(() => {
+    const onShow = (event: PageTransitionEvent) => {
+      if (event.persisted) latest.current();
+    };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
 }
 
 /** «Return to payment» (the guard's §4, addendum Q4): the same checkout's page, from a fresh read — never a new checkout. */

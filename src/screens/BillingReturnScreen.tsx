@@ -2,15 +2,24 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
-import { listCheckoutAttempts, markLeft, type CheckoutAttempt } from "../api/checkoutAttempt";
+import { closeCreationAttempts, listCheckoutAttempts, markLeft, type CheckoutAttempt } from "../api/checkoutAttempt";
+import { apiErrorFacts } from "../api/errors";
 import { AuthShell } from "../components/AuthShell";
 import { AddressLink } from "../components/CompanyRouter";
+import { ErrorNote } from "../components/ErrorNote";
 import { useCompanies } from "../hooks/useCompanies";
 import type { Theme } from "../hooks/useTheme";
-import { COMPANIES_ROUTE } from "../lib/companies";
+import { COMPANIES_ROUTE, companyRoute, isNeverOpened, tenantsQueryOptions } from "../lib/companies";
 import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
 import { formatDeadline } from "./companySetupText";
-import { BELONGS_TO_TEXT, NO_ATTEMPT_TEXT, SEVERAL_ATTEMPTS_TEXT, attemptTarget, type CheckoutReturnState } from "./billingReturn";
+import {
+  BELONGS_TO_TEXT,
+  CHECK_FAILED_TEXT,
+  NO_ATTEMPT_TEXT,
+  SEVERAL_ATTEMPTS_TEXT,
+  attemptTarget,
+  type CheckoutReturnState,
+} from "./billingReturn";
 
 type Landing =
   | { kind: "deciding" }
@@ -32,7 +41,12 @@ type Landing =
  * invoice or card, when the tab holds that company or none — entering is not
  * swapping; when the tab holds **another** company, nothing is switched: it
  * says whose payment it is, with a link. Several: the reader chooses. None:
- * there is nothing to show, and never «paid».
+ * there is nothing to show, and never «paid». Only records the server
+ * answered with a checkout count (release-reviewer N5): one whose answer
+ * never came has no payment page to have come back from. A CREATION record
+ * of a company that is no longer never-opened is spent, and closed on the
+ * way in (B1). The account unreadable — no records can be read — is said,
+ * with the way on (N6).
  */
 export function BillingReturnScreen({ cancel, theme, toggleTheme }: { cancel: boolean; theme: Theme; toggleTheme: () => void }) {
   const location = useLocation();
@@ -62,7 +76,7 @@ export function BillingReturnScreen({ cancel, theme, toggleTheme }: { cancel: bo
         setLanding({ kind: "none" });
         return;
       }
-      const attempts = listCheckoutAttempts(storage, userId);
+      const attempts = listCheckoutAttempts(storage, userId).filter((attempt) => attempt.checkoutId !== undefined);
       if (cancel && attempts[0]) attempts[0] = markLeft(storage, attempts[0]);
       if (attempts.length === 0) {
         setLanding({ kind: "none" });
@@ -78,15 +92,50 @@ export function BillingReturnScreen({ cancel, theme, toggleTheme }: { cancel: bo
         setLanding({ kind: "elsewhere", attempt });
         return;
       }
+      if (attempt.returnTarget === "CREATION" && accountClient !== null) {
+        let row: { lifecycle: string | null } | undefined;
+        try {
+          row = (await accountClient.fetchQuery(tenantsQueryOptions(taskaApi))).find((tenant) => tenant.id === attempt.tenantId);
+        } catch {
+          row = undefined;
+        }
+        // Opened already: the creation's payment is spent (B1); the address opens the app shell.
+        if (row !== undefined && row.lifecycle !== null && !isNeverOpened(row.lifecycle)) closeCreationAttempts(storage, attempt.tenantId);
+      }
       address.go(attemptTarget(attempt), { replace: true, state: { checkoutReturn: true } satisfies CheckoutReturnState });
     })();
-  }, [userId, cancel, address]);
+  }, [userId, cancel, address, accountClient]);
 
+  const unreadable = landing.kind === "deciding" && me.isError;
   useEffect(() => {
-    if (landing.kind !== "deciding") heading.current?.focus();
-  }, [landing.kind]);
+    if (landing.kind !== "deciding" || unreadable) heading.current?.focus();
+  }, [landing.kind, unreadable]);
 
   const nameOf = (tenantId: string) => companies.data?.find((tenant) => tenant.id === tenantId)?.name ?? "this company";
+
+  // The account could not be read, so neither can its records (N6): said, with the way on.
+  if (unreadable) {
+    const only = companies.data?.length === 1 ? companies.data[0] : null;
+    return (
+      <AuthShell entrance="app" theme={theme} toggleTheme={toggleTheme}>
+        <div className="company-setup billing-return">
+          <h1 className="auth-title" ref={heading} tabIndex={-1}>
+            Payment
+          </h1>
+          <ErrorNote requestId={apiErrorFacts(me.error).requestId}>{CHECK_FAILED_TEXT}</ErrorNote>
+          {only !== null ? (
+            <AddressLink className="auth-ghost company-setup-all" path={companyRoute(only.id, "/company/billing")}>
+              Open Billing
+            </AddressLink>
+          ) : (
+            <AddressLink className="auth-ghost company-setup-all" path={COMPANIES_ROUTE} state={{ focusHeading: true, continuedShell: true }}>
+              All companies
+            </AddressLink>
+          )}
+        </div>
+      </AuthShell>
+    );
+  }
 
   if (landing.kind === "deciding") {
     return (

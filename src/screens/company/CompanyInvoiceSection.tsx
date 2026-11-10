@@ -42,6 +42,7 @@ import {
   usePaymentWatch,
   useRereadAfterPaid,
   useBillingReader,
+  useRestoredFromCache,
 } from "./companyBilling";
 import { useCompanyZoneOutlet, zoneHeading } from "./companyZone";
 import type { CheckoutReturnState } from "../billingReturn";
@@ -89,7 +90,22 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
   const [outcome, setOutcome] = useState<Outcome>(null);
   const [hadExpired, setHadExpired] = useState(false);
   const payButton = useRef<HTMLButtonElement>(null);
+  const returnButton = useRef<HTMLButtonElement>(null);
   const [returning, setReturning] = useState(false);
+  useRestoredFromCache(() => setReturning(false));
+
+  // Back from the provider loaded this page afresh: the attempt reads as left (N3).
+  const { checkBackOnLoad } = press;
+  useEffect(() => {
+    if (reader.owner) checkBackOnLoad(record);
+  }, [reader.owner, record, checkBackOnLoad]);
+  // …and focus goes on «Return to payment» once it is drawn (N3).
+  const returnFocusHandled = useRef(0);
+  useEffect(() => {
+    if (press.returnFocusRequest <= returnFocusHandled.current || press.returnFocusInvoice !== invoiceId || returnButton.current === null) return;
+    returnFocusHandled.current = press.returnFocusRequest;
+    returnButton.current.focus();
+  });
 
   // The company's PAYMENT_EXPIRED while the payment is out: «open for changes again» is said only when the re-read lost it.
   const expiredNow = reader.tenant?.restrictions.includes("PAYMENT_EXPIRED") ?? false;
@@ -103,16 +119,23 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
   const invoiceState = invoice?.state ?? null;
   const checkoutState = watch.checkout?.state ?? null;
   useEffect(() => {
-    if (!unresolved(record) || reader.meId === null) return;
+    if (record === null || reader.meId === null) return;
     const close = (next: Outcome) => {
       setOutcome(next);
-      closeAttempt(record.userId, companyId, invoiceId);
+      closeAttempt(record.userId, companyId, invoiceId, record.key);
     };
+    // An ended invoice closes any record of it — one whose answer never came too (B1).
     if (invoiceState === "PAID") {
-      close("paid");
-      rereadAfterPaid(companyId);
-    } else if (invoiceState === "EXPIRED" || invoiceState === "VOID") close(null);
-    else if (checkoutState === "FAILED") close("failed");
+      close(unresolved(record) ? "paid" : null);
+      if (unresolved(record)) rereadAfterPaid(companyId);
+      return;
+    }
+    if (invoiceState === "EXPIRED" || invoiceState === "VOID") {
+      close(null);
+      return;
+    }
+    if (!unresolved(record)) return;
+    if (checkoutState === "FAILED") close("failed");
     else if (checkoutState === "EXPIRED") close("expired");
     else if (watch.lost) close("not-found");
   }, [record, reader.meId, invoiceState, checkoutState, watch.lost, companyId, invoiceId, rereadAfterPaid]);
@@ -214,9 +237,10 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
       <button
         aria-disabled={returning || undefined}
         className="secondary-button compact-button company-invoice-again"
-        onClick={() => {
+        onClick={(event) => {
           if (returning) return;
           setReturning(true);
+          press.noteLeaving(invoiceId, event.currentTarget);
           void returnToPayment(companyId, checkoutId)
             .then((went) => {
               if (!went) {
@@ -229,6 +253,7 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
               void watch.checkoutQuery.refetch();
             });
         }}
+        ref={returnButton}
         type="button"
       >
         Return to payment

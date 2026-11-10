@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
@@ -22,6 +22,7 @@ const { fakeApi, state } = vi.hoisted(() => {
     invoices: [] as Array<Record<string, unknown>>,
     checkout: null as null | (() => Promise<unknown>),
     restrictions: [] as string[],
+    createHangs: false,
     EUR,
   };
   const workspace = { tenantId: "n", tenantName: "Northwind", tenantSessionId: "s-n" };
@@ -55,6 +56,12 @@ const { fakeApi, state } = vi.hoisted(() => {
     getCheckout: () => {
       state.calls.push("getCheckout");
       return state.checkout ? state.checkout() : new Promise(() => {});
+    },
+    // The page address stays the provider's: a stand-in that goes nowhere, so the press stays in flight.
+    createCheckout: async (_tenantId: string, invoiceId: string) => {
+      state.calls.push("createCheckout");
+      if (state.createHangs) return new Promise(() => {});
+      return { id: "co-1", invoiceId, state: "CREATED", expiresAt: null, redirect: { go: () => {} } };
     },
   };
   const api = new Proxy(known, {
@@ -108,6 +115,7 @@ beforeEach(() => {
   state.invoices = [invoice(), invoice({ id: "inv-initial", number: "TSK-2026-01002", purpose: "INITIAL", state: "PAID", issuedAt: "2026-05-04T09:00:00Z", allocated: state.EUR("2000"), remaining: state.EUR("0") })];
   state.checkout = null;
   state.restrictions = [];
+  state.createHangs = false;
 });
 
 afterEach(() => {
@@ -138,6 +146,16 @@ describe("the rail and who sees Billing (B1, §7)", () => {
     const row = (await screen.findByRole("link", { name: "TSK-2026-01008" })).closest("li") as HTMLElement;
     expect(within(row).getAllByText("confirming").length).toBeGreaterThan(0);
     expect(within(row).queryByRole("button", { name: "Pay" })).not.toBeInTheDocument();
+  });
+
+  it("a record of an invoice the list reads PAID: «paid», never «confirming» — and the list closes it (B1)", async () => {
+    attempt();
+    state.invoices[0] = invoice({ state: "PAID", allocated: state.EUR("2000"), remaining: state.EUR("0") });
+    renderAt("/company/billing");
+    const row = (await screen.findByRole("link", { name: "TSK-2026-01008" })).closest("li") as HTMLElement;
+    expect(within(row).getAllByText("paid").length).toBeGreaterThan(0);
+    expect(within(row).queryByText("confirming")).not.toBeInTheDocument();
+    await waitFor(() => expect(window.localStorage.getItem(checkoutAttemptKey("tom", "n", "inv-renewal"))).toBeNull());
   });
 
   it("a member who is not the owner has no Billing in the rail, gets one line at its address, and no billing request goes out", async () => {
@@ -206,8 +224,39 @@ describe("the invoice and its payment's state (B5–B7)", () => {
     state.checkout = async () => checkout("PENDING");
     renderAt("/company/billing/inv-renewal");
     await waitFor(() => expect(block()).toHaveTextContent("You left the payment page. The invoice is still unpaid."));
-    expect(screen.getByRole("button", { name: "Return to payment" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Return to payment" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Pay/ })).not.toBeInTheDocument();
+  });
+
+  it("Back from the provider out of the back/forward cache: the attempt reads as left, focus on «Return to payment» (N3)", async () => {
+    state.checkout = async () => checkout("PENDING");
+    renderAt("/company/billing/inv-renewal");
+    const pay = await screen.findByRole("button", { name: "Pay €20.00" });
+    fireEvent.click(pay);
+    await waitFor(() => expect(window.localStorage.getItem(checkoutAttemptKey("tom", "n", "inv-renewal"))).toContain('"checkoutId":"co-1"'));
+    act(() => {
+      window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+    });
+    await waitFor(() => expect(block()).toHaveTextContent("You left the payment page. The invoice is still unpaid."));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Return to payment" })).toHaveFocus());
+    expect(JSON.parse(window.localStorage.getItem(checkoutAttemptKey("tom", "n", "inv-renewal")) ?? "{}").leftAt).toEqual(expect.any(String));
+    expect(screen.queryByRole("button", { name: /^Pay/ })).not.toBeInTheDocument();
+  });
+
+  it("Back before any checkout was recorded: Pay at rest again, with focus (N3)", async () => {
+    state.createHangs = true;
+    renderAt("/company/billing/inv-renewal");
+    const pay = await screen.findByRole("button", { name: "Pay €20.00" });
+    // The press went out and nothing came back: the record has no checkout.
+    fireEvent.click(pay);
+    expect(await screen.findByRole("button", { name: "Opening payment page" })).toBeInTheDocument();
+    document.body.focus();
+    act(() => {
+      window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+    });
+    expect(await screen.findByRole("button", { name: "Pay €20.00" })).toHaveFocus();
+    expect(JSON.parse(window.localStorage.getItem(checkoutAttemptKey("tom", "n", "inv-renewal")) ?? "{}").leftAt).toBeUndefined();
+    expect(block()).toBeEmptyDOMElement();
   });
 
   it("a checkout this company does not have: said, and nothing offered", async () => {

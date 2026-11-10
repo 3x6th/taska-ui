@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Invoice } from "../../api/billing";
 import { apiErrorFacts } from "../../api/errors";
 import { ErrorNote } from "../../components/ErrorNote";
@@ -30,6 +30,7 @@ import {
   useCheckoutAttempts,
   usePayInvoice,
   usePaymentWatch,
+  useRestoredFromCache,
 } from "./companyBilling";
 
 type Outcome = "failed" | "expired" | "not-found" | null;
@@ -41,8 +42,10 @@ type Outcome = "failed" | "expired" | "not-found" | null;
  * «Pay {total}», the card's one accent, `returnTarget: CREATION`. While a
  * payment of it is unresolved, its state in the slot instead, read at the
  * watch's cadence. **The company opens only when the server says so**: an
- * invoice PAID asks the card to read the company again (`onPaid`), and only
- * its `lifecycle` ACTIVE hands the address to the app shell.
+ * invoice PAID asks the card to read the company again (`onPaid`) — the card
+ * then polls it (release-reviewer N1) — and only its `lifecycle` ACTIVE hands
+ * the address to the app shell. `stalled`: the card's poll gave up after
+ * `POLL_LIMIT_MS`, so «Check again» (`onCheckAgain`) stands under the state.
  */
 export function CreationPaySlot({
   companyId,
@@ -51,6 +54,8 @@ export function CreationPaySlot({
   creationDeadline,
   factId,
   onPaid,
+  stalled = false,
+  onCheckAgain,
 }: {
   companyId: string;
   userId: string;
@@ -58,34 +63,60 @@ export function CreationPaySlot({
   creationDeadline: string | null;
   factId: string;
   onPaid: () => void;
+  stalled?: boolean;
+  onCheckAgain?: () => void;
 }) {
   const invoices = useQuery(companyInvoicesOptions(companyId));
   const attempts = useCheckoutAttempts(userId, companyId);
   const listed = listedInvoices(invoices.data ?? []);
   // The invoice an unresolved payment is of, else the open first payment.
   const watched = listed.find((invoice) => unresolved(attempts.get(invoice.id))) ?? null;
+  // A first payment already PAID — settled before this card read it — is the one the company is opening on.
   const chosen: Invoice | null =
-    watched ?? listed.find((invoice) => invoice.purpose === "INITIAL" && isPayable(invoice)) ?? listed.find(isPayable) ?? null;
+    watched ??
+    listed.find((invoice) => invoice.purpose === "INITIAL" && isPayable(invoice)) ??
+    listed.find(isPayable) ??
+    listed.find((invoice) => invoice.purpose === "INITIAL" && invoice.state === "PAID") ??
+    null;
   const record = chosen ? (attempts.get(chosen.id) ?? null) : null;
   const watch = usePaymentWatch({ companyId, invoiceId: chosen?.id ?? null, record, enabled: chosen !== null });
   const invoice = watch.invoiceQuery.data ?? chosen;
   const press = usePayInvoice({ companyId, userId, returnTarget: "CREATION", company, creationDeadline });
   const [outcome, setOutcome] = useState<Outcome>(null);
   const [returning, setReturning] = useState(false);
+  useRestoredFromCache(() => setReturning(false));
+  const returnButton = useRef<HTMLButtonElement>(null);
+
+  // Back from the provider loaded the card afresh: the attempt reads as left (N3), focus on «Return to payment».
+  const { checkBackOnLoad } = press;
+  useEffect(() => {
+    checkBackOnLoad(record);
+  }, [record, checkBackOnLoad]);
+  const returnFocusHandled = useRef(0);
+  useEffect(() => {
+    if (press.returnFocusRequest <= returnFocusHandled.current || returnButton.current === null) return;
+    if (chosen === null || press.returnFocusInvoice !== chosen.id) return;
+    returnFocusHandled.current = press.returnFocusRequest;
+    returnButton.current.focus();
+  });
 
   const invoiceState = watch.invoiceQuery.data?.state ?? null;
   const checkoutState = watch.checkout?.state ?? null;
   useEffect(() => {
     if (chosen === null) return;
     if (invoiceState === "PAID") {
-      if (unresolved(record)) closeAttempt(userId, companyId, chosen.id);
+      if (record !== null) closeAttempt(userId, companyId, chosen.id, record.key);
       onPaid();
+      return;
+    }
+    if (record !== null && (invoiceState === "EXPIRED" || invoiceState === "VOID")) {
+      closeAttempt(userId, companyId, chosen.id, record.key);
       return;
     }
     if (!unresolved(record)) return;
     const close = (next: Outcome) => {
       setOutcome(next);
-      closeAttempt(userId, companyId, chosen.id);
+      closeAttempt(userId, companyId, chosen.id, record.key);
     };
     if (invoiceState === "EXPIRED" || invoiceState === "VOID") close(null);
     else if (checkoutState === "FAILED") close("failed");
@@ -122,7 +153,15 @@ export function CreationPaySlot({
     const paidYet = invoice?.state === "PAID" ? { ...invoice, state: "OPEN" } : invoice;
     state = watchedPaymentState({ invoice: paidYet, checkout: watch.checkout, left: record.leftAt !== undefined, stage: watch.stage, company, reopened: false });
   } else if (invoice?.state === "PAID") {
-    state = watchedPaymentState({ invoice: { ...invoice, state: "OPEN" }, checkout: null, left: false, stage: "fresh", company, reopened: false });
+    // Settled; the company has not opened yet: «Confirming» while the card polls it, «Check again» once it gave up (N1).
+    state = watchedPaymentState({
+      invoice: { ...invoice, state: "OPEN" },
+      checkout: null,
+      left: false,
+      stage: stalled ? "stopped" : "fresh",
+      company,
+      reopened: false,
+    });
   } else if (outcome === "failed") state = failedState();
   else if (outcome === "expired") state = expiredState();
   else if (outcome === "not-found") state = notFoundState(company);
@@ -161,9 +200,10 @@ export function CreationPaySlot({
         <button
           aria-disabled={returning || undefined}
           className="secondary-button compact-button company-setup-again"
-          onClick={() => {
+          onClick={(event) => {
             if (returning) return;
             setReturning(true);
+            press.noteLeaving(record.invoiceId, event.currentTarget);
             const done = (went: boolean) => {
               if (went) return;
               setReturning(false);
@@ -171,13 +211,18 @@ export function CreationPaySlot({
             };
             void returnToPayment(companyId, record.checkoutId).then(done, () => done(false));
           }}
+          ref={returnButton}
           type="button"
         >
           Return to payment
         </button>
       ) : null}
       {state?.action === "check" ? (
-        <button className="secondary-button compact-button company-setup-again" onClick={watch.checkAgain} type="button">
+        <button
+          className="secondary-button compact-button company-setup-again"
+          onClick={() => (unresolved(record) ? watch.checkAgain() : onCheckAgain?.())}
+          type="button"
+        >
           Check again
         </button>
       ) : null}

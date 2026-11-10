@@ -124,7 +124,16 @@ export function writeCheckoutAttempt(storage: Storage, record: CheckoutAttempt):
   }
 }
 
-export function clearCheckoutAttempt(storage: Storage, userId: string, tenantId: string, invoiceId: string): void {
+/**
+ * Removes the record — only while it still holds `key`, when one is named: a
+ * refusal of one tab's key never closes the record another tab's live
+ * attempt has written since (release-reviewer N2).
+ */
+export function clearCheckoutAttempt(storage: Storage, userId: string, tenantId: string, invoiceId: string, key?: string): void {
+  if (key !== undefined) {
+    const current = readCheckoutAttempt(storage, userId, tenantId, invoiceId);
+    if (current !== null && current.key !== key) return;
+  }
   try {
     storage.removeItem(checkoutAttemptKey(userId, tenantId, invoiceId));
   } catch {
@@ -172,6 +181,33 @@ export function listCheckoutAttempts(storage: Storage, userId: string): Checkout
     own.push(record);
   }
   return own.sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0));
+}
+
+/**
+ * A company that is no longer never-opened has spent its creation's payment
+ * (release-reviewer B1): its CREATION records go, whoever's they are — the
+ * first payment they were about is settled, or the company opened without it.
+ * Its other records are left alone. Answers whether anything went.
+ */
+export function closeCreationAttempts(storage: Storage, tenantId: string): boolean {
+  let closed = false;
+  for (const key of attemptKeys(storage)) {
+    let raw: string | null;
+    try {
+      raw = storage.getItem(key);
+    } catch {
+      continue;
+    }
+    const record = parse(raw);
+    if (record === null || record.tenantId !== tenantId || record.returnTarget !== "CREATION") continue;
+    try {
+      storage.removeItem(key);
+      closed = true;
+    } catch {
+      // Left as it was.
+    }
+  }
+  return closed;
 }
 
 /** Sign-out: every record of the account goes (`taska.checkout.{userId}.*`). */
