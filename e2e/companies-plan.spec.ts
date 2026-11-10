@@ -94,7 +94,7 @@ test("AC2: moved to FREE below its usage, the long-named company keeps its data 
     "It’s over its plan’s limits. Nothing in it can be changed until it’s back within them.",
   );
   await expect(page.locator(".company-general-states")).toContainText(
-    "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t take payments or change plans yet.",
+    "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t change plans yet.",
   );
   // A FREE owner: no price, no paid period — and nothing failed.
   await expect(labels(page)).toHaveText(["Plan", "Projects", "Seats", "Storage", "Issues per project"]);

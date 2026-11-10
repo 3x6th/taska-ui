@@ -136,12 +136,17 @@ test("AC4: Initech — renaming is refused under the pause; Sofia resumes; past 
   await page.reload();
   // TAS-512: the financial line explained to the owner (§4.39) — and «what still works» only once nothing but it is left.
   const expired = "Its paid period has ended. Nothing in it can be changed until you renew it. There’s no grace period, and it doesn’t move to a free plan on its own.";
-  await expect(stateLines(page)).toHaveText(["Paused by its owner. No one can change anything in it while it’s paused.", expired]);
+  // TAS-513 (B2c): the owner's ended-period line links to Billing, where it is paid.
+  await expect(stateLines(page)).toHaveText(["Paused by its owner. No one can change anything in it while it’s paused.", `${expired} See Billing`]);
+  await expect(page.locator(".company-general-states").getByRole("link", { name: "See Billing" })).toHaveAttribute(
+    "href",
+    `/c/${COMPANY.initech}/company/billing`,
+  );
   await page.getByRole("button", { name: "Resume company" }).click();
   await expect(said(page)).toHaveText("Initech is no longer paused.");
   await expect(stateLines(page)).toHaveText([
-    expired,
-    "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t take payments or change plans yet.",
+    `${expired} See Billing`,
+    "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t change plans yet.",
   ]);
 });
 
