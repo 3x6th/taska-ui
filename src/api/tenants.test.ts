@@ -97,6 +97,7 @@ describe("reading every company (DESIGN.md §4.33)", () => {
 /* ------------------------------------------------ creating a company (TAS-501) */
 
 const plan = {
+  kind: "PAID",
   id: "7d2c4e1a-5b3f-4a6c-9e8d-0f1a2b3c4d02",
   code: "team",
   version: "2",
@@ -116,6 +117,7 @@ describe("a plan as the catalogue sends it (api-contract-guard §1, §9 parity)"
   it("reads what the form draws, leaves capabilities unread, and keeps money a string", () => {
     expect(toPlanVersion(plan)).toEqual({
       id: plan.id,
+      kind: "PAID",
       code: "team",
       name: "Team",
       version: "2",
@@ -140,6 +142,14 @@ describe("a plan as the catalogue sends it (api-contract-guard §1, §9 parity)"
     });
     expect(read).toMatchObject({ period: "CALENDAR_QUARTER", state: "SCHEDULED", price: { currency: "GBP" } });
     expect(read?.limits).toEqual([{ kind: "API_CALLS", limit: "1000", unlimited: false }]);
+  });
+
+  it("reads kind as an open string, and a plan without one has none (TAS-513 re-pin, TAS-501 A16)", () => {
+    expect(toPlanVersion({ ...plan, kind: "FREE" })?.kind).toBe("FREE");
+    expect(toPlanVersion({ ...plan, kind: "TRIAL" })?.kind).toBe("TRIAL");
+    const { kind: _kind, ...withoutKind } = plan;
+    expect(toPlanVersion(withoutKind)?.kind).toBeNull();
+    expect(toPlanVersion({ ...plan, kind: 1 })?.kind).toBeNull();
   });
 
   it("refuses money that is not a decimal string of minor units — never a float", () => {

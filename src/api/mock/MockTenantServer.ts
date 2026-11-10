@@ -205,6 +205,8 @@ export const MOCK_PLAN_IDS = {
 
 interface MockPlan {
   id: string;
+  /** `PlanVersion.kind` (develop `43d6c89d`): what makes a plan the free one, never its price. */
+  kind: "FREE" | "PAID";
   code: string;
   version: string;
   name: string;
@@ -219,6 +221,7 @@ interface MockPlan {
 const MOCK_PLANS: readonly MockPlan[] = [
   {
     id: MOCK_PLAN_IDS.free,
+    kind: "FREE",
     code: "mock-free",
     version: "1",
     name: "Free",
@@ -236,6 +239,7 @@ const MOCK_PLANS: readonly MockPlan[] = [
   },
   {
     id: MOCK_PLAN_IDS.teamRetired,
+    kind: "PAID",
     code: "mock-team",
     version: "1",
     name: "Team",
@@ -254,6 +258,7 @@ const MOCK_PLANS: readonly MockPlan[] = [
   },
   {
     id: MOCK_PLAN_IDS.team,
+    kind: "PAID",
     code: "mock-team",
     version: "2",
     name: "Team",
@@ -573,7 +578,7 @@ const unpaid = (planVersionId: string): StoredSubscription => ({
 });
 
 /** Whether a plan of this mock's catalogue is FREE — the server's knowledge, never the client's (B3). */
-const isFreePlan = (planVersionId: string) => MOCK_PLANS.find((plan) => plan.id === planVersionId)?.price.amountMinor === "0";
+const isFreePlan = (planVersionId: string) => MOCK_PLANS.find((plan) => plan.id === planVersionId)?.kind === "FREE";
 
 /**
  * The order a refusal names a company's restrictions in, and the order they
@@ -1406,7 +1411,7 @@ export class MockTenantServer {
       }
       const plan = MOCK_PLANS.find((item) => item.id === input.planVersionId && item.state === "PUBLISHED");
       if (!plan) throw problem(400, "VALIDATION_FAILED", "Invalid request");
-      const free = plan.price.amountMinor === "0";
+      const free = plan.kind === "FREE";
       if (free && state.freeLedger[grant.userId] !== undefined) {
         throw problem(409, "FREE_ELIGIBILITY_USED", "The free company allowance has been used");
       }

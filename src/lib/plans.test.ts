@@ -6,6 +6,7 @@ import { formatBytes, formatMoney, isFreePlan, limitText, offeredPlans, planLimi
 
 const plan = (overrides: Partial<PlanVersion> = {}): PlanVersion => ({
   id: "p",
+  kind: "PAID",
   code: "team",
   name: "Team",
   version: "1",
@@ -32,14 +33,20 @@ describe("the price", () => {
     expect(planPriceText(plan())).toBe("€20 a month");
     expect(planPriceText(plan({ period: "NONE" }))).toBe("€20");
     expect(planPriceText(plan({ period: "CALENDAR_QUARTER" }))).toBe("€20 CALENDAR_QUARTER");
-    expect(planPriceText(plan({ price: { amountMinor: "0", currency: "EUR", exponent: 2 } }))).toBeNull();
+    expect(planPriceText(plan({ kind: "FREE", price: { amountMinor: "0", currency: "EUR", exponent: 2 } }))).toBeNull();
     expect(planPriceText(plan({ price: null }))).toBeNull();
+    // A price of zero on a plan that is not FREE is drawn: the kind decides (TAS-513 re-pin).
+    expect(planPriceText(plan({ price: { amountMinor: "0", currency: "EUR", exponent: 2 } }))).toBe("€0 a month");
+    expect(planPriceText(plan({ kind: null }))).toBe("€20 a month");
   });
 
-  it("is zero for the free plan only — unreadable money is not free", () => {
-    expect(isFreePlan(plan({ price: { amountMinor: "0", currency: "EUR", exponent: 2 } }))).toBe(true);
+  it("is the plan whose kind is FREE — never decided by the price; an unknown or missing kind is not free", () => {
+    expect(isFreePlan(plan({ kind: "FREE", price: { amountMinor: "0", currency: "EUR", exponent: 2 } }))).toBe(true);
+    expect(isFreePlan(plan({ kind: "FREE" }))).toBe(true);
+    expect(isFreePlan(plan({ price: { amountMinor: "0", currency: "EUR", exponent: 2 } }))).toBe(false);
     expect(isFreePlan(plan())).toBe(false);
-    expect(isFreePlan(plan({ price: null }))).toBe(false);
+    expect(isFreePlan(plan({ kind: null, price: { amountMinor: "0", currency: "EUR", exponent: 2 } }))).toBe(false);
+    expect(isFreePlan(plan({ kind: "TRIAL" }))).toBe(false);
   });
 });
 
