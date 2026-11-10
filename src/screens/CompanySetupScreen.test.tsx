@@ -24,6 +24,8 @@ const { fakeApi, state } = vi.hoisted(() => {
     cancel: null as null | (() => Promise<unknown>),
     cancels: [] as unknown[][],
     me: "tom",
+    invoices: [] as unknown[],
+    checkout: null as null | (() => Promise<unknown>),
   };
   const api = {
     getCurrentUser: async () => ({ id: state.me, email: `${state.me}@example.com`, displayName: state.me, status: "ACTIVE" }),
@@ -44,6 +46,17 @@ const { fakeApi, state } = vi.hoisted(() => {
       return state.cancel ? state.cancel() : new Promise(() => {});
     },
     listBillingPlans: async () => ({ items: [], nextCursor: null }),
+    // TAS-513: the owner's payment slot.
+    listInvoices: async () => {
+      state.reads.push("invoices");
+      return { items: state.invoices, nextCursor: null };
+    },
+    getInvoice: async (_tenantId: string, invoiceId: string) => {
+      state.reads.push("invoice");
+      return (state.invoices as Array<{ id: string }>).find((invoice) => invoice.id === invoiceId);
+    },
+    createCheckout: () => (state.checkout ? state.checkout() : new Promise(() => {})),
+    getCheckout: async () => ({ id: "co", invoiceId: "inv-1", state: "PENDING", expiresAt: null, redirect: null }),
     currentWorkspace: () => null,
     onWorkspaceChange: () => () => {},
   };
@@ -67,8 +80,29 @@ const tenant = (overrides: Partial<Tenant> = {}): Tenant => ({
 const refusal = (status: number, code: string) =>
   Object.assign(new Error("server words"), { status, code, requestId: `rid-${code}`, details: null, reasons: [] });
 
+const INITIAL = {
+  id: "inv-1",
+  tenantId: ID,
+  number: "TSK-2026-01006",
+  purpose: "INITIAL",
+  state: "OPEN",
+  planVersionId: "p",
+  total: { amountMinor: "2000", currency: "EUR", exponent: 2 },
+  allocated: { amountMinor: "0", currency: "EUR", exponent: 2 },
+  remaining: { amountMinor: "2000", currency: "EUR", exponent: 2 },
+  matchedUnallocated: null,
+  issuedAt: "2026-10-15T09:00:00Z",
+  dueAt: "2099-12-04T14:32:00Z",
+  paymentMethod: "PSP",
+  version: "1",
+  replacesInvoiceId: null,
+};
+
 beforeEach(() => {
   window.sessionStorage.clear();
+  window.localStorage.clear();
+  state.invoices = [INITIAL];
+  state.checkout = null;
   state.tenant = tenant();
   state.operation = null;
   state.reads = [];
@@ -111,9 +145,40 @@ describe("awaiting the first payment", () => {
     const time = document.querySelector("time");
     expect(time).toHaveAttribute("datetime", "2099-12-04T14:32:00Z");
     expect(time?.parentElement?.textContent).toMatch(/^Its projects and invitations open once the first payment is confirmed\. If it isn’t paid by Dec 4, 2099, \d\d:32, it closes automatically\.$/);
-    expect(screen.getByText("This version of Taska can’t take payments yet.")).toBeInTheDocument();
+    // TAS-513 (B2b): the owner's slot — the invoice the server issued, and Pay, the card's one accent.
+    expect(await screen.findByRole("button", { name: "Pay €20.00" })).toHaveClass("primary-button");
+    expect(screen.getByText("Invoice TSK-2026-01006 · €20.00")).toBeInTheDocument();
+    expect(screen.queryByText("This version of Taska can’t take payments yet.")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "All companies" })).toHaveAttribute("href", "/companies");
+  });
+
+  it("TAS-513: before Taska issues the first invoice, the owner is told so — and nobody else is asked for one", async () => {
+    state.invoices = [];
+    const first = renderCard();
+    expect(await screen.findByText("There’s no invoice to pay yet. It appears here once Taska issues it.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Pay/ })).not.toBeInTheDocument();
+    first.unmount();
+    state.reads = [];
+    state.me = "sofia";
+    renderCard();
+    await waitFor(() => expect(state.reads).toContain("tenant"));
+    expect(state.reads).not.toContain("invoices");
+    expect(screen.queryByText(/invoice/i)).not.toBeInTheDocument();
+  });
+
+  it("TAS-513: a payment the server will not take says so under Pay, with the reservation's end, and keeps focus on Pay", async () => {
+    state.checkout = () =>
+      Promise.reject(Object.assign(new Error("not configured"), { status: 503, code: "POLICY_NOT_CONFIGURED", requestId: "rid-p", details: null, reasons: [] }));
+    renderCard();
+    const pay = await screen.findByRole("button", { name: "Pay €20.00" });
+    pay.focus();
+    fireEvent.click(pay);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(
+      /^Online payment isn’t available for this company yet, so the payment page wasn’t opened and nothing was charged\. The company stays reserved until Dec 4, 2099, \d\d:32\.$/,
+    );
+    expect(screen.getByRole("button", { name: "Pay €20.00" })).toHaveFocus();
   });
 
   it("the owner cancels behind §4.22's strip — «Keep it» first, Esc closes it — and the card follows the answer", async () => {
