@@ -2343,7 +2343,7 @@ Everything below is the entry as it stood, in the past tense.
 - **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml`, re-pinned from `758f8fc6` to develop `43d6c89d` in this story;
   none in `openapi.yml`): `GET /api/v1/tenants/{tenantId}/billing/invoices` (listInvoices), `GET …/billing/invoices/{invoiceId}`
   (getInvoice), `POST …/billing/invoices/{invoiceId}/checkout` (createCheckout, `Idempotency-Key`, body
-  `{returnTarget, confirmed: true}`), `GET …/billing/checkouts/{checkoutId}` (getCheckout) — all owner only. Not called:
+  `{returnTarget, confirmed: true}`), `GET …/billing/checkout/{checkoutId}` (getCheckout) — all owner only. Not called:
   createInvoice (stays off `TaskaApi` until TAS-514), autopay, refunds, disputes, documents (TAS-514…516). Backend:
   TAS-348, TAS-349, TAS-337, TAS-352; open backend PR #323 (Stripe adapter, head `2371a4b6`) has no gateway route and no
   Checkout proto. Removal of the whole section: TAS-348/349 merged and deployed with a gateway REST route, then the
@@ -2378,8 +2378,9 @@ Everything below is the entry as it stood, in the past tense.
      TAS-337 (provisioning issues it, or the blueprint says the owner calls `createInvoice` — then TAS-514 builds the
      form).
   7. **`createCheckout` problem codes are unlisted.** The client keeps the attempt (same key on retry) after a lost
-     answer, 5xx, 429, `DEPENDENCY_UNAVAILABLE` and `CAPABILITY_DISABLED`, and closes it after `OWNER_REQUIRED`,
-     `INVALID_STATE`, `IDEMPOTENCY_CONFLICT` and `POLICY_NOT_CONFIGURED`. Removal: ask A60.
+     answer, 5xx, 408, 429 and `DEPENDENCY_UNAVAILABLE`, and closes it after `OWNER_REQUIRED`, `INVALID_STATE`,
+     `IDEMPOTENCY_CONFLICT`, `POLICY_NOT_CONFIGURED`, `CAPABILITY_DISABLED` and `READ_ONLY` (only if the record still
+     holds the refused key). Removal: ask A60.
   8. **Idempotency scope** is assumed per (actor, company, operation, key). Removal: ask A55.
 - **What the UI assumes where the blueprint is silent:** Pay only on an OPEN PSP invoice with `remaining = total` (PR
   #323 charges `invoice.total`, and its store accepts only `state='OPEN'`); PARTIALLY_PAID and WIRE invoices show
