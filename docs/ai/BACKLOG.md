@@ -4727,3 +4727,21 @@ Non-blocking notes (`docs/ai/reviews/TAS-522/`, git-ignored).
 - **The comment beside the 768 rule in `styles.css`** («at any width one of the two is there») is false on the board at
   ≥768, where neither the switcher nor the menu row draws — say «in the shared bar» (release-reviewer, phone-row
   review 2).
+
+### Left by TAS-513 pre-build and build (hosted checkout, B2B blueprint `43d6c89d`, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-513-*.md` (git-ignored); the divergence entries are in `API-DIVERGENCE.md` «TAS-513».
+
+- **Re-vendor the gateway `openapi.yml`**: develop gained ~275 lines since `758f8fc6`, among them a real
+  `GET /tenants/{t}/capabilities` (TAS-497, `billing.pay`). A contract pass of its own, not TAS-513
+  (api-contract-guard §0).
+- **No billing-profile endpoint** (TAS-356): the buyer's details for an invoice have no read or write in the
+  blueprint. TAS-514 (documents and the buyer form) needs it or ask A53's answer.
+- **TAS-514 wires invoice lines, buyer, seller and documents** into the invoice page: the mapper drops them today, so
+  the page has no «Items» (art-director B5 vs the guard's §1 — ruled at build review).
+- **RENEWAL and PLAN_CHANGE creation by the owner**: the UI pays only invoices the server issued; who issues a
+  plan change, and whether the owner ever calls `createInvoice`, waits for A53 and TAS-514.
+- **Stripe and the `#` fragment**: whether `success_url` keeps `#/billing/return` is unverified — one sandbox probe
+  before the flag-on PR; if it drops it, A54 (per-checkout return URL) becomes blocking.
+- **A payment returned on another device** has no attempt record to route by; Billing shows its state, the return
+  screen says «We can't find a payment started in this browser». Accepted; removal is A54.
