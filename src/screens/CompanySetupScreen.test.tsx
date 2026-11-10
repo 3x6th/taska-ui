@@ -167,6 +167,15 @@ describe("awaiting the first payment", () => {
     expect(screen.queryByText(/invoice/i)).not.toBeInTheDocument();
   });
 
+  it("TAS-513 (N1): the first invoice read PAID while the company still awaits payment — «Confirming», and the company is read again until it opens", async () => {
+    state.invoices = [{ ...INITIAL, state: "PAID", allocated: INITIAL.total, remaining: { ...INITIAL.total, amountMinor: "0" } }];
+    renderCard();
+    await waitFor(() => expect(document.querySelector(".company-payment-state")).toHaveTextContent("Confirming the payment."));
+    expect(screen.queryByRole("button", { name: /^Pay/ })).not.toBeInTheDocument();
+    // On arrival, on the slot's word, then at the cadence (1 s, 2 s…).
+    await waitFor(() => expect(state.reads.filter((read) => read === "tenant").length).toBeGreaterThanOrEqual(4), { timeout: 6000 });
+  }, 10_000);
+
   it("TAS-513: a payment the server will not take says so under Pay, with the reservation's end, and keeps focus on Pay", async () => {
     state.checkout = () =>
       Promise.reject(Object.assign(new Error("not configured"), { status: 503, code: "POLICY_NOT_CONFIGURED", requestId: "rid-p", details: null, reasons: [] }));

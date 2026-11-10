@@ -160,6 +160,19 @@ export function CompanySetupScreen({
   // operation to follow — at the polling cadence.
   const [pollStarted, setPollStarted] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
+  /**
+   * TAS-513 (release-reviewer N1): the payment slot saw its invoice PAID while
+   * the company still reads AWAITING_PAYMENT — when, and how many reads of the
+   * company there had been. The company is then read at the setup cadence
+   * until it opens, for `POLL_LIMIT_MS`, then «Check again».
+   */
+  const [paidSeen, setPaidSeen] = useState<{ at: number; reads: number } | null>(null);
+  const [paidStalled, setPaidStalled] = useState(false);
+  /** How many times the company has been read on this card's client — `pollDelay`'s count. */
+  const tenantReads = () => {
+    const query = sessionClient.getQueryState(["tenant", companyId]);
+    return query ? query.dataUpdateCount + query.errorUpdateCount : 0;
+  };
   const tenantQuery = useQuery({
     queryKey: ["tenant", companyId],
     queryFn: () => taskaApi.getTenant(companyId),
@@ -169,8 +182,14 @@ export function CompanySetupScreen({
     refetchOnWindowFocus: "always",
     refetchInterval: (query) => {
       const lifecycle = query.state.data?.lifecycle ?? row?.lifecycle ?? null;
+      const reads = query.state.dataUpdateCount + query.state.errorUpdateCount;
+      // Paid, not yet opened (N1): read until the server opens it.
+      if (lifecycle === "AWAITING_PAYMENT" && paidSeen !== null) {
+        // The slot's own re-read is the first after `paidSeen`: the cadence starts at 1 s after it.
+        return Date.now() - paidSeen.at >= POLL_LIMIT_MS ? false : pollDelay(Math.max(0, reads - paidSeen.reads - 1));
+      }
       if (lifecycle !== "PROVISIONING" || operationId !== null || Date.now() - pollStarted >= POLL_LIMIT_MS) return false;
-      return pollDelay(query.state.dataUpdateCount + query.state.errorUpdateCount - 1);
+      return pollDelay(reads - 1);
     },
   });
   const tenant: Tenant | null = tenantQuery.data ?? row;
@@ -217,6 +236,13 @@ export function CompanySetupScreen({
     const timer = window.setTimeout(() => setTimedOut(true), Math.max(0, left));
     return () => window.clearTimeout(timer);
   }, [provisioning, operationEnded, pollStarted]);
+
+  // The paid company's poll stops after 5 minutes: «Check again» in the slot (N1).
+  useEffect(() => {
+    if (paidSeen === null) return;
+    const timer = window.setTimeout(() => setPaidStalled(true), Math.max(0, POLL_LIMIT_MS - (Date.now() - paidSeen.at)));
+    return () => window.clearTimeout(timer);
+  }, [paidSeen]);
 
   // After 30 s on «Being set up», the sentence changes (§4.37).
   const [slow, setSlow] = useState(false);
@@ -431,10 +457,18 @@ export function CompanySetupScreen({
             companyId={companyId}
             creationDeadline={deadline}
             factId={payFactId}
-            onPaid={() => {
-              paidHere.current = true;
+            onCheckAgain={() => {
+              setPaidStalled(false);
+              setPaidSeen({ at: Date.now(), reads: tenantReads() });
               void tenantQuery.refetch();
             }}
+            onPaid={() => {
+              paidHere.current = true;
+              const reads = tenantReads();
+              setPaidSeen((seen) => seen ?? { at: Date.now(), reads });
+              void tenantQuery.refetch();
+            }}
+            stalled={paidStalled}
             userId={me.data.id}
           />
         ) : null}
