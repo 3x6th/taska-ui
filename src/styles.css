@@ -4440,8 +4440,10 @@ h1 {
   text-decoration: none;
 }
 
+/* ≤820 every target is 44 (B11); the card's Pay keeps §4.37's 39 full width. */
 @media (max-width: 820px) {
   .company-billing-pay,
+  .company-invoice-pay,
   .company-invoice-again,
   .company-setup-again {
     min-height: 44px;
