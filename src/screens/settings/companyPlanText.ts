@@ -86,7 +86,8 @@ export interface UsageLine {
 /** §4.36's order; a kind this build does not know comes after, as it came. */
 const USAGE_ORDER: readonly string[] = ["PROJECT", "SEAT", "STORAGE_BYTES", "TASK_LIFETIME"];
 
-const group = (digits: string) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+/** A decimal string's digits grouped with commas — «1,234,567» — as text, never through `Number` (TAS-512; TAS-528's counter too). */
+export const group = (digits: string) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 /** A snapshot row's line, by the one template (art-director B3). `null` for a row whose counts are not the blueprint's decimal. */
 function snapshotLine(row: QuotaUsage): UsageLine | null {

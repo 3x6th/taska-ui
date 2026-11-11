@@ -18,7 +18,9 @@ import { companyWriteRefusalText, quotaRefusalText, writeRefusalText } from "../
 import { CompanyMarkerWord } from "../components/CompanyMarkerWord";
 import { refreshAfterRefusal } from "./settings/companyPlan";
 import { isIndefinite, keyFor, type SentIntent } from "./settings/companyMembers";
+import { NewIssueCount } from "../components/ProjectIssueCount";
 import { createIssueSignature } from "../lib/issueCreateIntent";
+import { projectTaskQuotaKey } from "../lib/projectTaskQuota";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Shapes, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
 import {
   useEffect,
@@ -51,6 +53,7 @@ import {
   isTransitionConflict,
   isWorkspaceClosed,
   IssueVersionConflictError,
+  refusalCode,
   reportable,
 } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
@@ -7044,7 +7047,9 @@ function CreateIssueModal({
   onCreated: (issue: Issue) => void;
 }) {
   const queryClient = useQueryClient();
-  const formCompany = useCompanyName(useCompanyAddress()?.companyId ?? null);
+  /** The companies build's company: only there is the project's issue counter read and drawn (TAS-528, B5). */
+  const formCompanyId = useCompanyAddress()?.companyId ?? null;
+  const formCompany = useCompanyName(formCompanyId);
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
   const meta = useMeta();
@@ -7236,6 +7241,21 @@ function CreateIssueModal({
    * mint a new one. In flight the key counts as open: its answer is not in.
    */
   const sentCreate = useRef<SentIntent | null>(null);
+  /**
+   * The reader's own create went through (TAS-528, art-director B6): when the
+   * form goes, the project's cached issue counter goes with it, so the next
+   * New issue or Edit project shows the skeleton and the server's new number,
+   * never the one from before this create. Removed only once the form has
+   * unmounted — removed under the open form, its own read would be rebuilt and
+   * sent at once; the next open asks instead (guard §3: +0 at the create).
+   */
+  const created = useRef({ issue: false });
+  useEffect(() => {
+    const outcome = created.current;
+    return () => {
+      if (outcome.issue) queryClient.removeQueries({ queryKey: projectTaskQuotaKey(projectId), exact: true });
+    };
+  }, [projectId, queryClient]);
   /** Where a refusal brings the modal body's view (§4.40 «Отказы квоты»). */
   const submitRef = useRef<HTMLButtonElement>(null);
   const createIssue = useMutation({
@@ -7278,8 +7298,17 @@ function CreateIssueModal({
         void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
         typeSelectRef.current?.focus();
       }
+      // The companies build (TAS-528, art-director B6, guard B3): a refusal by
+      // the plan's limit or a restriction may mean the counter moved — the
+      // open form's line is read again once, in place, the number it holds
+      // staying until the answer. Never counted here.
+      const refused = refusalCode(error);
+      if (formCompanyId !== null && (refused === "QUOTA_EXCEEDED" || refused === "READ_ONLY" || refused === "CAPABILITY_DISABLED")) {
+        void queryClient.invalidateQueries({ queryKey: projectTaskQuotaKey(projectId), exact: true });
+      }
     },
     onSuccess: async (issue) => {
+      created.current.issue = true;
       await invalidateBoard(queryClient, projectId);
       onCreated(issue);
     },
@@ -7793,6 +7822,10 @@ function CreateIssueModal({
             </div>
           </div>
         </fieldset>
+        {/* The project's issue counter (TAS-528, §4.43): its own row after
+            Planning and before the refusal slot, so it never stands between a
+            refusal and the buttons (art-director B1). Companies build only. */}
+        {formCompanyId ? <NewIssueCount companyId={formCompanyId} projectId={projectId} /> : null}
         {/* The `key` is the date refusal's sequence number, so the same
             sentence twice over remounts this node rather than re-rendering
             identical text: a live region that emits no mutation announces
