@@ -8783,6 +8783,74 @@ describe("a deleted account", () => {
     expect(ghost.getAttribute("style")).toContain("background-color");
   });
 
+  /**
+   * release-reviewer B1: the context's member list is read once and kept
+   * (TAS-202), so somebody deleted since is still a named row there — name,
+   * photo, colour. The issue read's mark wins: no chip is drawn from that row.
+   */
+  it("draws the held chip from the issue read when the member list still names the deleted assignee", async () => {
+    const staleSofia = {
+      userId: SOFIA,
+      role: "MEMBER" as const,
+      addedAt: "2026-08-01T09:00:00Z",
+      addedBy: "user-anna",
+      user: { displayName: "Sofia Reyes", email: "sofia@example.com" },
+    };
+    seedMembers([anna, staleSofia]);
+    seedDeletedPeople([SOFIA]);
+    seedAssignee(SOFIA);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    await waitFor(() => expect(chipLabels()).toEqual(["None", "Deleted user", "Anna"]));
+    const row = document.querySelector(".meta-grid .chip-row") as HTMLElement;
+    expect(row).not.toHaveTextContent("Sofia");
+    expect(row.querySelector("img")).toBeNull();
+    expect([...row.querySelectorAll(".avatar")].map((circle) => circle.getAttribute("title"))).not.toContain("Sofia Reyes");
+    const held = panel.getByRole("button", { name: "Deleted user" });
+    expect(held).toBeDisabled();
+    expectNeutral(held.querySelector(".avatar"));
+  });
+
+  it("never offers a deleted account to subscribe — a deleted row, or a named row the issue read marks (release-reviewer L1)", async () => {
+    const named = (userId: string, displayName: string) => ({
+      userId,
+      role: "MEMBER" as const,
+      addedAt: "2026-08-01T09:00:00Z",
+      addedBy: "user-anna",
+      user: { displayName, email: `${userId}@example.com` },
+    });
+    seedMembers([anna, sofiaRow, named("user-vera", "Vera Stale"), named("user-tom", "Tom Becker")]);
+    // Vera's row is stale: the issue read marks her, as its reporter.
+    seedDeletedPeople([SOFIA, "user-vera"]);
+    seedReporter("user-vera");
+    seedWatchers([watcher("user-anna")], null);
+    renderBoard(ISSUE_PATH);
+    await openPanel();
+
+    const picker = await waitFor(() => {
+      const found = document.querySelector(".watcher-form select") as HTMLSelectElement | null;
+      expect(found).not.toBeNull();
+      return found as HTMLSelectElement;
+    });
+    expect([...picker.options].map((option) => option.textContent)).toEqual(["Select a member", "Tom Becker"]);
+  });
+
+  it("leaves out of the filter a named member row the board read marks deleted", async () => {
+    seedMembers([
+      anna,
+      { userId: SOFIA, role: "MEMBER", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", user: { displayName: "Sofia Reyes", email: "sofia@example.com" } },
+    ]);
+    seedDeletedPeople([SOFIA]);
+    seedExtraIssues([{ id: "issue-2", issueKey: "TAS-103", summary: "Hers", assigneeId: SOFIA }]);
+    renderBoard();
+
+    expectNeutral(within(await screen.findByRole("button", { name: /TAS-103/ })).getByLabelText("Deleted user"));
+    await waitFor(() => expect(document.querySelectorAll(".filterbar .avatar-filter")).toHaveLength(1));
+    expect(document.querySelector(".filterbar")).not.toHaveTextContent("Sofia");
+    expect(document.querySelector('.filterbar [aria-label="Sofia Reyes"]')).toBeNull();
+  });
+
   it("leaves a person merely called «Deleted user» their own circle (art-director F4)", async () => {
     seedMembers([anna]);
     seedSummaries({ "user-dee": "Deleted user" });

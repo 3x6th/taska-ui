@@ -637,6 +637,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const workflowUnknown = workflowUnread.unanswered;
 
   const userById = useMemo(() => toUserMap(members), [members]);
+  // Who the board read itself marks deleted (TAS-529): the context's member
+  // list is read once and kept (TAS-202), so a person deleted since may still
+  // be a named row there — the filter must not draw them from it.
+  const deletedOnBoard = useMemo(() => deletedIdsOnBoard(board), [board]);
   // The columns on screen: the board's own, as sent (§4.9) — or, until it has
   // answered and after it failed, the ones predicted from the context, never
   // used to place a card.
@@ -1267,7 +1271,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <div className="assignee-row">
           {/* A deleted account's row is not drawn (TAS-529, art-director B7):
               nobody can be picked out by a circle that names nobody. */}
-          {members.filter((member) => !member.deleted).map((member) => (
+          {members.filter((member) => !member.deleted && !deletedOnBoard.has(member.userId)).map((member) => (
             <button
               className={`avatar-filter ${assigneeFilter === member.userId ? "is-active" : ""}`}
               key={member.userId}
@@ -2982,11 +2986,22 @@ function IssuePanel({
   // Named by the issue read itself since TAS-246; the member list is the
   // fallback for a summary the server could not fill (`personFor`).
   const reporter = personFor(issue.reporterId, issue.reporter, userById);
+  // Who this issue read marks deleted (TAS-529) — the assignee, the reporter,
+  // a watcher, an uploader, an actor or a participant. The member list is the
+  // context's, read once and kept (TAS-202): a person deleted since it was read
+  // is still a named row there, with their name, photo and colour, and the mark
+  // on this read is what must win (release-reviewer B1).
+  const markedDeleted = deletedIdsInIssue(issueQuery.data);
   // The member chips (TAS-226): the people the server takes as an assignee,
   // and the current assignee whatever their role now. Never a deleted
-  // account's row (TAS-529, art-director B7) — it is nobody to assign.
+  // account's row (TAS-529, art-director B7), nor a row this read marks
+  // deleted — either is nobody to assign; the current assignee is then the
+  // held chip below, drawn from the issue read.
   const assigneeChips = members.filter(
-    (member) => !member.deleted && (canBeAssigned(member) || member.userId === issue.assigneeId),
+    (member) =>
+      !member.deleted &&
+      !markedDeleted.has(member.userId) &&
+      (canBeAssigned(member) || member.userId === issue.assigneeId),
   );
   // Only once the member read has answered: before that every assignee is "not
   // a member chip", and the chip would jump into the row and out again.
@@ -3765,6 +3780,7 @@ function IssuePanel({
           members={members}
           membersAnswered={membersAnswered}
           membersUnknown={membersUnknown}
+          markedDeleted={markedDeleted}
           userById={userById}
           isProjectAdmin={isProjectAdmin}
           canWatch={canWatch}
@@ -3896,6 +3912,7 @@ function IssueWatchersSection({
   members,
   membersAnswered,
   membersUnknown,
+  markedDeleted,
   userById,
   isProjectAdmin,
   canWatch,
@@ -3909,6 +3926,8 @@ function IssueWatchersSection({
   /** The member read answered. Three states, not two — see the panel's own prop. */
   membersAnswered: boolean;
   membersUnknown: boolean;
+  /** The ids the issue read marks deleted (TAS-529): never offered to subscribe, whatever the member list still says. */
+  markedDeleted: ReadonlySet<string>;
   userById: ReadonlyMap<string, Person>;
   /**
    * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}` as this
@@ -3997,8 +4016,11 @@ function IssueWatchersSection({
       watchers.find((watcher) => watcher.userId === userId),
     );
   const subscribed = useMemo(() => new Set(watchers.map((watcher) => watcher.userId)), [watchers]);
-  // Never a deleted account's row (TAS-529, art-director B7): nobody to subscribe.
-  const addable = members.filter((member) => !member.deleted && !subscribed.has(member.userId));
+  // Never a deleted account's row (TAS-529, art-director B7), nor a row the
+  // issue read marks deleted (release-reviewer L1): nobody to subscribe.
+  const addable = members.filter(
+    (member) => !member.deleted && !markedDeleted.has(member.userId) && !subscribed.has(member.userId),
+  );
 
   /**
    * One write, and the issue read re-asked — which since TAS-246 is where the
@@ -7906,6 +7928,39 @@ function CreateIssueModal({
       </form>
     </Modal>
   );
+}
+
+/**
+ * Every id an issue read marks deleted (TAS-529): the assignee, the reporter,
+ * the watchers, the uploaders, and the actors and participants of its history.
+ * Only the server's mark is read — a blank name is never one — and only ids
+ * come out: what the read is used for is to stop offering a person, never to
+ * name one.
+ */
+function deletedIdsInIssue(read: IssueDetailsWithHistory | undefined): ReadonlySet<string> {
+  const ids = new Set<string>();
+  const mark = (person: { id: string; deleted: boolean } | null | undefined) => {
+    if (person?.deleted === true && person.id) ids.add(person.id);
+  };
+  const issue = read?.issue;
+  mark(issue?.assignee);
+  mark(issue?.reporter);
+  for (const watcher of issue?.watchers?.watchers ?? []) if (watcher.deleted === true && watcher.userId) ids.add(watcher.userId);
+  for (const attachment of issue?.attachments ?? []) mark(attachment.uploadedByUser);
+  for (const event of read?.history ?? []) {
+    mark(event.actor);
+    for (const participant of Object.values(event.participants ?? {})) mark(participant);
+  }
+  return ids;
+}
+
+/** Every card assignee a board read marks deleted (TAS-529) — ids only, as `deletedIdsInIssue`. */
+function deletedIdsOnBoard(board: Board | undefined): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const card of [...(board?.columns ?? []).flatMap((column) => column.issues), ...(board?.unplacedIssues ?? [])]) {
+    if (card.assignee?.deleted === true) ids.add(card.assignee.id);
+  }
+  return ids;
 }
 
 function toUserMap(members: ProjectMember[]): Map<string, Person> {

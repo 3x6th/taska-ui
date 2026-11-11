@@ -16,6 +16,14 @@ import { COMPANY, PROJECT, companyPath, inCompany, setHooks } from "./companiesF
  * One drawing everywhere: «Deleted user» on §4.4's neutral circle, «a deleted
  * user» inside a sentence, nothing to act on, and nothing of the person — no
  * name, address, picture or colour (art-director §6's DOM assertions).
+ *
+ * Sofia owns Initech, and an owner is not an account the hook is for (its own
+ * doc in MockTenantServer.ts: the server's prerequisite would refuse the
+ * deletion). She is used anyway because every seeded account with an ACTIVE
+ * membership, a project row, an assignment and a photo in a writable company
+ * owns some company. F3's cleanup therefore also removes her Initech
+ * membership — not a contract state — and nothing below reads Initech while a
+ * hook names her (release-reviewer L3).
  */
 
 const SOFIA = "16ad2404-96e3-4c51-b00d-55c5d1451d3c";
@@ -235,6 +243,29 @@ test.describe("F2, the window before the cleanup: Sofia is marked on every read 
     expect(options.filter((option) => option !== "")).toEqual(expect.arrayContaining(["Tom Becker · tom@example.com"]));
     expect(options.join("|")).not.toMatch(/Sofia|Deleted user/);
   });
+});
+
+test("in the app, without a reload: the board's member list still names Sofia, the issue read marks her — the chip is the issue read's (release-reviewer B1)", async ({
+  page,
+}) => {
+  await inCompany(page, "Northwind", COMPANY.northwind);
+  await page.goto(companyPath(COMPANY.northwind, `/projects/${WEB}/board`));
+  // The context is read now, with Sofia named — and kept for the board's life (TAS-202).
+  await expect(page.locator(".filterbar .avatar-filter .avatar[aria-label='Sofia Reyes']")).toHaveCount(1);
+  await setHooks(page, IN_THE_WINDOW);
+
+  await page.locator(".issue-card", { hasText: "WEB-12" }).click();
+  const panel = page.getByRole("dialog", { name: "WEB-12 issue" });
+  await expect(chipLabels(panel)).toHaveText(["None", "Deleted user", "Anna"]);
+  const held = panel.getByRole("button", { name: "Deleted user", exact: true });
+  await expect(held).toBeDisabled();
+  await expectNeutral(held.locator(".avatar"));
+  const chips = panel.locator(".meta-grid .chip-row");
+  await expect(chips).not.toContainText("Sofia");
+  await expect(chips.locator("img")).toHaveCount(0);
+  // Nor is she offered to subscribe.
+  const picker = panel.locator(".watcher-form select");
+  if (await picker.count()) expect((await picker.locator("option").allInnerTexts()).join("|")).not.toContain("Sofia");
 });
 
 test("F3: named, then deleted, then re-read — the former name, address, picture and colour are gone from the page", async ({ page }) => {

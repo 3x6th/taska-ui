@@ -4,8 +4,8 @@ import type { Board, UserSummary } from "../../domain/types";
 import type { TaskaApi } from "../TaskaApi";
 import { readAllPages, seatsOf, type Membership } from "../tenantMembers";
 import { createLocalLockManager } from "../webSession";
-import { MOCK_ACCOUNT_IDS, MOCK_DELETED_ACCOUNT_ID, MOCK_FORMER_ACCOUNT_ID, MOCK_PROJECT_IDS } from "./MockTaskaApi";
-import { MOCK_SERVER_KEY, MOCK_TENANT_HOOKS_KEY, MOCK_TENANT_IDS, MOCK_TENANT_PROJECT_IDS } from "./MockTenantServer";
+import { MOCK_ACCOUNT_IDS, MOCK_DELETED_ACCOUNT_ID, MOCK_FORMER_ACCOUNT_ID, MOCK_PROJECT_IDS, MockTaskaStore } from "./MockTaskaApi";
+import { MOCK_SERVER_KEY, MOCK_TENANT_HOOKS_KEY, MOCK_TENANT_IDS, MOCK_TENANT_PROJECT_IDS, MockTenantServer } from "./MockTenantServer";
 import { createCompaniesMockApi } from "./mockCompanies";
 
 /*
@@ -84,7 +84,28 @@ describe("the seed's deleted account — Initech's HLP-3, after the cleanup", ()
   });
 });
 
+/** `GET /tenants/{t}/members` as the server sends it, before any mapper (release-reviewer L2). */
+async function rawMembers(tenantId: string, hooks: Record<string, unknown>) {
+  const local = new MemoryStorage();
+  local.setItem(MOCK_TENANT_HOOKS_KEY, JSON.stringify(hooks));
+  const transport = new MockTenantServer({ storage: local, accountStore: new MockTaskaStore(), latencyMs: 0 }).transport();
+  const account = (await transport.startWebSession({ email: "anna@example.com", password: "x" }, crypto.randomUUID())) as { accessToken: string };
+  const company = (await transport.createTenantSession(account.accessToken, tenantId, crypto.randomUUID())) as { accessToken: string };
+  return ((await transport.listTenantMembers(company.accessToken, tenantId, {}, new AbortController().signal)) as { items: Array<Record<string, unknown>> }).items;
+}
+
 describe("the deletedAccounts hook (Addendum 2)", () => {
+  it("puts the mark on the wire and nothing of the profile — no name, no address — while every other row keeps its own", async () => {
+    const items = await rawMembers(NW, { deletedAccounts: [{ userId: sofia, cleanup: false }] });
+    const hers = items.find((item) => item.userId === sofia);
+    expect(hers).toMatchObject({ userId: sofia, role: "MEMBER", state: "ACTIVE", deleted: true });
+    for (const field of ["displayName", "email", "avatarPath"]) expect(hers).not.toHaveProperty(field);
+    expect(JSON.stringify(items)).not.toMatch(/Sofia|sofia@example\.com/);
+    const annas = items.find((item) => item.userId === anna);
+    expect(annas).toMatchObject({ displayName: "Anna Ivanova", email: "anna@example.com" });
+    expect(annas).not.toHaveProperty("deleted");
+  });
+
   it("in the window (`cleanup: false`) marks Sofia on every read and removes nothing", async () => {
     const before = await inCompany("anna@example.com", NW);
     const face = (await before.api.listMembers(WEB)).find((member) => member.userId === sofia)?.user?.avatarUrl;
