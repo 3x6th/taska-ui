@@ -2385,8 +2385,20 @@ Everything below is the entry as it stood, in the past tense.
   the fixtures; develop's codes mapped (`INITIAL_PAYMENT_REQUIRED`, `PAID_SUBSCRIPTION_REQUIRED`,
   `PLAN_TERMS_CHANGE_REQUIRES_NOTICE`, `PLAN_SELECTION_CHANGED`, `FREE_ADMISSION_REJECTED`, `FREE_TRANSITION_PENDING`
   → 409 `INVALID_STATE`; `EXPECTED_VERSION_REQUIRED` → 428; FREE admission unavailable → 503 `DEPENDENCY_UNAVAILABLE`);
-  the mandate version answered deliberately unequal to the subscription version. The Umbrella Team v1 → v2
-  «announcement» seed is gone. Fixed in the mock: PLAN_CHANGE settled like a renewal (F1), a scheduled plan applied
+  the mandate version answered deliberately unequal to the subscription version (it starts at 41; the mandate id is
+  derived from the tenant id). The Umbrella Team v1 → v2 «announcement» seed is gone, so Umbrella's seeded renewal
+  01008 now renews Team v1 at €15. Also invented: the AFTER_PAYMENT invoice is due 7 days after the command; cancel
+  needs a current paid period and resume accepts an ended one (else 409 `INVALID_STATE`), and both move the version
+  even when nothing changes (A72); a withdrawal is IMMEDIATE, drops the schedule and VOIDs the older PLAN_CHANGE invoice
+  but not a RENEWAL; VOIDing an invoice expires its open checkouts; Paid → FREE also lifts PAYMENT_EXPIRED; FREE → FREE
+  is a no-op that skips the ledger, and FREE is allowed again for the company the ledger already names; a refused FREE
+  change is stored in the receipt (receipts keyed `{tenant}:{actor}:{key}`, hash over operation, `If-Match` and body);
+  `setAutopayConsent` is refused `READ_ONLY` under OWNER_PAUSE, PLATFORM_BLOCK, PAYMENT_DISPUTE and
+  PENDING_FIRST_PAYMENT, 403 `CAPABILITY_DISABLED` behind `autopayConsentEnabled: false`, 400 `VALIDATION_FAILED` for
+  `consent: true`; `applyPlan` to a paid plan drops any schedule and to FREE goes the Paid → FREE path without spending
+  an allowance; `autopaySuspended: {[tenantId]: true}` suspends a CONSENTED mandate and removing it never restores it.
+  The FREE ledger stays as in the fixtures: Tom keeps his allowance (Umbrella → Free applies at once); the refusal is
+  Priya on the long-named company. Fixed in the mock: PLAN_CHANGE settled like a renewal (F1), a scheduled plan applied
   without payment (F2), a dispute leaving autopay on (F7).
 - **Turning the flag on** additionally needs TAS-354 and TAS-355 behind a gateway REST route, and asks A62, A63, A65
   and A70 answered; «Turn on» needs A67.

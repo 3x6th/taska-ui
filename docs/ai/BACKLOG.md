@@ -4772,3 +4772,26 @@ Rulings in `docs/ai/reviews/TAS-513-*.md` (git-ignored); the divergence entries 
 - **The Back check is per document** (`loadedByHistory()`, `companyBilling.ts`): in a page loaded by Back, the first
   click into an invoice marks it left; the list's word after Back is `confirming` on a fresh load and `unpaid` on a
   bfcache restore. Wording only (release-reviewer L1).
+- **Flaky in CI: `SettingsConnectedAppsSection.test.tsx` «selects the text and says how to copy it when the clipboard
+  refuses Claude's»** (TAS-414): on PR #134's first run `window.getSelection()?.toString()` read `''` instead of the MCP
+  URL (`:285`); green on the rerun of the same commit and in every local gate. jsdom selection after a stubbed
+  `navigator` — make the assertion wait (`await waitFor`) or assert the select call instead (found 2026-11-11).
+
+### Left by TAS-515 build (plan change, renewal, autopay off, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-515-*.md` (git-ignored); divergence in `API-DIVERGENCE.md` «TAS-515».
+
+- **«Turn on» automatic payments** waits for a payment-method source and a terms version (A67, TAS-355); the consent
+  dialog is ruled (art-director B10) and not built.
+- **An AFTER_PAYMENT change is invisible after a reload** (A63): Plan shows no Pending change, and a new selection can
+  supersede it unnoticed.
+- **The renewal row is hidden when renewal is on but the paid period has ended** (PAYMENT_EXPIRED without a cancel): no
+  ruling covers it. Builder's proposal: «The paid period ended {date}. To use {Company} again, pay its renewal in Billing
+  or change its plan.» — for art-director.
+- **No request-budget pin for opening «Change plan»** (+1 `getSubscription`) in `BillingRequests.test.tsx`.
+- **Pending changes and open intents are module-level, keyed by the company session**: re-entering the company drops
+  them (a lost answer then needs a fresh press with a new key).
+- **The mock's renewal calendar issues a RENEWAL for Initech at clock offsets of 25–32 days**: future specs using those
+  offsets will see an extra invoice.
+- **A paid NEXT_PERIOD change superseded by a new selection** is dropped without a refund on the mock (edge, not built;
+  develop's answer unknown).
