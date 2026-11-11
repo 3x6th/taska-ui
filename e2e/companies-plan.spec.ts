@@ -34,7 +34,7 @@ const fact = (page: Page, label: string) =>
   page.locator(".company-plan dl > div").filter({ has: page.locator("dt", { hasText: new RegExp(`^${label}$`) }) }).locator("dd");
 const storedHooks = (page: Page) => page.evaluate(() => JSON.parse(window.localStorage.getItem("taska.mockTenantHooks") ?? "{}") as Record<string, unknown>);
 
-test("AC1: a member of Globex sees its plan and usage — no price, payments or announced terms — and no subscription read goes out", async ({ page }) => {
+test("AC1: a member of Globex sees its plan and usage — no price, payments or scheduled change — and no subscription read goes out", async ({ page }) => {
   await inCompany(page, "Globex", COMPANY.globex);
   // A read of the subscription would take this refusal, once: it stays untaken.
   await setHooks(page, { refuseNext: { getSubscription: { status: 503, code: "DEPENDENCY_UNAVAILABLE" } } });
@@ -56,29 +56,18 @@ test("AC1: Priya, an admin of Umbrella but not its owner, sees no finance either
   await expect(labels(page)).toHaveText(["Plan", "Projects", "Seats", "Storage", "Issues per project"]);
   await expect(fact(page, "Plan")).toHaveText("Team · version 1");
   await expect(fact(page, "Seats")).toHaveText("4 in use · 25 allowedSuspended members and pending invitations hold seats too.");
-  await expect(page.locator(".company-plan")).not.toContainText(/€|Paid until|Announced/);
+  await expect(page.locator(".company-plan")).not.toContainText(/€|Paid until|Scheduled change/);
   expect(await storedHooks(page)).toMatchObject({ refuseNext: { getSubscription: { code: "DEPENDENCY_UNAVAILABLE" } } });
 });
 
-test("the owner of Umbrella sees the money: price, paid until, automatic payments and Team v2 announced for its paid-through", async ({ page }) => {
+test("the owner of Umbrella sees the money: price, paid until and automatic payments — nothing scheduled until the owner schedules it", async ({ page }) => {
   await inCompany(page, "Umbrella", COMPANY.umbrella, "tom@example.com");
   await openPlan(page, COMPANY.umbrella);
   await expect(page.getByText("The plan Umbrella is on and what it uses.", { exact: true })).toBeVisible();
-  await expect(labels(page)).toHaveText([
-    "Plan",
-    "Price",
-    "Paid until",
-    "Automatic payments",
-    "Announced change",
-    "Projects",
-    "Seats",
-    "Storage",
-    "Issues per project",
-  ]);
+  // TAS-515: no Team v1 → v2 «announcement» — develop writes the scheduled fields for the owner's own change only.
+  await expect(labels(page)).toHaveText(["Plan", "Price", "Paid until", "Automatic payments", "Projects", "Seats", "Storage", "Issues per project"]);
   await expect(fact(page, "Price")).toHaveText("€15 a month");
   await expect(fact(page, "Automatic payments")).toHaveText("On");
-  await expect(fact(page, "Announced change")).toContainText(/^From [A-Z][a-z]{2} \d{1,2}, (\d{4}, )?\d\d:\d\d: Team · version 2, €20 a month/);
-  await expect(fact(page, "Announced change")).toContainText("5 projects · 50 seats · 5 GB storage · unlimited issues");
   await expect(fact(page, "Issues per project")).toHaveText("No limit");
 });
 
@@ -94,7 +83,7 @@ test("AC2: moved to FREE below its usage, the long-named company keeps its data 
     "It’s over its plan’s limits. Nothing in it can be changed until it’s back within them.",
   );
   await expect(page.locator(".company-general-states")).toContainText(
-    "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t change plans yet.",
+    "Everything in it can still be read, and admins can still remove members and revoke invitations.",
   );
   // A FREE owner: no price, no paid period — and nothing failed.
   await expect(labels(page)).toHaveText(["Plan", "Projects", "Seats", "Storage", "Issues per project"]);
@@ -182,7 +171,7 @@ test("AC4: a late billing answer of Umbrella is never drawn once the tab is in N
   // Northwind's own plan, once its own slow read answers — and past Umbrella's delay, nothing of Umbrella's.
   await expect(fact(page, "Plan")).toHaveText("Free · version 1", { timeout: 10_000 });
   await page.waitForTimeout(3_000);
-  await expect(page.locator("body")).not.toContainText(/€15|Team · version|Announced change/);
+  await expect(page.locator("body")).not.toContainText(/€15|Team · version|Scheduled change/);
   await expect(fact(page, "Seats")).toHaveText(/ in use · 5 allowed/);
 });
 

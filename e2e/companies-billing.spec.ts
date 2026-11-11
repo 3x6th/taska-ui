@@ -23,7 +23,7 @@ const mockPage = (page: Page) => page.getByRole("heading", { level: 1, name: "Te
 /** The mock server's checkouts of an invoice — its own record, read from the shared storage. */
 const checkoutsOf = (page: Page, invoiceId: string) =>
   page.evaluate((id) => {
-    const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v6") ?? "{}") as { checkouts?: Array<{ invoiceId: string }> };
+    const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v7") ?? "{}") as { checkouts?: Array<{ invoiceId: string }> };
     return (state.checkouts ?? []).filter((checkout) => checkout.invoiceId === id).length;
   }, invoiceId);
 
@@ -37,11 +37,11 @@ const attemptsOf = (page: Page) =>
 
 /** How many keys of `createCheckout` reached the mock server — its durable receipts. */
 const checkoutKeysSent = (page: Page) =>
-  page.evaluate(() => Object.keys((JSON.parse(window.localStorage.getItem("taska.mockServer.v6") ?? "{}") as { checkoutReceipts?: object }).checkoutReceipts ?? {}).length);
+  page.evaluate(() => Object.keys((JSON.parse(window.localStorage.getItem("taska.mockServer.v7") ?? "{}") as { checkoutReceipts?: object }).checkoutReceipts ?? {}).length);
 
 const invoiceStateOf = (page: Page, invoiceId: string) =>
   page.evaluate((id) => {
-    const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v6") ?? "{}") as { invoices?: Array<{ id: string; state: string }> };
+    const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v7") ?? "{}") as { invoices?: Array<{ id: string; state: string }> };
     return state.invoices?.find((invoice) => invoice.id === id)?.state ?? null;
   }, invoiceId);
 
@@ -62,7 +62,8 @@ test("pay: the provider says yes, the invoice reads «Confirming» and then «Pa
   await payRenewal(page, { settlementDelayMs: 2500 });
   await expect(page).toHaveTitle("Test checkout — Taska mock");
   await expect(page.locator(".mock-checkout dl")).toContainText("Umbrella");
-  await expect(page.locator(".mock-checkout dl")).toContainText("€20.00");
+  // TAS-515: the renewal of the plan Umbrella is on, Team v1 — no longer onto an announced v2.
+  await expect(page.locator(".mock-checkout dl")).toContainText("€15.00");
   await page.getByRole("button", { name: "Payment succeeds" }).click();
 
   await expect(page).toHaveURL(renewalPath);
@@ -84,7 +85,7 @@ test("a failure: «The payment didn’t go through.» and Pay again", async ({ p
   await expect(stateBlock(page)).toHaveText(
     "The payment didn’t go through. The invoice is still unpaid. You can pay it again with the same card or another one.",
   );
-  await expect(page.getByRole("button", { name: "Pay €20.00" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Pay €15.00" })).toBeVisible();
   expect(await invoiceStateOf(page, INVOICE.umbrellaRenewal)).toBe("OPEN");
 });
 
@@ -144,7 +145,7 @@ test("a double click, and two tabs pressing at once, make one checkout: one key,
 test("Back from the payment page reads as leaving it: «You left the payment page.», focus on «Return to payment»", async ({ page }) => {
   await inCompany(page, "Umbrella", COMPANY.umbrella, "tom@example.com");
   await page.goto(renewalPath);
-  await page.getByRole("button", { name: "Pay €20.00" }).click();
+  await page.getByRole("button", { name: "Pay €15.00" }).click();
   await expect(mockPage(page)).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(renewalPath);

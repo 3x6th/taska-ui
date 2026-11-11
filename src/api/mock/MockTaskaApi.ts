@@ -90,7 +90,7 @@ import type {
   MembershipPage,
   QuotaSnapshot,
 } from "../tenantMembers";
-import type { Checkout, Invoice, InvoicePage, ReturnTarget } from "../billing";
+import type { AutopayConsentResult, ChangePlanInput, Checkout, Invoice, InvoicePage, PlanChange, ReturnTarget } from "../billing";
 import {
   ATTACHMENT_BUCKET,
   ATTACHMENT_MAX_SIZE_BYTES,
@@ -9812,6 +9812,23 @@ export class MockTaskaApi implements TaskaApi {
 
   async getCheckout(_tenantId: string, _checkoutId: string): Promise<Checkout> {
     throw new TenancyUnavailableError("getCheckout");
+  }
+
+  // TAS-515: the companies build's plan change, renewal and automatic payments — `MockTenantServer`'s.
+  async changeSubscriptionPlan(_tenantId: string, _input: ChangePlanInput, _version: string, _idempotencyKey: string): Promise<PlanChange> {
+    throw new TenancyUnavailableError("changeSubscriptionPlan");
+  }
+
+  async cancelSubscriptionRenewal(_tenantId: string, _version: string, _idempotencyKey: string): Promise<Subscription> {
+    throw new TenancyUnavailableError("cancelSubscriptionRenewal");
+  }
+
+  async resumeSubscriptionRenewal(_tenantId: string, _version: string, _idempotencyKey: string): Promise<Subscription> {
+    throw new TenancyUnavailableError("resumeSubscriptionRenewal");
+  }
+
+  async setAutopayConsent(_tenantId: string, _consent: false, _subscriptionVersion: string, _idempotencyKey: string): Promise<AutopayConsentResult> {
+    throw new TenancyUnavailableError("setAutopayConsent");
   }
 
   async getMeta(): Promise<EnumDictionaries> {

@@ -246,9 +246,10 @@ export function watchedPaymentState(input: {
   stage: WatchStage;
   company: string | null;
   reopened: boolean;
+  nowOn?: string | null;
 }): PaymentState {
   const { invoice, checkout, left, stage } = input;
-  if (invoice?.state === "PAID") return paidState(invoice, input.company, input.reopened);
+  if (invoice?.state === "PAID") return paidState(invoice, input.company, input.reopened, input.nowOn ?? null);
   const state = checkout?.state ?? null;
   if (state === "UNKNOWN") {
     return {
@@ -298,13 +299,19 @@ export function watchedPaymentState(input: {
   };
 }
 
-/** «Paid.» (B7): only from the invoice; «{Company} is open for changes again.» only when the re-read company lost `PAYMENT_EXPIRED`. */
-export function paidState(invoice: Invoice, company: string | null, reopened: boolean): PaymentState {
+/**
+ * «Paid.» (B7): only from the invoice; «{Company} is open for changes again.»
+ * only when the re-read company lost `PAYMENT_EXPIRED`; and — TAS-515
+ * (art-director B12) — a plan change's «{Company} is now on {plan}.» only when
+ * the re-read entitlement names the invoice's plan (`nowOn`).
+ */
+export function paidState(invoice: Invoice, company: string | null, reopened: boolean, nowOn: string | null = null): PaymentState {
   const paidLine = invoice.number ? `Invoice ${invoice.number} is paid in full.` : "This invoice is paid in full.";
+  const parts = [paidLine, reopened ? `${company ?? "This company"} is open for changes again.` : null, nowOn];
   return {
     kind: "paid",
     fact: "Paid.",
-    explanation: reopened ? `${paidLine} ${company ?? "This company"} is open for changes again.` : paidLine,
+    explanation: parts.filter((part): part is string => part !== null).join(" "),
     action: null,
   };
 }

@@ -146,7 +146,7 @@ test("AC4: Initech — renaming is refused under the pause; Sofia resumes; past 
   await expect(said(page)).toHaveText("Initech is no longer paused.");
   await expect(stateLines(page)).toHaveText([
     `${expired} See Billing`,
-    "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t change plans yet.",
+    "Everything in it can still be read, and admins can still remove members and revoke invitations.",
   ]);
 });
 

@@ -82,7 +82,8 @@ describe("owner only (§5.5, §7)", () => {
     ]);
     expect(page.nextCursor).toBeNull();
     expect(JSON.stringify(page)).not.toContain("billing@example.com");
-    expect((await api.getInvoice(UM, RENEWAL)).total).toEqual({ amountMinor: "2000", currency: "EUR", exponent: 2 });
+    // TAS-515: the renewal of the plan Umbrella is on, Team v1 — no longer onto an announced v2.
+    expect(await api.getInvoice(UM, RENEWAL)).toMatchObject({ planVersionId: MOCK_PLAN_IDS.teamRetired, total: { amountMinor: "1500", currency: "EUR", exponent: 2 } });
     expect(facts(await caught(api.getInvoice(UM, MOCK_INVOICE_IDS.starkInitial)))).toMatchObject({ status: 404, code: "RESOURCE_NOT_FOUND" });
   });
 });
@@ -171,14 +172,15 @@ describe("settlement, in two steps (§5.2)", () => {
     expect(facts(await caught(api.createCheckout(UM, RENEWAL, "BILLING", key())))).toMatchObject({ status: 409, code: "INVALID_STATE" });
   });
 
-  it("a paid period that has ended: the renewal lifts PAYMENT_EXPIRED and starts from the settlement", async () => {
-    const { api, desk, setHooks } = await inCompany("tom@example.com", UM, { clockOffsetMs: 46 * DAY, settlementDelayMs: 0 });
+  it("the renewal is due at the paid-through (TAS-515 NB4): past it the period has ended and the renewal can no longer be paid", async () => {
+    const { api } = await inCompany("tom@example.com", UM, { clockOffsetMs: 46 * DAY, settlementDelayMs: 0 });
+    const through = (await api.getSubscription(UM)).paidThrough as string;
     expect((await api.getTenant(UM)).restrictions).toContain("PAYMENT_EXPIRED");
-    const checkout = await api.createCheckout(UM, RENEWAL, "BILLING", key());
-    desk.observeMockCheckout(tokenOf(checkout), "succeeds");
-    setHooks({ clockOffsetMs: 46 * DAY + 1000 });
-    expect((await api.getInvoice(UM, RENEWAL)).state).toBe("PAID");
-    expect((await api.getTenant(UM)).restrictions).not.toContain("PAYMENT_EXPIRED");
+    const renewal = await api.getInvoice(UM, RENEWAL);
+    expect(renewal.state).toBe("EXPIRED");
+    expect(Date.parse(renewal.dueAt as string)).toBeLessThanOrEqual(Date.parse(through));
+    // The way back is a new purchase — MockTenantServer.planChange.test.ts re-buys the plan and lifts it.
+    expect(facts(await caught(api.createCheckout(UM, RENEWAL, "BILLING", key())))).toMatchObject({ status: 409, code: "INVALID_STATE" });
   });
 
   it("Stark's first payment opens the company — PENDING_FIRST_PAYMENT gone, a paid period started", async () => {

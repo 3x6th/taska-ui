@@ -2338,6 +2338,97 @@ Everything below is the entry as it stood, in the past tense.
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
 - **Removal:** delete with the flag, after the probe.
 
+### TAS-515: plan change, renewal and automatic payments ship ahead of the gateway, on the B2B blueprint
+
+- **Endpoints** (blueprint at develop `43d6c89d`, none in `openapi.yml`): `POST …/billing/plan-changes`
+  (changeSubscriptionPlan, `Idempotency-Key`, `If-Match` = `Subscription.version`, body `{planVersionId, currency,
+  paymentMethod: PSP, confirmed: true}`); `PUT` / `DELETE …/billing/renewal-cancellation` (cancel / resume); `PUT
+  …/billing/autopay` with `consent: false` only. Reused: `getSubscription`, `getEntitlement`, `getTenantQuotas`,
+  `listBillingPlans`, TAS-513's invoice and checkout routes. Not called: `listSubscriptionPeriods`, `createInvoice`,
+  `getTenantCapabilities`. Backend: TAS-354 merged as gRPC only (`29e8950d`); TAS-355 not started; no gateway route.
+- **Observed (2026-11-11 ~00:45Z, no token, `tenants/not-a-uuid/…`):** 404 «No static resource» — subscription
+  `86890838-6f2b-4b08-bcf3-a80c0044b6a4`, periods `04cc7a23-4306-4fbf-bcac-948d00f9fcf0`, POST plan-changes
+  `63ede7e0-265d-4da7-a61f-c5cbda4dfb79`, PUT renewal-cancellation `aab34deb-573c-4de2-99a3-03fbe52fbb4b`, DELETE
+  renewal-cancellation `48991c4a-f660-4aa8-b6b4-13e202f8540e`, PUT autopay `9b9f4d57-0c19-45d3-b151-089752458586`;
+  `GET …/capabilities` 400 `INVALID_ARGUMENT` with `requestId: null` (deployed); control `GET /projects` 401
+  (`26459a85-1d4d-4d49-91d7-d6bcac85f425`).
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`.
+- **What the UI assumes where the blueprint is silent — each removable:**
+  - `If-Match` for all four commands is `Subscription.version`, never `AutopayMandate.version`; a retry sends the same
+    key, `If-Match` and body; 412 re-reads and needs a new press. Removal: A71 (`x-version-source` on change, cancel,
+    resume).
+  - No quote: before confirming, the UI branches only on a FREE target and on the company having no `paidThrough` (or
+    PAYMENT_EXPIRED); paid → paid is a neutral sentence; the effect and date are drawn only from the answer. Removal:
+    A61.
+  - The PLAN_CHANGE invoice is followed only when `PlanChange.invoiceId` is present (develop never sets it); otherwise
+    «There's no invoice for this change yet», no Pay. Removal: A62 (with A53, TAS-356).
+  - An AFTER_PAYMENT change is shown only in the session that made it; after a reload nothing. The in-session row is
+    cleared by a heuristic: a subscription re-read after the acceptance with another version **and** a
+    `scheduledPlanVersionId` (a NEXT_PERIOD selection superseded it — an AFTER_PAYMENT selection nulls the schedule,
+    SPC 315-340), or an entitlement with another version **and** another plan (a FREE move elsewhere), or a subscription with another
+    version **and** another `paidThrough` (a re-buy of the current plan settled). On develop two more writers move
+    `paidThrough` while an AFTER_PAYMENT change is pending — coverage revoked on a full refund or final chargeback
+    (`SubscriptionStore.java:539`) and a paid future period starting (`:596-603`) — so the row can go early, as after a
+    reload. A withdrawal or another AFTER_PAYMENT change made in another tab stays invisible. Removal: A63.
+  - Whether a scheduled change is already paid is not on the wire. Withdrawing it (choosing the current plan) is
+    worded «…dropped — unless it's already paid for; then it still starts on that date.» and the result is read from
+    the re-read subscription. On develop a paid NEXT_PERIOD change cannot be withdrawn: `applied()` keeps the schedule
+    and choosing the current plan is an IMMEDIATE no-op (SPC 221); a later AFTER_PAYMENT selection nulls the schedule
+    but leaves the granted future period, and on its settlement `window()` supersedes every GRANTED period — the paid
+    future period is forfeited without a refund. Removal: A76 (409 or a defined refund path, and a «paid» marker; A63's
+    `state`).
+  - Cancelling renewal does not cancel a scheduled change; a paid one still starts at the boundary (develop reads the
+    renewal flags only in `RenewalCalendar.java:44-73`). With a schedule the copy speaks of «its last paid period», not a
+    date. Removal: A66 extended (decide whether cancelling drops an unpaid schedule).
+  - The PLAN_CHANGE invoice page reads `getEntitlement` once more (owner, `purpose = PLAN_CHANGE`, usually cached) for
+    «… is now on {plan}» and «Until {plan} starts…». Removal: A75 extended to the invoice page, or A43's plan snapshot.
+  - `scheduledPlanVersionId` / `scheduledEffectiveAt` are read as the owner's own NEXT_PERIOD change. Removal: A64.
+  - Withdrawal of a scheduled change and re-buying under PAYMENT_EXPIRED both go through choosing the current plan
+    (`Subscription.planVersionId`), offered only when it equals `Entitlement.planVersionId`. Removal: A74.
+  - Free is always offered and its eligibility learnt from the refusal (remembered until sign-out).
+  - «Turn on» automatic payments does not exist: nothing supplies `paymentMethodId` or `termsVersion`. Removal: A67.
+  - Autopay copy names no invoice kind or timing. Removal: A69.
+  - Each command is followed by a subscription re-read; the answer's `subscription` is never cached.
+- **Found on develop, recorded, not compensated:** a new selection leaves older-selection invoices (RENEWAL included)
+  OPEN and payable while settlement denies them — money without coverage (A65, high); an open RENEWAL stays payable and
+  renews after a cancel (A66); SUSPENDED survives Paid→FREE (A69); `renewal_cancelled` survives Paid→FREE (A73); a
+  withdrawal 404s when the current version is no longer the latest published (A74; Umbrella on retired Team v1 shows it
+  on the mock too); TAS-354 codes outside `ErrorCode` (A70); the AUTOPAY profile refuses a withdrawal under pause,
+  block or dispute (A68); periods are listed newest first (contracts §7 says ascending); capabilities answers 400 with
+  `requestId: null`.
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v7` — every mock session is
+  signed out once): Starter €10 and Business €40 published plans; the PLAN_CHANGE invoice issued at command time and
+  returned in `invoiceId` (NEXT_PERIOD: due at `effectiveAt`); older-selection invoices VOIDed by a new selection; a
+  plan change ends when its invoice expires; 30-day periods; a minimal renewal calendar (RENEWAL at `paidThrough` − 7
+  days, due 7 days later, only with renewal on and no change active); an `autopaySuspended` hook; the FREE ledger from
+  the fixtures; develop's codes mapped (`INITIAL_PAYMENT_REQUIRED`, `PAID_SUBSCRIPTION_REQUIRED`,
+  `PLAN_TERMS_CHANGE_REQUIRES_NOTICE`, `PLAN_SELECTION_CHANGED`, `FREE_ADMISSION_REJECTED`, `FREE_TRANSITION_PENDING`
+  → 409 `INVALID_STATE`; `EXPECTED_VERSION_REQUIRED` → 428; FREE admission unavailable → 503 `DEPENDENCY_UNAVAILABLE`);
+  the mandate version answered deliberately unequal to the subscription version (it starts at 41; the mandate id is
+  derived from the tenant id). The Umbrella Team v1 → v2 «announcement» seed is gone, so Umbrella's seeded renewal
+  01008 now renews Team v1 at €15 (due at its `paidThrough`, not after it). A withdrawal over a **paid** scheduled
+  change is an IMMEDIATE no-op that keeps the schedule, as on develop — but the mock bumps `Subscription.version` there
+  and develop does not. Any new selection drops a paid NEXT_PERIOD change at once on the mock; on develop its granted
+  future period still starts at the boundary unless a later AFTER_PAYMENT selection settles first (`window()` then
+  forfeits it), and a later NEXT_PERIOD is scheduled after the paid period (`boundary()` takes the max GRANTED end). Also invented: the AFTER_PAYMENT invoice is due 7 days after the command; cancel
+  needs a current paid period and resume accepts an ended one (else 409 `INVALID_STATE`), and both move the version
+  even when nothing changes (A72); a withdrawal is IMMEDIATE, drops the schedule and VOIDs the older PLAN_CHANGE invoice
+  but not a RENEWAL; VOIDing an invoice expires its open checkouts; Paid → FREE also lifts PAYMENT_EXPIRED; FREE → FREE
+  is a no-op that skips the ledger, and FREE is allowed again for the company the ledger already names; a refused FREE
+  change is stored in the receipt (receipts keyed `{tenant}:{actor}:{key}`, hash over operation, `If-Match` and body);
+  `setAutopayConsent` is refused `READ_ONLY` under OWNER_PAUSE, PLATFORM_BLOCK, PAYMENT_DISPUTE and
+  PENDING_FIRST_PAYMENT, 403 `CAPABILITY_DISABLED` behind `autopayConsentEnabled: false`, 400 `VALIDATION_FAILED` for
+  `consent: true`; `applyPlan` to a paid plan drops any schedule and to FREE goes the Paid → FREE path without spending
+  an allowance; `autopaySuspended: {[tenantId]: true}` suspends a CONSENTED mandate and removing it never restores it.
+  The FREE ledger stays as in the fixtures: Tom keeps his allowance (Umbrella → Free applies at once); the refusal is
+  Priya on the long-named company. Fixed in the mock: PLAN_CHANGE settled like a renewal (F1), a scheduled plan applied
+  without payment (F2), a dispute leaving autopay on (F7).
+- **Turning the flag on** additionally needs TAS-354 and TAS-355 behind a gateway REST route, and asks A62, A63, A65,
+  A70 and A76 answered; «Turn on» needs A67.
+- **Removal:** with the flag, after a stand probe — Free → immediate with no Paid until; cheaper → invoice → PAID → a
+  new month; dearer → scheduled → paid → switch at the date; cancel → read-only at the end; 412 from a second tab;
+  a same-key replay returns the same answer.
+
 ### TAS-513: hosted checkout ships ahead of the gateway, on the B2B blueprint
 
 - **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml`, re-pinned from `758f8fc6` to develop `43d6c89d` in this story;
@@ -2463,8 +2554,10 @@ Everything below is the entry as it stood, in the past tense.
   by `planVersionId` — a join of two published reads, not a correction of a backend answer. Removal: ask A43 (a plan
   snapshot inside the billing answers).
 - **What the UI assumes where the blueprint is silent — each removable:**
-  - `scheduledPlanVersionId` / `scheduledEffectiveAt` are read as announced terms and shown to the owner only; no notice
-    type exists, and non-owners see no announced terms. Removal: ask A47.
+  - ~~`scheduledPlanVersionId` / `scheduledEffectiveAt` are read as announced terms~~ — **corrected by TAS-515**
+    (api-contract-guard, develop `43d6c89d`): on develop the two fields are written only by the owner's own NEXT_PERIOD
+    choice (`SubscriptionPlanChanges.java:331`, `PlanCoveragePolicy.applied`); no catalogue-notice writer exists
+    (TAS-483). The row is now «Scheduled change», owner only. Removal: ask A64 (supersedes A47).
   - Current limits come from the quota snapshot (SEAT, PROJECT, STORAGE_BYTES) and `Entitlement.limits`
     (TASK_LIFETIME), never from the catalogue; the catalogue's limits only for announced terms. Removal: asks A44, A48.
   - Restrictions come from `Tenant.restrictions` only; which quota an `OVER_QUOTA` is about is not known. Removal: ask

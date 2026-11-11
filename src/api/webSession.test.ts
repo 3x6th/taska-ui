@@ -141,6 +141,20 @@ function fakeTransport() {
     getInvoice: vi.fn<B2bTransport["getInvoice"]>(async (_bearer, tenantId, invoiceId) => ({ id: invoiceId, tenantId, state: "OPEN" })),
     createCheckout: vi.fn<B2bTransport["createCheckout"]>(async (_bearer, _tenantId, invoiceId) => ({ id: "checkout-1", invoiceId, state: "CREATED" })),
     getCheckout: vi.fn<B2bTransport["getCheckout"]>(async (_bearer, _tenantId, checkoutId) => ({ id: checkoutId, invoiceId: "invoice-1", state: "PENDING" })),
+    // TAS-515.
+    changeSubscriptionPlan: vi.fn<B2bTransport["changeSubscriptionPlan"]>(async (_bearer, tenantId) => ({
+      subscription: { tenantId, planVersionId: "plan-team", version: "3", renewalCancelled: false, autopayState: "DISABLED" },
+      effect: "AFTER_PAYMENT",
+      invoiceId: "invoice-2",
+      operationId: "operation-1",
+    })),
+    cancelSubscriptionRenewal: vi.fn<B2bTransport["cancelSubscriptionRenewal"]>(async (_bearer, tenantId) => ({
+      tenantId, planVersionId: "plan-team", version: "3", renewalCancelled: true, autopayState: "CONSENTED",
+    })),
+    resumeSubscriptionRenewal: vi.fn<B2bTransport["resumeSubscriptionRenewal"]>(async (_bearer, tenantId) => ({
+      tenantId, planVersionId: "plan-team", version: "4", renewalCancelled: false, autopayState: "CONSENTED",
+    })),
+    setAutopayConsent: vi.fn<B2bTransport["setAutopayConsent"]>(async () => ({ id: "mandate-1", state: "DISABLED", version: "41" })),
   };
 }
 

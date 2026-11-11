@@ -13,13 +13,19 @@ import type {
 import { TRANSPORT_FAILURE_REASON } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
 import {
+  UnreadableAnswerError,
   httpsOnly,
+  toAutopayConsentResult,
   toCheckout,
   toInvoice,
   toInvoicePage,
+  toPlanChange,
+  type AutopayConsentResult,
+  type ChangePlanInput,
   type Checkout,
   type Invoice,
   type InvoicePage,
+  type PlanChange,
   type RedirectPolicy,
   type ReturnTarget,
 } from "./billing";
@@ -224,6 +230,21 @@ export interface B2bTransport {
   createCheckout(bearer: string | null, tenantId: string, invoiceId: string, returnTarget: ReturnTarget, idempotencyKey: string): Promise<unknown>;
   /** `GET /tenants/{tenantId}/billing/checkout/{checkoutId}` — 200 `Checkout`. */
   getCheckout(bearer: string | null, tenantId: string, checkoutId: string, signal: AbortSignal): Promise<unknown>;
+
+  /*
+   * The company's plan change, renewal and automatic payments (TAS-515), the
+   * owner's only, with that company's WEB_TENANT. Every one carries the
+   * caller's `Idempotency-Key` and `If-Match: "{Subscription.version}"`.
+   */
+
+  /** `POST /tenants/{tenantId}/billing/plan-changes` `{planVersionId, currency, paymentMethod, confirmed: true}` — 200 `PlanChange`. */
+  changeSubscriptionPlan(bearer: string | null, tenantId: string, input: ChangePlanInput, version: string, idempotencyKey: string): Promise<unknown>;
+  /** `PUT /tenants/{tenantId}/billing/renewal-cancellation` `{confirmed: true}` — 200 `Subscription`. */
+  cancelSubscriptionRenewal(bearer: string | null, tenantId: string, version: string, idempotencyKey: string): Promise<unknown>;
+  /** `DELETE /tenants/{tenantId}/billing/renewal-cancellation`, no body — 200 `Subscription`. */
+  resumeSubscriptionRenewal(bearer: string | null, tenantId: string, version: string, idempotencyKey: string): Promise<unknown>;
+  /** `PUT /tenants/{tenantId}/billing/autopay` `{consent: false, confirmed: true}` — 200 `AutopayMandate`. */
+  setAutopayConsent(bearer: string | null, tenantId: string, consent: false, version: string, idempotencyKey: string): Promise<unknown>;
 }
 
 /** `AccessSession` as this layer reads it: the four strings it needs, `tenantId` only on a company session. */
@@ -1201,6 +1222,56 @@ export class WebSessionClient {
     if (checkout === null) throw new Error("The answer held no checkout.");
     if (checkout.id !== checkoutId) throw new ForeignCompanyAnswerError();
     return checkout;
+  }
+
+  /* ---------------------------- plan change, renewal and automatic payments (TAS-515) */
+
+  /*
+   * api-contract-guard's pre-build ruling §1: the tab's company session of
+   * that company only (`inCompany`), control plane — no `read` option, so a
+   * refusal marks nothing. The key and `If-Match` are the caller's, and a
+   * retry of one intent sends the same ones; the bodies are built field by
+   * field by the transport, so a retry is the same bytes. An answer naming
+   * another company is `ForeignCompanyAnswerError` and one that is not an
+   * object `UnreadableAnswerError`: no answer about this command either way,
+   * so the intent stays open. Nothing of an answer is learnt or cached here.
+   */
+
+  async changeSubscriptionPlan(tenantId: string, input: ChangePlanInput, version: string, idempotencyKey: string): Promise<PlanChange> {
+    const answer = toPlanChange(
+      await this.inCompany(tenantId, (bearer) => this.transport.changeSubscriptionPlan(bearer, tenantId, input, version, idempotencyKey)),
+    );
+    if (answer === null) throw new UnreadableAnswerError();
+    if (answer.subscription !== null) ofCompany(answer.subscription, tenantId);
+    return answer;
+  }
+
+  async cancelSubscriptionRenewal(tenantId: string, version: string, idempotencyKey: string): Promise<Subscription> {
+    return this.subscriptionAnswer(
+      await this.inCompany(tenantId, (bearer) => this.transport.cancelSubscriptionRenewal(bearer, tenantId, version, idempotencyKey)),
+      tenantId,
+    );
+  }
+
+  async resumeSubscriptionRenewal(tenantId: string, version: string, idempotencyKey: string): Promise<Subscription> {
+    return this.subscriptionAnswer(
+      await this.inCompany(tenantId, (bearer) => this.transport.resumeSubscriptionRenewal(bearer, tenantId, version, idempotencyKey)),
+      tenantId,
+    );
+  }
+
+  async setAutopayConsent(tenantId: string, consent: false, subscriptionVersion: string, idempotencyKey: string): Promise<AutopayConsentResult> {
+    const answer = toAutopayConsentResult(
+      await this.inCompany(tenantId, (bearer) => this.transport.setAutopayConsent(bearer, tenantId, consent, subscriptionVersion, idempotencyKey)),
+    );
+    if (answer === null) throw new UnreadableAnswerError();
+    return answer;
+  }
+
+  /** A command's `Subscription` answer: an object, of this company — or no answer about it. */
+  private subscriptionAnswer(wire: unknown, tenantId: string): Subscription {
+    if (typeof wire !== "object" || wire === null || Array.isArray(wire)) throw new UnreadableAnswerError();
+    return ofCompany(toSubscription(wire), tenantId);
   }
 
   private tenantAnswer(answer: unknown): Tenant {

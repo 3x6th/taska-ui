@@ -645,6 +645,7 @@ export function Strip({
   onCancel,
   onAnswer,
   className = "",
+  cancelLabel = "Cancel",
 }: {
   id: string;
   sentence: string;
@@ -653,6 +654,8 @@ export function Strip({
   onCancel: () => void;
   onAnswer: () => void;
   className?: string;
+  /** The way back's label — «Keep renewal», «Keep them on» (TAS-515, the «Keep it» precedent of §4.37). */
+  cancelLabel?: string;
 }) {
   return (
     <div className={`member-confirm company-member-confirm ${className}`} id={id}>
@@ -669,7 +672,7 @@ export function Strip({
           }}
           type="button"
         >
-          Cancel
+          {cancelLabel}
         </button>
         <button
           aria-describedby={`${id}-sentence`}

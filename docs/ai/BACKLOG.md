@@ -4772,3 +4772,37 @@ Rulings in `docs/ai/reviews/TAS-513-*.md` (git-ignored); the divergence entries 
 - **The Back check is per document** (`loadedByHistory()`, `companyBilling.ts`): in a page loaded by Back, the first
   click into an invoice marks it left; the list's word after Back is `confirming` on a fresh load and `unpaid` on a
   bfcache restore. Wording only (release-reviewer L1).
+- **Flaky in CI: `SettingsConnectedAppsSection.test.tsx` «selects the text and says how to copy it when the clipboard
+  refuses Claude's»** (TAS-414): on PR #134's first run `window.getSelection()?.toString()` read `''` instead of the MCP
+  URL (`:285`); green on the rerun of the same commit and in every local gate. jsdom selection after a stubbed
+  `navigator` — make the assertion wait (`await waitFor`) or assert the select call instead (found 2026-11-11).
+
+### Left by TAS-515 build (plan change, renewal, autopay off, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-515-*.md` (git-ignored); divergence in `API-DIVERGENCE.md` «TAS-515».
+
+- **«Turn on» automatic payments** waits for a payment-method source and a terms version (A67, TAS-355); the consent
+  dialog is ruled (art-director B10) and not built.
+- **An AFTER_PAYMENT change is invisible after a reload** (A63): Plan shows no Pending change, and a new selection can
+  supersede it unnoticed.
+- ~~The renewal row is hidden when renewal is on but the paid period has ended~~ — **ruled at build review**: keep it
+  hidden; Plan reads no invoices, and the §4.39 block already says it with «See Billing».
+- **No request-budget pin for opening «Change plan»** (+1 `getSubscription`) in `BillingRequests.test.tsx`.
+- **Pending changes and open intents are module-level, keyed by the company session**: re-entering the company drops
+  them (a lost answer then needs a fresh press with a new key).
+- **The mock's renewal calendar issues a RENEWAL for Initech at clock offsets of 25–32 days**: future specs using those
+  offsets will see an extra invoice.
+- **A paid NEXT_PERIOD change superseded by a later AFTER_PAYMENT selection** is forfeited without a refund on develop
+  (`window()` supersedes every GRANTED period on settlement); the UI can't warn — whether a schedule is paid isn't on
+  the wire (A76, A63).
+- **An in-session pending AFTER_PAYMENT change can't be withdrawn** from the dialog (develop allows it by choosing the
+  current plan, SPC 167, 221): pass the pending change into `planChoices` (api-contract-guard L-7).
+- **The vendored gateway `openapi.yml` is one route behind** develop (`GET /tenants/{tenantId}/capabilities`) — fold into
+  the re-vendor line above.
+- **Withdrawal copy refinements** (art-director re-verdict, non-blocking): pre-confirm «The change to {scheduled} from
+  {date} is dropped, and {Company} stays on {current}. If that change is already paid for, it can't be dropped: it still
+  starts on that date.»; without a date, no second sentence; after a paid withdrawal, for the rest of the session the
+  Scheduled row's third line «It's already paid for, so it starts on that date.» (after a reload unknowable, A76).
+- **Re-buy Pending row copy** (art-director): on a re-buy of the current plan under PAYMENT_EXPIRED, «Starts a new month
+  once invoice {number} is paid. Until then, {Company} stays read-only.» instead of «…stays on {current}» naming the
+  same plan.

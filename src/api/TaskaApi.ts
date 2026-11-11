@@ -1,5 +1,5 @@
 import type { AccessTokenScopes } from "./accessTokens";
-import type { Checkout, Invoice, InvoicePage, ReturnTarget } from "./billing";
+import type { AutopayConsentResult, ChangePlanInput, Checkout, Invoice, InvoicePage, PlanChange, ReturnTarget } from "./billing";
 import type {
   CreateTenantInput,
   CreateTenantResult,
@@ -1656,6 +1656,50 @@ export interface TaskaApi {
   createCheckout(tenantId: string, invoiceId: string, returnTarget: ReturnTarget, idempotencyKey: string): Promise<Checkout>;
   /** `GET /tenants/{tenantId}/billing/checkout/{checkoutId}` — the checkout as the server has it now. */
   getCheckout(tenantId: string, checkoutId: string): Promise<Checkout>;
+
+  /*
+   * A company's plan change, renewal and automatic payments (TAS-515), on the
+   * B2B blueprint's routes — none on the stand, and on develop as gRPC only
+   * (TAS-354; `setAutopayConsent` is TAS-355, not started) —
+   * docs/ai/API-DIVERGENCE.md «TAS-515». The owner's only (403
+   * `OWNER_REQUIRED`), with the tab's company session of that company
+   * (another company: `WorkspaceClosedError`, no request); control plane, so
+   * a refusal marks nothing. Each carries `If-Match: "{version}"` —
+   * **`Subscription.version` from the last `getSubscription`, never
+   * `AutopayMandate.version`** — and the caller's `Idempotency-Key`, one per
+   * confirmed intent: a retry after an answer that never came sends the same
+   * key, the same `If-Match` and the same body (api-contract-guard §2).
+   * **None is optimistic** and no answer is cached: the screen reads the
+   * subscription again. A 2xx naming another company is
+   * `ForeignCompanyAnswerError`; one that is not an object is
+   * `UnreadableAnswerError` — both leave the intent open. Today's build
+   * refuses all four without a request (`TenancyUnavailableError`).
+   */
+
+  /**
+   * `POST /tenants/{tenantId}/billing/plan-changes` `{planVersionId, currency,
+   * paymentMethod, confirmed: true}`, in that order. 200 `PlanChange`: the
+   * server's `effect` (IMMEDIATE, AFTER_PAYMENT, NEXT_PERIOD) and
+   * `effectiveAt` are facts once recorded — there is no quote (A61).
+   * Refusals: 400 `VALIDATION_FAILED`; 403 `OWNER_REQUIRED`; 404
+   * `RESOURCE_NOT_FOUND` (not the latest published version); 409
+   * `FREE_ELIGIBILITY_USED` / `INVALID_STATE` / `IDEMPOTENCY_CONFLICT`; 412,
+   * 428; 422 `CONFIRMATION_REQUIRED`; 429; 503 `DEPENDENCY_UNAVAILABLE` /
+   * `POLICY_NOT_CONFIGURED`.
+   */
+  changeSubscriptionPlan(tenantId: string, input: ChangePlanInput, version: string, idempotencyKey: string): Promise<PlanChange>;
+  /** `PUT /tenants/{tenantId}/billing/renewal-cancellation` `{confirmed: true}` — 200 `Subscription`; 409 without a paid subscription. */
+  cancelSubscriptionRenewal(tenantId: string, version: string, idempotencyKey: string): Promise<Subscription>;
+  /** `DELETE /tenants/{tenantId}/billing/renewal-cancellation`, no body — 200 `Subscription`. */
+  resumeSubscriptionRenewal(tenantId: string, version: string, idempotencyKey: string): Promise<Subscription>;
+  /**
+   * `PUT /tenants/{tenantId}/billing/autopay` `{consent: false, confirmed:
+   * true}` — **withdrawal only**: `consent` is the literal `false`, so no
+   * caller can send `true`; there is no source for a payment method or a
+   * terms version (ask A67). `version` is `Subscription.version`
+   * (`x-version-source`). 200 `AutopayMandate`, kept as its state only.
+   */
+  setAutopayConsent(tenantId: string, consent: false, subscriptionVersion: string, idempotencyKey: string): Promise<AutopayConsentResult>;
 
   /**
    * `GET /meta` — the enum dictionaries (backend TAS-217), read once per
