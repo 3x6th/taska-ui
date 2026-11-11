@@ -2358,11 +2358,11 @@ Everything below is the entry as it stood, in the past tense.
 - **What the UI assumes where the blueprint is silent — each removable:**
   - Disputes are PSP-only (every outcome rule names a PSP confirmation; `Dispute` has no method) — A91.
   - Outcome wording without an invoice or an amount: «Disputed payment» (A91).
-  - «A new full payment is needed» from `PAYMENT_EXPIRED` after a LOST_PARTIAL_COVERAGE_REVOKED — the wire cannot tell a
-    revoked period from an ended one (A92).
+  - «A paid plan for {Company} now needs a new full payment» from `PAYMENT_EXPIRED` after a LOST_PARTIAL_COVERAGE_REVOKED —
+    the wire cannot tell a revoked period from an ended one (A92); payment is never said to be the only way back (Free,
+    D209–D211).
   - No requester and no reason text in the history (A94); bank crediting said once, with no number (A95).
-  - A refund's `decidedAt` and `submittedAt` persist into later states; a WIRE `submittedAt` is kept only with the
-    evidence set (A87, A96).
+  - A refund's `decidedAt` and `submittedAt` persist into later states, each read from its own field only (A87, A96).
   - Disputes drawn newest first; the blueprint's §7 says ascending (A87). +1 read on Billing (A75).
 - **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v9` — every mock session is
   signed out once; no displayed mock string reaches the REST bundle, checked by hand on both REST builds; the only hits
