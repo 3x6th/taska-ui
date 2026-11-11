@@ -495,7 +495,8 @@ export type RefundKind = "SUBSCRIPTION_FULL" | "UNALLOCATED_RETURN" | (string & 
  * One `Refund`, narrowed (decision 6): no `paymentId` (an admin-only fact), no
  * `version` (no owner write), none of the operator's evidence, calendar and
  * SLA fields — but `sendDueAt` («Taska aims to send it by», only where a
- * screen may say it) and `decidedAt`.
+ * screen may say it), `decidedAt` and `submittedAt` (TAS-516: the row's history,
+ * each step only from its own field).
  */
 export interface Refund {
   id: string;
@@ -510,6 +511,7 @@ export interface Refund {
   feeBearer: string | null;
   sendDueAt: string | null;
   decidedAt: string | null;
+  submittedAt: string | null;
 }
 
 /** `RefundPage`, as sent: `nextCursor` absent at the end. */
@@ -524,6 +526,9 @@ export function toRefund(wire: unknown): Refund | null {
   if (row === null) return null;
   const id = text(row.id);
   if (id === null) return null;
+  const sourceMethod = text(row.sourceMethod);
+  // The SLA set is all-or-nothing, and a wire refund is sent only once its evidence is complete (guard Q3).
+  const submitted = sourceMethod === "WIRE" && instant(row.evidenceCompletedAt) === null ? null : instant(row.submittedAt);
   return {
     id,
     tenantId: text(row.tenantId),
@@ -531,24 +536,95 @@ export function toRefund(wire: unknown): Refund | null {
     state: text(row.state),
     amount: toMoney(row.amount),
     reasonCode: text(row.reasonCode),
-    sourceMethod: text(row.sourceMethod),
+    sourceMethod,
     requestedAt: instant(row.requestedAt),
     confirmedAt: instant(row.confirmedAt),
     feeBearer: text(row.feeBearer),
     sendDueAt: instant(row.sendDueAt),
     decidedAt: instant(row.decidedAt),
+    submittedAt: submitted,
   };
 }
 
-/** `RefundPage` in the server's order — the screen orders it. */
+/** A list's `{items: []}` body (TAS-516, guard F1): a 2xx that is not one is no answer, never an empty list. */
+function pageBody(wire: unknown): Record<string, unknown> & { items: unknown[] } {
+  const page = objectOf(wire);
+  if (page === null || !Array.isArray(page.items)) throw new UnreadableAnswerError();
+  return page as Record<string, unknown> & { items: unknown[] };
+}
+
+/** `RefundPage` in the server's order — the screen orders it. A body with no `items` array is no answer (F1). */
 export function toRefundPage(wire: unknown): RefundPage {
-  const page = objectOf(wire) ?? {};
-  const items = Array.isArray(page.items) ? page.items.map(toRefund).filter((refund): refund is Refund => refund !== null) : [];
-  return { items, nextCursor: text(page.nextCursor) };
+  const page = pageBody(wire);
+  return { items: page.items.map(toRefund).filter((refund): refund is Refund => refund !== null), nextCursor: text(page.nextCursor) };
 }
 
 /** Every refund, all pages. */
 export const readAllRefunds = (list: (params: { cursor?: string; limit?: number }) => Promise<RefundPage>): Promise<Refund[]> => readAllPages(list);
+
+/* ------------------------------------------------------ disputes (TAS-516) */
+
+/*
+ * The blueprint's `listDisputes` (`b2b-openapi.yaml` at develop `43d6c89d`), not
+ * on the stand (docs/ai/API-DIVERGENCE.md «TAS-516», TAS-490). api-contract-guard's
+ * pre-build ruling §3: **no dispute names an invoice or an amount** (A91), and no
+ * row is ever joined to `Tenant.restrictions` — the two say different things.
+ * `paymentId`, `version` and `confirmedMoneyFactId` stay out: nothing owner-facing
+ * may hold a payment id (A83, A89).
+ */
+
+/** `Dispute.state`. */
+export type DisputeState = "OPEN" | "NEEDS_REVIEW" | "WON" | "LOST" | "WITHDRAWN" | (string & {});
+
+/** `Dispute.finalOutcome`. */
+export type DisputeOutcome = "WON" | "WITHDRAWN_CONFIRMED" | "LOST_FULL_REFUND" | "LOST_PARTIAL_COVERAGE_REVOKED" | (string & {});
+
+/** One `Dispute`, narrowed: the outcome is kept only when it matches its state (§3's pair rule, `toDispute`). */
+export interface Dispute {
+  id: string;
+  tenantId: string | null;
+  state: DisputeState | null;
+  finalOutcome: DisputeOutcome | null;
+  openedAt: string | null;
+  resolvedAt: string | null;
+}
+
+/** `DisputePage`, as sent: `nextCursor` absent at the end. */
+export interface DisputePage {
+  items: Dispute[];
+  nextCursor: string | null;
+}
+
+/** The blueprint's `oneOf`: a terminal state and its outcome (§3) — anything else is said by the state's word alone. */
+const outcomeMatches = (state: string | null, outcome: string | null) =>
+  outcome !== null && ((state === "WON" && outcome === "WON") || (state === "WITHDRAWN" && outcome === "WITHDRAWN_CONFIRMED") || (state === "LOST" && outcome.startsWith("LOST_")));
+
+/** One wire `Dispute`, or `null` for a row without a usable `id`. */
+export function toDispute(wire: unknown): Dispute | null {
+  const row = objectOf(wire);
+  if (row === null) return null;
+  const id = text(row.id);
+  if (id === null) return null;
+  const state = text(row.state);
+  const outcome = text(row.finalOutcome);
+  return {
+    id,
+    tenantId: text(row.tenantId),
+    state,
+    finalOutcome: outcomeMatches(state, outcome) ? outcome : null,
+    openedAt: instant(row.openedAt),
+    resolvedAt: instant(row.resolvedAt),
+  };
+}
+
+/** `DisputePage` in the server's order — the screen orders it. A body with no `items` array is no answer (F1). */
+export function toDisputePage(wire: unknown): DisputePage {
+  const page = pageBody(wire);
+  return { items: page.items.map(toDispute).filter((dispute): dispute is Dispute => dispute !== null), nextCursor: text(page.nextCursor) };
+}
+
+/** Every dispute, all pages. */
+export const readAllDisputes = (list: (params: { cursor?: string; limit?: number }) => Promise<DisputePage>): Promise<Dispute[]> => readAllPages(list);
 
 /** `WIRE_RECONCILIATION_TARGET_SECONDS`'s bounds (develop `0003-platform-flags.sql`). */
 export const WIRE_RECONCILIATION_TARGET_MAX_S = 31_536_000;

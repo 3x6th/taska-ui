@@ -99,6 +99,7 @@ import type {
   InvoiceDocument,
   InvoicePage,
   PlanChange,
+  DisputePage,
   RefundPage,
   ReturnTarget,
 } from "../billing";
@@ -9824,6 +9825,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async listRefunds(_tenantId: string, _params?: ListCompanyPageParams): Promise<RefundPage> {
     throw new TenancyUnavailableError("listRefunds");
+  }
+
+  async listDisputes(_tenantId: string, _params?: ListCompanyPageParams): Promise<DisputePage> {
+    throw new TenancyUnavailableError("listDisputes");
   }
 
   async getTenantCapabilities(_tenantId: string): Promise<CompanyDurations> {

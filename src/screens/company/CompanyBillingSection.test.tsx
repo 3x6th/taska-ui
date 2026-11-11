@@ -612,6 +612,7 @@ describe("TAS-514: refunds, the wire invoice and its document", () => {
     feeBearer: "TASKA",
     sendDueAt: null,
     decidedAt: null,
+    submittedAt: null,
     ...overrides,
   });
 

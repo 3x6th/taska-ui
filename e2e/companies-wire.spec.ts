@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
-import { B2B, COMPANY, INVOICE, companyPath, inCompany, openCompanyZone, setHooks, signIn } from "./companiesFixtures";
+import { B2B, COMPANY, INVOICE, MOCK_SERVER_KEY, companyPath, inCompany, openCompanyZone, setHooks, signIn } from "./companiesFixtures";
 
 /*
  * Bank-transfer invoices, their document and refunds in the companies build
- * (TAS-514) against the third e2e server's mock (`taska.mockServer.v8`). Every
+ * (TAS-514) against the third e2e server's mock (`MOCK_SERVER_KEY`). Every
  * fixture is Cyberdyne Systems' — Tom's company that pays by bank transfer —
  * and the bank's side is the mock's admin hooks: a statement line recorded,
  * confirmed against an invoice, its unallocated money returned. The owner
@@ -337,11 +337,11 @@ test("the never-opened card with a wire first invoice: its bank details, no Pay 
 
   // The money arrives a day after its due date while the creation is still open (D238).
   const invoiceId = await page.evaluate(
-    (id) =>
-      (JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { invoices: Array<{ id: string; tenantId: string }> }).invoices.find(
+    ({ id, key }) =>
+      (JSON.parse(window.localStorage.getItem(key) ?? "{}") as { invoices: Array<{ id: string; tenantId: string }> }).invoices.find(
         (invoice) => invoice.tenantId === id,
       )?.id,
-    tenantId,
+    { id: tenantId, key: MOCK_SERVER_KEY },
   );
   await setHooks(page, {
     issueMethod: { "*": "WIRE" },
@@ -371,11 +371,11 @@ test("a first transfer matched while the company's own read lags: «matched», T
   await expect(page.getByText(/^Invoice TSK-2026-01009 · €20\.00 · Bank transfer$/)).toBeVisible();
   const tenantId = new URL(page.url()).pathname.split("/")[2];
   const invoiceId = await page.evaluate(
-    (id) =>
-      (JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { invoices: Array<{ id: string; tenantId: string }> }).invoices.find(
+    ({ id, key }) =>
+      (JSON.parse(window.localStorage.getItem(key) ?? "{}") as { invoices: Array<{ id: string; tenantId: string }> }).invoices.find(
         (invoice) => invoice.tenantId === id,
       )?.id,
-    tenantId,
+    { id: tenantId, key: MOCK_SERVER_KEY },
   );
   // The admin confirms a full, timely transfer; the company's own read is slow to say it opened.
   await setHooks(page, {

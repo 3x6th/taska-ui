@@ -1,9 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
-import { B2B, COMPANY, INVOICE, LONG_NAME, companyPath, inCompany, openCompanyZone, setHooks } from "./companiesFixtures";
+import { B2B, COMPANY, INVOICE, LONG_NAME, MOCK_SERVER_KEY, companyPath, inCompany, openCompanyZone, setHooks } from "./companiesFixtures";
 
 /*
  * A plan change, its renewal and automatic payments in the companies build
- * (TAS-515) against the third e2e server's mock (`taska.mockServer.v8`). The
+ * (TAS-515) against the third e2e server's mock (`MOCK_SERVER_KEY`). The
  * story's acceptance: paid → Free at once, with the paid period gone; paid →
  * cheaper paid only after its payment, with a new month; Free refused through
  * the real path; a dearer plan scheduled with its invoice; a scheduled change
@@ -28,12 +28,13 @@ const dialog = (page: Page) => page.getByRole("dialog", { name: "Change plan" })
 /** The mock server's own record, from the shared storage. */
 const server = (page: Page) =>
   page.evaluate(
-    () =>
-      JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as {
+    (key) =>
+      JSON.parse(window.localStorage.getItem(key) ?? "{}") as {
         tenants: Array<{ id: string; subscription: { planVersionId: string; paidThrough?: string; version: string } }>;
         invoices: Array<{ id: string; tenantId: string; number: string; purpose: string; state: string }>;
         billingReceipts: Record<string, unknown>;
       },
+    MOCK_SERVER_KEY,
   );
 const subscriptionOf = async (page: Page, tenantId: string) => (await server(page)).tenants.find((tenant) => tenant.id === tenantId)?.subscription;
 

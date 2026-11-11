@@ -260,6 +260,7 @@ describe("refunds (B11, decision 6)", () => {
     feeBearer: "TASKA",
     sendDueAt: null,
     decidedAt: null,
+    submittedAt: null,
     ...overrides,
   });
 
@@ -373,6 +374,7 @@ describe("fix round 1", () => {
       feeBearer: "TASKA",
       sendDueAt: null,
       decidedAt: null,
+      submittedAt: null,
     });
     // «…00.500Z» sorts before «…00Z» as a string, but is the later instant; «+01:00» is an hour earlier than it reads.
     const listed = listedRefunds([at("a", "2026-11-10T09:00:00Z"), at("b", "2026-11-10T09:00:00.500Z"), at("c", "2026-11-10T09:30:00+01:00"), at("d", null)]);

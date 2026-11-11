@@ -8,6 +8,7 @@ import type {
   InvoiceDocument,
   InvoicePage,
   PlanChange,
+  DisputePage,
   RefundPage,
   ReturnTarget,
 } from "./billing";
@@ -1683,6 +1684,14 @@ export interface TaskaApi {
    * ties one to an invoice.
    */
   listRefunds(tenantId: string, params?: ListCompanyPageParams): Promise<RefundPage>;
+  /**
+   * `GET /tenants/{tenantId}/billing/disputes` (TAS-516) — one page, as sent
+   * (`readAllDisputes` follows the cursor); the owner's (403 `OWNER_REQUIRED`
+   * for anybody else), never refused by a restriction. **No dispute names an
+   * invoice or an amount** (A91): a screen never ties one to an invoice, or to
+   * `Tenant.restrictions`.
+   */
+  listDisputes(tenantId: string, params?: ListCompanyPageParams): Promise<DisputePage>;
   /**
    * `GET /tenants/{tenantId}/capabilities` (TAS-514 Q3) — read for its
    * durations only: `WIRE_RECONCILIATION_TARGET_SECONDS`, or `null`. Every
