@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { taskaApi } from "../../api/client";
 import type { ChangePlanInput } from "../../api/billing";
-import { apiErrorFacts, refusalCode } from "../../api/errors";
+import { apiErrorFacts, isWorkspaceClosed, refusalCode } from "../../api/errors";
 import { isSendableVersion } from "../../api/tenantMembers";
 import type { PlanVersion, Tenant } from "../../api/tenants";
 import { ErrorNote } from "../../components/ErrorNote";
@@ -57,6 +57,17 @@ interface Sent {
   intent: SubscriptionIntent;
   input: ChangePlanInput;
   target: PlanVersion;
+}
+
+/** A refusal, with the company as the re-read after it found it (`null`: not read, or the read failed). */
+class Refused extends Error {
+  constructor(
+    readonly error: unknown,
+    readonly tenant: Tenant | null,
+  ) {
+    super("");
+    this.name = "Refused";
+  }
 }
 
 /**
@@ -140,7 +151,27 @@ export function ChangePlanModal({
 
   const change = useMutation({
     mutationFn: async ({ intent, input, target }: Sent): Promise<PlanChangeOutcome> => {
-      const answer = await taskaApi.changeSubscriptionPlan(companyId, input, intent.version, intent.key);
+      let answer;
+      try {
+        answer = await taskaApi.changeSubscriptionPlan(companyId, input, intent.version, intent.key);
+      } catch (error) {
+        // An answer that never came: nothing read again — the next press repeats it (B11).
+        if (isUnanswered(error) || isWorkspaceClosed(error)) throw error;
+        // Any other refusal: in flight until the subscription and the company have been read again
+        // (B11), so the next press goes with the fresh If-Match — the catalogue too after a 412, 404 or 400.
+        const status = apiErrorFacts(error).status;
+        const code = refusalCode(error);
+        const catalogue =
+          status === 412 || status === 404 || code === "VALIDATION_FAILED"
+            ? accountClient?.invalidateQueries({ queryKey: PLANS_QUERY_KEY }).catch(() => undefined)
+            : undefined;
+        const [, company] = await Promise.all([
+          reread(COMPANY_SUBSCRIPTION_KEY),
+          queryClient.fetchQuery({ ...companyTenantOptions(companyId), staleTime: 0 }).catch(() => null),
+          catalogue,
+        ]);
+        throw new Refused(error, company);
+      }
       if (meId !== null) settleIntent(meId, companyId, intent, null);
       // The invoice it named — presented as this change's only when it says so (decision 4).
       let invoice: ChangeInvoice = { kind: "none" };
@@ -161,41 +192,27 @@ export function ChangePlanModal({
       return { effect: answer.effect, target, effectiveAt: answer.effectiveAt, invoice };
     },
     onSuccess: (outcome) => onChanged(outcome),
-    onError: (error, sent) => {
+    onError: (thrown, sent) => {
+      const error = thrown instanceof Refused ? thrown.error : thrown;
       if (meId !== null) settleIntent(meId, companyId, sent.intent, error);
-      const words = subscriptionRefusalWords("changePlan", error, company, sent.target);
-      setRefusal((previous) => ({ ...words, requestId: apiErrorFacts(error).requestId, seq: (previous?.seq ?? 0) + 1 }));
-      // An answer that never came: the same key on the next press, nothing read again (B11).
-      if (isUnanswered(error)) return;
       const code = refusalCode(error);
       const status = apiErrorFacts(error).status;
+      const rereadCompany = thrown instanceof Refused ? thrown.tenant : null;
+      if (code === "OWNER_REQUIRED" && rereadCompany !== null && rereadCompany.ownerId !== null && rereadCompany.ownerId !== meId) {
+        // Somebody else owns it now (§4.39's G6): the dialog closes and the page follows.
+        onOwnerLost(rereadCompany);
+        return;
+      }
+      const words = subscriptionRefusalWords("changePlan", error, company, sent.target);
+      setRefusal((previous) => ({ ...words, requestId: apiErrorFacts(error).requestId, seq: (previous?.seq ?? 0) + 1 }));
       if (code === "FREE_ELIGIBILITY_USED") {
         // Known until sign-out (TAS-501's precedent); the row says so, and nothing is chosen.
         if (meId !== null) markFreeUsed(meId);
         setChosenId(null);
       }
-      if (code === "RESOURCE_NOT_FOUND" || status === 404 || code === "VALIDATION_FAILED") {
-        setChosenId(null);
-        void accountClient?.invalidateQueries({ queryKey: PLANS_QUERY_KEY });
-      }
-      void (async () => {
-        await reread(COMPANY_SUBSCRIPTION_KEY);
-        let rereadCompany: Tenant | null;
-        try {
-          rereadCompany = await queryClient.fetchQuery({ ...companyTenantOptions(companyId), staleTime: 0 });
-        } catch {
-          rereadCompany = null;
-        }
-        if (code === "OWNER_REQUIRED" && rereadCompany !== null && rereadCompany.ownerId !== null && rereadCompany.ownerId !== meId) {
-          onOwnerLost(rereadCompany);
-          return;
-        }
-        if (status === 412) {
-          // The dialog stays and reads again: the catalogue too; the choice kept if still offered (B11).
-          await accountClient?.invalidateQueries({ queryKey: PLANS_QUERY_KEY }).catch(() => undefined);
-          setHeadingFocus((value) => value + 1);
-        }
-      })();
+      if (code === "RESOURCE_NOT_FOUND" || status === 404 || code === "VALIDATION_FAILED") setChosenId(null);
+      // The dialog stays, read again; the choice kept if still offered; focus on its heading (B11).
+      if (status === 412) setHeadingFocus((value) => value + 1);
     },
   });
   const busy = change.isPending;

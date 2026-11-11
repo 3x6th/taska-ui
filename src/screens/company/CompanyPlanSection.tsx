@@ -2,7 +2,7 @@ import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-q
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link } from "react-router-dom";
 import { taskaApi } from "../../api/client";
-import { apiErrorFacts, refusalCode } from "../../api/errors";
+import { apiErrorFacts, isWorkspaceClosed, refusalCode } from "../../api/errors";
 import { isSendableVersion } from "../../api/tenantMembers";
 import type { PlanVersion, Subscription, Tenant } from "../../api/tenants";
 import { ApiNotice } from "../../components/ApiNotice";
@@ -246,10 +246,26 @@ function CompanyPlan({ companyId }: { companyId: string }) {
   const [renewalRefusal, setRenewalRefusal] = useState<(RefusalWords & { requestId: string | null; seq: number }) | null>(null);
   const stripId = useId();
 
+  /** The company as a refusal's re-read found it, for its OWNER_REQUIRED (G6). */
+  const refusedTenant = useRef<Tenant | null>(null);
   const renewal = useMutation({
     mutationFn: async ({ intent, cancel }: { intent: SubscriptionIntent; cancel: boolean }) => {
-      if (cancel) await taskaApi.cancelSubscriptionRenewal(companyId, intent.version, intent.key);
-      else await taskaApi.resumeSubscriptionRenewal(companyId, intent.version, intent.key);
+      try {
+        if (cancel) await taskaApi.cancelSubscriptionRenewal(companyId, intent.version, intent.key);
+        else await taskaApi.resumeSubscriptionRenewal(companyId, intent.version, intent.key);
+      } catch (error) {
+        refusedTenant.current = null;
+        // Any refusal but a lost answer: in flight until the subscription and the company are read
+        // again (B11), so the next press goes with the fresh If-Match.
+        if (!isUnanswered(error) && !isWorkspaceClosed(error)) {
+          const [, reread] = await Promise.all([
+            queryClient.invalidateQueries({ queryKey: COMPANY_SUBSCRIPTION_KEY }).catch(() => undefined),
+            rereadTenant(),
+          ]);
+          refusedTenant.current = reread;
+        }
+        throw error;
+      }
       if (meId !== null) settleIntent(meId, companyId, intent, null);
       // The rows follow the subscription read again, never the answer (guard §1, §7).
       await queryClient.invalidateQueries({ queryKey: COMPANY_SUBSCRIPTION_KEY }).catch(() => undefined);
@@ -271,12 +287,8 @@ function CompanyPlan({ companyId }: { companyId: string }) {
       // The box under the row is not live; the page's status says it (B11).
       say(words.text);
       renewalButton.current?.focus();
-      if (isUnanswered(error)) return;
-      void queryClient.invalidateQueries({ queryKey: COMPANY_SUBSCRIPTION_KEY });
-      void (async () => {
-        const reread = await rereadTenant();
-        if (refusalCode(error) === "OWNER_REQUIRED" && reread !== null && reread.ownerId !== null && reread.ownerId !== meId) await followOwner(reread);
-      })();
+      const reread = refusedTenant.current;
+      if (refusalCode(error) === "OWNER_REQUIRED" && reread !== null && reread.ownerId !== null && reread.ownerId !== meId) void followOwner(reread);
     },
   });
   const renewalBusy = renewal.isPending;

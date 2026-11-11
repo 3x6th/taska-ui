@@ -3,7 +3,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { taskaApi } from "../../api/client";
 import type { Invoice } from "../../api/billing";
-import { refusalCode } from "../../api/errors";
+import { isWorkspaceClosed, refusalCode } from "../../api/errors";
 import { isSendableVersion } from "../../api/tenantMembers";
 import type { Subscription } from "../../api/tenants";
 import { ErrorNote } from "../../components/ErrorNote";
@@ -317,7 +317,14 @@ function AutopayGroup({
 
   const turnOff = useMutation({
     mutationFn: async (intent: SubscriptionIntent) => {
-      await taskaApi.setAutopayConsent(companyId, false, intent.version, intent.key);
+      try {
+        await taskaApi.setAutopayConsent(companyId, false, intent.version, intent.key);
+      } catch (error) {
+        // Any refusal but a lost answer: in flight until the subscription and the company are read
+        // again (B11), so the next press goes with the fresh If-Match.
+        if (!isUnanswered(error) && !isWorkspaceClosed(error)) await Promise.all([invalidate(COMPANY_SUBSCRIPTION_KEY), invalidate(companyTenantKey(companyId))]);
+        throw error;
+      }
       settleIntent(meId, companyId, intent, null);
       // The mandate's answer means only «2xx»: the group follows the subscription read again.
       await invalidate(COMPANY_SUBSCRIPTION_KEY);
@@ -336,9 +343,6 @@ function AutopayGroup({
       setRefusal((current) => ({ ...words, requestId: apiErrorFacts(error).requestId, seq: (current?.seq ?? 0) + 1 }));
       say(words.text);
       button.current?.focus();
-      if (isUnanswered(error)) return;
-      void invalidate(COMPANY_SUBSCRIPTION_KEY);
-      void invalidate(companyTenantKey(companyId));
       if (refusalCode(error) === "OWNER_REQUIRED") void accountClient?.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
     },
   });
