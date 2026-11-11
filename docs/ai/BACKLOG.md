@@ -4820,3 +4820,23 @@ Rulings in `docs/ai/reviews/TAS-514-*.md` (git-ignored); divergence in `API-DIVE
   vendored snapshot (`758f8fc6`) lacks (api-contract-guard F7); fold into the re-vendor line above.
 - **Duplicate payments between arrival and an admin's record** — the owner sees nothing until a platform admin records
   the bank statement, so payers may send twice (ends as a DUPLICATE_PAYMENT return) until A80.
+
+### Left by TAS-514 build (2026-11-11)
+
+Build reviews in `docs/ai/reviews/TAS-514-*-build.md`, `TAS-514-release-reviewer-wave1.md`, fix-round decisions in
+`TAS-514-fix-round-decisions.md` (git-ignored).
+
+- **A closed or cancelled creation's refund is invisible** — its session is refused (A2+), so D216's return and any other
+  money returned for a creation that never opened is not shown to anyone in the UI.
+- **A bank-paid month's start date** is not shown (A82): D247's «new month from the confirmation» shows only through
+  Plan's Paid until.
+- **Clipboard failure selects the spaced IBAN** — the selection is the print form with spaces while Copy copies the
+  electronic form; a bank form with `maxlength=34` may reject a pasted selection (release-reviewer N1, art-director N2).
+- **The card's refunds read** — a failed `listRefunds` on the never-opened card is silent, and a return to the tab
+  re-reads the invoices but not the refunds (release-reviewer N5).
+- **Silent failures lose their request id** — the capabilities read (`companyBilling.ts` durations) and the card's
+  refunds read drop the `requestId` when they fail quietly by design (api-contract-guard).
+- **Layout, accepted** — at 320 the card's «Invoice {number} · {amount} · Bank transfer» wraps mid-phrase; the Refunds
+  amount column sits ~6 px off the Invoices column at 1440 (separate lists).
+- **No automated guard for mock strings in the REST bundle** — checked by hand per story; a `npm run check` step that
+  builds REST and greps the fixtures would make it permanent (api-contract-guard G5).

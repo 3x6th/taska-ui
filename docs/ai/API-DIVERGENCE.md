@@ -2352,7 +2352,9 @@ Everything below is the entry as it stood, in the past tense.
   `03578dc3-62c1-4973-960d-4aca54446c25`, `…/billing/profile` `9354d6e1-7b7c-4139-a9db-c044cefba398`, invoices
   `abd91f5c-b8aa-4e5e-874d-204d19629d71`; capabilities 400 `INVALID_ARGUMENT` (path validation reached — deployed;
   `requestId` null); control `GET /projects` 401 `d2d4bc03-3cf1-405c-a53f-3c5f69df4c74`.
-- **Compensation: none.** Behind `VITE_TASKA_TENANTS`.
+- **Compensation: one, small.** Behind `VITE_TASKA_TENANTS`. The never-opened card reads every refund page and keeps
+  only LATE_FIRST_PAYMENT ones on the client, because `listRefunds` has no filter (+1 read, decision 7). Removal: a
+  `?invoiceId=` (A81) or `?reasonCode=` filter.
 - **Not delivered, because the backend has no operation:** the story's «edit the billing profile for future invoices»
   (How 1). No route, proto or table exists; the mock invents none and nothing is stored in the browser. The invoice shows
   its immutable buyer and seller snapshot read-only. Removal: A77 (TAS-356). «Pay by bank transfer instead» on a PSP
@@ -2374,7 +2376,9 @@ Everything below is the entry as it stood, in the past tense.
     replacement of an invoice is found by scanning the list (A86); a closed creation's refund is invisible, its session
     being refused (A2 extended); late PLAN_CHANGE money has no sentence (A88).
 - **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v8` — every mock session is
-  signed out once; none of it reaches the REST bundle, checked by string on the build):
+  signed out once; no displayed mock string reaches the REST bundle — checked by hand, by string search of REST builds,
+  at 21cb447 and e3b91de (the only hit is the object key `cyberdyneSkynet` in the existing `MOCK_TENANT_PROJECT_IDS` id
+  map); nothing in `npm run check` guards it):
   - **Fixtures:** one new seeded company, Cyberdyne Systems (Tom owner, Priya TENANT_ADMIN, project SKY, Team v2,
     autopay DISABLED, paid through +4 days), whose stored invoice method is WIRE (`invoiceMethod`, never on the wire).
     Umbrella and Stark are not reseeded. Its invoices TSK-2026-00901…00904 are their own series (TAS-515's e2e expects
@@ -2393,7 +2397,10 @@ Everything below is the entry as it stood, in the past tense.
     replacement at the earlier of now + 7 days and the deadline.
   - **Matching** happens at confirm time, not at record time. Invisible outcomes (the receipt stays unconfirmed): a late
     plan change, a late renewal of a blocked or inactive company, DAY precision on the due day, another company's
-    invoice. A late partial renewal returns INCOMPLETE_BANK_PAYMENT; money for a PAID invoice, or for the first invoice
+    invoice, a non-WIRE, VOID or DRAFT invoice, a currency mismatch, a company DELETED or DELETING at any time, an
+    unknown invoice. Money matched to an invoice that then expires is marked return-required on the receipt at expiry
+    and never combines with a later settlement (D246, L06.4–5; fix round 1 — it used to vanish when a late full payment
+    settled the expired invoice; A97). A late partial renewal returns INCOMPLETE_BANK_PAYMENT; money for a PAID invoice, or for the first invoice
     of a company that has since opened, is DUPLICATE_PAYMENT; D216 applies only when the money arrived no later than the
     earlier of due and deadline. PARTIALLY_PAID invoices also expire at `dueAt`; `holdExpiry` stops that (develop's real
     behaviour, A85).
@@ -2408,7 +2415,11 @@ Everything below is the entry as it stood, in the past tense.
   - **Document:** `application/pdf`, no `Content-Disposition`, a one-page PDF marked «MOCK — not a tax document»; DRAFT
     404; a `documentOff` hook gives 503 POLICY_NOT_CONFIGURED, `documentType` swaps the content type.
 - **Turning the flag on** additionally needs TAS-357, 358 and 482 behind a gateway REST route, asks A78, A79 and A80
-  answered, and the vendored gateway contract re-vendored (capabilities); «edit billing details» needs A77.
+  answered, and the vendored gateway contract re-vendored (capabilities); «edit billing details» needs A77. A97 (money
+  matched to an invoice that expires: RETURN_REQUIRED at expiry, never combined with later money; D247 needs a fresh
+  full payment; the late remainder returned as INCOMPLETE_BANK_PAYMENT) is a doc ask on TAS-357. A79 also covers
+  `Cache-Control: private, no-store` on the document (the client now sends `cache: "no-store"` too) and `X-Request-Id`
+  / `Content-Disposition` exposed to CORS.
 - **Removal:** with the flag, after a stand probe — a partial transfer → expiry → a return; 25 against 20 → 20 covered and
   a return of 5; a late first payment → a replacement invoice and a return; a late renewal → a month from confirmation; a
   non-owner's download 403.
