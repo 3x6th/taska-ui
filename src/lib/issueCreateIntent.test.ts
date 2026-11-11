@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CreateIssueInput } from "../api/TaskaApi";
 import { MockProblemError } from "../api/mock/MockTenantServer";
-import { isIndefinite, keyFor, type SentIntent } from "../screens/settings/companyMembers";
+import { isIndefinite, keyFor, type SentIntent } from "./intentKey";
 import { createIssueSignature } from "./issueCreateIntent";
 
 /*

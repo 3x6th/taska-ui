@@ -47,7 +47,7 @@ import {
   type ZoneAction,
 } from "./companyGeneralText";
 import { CompanyStateBlock } from "./CompanyStateBlock";
-import { isIndefinite, keyFor } from "./companyMembers";
+import { isIndefinite, keyFor } from "../../lib/intentKey";
 import { companyMembersOptions } from "./companyMembersQuery";
 import { Strip } from "./SettingsMembersSection";
 import { TransferOwnershipModal, type TransferRefusal } from "./TransferOwnershipModal";

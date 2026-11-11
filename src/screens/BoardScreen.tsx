@@ -17,7 +17,7 @@ import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress"
 import { companyWriteRefusalText, quotaRefusalText, writeRefusalText } from "../lib/companyRestrictions";
 import { CompanyMarkerWord } from "../components/CompanyMarkerWord";
 import { refreshAfterRefusal } from "./settings/companyPlan";
-import { isIndefinite, keyFor, type SentIntent } from "./settings/companyMembers";
+import { isIndefinite, keyFor, type SentIntent } from "../lib/intentKey";
 import { NewIssueCount } from "../components/ProjectIssueCount";
 import { createIssueSignature } from "../lib/issueCreateIntent";
 import { projectTaskQuotaKey } from "../lib/projectTaskQuota";

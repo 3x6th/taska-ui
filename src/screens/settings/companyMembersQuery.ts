@@ -2,7 +2,7 @@ import { queryOptions } from "@tanstack/react-query";
 import { taskaApi } from "../../api/client";
 import { UnendedListError, readAllPages } from "../../api/tenantMembers";
 import { ForeignCompanyAnswerError } from "../../api/tenants";
-import { isIndefinite } from "./companyMembers";
+import { isIndefinite } from "../../lib/intentKey";
 
 /*
  * Settings › Members' three reads (TAS-502, api-contract-guard §4, §8), on

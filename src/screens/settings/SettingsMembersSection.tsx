@@ -28,15 +28,13 @@ import {
   earliestPendingExpiry,
   groupRows,
   invitationsSentBy,
-  isIndefinite,
-  keyFor,
   memberControls,
   memberSubject,
   readerAccess,
   type MemberSubject,
   type ReaderAccess,
-  type SentIntent,
 } from "./companyMembers";
+import { isIndefinite, keyFor, type SentIntent } from "../../lib/intentKey";
 import {
   COMPANY_INVITATIONS_KEY,
   COMPANY_MEMBERS_KEY,

@@ -1,4 +1,3 @@
-import { apiErrorFacts, isWorkspaceClosed } from "../../api/errors";
 import {
   isKnownMembershipRole,
   isKnownMembershipState,
@@ -9,9 +8,10 @@ import { shortKey } from "../admin/columns";
 
 /*
  * Settings › Members (TAS-502, DESIGN.md §4.38) as pure functions: who the
- * reader is in the list, what each row offers, the groups and their order, and
- * when a write may send its previous key again. Pinned by unit tests rather
- * than by whichever component happens to draw them.
+ * reader is in the list, what each row offers, and the groups and their
+ * order. When a write may send its previous key again is `src/lib/intentKey.ts`
+ * (moved there in TAS-528). Pinned by unit tests rather than by whichever
+ * component happens to draw them.
  */
 
 /** The three groups of the page, in order (§4.38 «Список»). */
@@ -138,30 +138,3 @@ export function memberControls(member: Membership, access: ReaderAccess, meId: s
   return NONE;
 }
 
-/**
- * An answer that never came, or one that says nothing about the request: no
- * status, 408, 429 and 5xx. Its retry is the same intent and goes with the
- * same key and the same body (api-contract-guard §4); after anything else the
- * next press is a new intent with a new key.
- */
-export function isIndefinite(error: unknown): boolean {
-  if (isWorkspaceClosed(error)) return false;
-  const { status } = apiErrorFacts(error);
-  return status === null || status === 408 || status === 429 || status >= 500;
-}
-
-/** An intent sent, and whether its answer left it open — what `keyFor` reads. */
-export interface SentIntent {
-  signature: string;
-  key: string;
-  open: boolean;
-}
-
-const newKey = () =>
-  globalThis.crypto?.randomUUID?.() ??
-  "xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx".replace(/x/g, () => Math.floor(Math.random() * 16).toString(16));
-
-/** The key for an intent: the previous one when the same intent is retried after an indefinite answer, else a fresh one. */
-export function keyFor(previous: SentIntent | null, signature: string): string {
-  return previous !== null && previous.open && previous.signature === signature ? previous.key : newKey();
-}

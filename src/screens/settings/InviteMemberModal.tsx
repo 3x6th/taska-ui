@@ -19,7 +19,7 @@ import { ErrorNote } from "../../components/ErrorNote";
 import { Modal } from "../../components/Modal";
 import { useMutation } from "../../hooks/useMutation";
 import { keyBadgeStyle } from "../../lib/format";
-import { isIndefinite, keyFor, type SentIntent } from "./companyMembers";
+import { isIndefinite, keyFor, type SentIntent } from "../../lib/intentKey";
 import { COMPANY_INVITATIONS_KEY, COMPANY_MEMBERS_KEY } from "./companyMembersQuery";
 import { inviteHeadText, inviteRefusalWords } from "./companyMembersText";
 import { QUOTA_WRITE_META } from "./companyPlan";

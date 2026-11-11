@@ -1,7 +1,7 @@
 import { apiErrorFacts } from "../api/errors";
 import { TaskQuotaAnswerError, type ProjectTaskQuota } from "../api/tenantMembers";
-import { isIndefinite } from "../screens/settings/companyMembers";
-import { group } from "../screens/settings/companyPlanText";
+import { group } from "./digits";
+import { isIndefinite } from "./intentKey";
 
 /*
  * A project's issue counter in the companies build (TAS-528, DESIGN.md §4.43):
