@@ -2338,6 +2338,41 @@ Everything below is the entry as it stood, in the past tense.
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
 - **Removal:** delete with the flag, after the probe.
 
+### TAS-529: a deleted author ships ahead of the gateway, on a proposed tombstone marker
+
+- **Endpoints:** `GET /api/v1/issues/{issueId}` (assignee, reporter, watchers, attachments' uploader, history actor and
+  participants), comments, worklogs, attachments, watchers, the board and its column page, the project context, members and
+  `GET /project-stats`; blueprint `GET /tenants/{tenantId}/members`. Company Activity (proposed on TAS-523) is TAS-524's.
+  Backend: TAS-496 (owner), TAS-461, TAS-477, TAS-487, TAS-494 — none started at develop `43d6c89d`.
+- **Observed (2026-11-11 10:23Z, no token):** `GET /account/deletion-prerequisites` 404 «No static resource»
+  `77792e61-4160-44a1-9c79-36564ca6df68`; `GET /admin/accounts/not-a-uuid` 404 `050aa888-26a4-40c9-ab13-828399683e49`; `GET
+  /tenants/not-a-uuid/members` 404 `4ac1cfcd-7a40-430a-a8f6-a0b51075b95e`; control `GET /projects` 401
+  `e4502ec0-bf8f-4902-a548-7bcba3d904b6`. The deployed `/v3/api-docs` has no `DELETED`; develop has no `DELETED` in proto
+  `UserStatus` and no `deleted_at` on `auth.users`.
+- **The contract is silent:** no person DTO carries a deletion marker; the backend's documents fix only the display
+  («Удалённый пользователь», contracts §10). A tombstone left out of `GetUserDetailsByIds` would arrive as today's «not named»
+  spellings (`""`, `null`, absent, `author: null`) — the auth-service-down case (see «unnamed person» #2 above, which this
+  rule keeps as «Unknown»).
+- **What the UI does:** reads a proposed `deleted === true` on `UserSummaryDto`, `NullableUserSummaryDto`, `BoardUserDto`,
+  `IssueWatcherResponseDto`, `ProjectMemberDetailsDto` and `Membership`; such a person is «Deleted user» with a neutral avatar
+  (DESIGN §4.4) — no name, email, avatar or colour from the wire or any cache, `personFor` skips the member list; a blank or
+  absent name stays «Unknown» and is never read as deleted; no string comparison, no polling, no per-id read, no directory
+  filter; deleted rows offer no controls (a presentation choice — develop would accept such writes). No effect on the stand:
+  the field never arrives.
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`.
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts` / `MockTaskaApi.ts`, `taska.mockServer.v5`, no
+  `ServerState` change): the static tombstone `MOCK_DELETED_ACCOUNT_ID` (never in `users`, never named, its Initech membership
+  REMOVED) is the reporter, a comment and a work log author, an attachment's uploader, a history actor and an ASSIGNED
+  participant on Initech's HLP-3, beside an «Unknown»; the wire is `{id, deleted: true, displayName: "Deleted user",
+  avatarUrl: null}`, never an email (field name and string invented, A120, A121). The hook `deletedAccounts: [{userId,
+  cleanup}]` marks a seeded account at read time: `cleanup: true` (default) runs the existing removal once (after the
+  cleanup), `cleanup: false` runs nothing (the window: still assignee, watcher, project member and ACTIVE company member). The
+  directory never finds a deleted account. Under A122's preferred option the server would omit a deleted account's company
+  membership, so the window's company row may not exist on REST.
+- **Removed by:** A120 (field, TAS-496), A121 (English string), A122 (Membership), A123 (directory statement); A124 (cleanup of
+  assignments and watchers, refusals), A125 (audit snapshots), A126 (Activity proposal) on TAS-496 (comment 14540). If the
+  backend names the field differently, each mapper changes in one place.
+
 ### TAS-512: the company plan, usage and the explanation of restrictions ship ahead of the gateway, on the B2B blueprint
 
 - **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`; none in `openapi.yml`):

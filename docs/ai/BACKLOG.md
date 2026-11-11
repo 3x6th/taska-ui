@@ -4688,3 +4688,16 @@ into the fix round.
 - **Scroll-to-submit ignores where focus is**: Enter in Summary at a refusal scrolls the focused field out of the modal
   body (scrollTop 65 at 1440×810, 381 at 320×568) — §4.40 says only when focus stays on the submit; scroll only when
   the submit has focus (release-reviewer wave 2, low 2).
+
+### Left by TAS-529 (deleted author, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-529-*.md` (git-ignored); divergence in `API-DIVERGENCE.md` «TAS-529».
+
+- **Company Activity** — delivered by TAS-524 (PR #133) after rebasing onto the TAS-529 rule (Jira TAS-524 14541; A126).
+- **Reads made before a deletion** show the former name until re-read (20 s on remount; until leaving for
+  `refetchOnMount: false` reads; Transfer ownership until a re-read — its `staleTime: Infinity` lengthens the window, guard N7).
+- **«assigned someone»** — the unnamed-participant fallback contradicts §4.26's one-word rule (art-director N3).
+- **§2.7 avatar sizes** — the art-director measured the component at 24/28/34/64 against the documented row; check and correct.
+- **The vendored `openapi.yml` lags develop** (`RestErrorResponse` gains `requestId`, `reasons`, `status`, `title`; capabilities;
+  board DONE ordering, `doneSince`) — the «`requestId` lives only in a response header» divergence entry's Contract line is
+  stale (guard N6; a refresh task under the scope freeze).
