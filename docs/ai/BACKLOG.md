@@ -4529,7 +4529,7 @@ A17–A25 went to Jira as comments on their owner stories.
   `VALIDATION_FAILED`, missing → 428 `VERSION_CONFLICT`.
 - **New B2B enums** (membership role and state, invitation state, quota kind) belong in `/meta` (the TAS-217 pattern).
 - **A cursor invalidated by a concurrent change** is the same 400 as a forged one.
-- **A deleted account's name is a Russian placeholder** (contracts §10); ask for a flag and draw English words.
+- **A deleted account's name is a Russian placeholder** (contracts §10); ask for a flag and draw English words. — **answered by TAS-529**: the UI reads a proposed marker; asks A120, A121 on TAS-496.
 - **Membership carries no `joinedAt` / `suspendedAt`** on the wire (the columns exist) — no «Member since» / «Suspended on».
 - **The mock's quota snapshot has only the SEAT row** (TAS-512 adds PROJECT and STORAGE) — answered in TAS-512.
 - **Members beyond 50 seats** need a filter; inviting several emails at once; the invitation row naming its projects;

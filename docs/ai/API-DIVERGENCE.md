@@ -2351,14 +2351,16 @@ Everything below is the entry as it stood, in the past tense.
   `UserStatus` and no `deleted_at` on `auth.users`.
 - **The contract is silent:** no person DTO carries a deletion marker; the backend's documents fix only the display
   («Удалённый пользователь», contracts §10). A tombstone left out of `GetUserDetailsByIds` would arrive as today's «not named»
-  spellings (`""`, `null`, absent, `author: null`) — the auth-service-down case (see «unnamed person» #2 above, which this
-  rule keeps as «Unknown»).
+  spellings (`""`, `null`, absent, `author: null`) — the auth-service-down case (see the «unnamed person» entry, #2, below;
+  this rule keeps it «Unknown»).
 - **What the UI does:** reads a proposed `deleted === true` on `UserSummaryDto`, `NullableUserSummaryDto`, `BoardUserDto`,
   `IssueWatcherResponseDto`, `ProjectMemberDetailsDto` and `Membership`; such a person is «Deleted user» with a neutral avatar
   (DESIGN §4.4) — no name, email, avatar or colour from the wire or any cache, `personFor` skips the member list; a blank or
   absent name stays «Unknown» and is never read as deleted; no string comparison, no polling, no per-id read, no directory
-  filter; deleted rows offer no controls (a presentation choice — develop would accept such writes). No effect on the stand:
-  the field never arrives.
+  filter; deleted rows offer no controls (a presentation choice — develop would accept such writes). The marker never arrives
+  on the stand, but three changes ship in today's build too: the panel's current assignee outside the member list is one
+  active, disabled chip after «None» («Unknown» when unmarked); the reporter's unnamed avatar is labelled «Unknown»; assignee
+  chips are `aria-pressed` with a decorative avatar (no duplicated name).
 - **Compensation: none.** Behind `VITE_TASKA_TENANTS`.
 - **Mock answers where the blueprint is silent** (`MockTenantServer.ts` / `MockTaskaApi.ts`, `taska.mockServer.v5`, no
   `ServerState` change): the static tombstone `MOCK_DELETED_ACCOUNT_ID` (never in `users`, never named, its Initech membership
@@ -4385,6 +4387,8 @@ The entry as it stood:
 
 ### GET /issues/{issueId}: a failed part arrives as [] and an unnamed person as a blank or absent displayName
 
+- **TAS-529:** a person the server marks deleted (proposed `deleted === true`) is drawn «Deleted user» and never takes
+  the member-list fallback below; an unmarked blank name still does (see «TAS-529» above).
 **Measured 2026-10-07 20:03 UTC** (owner's session, GET only, 25 issues across 12 projects; first request id `4ce3d29e-776e-46d8-9d33-32d8da87ab5d`): every `GET /issues/{id}` answered 200 with `{issue, history}`; `reporter` and `assignee` are `{id, displayName, avatarUrl}` objects; `version` is a number and equals the list read's; `links[].target` is present; a watcher whose user has no profile (the Swagger example id `3fa85f64-…`) arrives with `displayName: null` — explicitly null, not absent and not `""`; no blank `displayName` was seen on reporter or assignee (auth-service was up); comments carry `author` with a non-empty name. A key in place of the UUID answers 400 INVALID_ARGUMENT "body.issueId must be a valid UUID"; a missing UUID answers 404 NOT_FOUND "Issue not found: …". No issue on the stand had attachments, so `uploadedByUser` and the `[]`-for-a-failed-part claim stay code-read.
 
 - **Endpoints:** `GET /api/v1/issues/{issueId}`, which answers
