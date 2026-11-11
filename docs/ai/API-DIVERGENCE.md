@@ -2158,8 +2158,8 @@ Everything below is the entry as it stood, in the past tense.
   404, a suspended membership closes its tab. Before TAS-316 and TAS-340 the flag is **unsafe**, not merely early:
   a gateway that issues tenant sessions but does not scope data routes would show the same projects in every
   company's tab, and the UI cannot tell.
-- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v5` since
-  TAS-512; `v4` in TAS-504, `v3` in TAS-502, `v2` in TAS-501, `v1` before it); this
+- **Mock:** the flag-on mock enforces sessions through a shared localStorage server (`taska.mockServer.v6` since
+  TAS-513; `v5` in TAS-512, `v4` in TAS-504, `v3` in TAS-502, `v2` in TAS-501, `v1` before it); this
   narrows "The mock has a session flag but no session enforcement" for the flag-on build only.
 - **Mock answers where the blueprint is silent** (`src/api/mock/MockTenantServer.ts`, `mockCompanies.ts`) — the
   mock's choices, not the blueprint's behaviour; each falls away with the ask named:
@@ -2337,6 +2337,110 @@ Everything below is the entry as it stood, in the past tense.
   carries the stand probe: invite → reserved + 1; resend → unchanged; revoke → − 1; suspend keeps used; remove frees
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
 - **Removal:** delete with the flag, after the probe.
+
+### TAS-513: hosted checkout ships ahead of the gateway, on the B2B blueprint
+
+- **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml`, re-pinned from `758f8fc6` to develop `43d6c89d` in this story;
+  none in `openapi.yml`): `GET /api/v1/tenants/{tenantId}/billing/invoices` (listInvoices), `GET …/billing/invoices/{invoiceId}`
+  (getInvoice), `POST …/billing/invoices/{invoiceId}/checkout` (createCheckout, `Idempotency-Key`, body
+  `{returnTarget, confirmed: true}`), `GET …/billing/checkout/{checkoutId}` (getCheckout) — all owner only. Not called:
+  createInvoice (stays off `TaskaApi` until TAS-514), autopay, refunds, disputes, documents (TAS-514…516). Backend:
+  TAS-348, TAS-349, TAS-337, TAS-352; open backend PR #323 (Stripe adapter, head `2371a4b6`) has no gateway route and no
+  Checkout proto. Removal of the whole section: TAS-348/349 merged and deployed with a gateway REST route, then the
+  flag-on PR with a stand probe.
+- **Re-pin consequence, fixed here, not compensated:** `PlanVersion.kind` (FREE | PAID) is now required. `isFreePlan`
+  is `kind === "FREE"`; a missing or unknown kind is not free and its price is drawn. Before it the client decided
+  "free" from the price (TAS-501 A16). `MOCK_PLANS` emit `kind`.
+- **Compensations, each removable:**
+  1. **Static return addresses.** PR #323 ignores `returnTarget` and sends Stripe one static `success_url` /
+     `cancel_url` from env (`…/billing/return`, `…/billing/cancel`), without ids; on GitHub Pages (hash routing) the
+     path form is a 404. The app owns `/billing/return` and `/billing/cancel` outside `/c/{companyId}` and routes by
+     its own attempt record in `localStorage` (`taska.checkout.{userId}.{tenantId}.{invoiceId}`). The stand's backend
+     env must hold `https://taska.ozero.dev/#/billing/return` and `…/#/billing/cancel`. **Unverified:** whether Stripe
+     keeps a `#` in `success_url` — sandbox probe before the flag-on PR. Removal: ask A54 (a per-checkout return URL
+     from an allowlisted fragment-form template) on TAS-349.
+  2. **No public cancel state, and on PR #323 an abandoned checkout never ends.** PR #323's
+     `StripePaymentProvider.state()` / `paymentStatus()` (`:199-211`) read only `payment_status`, so a cancelled or
+     expired session is still `unpaid` = PENDING; `checkout.session.expired` is rejected as `INVALID_WEBHOOK`
+     (`:177-183`); the port's `State` has no EXPIRED (`PaymentProvider.java:32-37`); no `expires_at` is sent (Stripe's
+     24 h default). The attempt never leaves `payment_attempts_invoice_active_uniq` (`0010-payment-attempts.sql:68`), so
+     with the flag on, after any abandoned checkout **Pay never comes back**: every new key is refused and «already in
+     progress» waits for an expiry that never comes. A card decline does not end it either: Stripe keeps the session
+     open, DECLINED comes only from `async_payment_failed`. The client's only signals of leaving are the landing on
+     `/billing/cancel` and a Back from the provider page (a `back_forward` load or a bfcache restore of the invoice page
+     or the card), both stored as `leftAt` and used for wording only («You left the payment page.», «Return to payment»
+     into the same checkout); a success return clears it; SUCCEEDED, UNKNOWN, FAILED, EXPIRED and PAID override it.
+     The mock's EXPIRED at its 30 min TTL and FAILED on «Payment fails» are the mock's own choices, not PR #323's.
+     Removal: ask A56 (sharpened, below) on TAS-349 — **required for flag-on**.
+  3. **Another key on an invoice with an active checkout** is refused without a pointer to the open one: 409
+     `INVALID_STATE` on the mock; on develop `PaymentAttemptStore` (`:153-181`) raises `IDEMPOTENCY_CONFLICT` for it,
+     and for an invoice that is not payable (the `INSERT…SELECT` selects no row, `:151`). The client treats both codes
+     alike: close the record, re-read the invoice, follow it («already in progress» while it is still payable). Compensation: the attempt record is shared across tabs
+     and created under the Web Lock `taska.checkout:{tenantId}:{invoiceId}`; the loser of a race reads «already in
+     progress». Browsers without Web Locks can still race two first sends; the server's unique index holds. Removal:
+     ask A57. The Billing list draws `confirming` and hides Pay from this browser-only record (unless it carries
+     `leftAt`), so a FAILED, expired or abandoned checkout reads `confirming` on the list until the invoice page is
+     opened or the record closes (the invoice read PAID/EXPIRED/VOID, the company opened). Removal: A57 + A58 merged
+     (`Invoice.activeCheckout`).
+  4. **SUCCEEDED is not PAID.** A poll reads `getCheckout` and `getInvoice` (two queries, not strictly one tick).
+     Removal: ask A58 (`Checkout.invoiceState`).
+  5. **`redirectUrl` on `getCheckout` and the replay rule are unspecified.** «Return to payment» takes the URL from a
+     fresh `getCheckout`; the mock returns it to the owner while CREATED/PENDING and unexpired, and a replayed key
+     returns the checkout as it is now, with `redirectUrl` while it is open. On develop the URL is never kept
+     (`PaymentAttemptStore.mark` stores state and `provider_payment_id`; `PaymentProvider.Payment` has no URL), so the
+     client draws «Return to payment» only when the last checkout read carried a redirect. Removal: ask A59 —
+     **required for flag-on**.
+  6. **Who issues the INITIAL invoice is unspecified.** The mock issues it when a paid company is created, due at
+     `creationDeadline`; the §4.37 card pays it with `returnTarget: CREATION`. No buyer form. Removal: ask A53 on
+     TAS-337 (provisioning issues it, or the blueprint says the owner calls `createInvoice` — then TAS-514 builds the
+     form).
+  7. **`createCheckout` problem codes are unlisted.** The client keeps the attempt (same key on retry) after a lost
+     answer, 5xx, 408, 429 and `DEPENDENCY_UNAVAILABLE`, and closes it after `OWNER_REQUIRED`, `INVALID_STATE`,
+     `IDEMPOTENCY_CONFLICT`, `POLICY_NOT_CONFIGURED`, `CAPABILITY_DISABLED` and `READ_ONLY` (only if the record still
+     holds the refused key). Removal: ask A60.
+  8. **Idempotency scope** is assumed per (actor, company, operation, key); the mock scopes receipts by (actor,
+     company, key) with `returnTarget` in the body hash, while develop's operation store scopes by `(tenant_id, kind,
+     request_key)` with `actorId` null (contracts.md §91 says the actor is in it). Removal: ask A55.
+- **What the UI assumes where the blueprint is silent:** Pay only on an OPEN PSP invoice with `remaining = total` (PR
+  #323 charges `invoice.total`, and develop's `PaymentAttemptStore.accept` — the TAS-349 core — accepts only
+  `state='OPEN' AND payable_until > now`); PARTIALLY_PAID and WIRE invoices show
+  their state and no Pay (TAS-514). The client drops `buyer`, `seller`, `lines`, FX and wire details from `Invoice`
+  (TAS-514). An answer about another company, invoice or checkout is a failed read (`ForeignCompanyAnswerError`).
+  Only `https:` redirect addresses are followed (the mock's own origin too). Billing is owner only in the UI although
+  `listInvoices` is `OWNER_OR_ADMIN_READ`.
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `mockCompanies.ts`, `taska.mockServer.v6` —
+  every mock session is signed out once): Umbrella's seeded RENEWAL is OPEN at €20, issued a day before the seed and
+  due 7 days after its paid-through (earlier than a real 7-day lead would issue it); a checkout lives 30 min;
+  settlement is two steps, SUCCEEDED then PAID after 2.5 s; the late 3-D Secure success comes after 20 s; «Bank
+  doesn't answer» stays UNKNOWN until the `resolveCheckout` hook; checkout off is the `checkoutOff` hook (503
+  `POLICY_NOT_CONFIGURED`, 503 `DEPENDENCY_UNAVAILABLE`, 403 `CAPABILITY_DISABLED` with and without `reasons`); an
+  invoice that is not payable answers 409 `INVALID_STATE`; `PLATFORM_BLOCK` makes createCheckout 403 `READ_ONLY`,
+  reads are never refused by a restriction; an OPEN invoice expires at `dueAt` together with its open checkouts; a paid
+  renewal extends the period from the current end if still ahead, else from settlement, lifts `PAYMENT_EXPIRED` and
+  keeps `planVersionId`; the `firstPaymentConfirmed` hook also marks the INITIAL invoice PAID; the wire `Invoice`
+  carries placeholder buyer, seller and lines the client never reads; every billing route answers 409
+  `INVALID_STATE` while the company is PROVISIONING; `checkoutOff` refuses before the receipt, so a same-key replay is
+  refused while it is set; a checkout moves CREATED → PENDING when its stand-in page opens (a Stripe session starts
+  `unpaid`, i.e. PENDING); EXPIRED at the 30 min TTL (real: 24 h, and never, see 2) and FAILED on «Payment fails»
+  (real: the session stays open). The PSP page `/mock-checkout/{token}` is keyed by
+  an opaque per-checkout token only the mock server maps back, mounted only in mock builds (absent from the REST
+  bundle), and its outcomes call a server-internal provider observation, not `TaskaApi`.
+- **Residual risk:** a payment returned on another device has no record to route by (its state is visible from
+  Billing); re-run api-contract-guard when the REST adapter meets the real gateway.
+- **Turning the flag on** additionally needs TAS-348, TAS-349 and a gateway route deployed, the backend env return
+  addresses above, the Stripe fragment probe, and asks A53, A54, A56 and A59 answered — A56 and A59 not as wording
+  but as behaviour: an abandoned checkout must end, and an open one must hand its URL back.
+- **Backend asks as sharpened at build review (api-contract-guard, 2026-11-11):** A56 — the adapter reads `status`,
+  `expired` becomes a port EXPIRED → attempt CANCELLED → public EXPIRED, accept `checkout.session.expired`, send
+  `expires_at = now + 30 min` (optionally an owner cancel through Stripe's `/expire`); A59 — `Payment.hostedUrl` from
+  the session's `url` while open, through `coordinator.get` and the replay to the owner, never stored, and a same-key
+  replay after 60 s answers without the URL, never 409; A60 — `IDEMPOTENCY_CONFLICT` only for the same key with another
+  body, another active key gets A57's answer or 409 `PAYMENT_PENDING` naming the checkout, a non-payable invoice 409
+  `INVALID_STATE`; A57 + A58 merged — `Invoice.activeCheckout {id, state, expiresAt}` and/or `Checkout.invoiceState`;
+  A53 — provisioning issues the INITIAL invoice and names it (`initialInvoiceId`); new — `Invoice.replacedByInvoiceId`
+  (the page reads the whole list only to find a replacement of an EXPIRED or VOID invoice); new — the invoice period on
+  the wire (`period_starts_at` / `period_ends_at` exist in `0003-invoices.sql:21`, TAS-514); A55 — the actor in the
+  idempotency scope.
 
 ### TAS-512: the company plan, usage and the explanation of restrictions ship ahead of the gateway, on the B2B blueprint
 

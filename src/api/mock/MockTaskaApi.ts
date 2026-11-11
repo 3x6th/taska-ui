@@ -90,6 +90,7 @@ import type {
   MembershipPage,
   QuotaSnapshot,
 } from "../tenantMembers";
+import type { Checkout, Invoice, InvoicePage, ReturnTarget } from "../billing";
 import {
   ATTACHMENT_BUCKET,
   ATTACHMENT_MAX_SIZE_BYTES,
@@ -9794,6 +9795,23 @@ export class MockTaskaApi implements TaskaApi {
 
   async getEntitlement(_tenantId: string): Promise<Entitlement> {
     throw new TenancyUnavailableError("getEntitlement");
+  }
+
+  // TAS-513: the companies build's invoices and checkout — `MockTenantServer`'s, never this store's.
+  async listInvoices(_tenantId: string, _params?: ListCompanyPageParams): Promise<InvoicePage> {
+    throw new TenancyUnavailableError("listInvoices");
+  }
+
+  async getInvoice(_tenantId: string, _invoiceId: string): Promise<Invoice> {
+    throw new TenancyUnavailableError("getInvoice");
+  }
+
+  async createCheckout(_tenantId: string, _invoiceId: string, _returnTarget: ReturnTarget, _idempotencyKey: string): Promise<Checkout> {
+    throw new TenancyUnavailableError("createCheckout");
+  }
+
+  async getCheckout(_tenantId: string, _checkoutId: string): Promise<Checkout> {
+    throw new TenancyUnavailableError("getCheckout");
   }
 
   async getMeta(): Promise<EnumDictionaries> {

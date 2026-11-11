@@ -13,6 +13,18 @@ import type {
 import { TRANSPORT_FAILURE_REASON } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
 import {
+  httpsOnly,
+  toCheckout,
+  toInvoice,
+  toInvoicePage,
+  type Checkout,
+  type Invoice,
+  type InvoicePage,
+  type RedirectPolicy,
+  type ReturnTarget,
+} from "./billing";
+import { clearCheckoutAttempts } from "./checkoutAttempt";
+import {
   toInvitation,
   toInvitationPage,
   toMembership,
@@ -198,6 +210,20 @@ export interface B2bTransport {
 
   /** `GET /tenants/{tenantId}/billing/entitlement` with that company's WEB_TENANT — 200 `Entitlement`, every member's read (TAS-512). */
   getEntitlement(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
+
+  /*
+   * The company's invoices and their hosted checkout (TAS-513), the owner's
+   * only, with that company's WEB_TENANT.
+   */
+
+  /** `GET /tenants/{tenantId}/billing/invoices?cursor&limit` — 200 `InvoicePage`. */
+  listInvoices(bearer: string | null, tenantId: string, params: ListCompanyPageParams, signal: AbortSignal): Promise<unknown>;
+  /** `GET /tenants/{tenantId}/billing/invoices/{invoiceId}` — 200 `Invoice`. */
+  getInvoice(bearer: string | null, tenantId: string, invoiceId: string, signal: AbortSignal): Promise<unknown>;
+  /** `POST /tenants/{tenantId}/billing/invoices/{invoiceId}/checkout` `{returnTarget, confirmed: true}` with the key — 201 `Checkout`. */
+  createCheckout(bearer: string | null, tenantId: string, invoiceId: string, returnTarget: ReturnTarget, idempotencyKey: string): Promise<unknown>;
+  /** `GET /tenants/{tenantId}/billing/checkout/{checkoutId}` — 200 `Checkout`. */
+  getCheckout(bearer: string | null, tenantId: string, checkoutId: string, signal: AbortSignal): Promise<unknown>;
 }
 
 /** `AccessSession` as this layer reads it: the four strings it needs, `tenantId` only on a company session. */
@@ -447,6 +473,8 @@ export interface WebSessionDeps {
   ownershipWaitMs?: number;
   /** Where `storage` events arrive — `window` in a browser; `null` listens to none. */
   events?: Pick<EventTarget, "addEventListener" | "removeEventListener"> | null;
+  /** Which payment-page addresses a `Checkout` may carry (TAS-513): `https:` only unless the mock says otherwise. */
+  redirectPolicy?: RedirectPolicy;
 }
 
 /** Which credential a request goes with: none (a public route), or the tab's (WEB_TENANT in a company, else WEB_GLOBAL). */
@@ -454,6 +482,7 @@ export type RequestCredential = "none" | "session";
 
 export class WebSessionClient {
   private readonly transport: B2bTransport;
+  private readonly redirectPolicy: RedirectPolicy;
   private readonly local: Storage;
   private readonly session: Storage;
   private readonly locks: LockManagerLike;
@@ -524,6 +553,7 @@ export class WebSessionClient {
 
   constructor(deps: WebSessionDeps) {
     this.transport = deps.transport;
+    this.redirectPolicy = deps.redirectPolicy ?? httpsOnly;
     this.local = deps.local;
     this.session = deps.session;
     this.locks = deps.locks ?? defaultLockManager();
@@ -613,6 +643,9 @@ export class WebSessionClient {
       }
       this.removeTab();
       this.removeItem(this.session, TENANT_CREATION_KEY);
+      // TAS-513: the account's payment attempts go with it (`taska.checkout.{userId}.*`).
+      const userId = account?.userId ?? this.accountUserId;
+      if (userId) clearCheckoutAttempts(this.local, userId);
       this.removeItem(this.local, WEB_SESSION_KEY);
       clearLastCompany(this.local);
       this.accountUserId = null;
@@ -1116,6 +1149,58 @@ export class WebSessionClient {
       toEntitlement(await this.inCompany(tenantId, (bearer, signal) => this.transport.getEntitlement(bearer, tenantId, signal))),
       tenantId,
     );
+  }
+
+  /* ------------------------------------------ invoices and checkout (TAS-513) */
+
+  /*
+   * api-contract-guard's pre-build design §1: the tab's company session of that
+   * company only (`inCompany`), control plane — no `read` option, so a refusal
+   * marks nothing. Each answer is narrowed (`toInvoice` keeps no buyer, seller,
+   * lines or wire details; `toCheckout` keeps the page address only inside
+   * `CheckoutRedirect`, and only one `redirectPolicy` accepts) and bound to what
+   * was asked: another company, invoice or checkout is a failed read
+   * (`ForeignCompanyAnswerError`).
+   */
+
+  async listInvoices(tenantId: string, params: ListCompanyPageParams = {}): Promise<InvoicePage> {
+    const page = toInvoicePage(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.listInvoices(bearer, tenantId, params, signal)),
+    );
+    for (const invoice of page.items) ofCompany(invoice, tenantId);
+    return page;
+  }
+
+  async getInvoice(tenantId: string, invoiceId: string): Promise<Invoice> {
+    const invoice = toInvoice(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.getInvoice(bearer, tenantId, invoiceId, signal)),
+    );
+    if (invoice === null) throw new Error("The answer held no invoice.");
+    if (invoice.id !== invoiceId) throw new ForeignCompanyAnswerError();
+    return ofCompany(invoice, tenantId);
+  }
+
+  /** The body is the two fields exactly, in one order, so a retry with the same key sends the same bytes. */
+  async createCheckout(tenantId: string, invoiceId: string, returnTarget: ReturnTarget, idempotencyKey: string): Promise<Checkout> {
+    const checkout = toCheckout(
+      await this.inCompany(tenantId, (bearer) => this.transport.createCheckout(bearer, tenantId, invoiceId, returnTarget, idempotencyKey)),
+      this.redirectPolicy,
+    );
+    if (checkout === null) throw new Error("The answer held no checkout.");
+    // It must name the invoice asked for (api-contract-guard F6): one that names another, or none, is
+    // no answer about this payment — a failure without a status, so the key is kept for Pay again.
+    if (checkout.invoiceId !== invoiceId) throw new ForeignCompanyAnswerError();
+    return checkout;
+  }
+
+  async getCheckout(tenantId: string, checkoutId: string): Promise<Checkout> {
+    const checkout = toCheckout(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.getCheckout(bearer, tenantId, checkoutId, signal)),
+      this.redirectPolicy,
+    );
+    if (checkout === null) throw new Error("The answer held no checkout.");
+    if (checkout.id !== checkoutId) throw new ForeignCompanyAnswerError();
+    return checkout;
   }
 
   private tenantAnswer(answer: unknown): Tenant {

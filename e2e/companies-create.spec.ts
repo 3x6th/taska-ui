@@ -127,7 +127,9 @@ test("AC2: a paid creation spends no FREE and lands on «Awaiting first payment�
   await expect(page).toHaveTitle("Stark Labs — Taska");
   await expect(page.getByText(/^Its projects and invitations open once the first payment is confirmed\. If it isn’t paid by /)).toBeVisible();
   await expect(page.locator(".company-setup time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
-  await expect(page.getByText("This version of Taska can’t take payments yet.")).toBeVisible();
+  // TAS-513: the first invoice the server issued with it, and Pay — the card's one accent.
+  await expect(page.getByText(/^Invoice TSK-2026-\d{5} · €20\.00$/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Pay €20.00" })).toBeVisible();
   // The owner may cancel it.
   await expect(page.getByRole("button", { name: "Cancel creation" })).toBeVisible();
   // Not the app shell: no Projects, no New project, no search, no bell.

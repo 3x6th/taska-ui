@@ -26,6 +26,8 @@ export function SectionArea({
   current,
   aside,
   className,
+  item = null,
+  headingDescribedBy,
   children,
 }: {
   /** The area's own name: the rail's `aria-label` and the crumb in the heading. */
@@ -37,6 +39,13 @@ export function SectionArea({
   aside?: ReactNode;
   /** For the one thing an area may set apart: its own narrow-width insets. */
   className?: string;
+  /**
+   * One thing inside the section, named in the heading after it — «Company ›
+   * Billing › Invoice TSK-2026-01008» (TAS-513). The section becomes a crumb.
+   */
+  item?: string | null;
+  /** What the heading is described by, when a section asks (a return from the payment page, TAS-513 B11). */
+  headingDescribedBy?: string | null;
   children: ReactNode;
 }) {
   const headingId = useId();
@@ -55,10 +64,15 @@ export function SectionArea({
     // sits at the top of an area that does not scroll the page, so only the
     // strip does. No `behavior`, so it jumps rather than glides, with or
     // without reduced motion; and no focus moves — the heading below takes it.
+    //
+    // And when the list itself changes (TAS-513, release-reviewer N7): the
+    // Company zone's owner-only Billing joins the rail once the owner is known,
+    // so a direct load of it would otherwise have scrolled before its link was
+    // there. Callers pass a stable list (a constant, or memoised).
     railRef.current
       ?.querySelector<HTMLElement>('[aria-current="page"]')
       ?.scrollIntoView({ inline: "nearest", block: "nearest" });
-  }, [current.id]);
+  }, [current.id, sections]);
 
   useEffect(() => {
     // Moving between sections replaces the whole body while the keyboard stays
@@ -127,12 +141,25 @@ export function SectionArea({
 
               tabIndex -1 so the effects above can put focus here; it is not in
               the tab order and never takes focus from a pointer. */}
-          <h1 className="area-section-title" id={headingId} ref={headingRef} tabIndex={-1}>
+          <h1
+            aria-describedby={headingDescribedBy ?? undefined}
+            className="area-section-title"
+            id={headingId}
+            ref={headingRef}
+            tabIndex={-1}
+          >
             <span className="area-crumb">
               {name}
               <span aria-hidden="true"> ›</span>
+              {item !== null ? (
+                <>
+                  {" "}
+                  {current.label}
+                  <span aria-hidden="true"> ›</span>
+                </>
+              ) : null}
             </span>
-            <span className="area-section-name">{current.label}</span>
+            <span className="area-section-name">{item ?? current.label}</span>
           </h1>
           {aside}
         </header>

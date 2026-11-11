@@ -22,6 +22,8 @@ import {
 } from "../lib/companies";
 import { useAccountQueryClient, useAppPath } from "../lib/companyAddress";
 import type { CompanyReadyState, CreateCompanyRouteState } from "./CreateCompanyScreen";
+import { CreationPaySlot } from "./company/CreationPaySlot";
+import type { CheckoutReturnState } from "./billingReturn";
 import {
   CANCELLED_TEXT,
   CANCEL_PAYMENT_PENDING_TEXT,
@@ -30,7 +32,6 @@ import {
   CANCEL_STALE_TEXT,
   CANCEL_ZONE_TEXT,
   MANUAL_REVIEW_TEXT,
-  PAY_SLOT_TEXT,
   POLL_LIMIT_MS,
   PROVISIONING_SLOW_TEXT,
   PROVISIONING_TEXT,
@@ -131,11 +132,17 @@ export function CompanySetupScreen({
    */
   const cancelAttempt = useRef<{ key: string; version: string } | null>(null);
   const stripId = useId();
+  /** The payment slot's fact, which the heading is described by after a return from the payment page (TAS-513, B11). */
+  const payFactId = useId();
+  const [returnedFromPayment] = useState(() => (location.state as CheckoutReturnState | null)?.checkoutReturn === true);
+  /** The slot saw its invoice PAID: the company's opening is the one this card hands over with «{Company} is ready.». */
+  const paidHere = useRef(false);
   const [continued] = useState(() => isContinuedShell(location.state));
   const [arrivedFromApp] = useState(
     () =>
       isContinuedShell(location.state) ||
-      (typeof location.state === "object" && location.state !== null && (location.state as { focusHeading?: unknown }).focusHeading === true),
+      (typeof location.state === "object" && location.state !== null && (location.state as { focusHeading?: unknown }).focusHeading === true) ||
+      returnedFromPayment,
   );
   /** The creation this tab made, while its operation may still be polled (`src/api/tenantCreation.ts`). */
   const [creation] = useState(() => {
@@ -153,6 +160,19 @@ export function CompanySetupScreen({
   // operation to follow — at the polling cadence.
   const [pollStarted, setPollStarted] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
+  /**
+   * TAS-513 (release-reviewer N1): the payment slot saw its invoice PAID while
+   * the company still reads AWAITING_PAYMENT — when, and how many reads of the
+   * company there had been. The company is then read at the setup cadence
+   * until it opens, for `POLL_LIMIT_MS`, then «Check again».
+   */
+  const [paidSeen, setPaidSeen] = useState<{ at: number; reads: number } | null>(null);
+  const [paidStalled, setPaidStalled] = useState(false);
+  /** How many times the company has been read on this card's client — `pollDelay`'s count. */
+  const tenantReads = () => {
+    const query = sessionClient.getQueryState(["tenant", companyId]);
+    return query ? query.dataUpdateCount + query.errorUpdateCount : 0;
+  };
   const tenantQuery = useQuery({
     queryKey: ["tenant", companyId],
     queryFn: () => taskaApi.getTenant(companyId),
@@ -162,8 +182,14 @@ export function CompanySetupScreen({
     refetchOnWindowFocus: "always",
     refetchInterval: (query) => {
       const lifecycle = query.state.data?.lifecycle ?? row?.lifecycle ?? null;
+      const reads = query.state.dataUpdateCount + query.state.errorUpdateCount;
+      // Paid, not yet opened (N1): read until the server opens it.
+      if (lifecycle === "AWAITING_PAYMENT" && paidSeen !== null) {
+        // The slot's own re-read is the first after `paidSeen`: the cadence starts at 1 s after it.
+        return Date.now() - paidSeen.at >= POLL_LIMIT_MS ? false : pollDelay(Math.max(0, reads - paidSeen.reads - 1));
+      }
       if (lifecycle !== "PROVISIONING" || operationId !== null || Date.now() - pollStarted >= POLL_LIMIT_MS) return false;
-      return pollDelay(query.state.dataUpdateCount + query.state.errorUpdateCount - 1);
+      return pollDelay(reads - 1);
     },
   });
   const tenant: Tenant | null = tenantQuery.data ?? row;
@@ -210,6 +236,13 @@ export function CompanySetupScreen({
     const timer = window.setTimeout(() => setTimedOut(true), Math.max(0, left));
     return () => window.clearTimeout(timer);
   }, [provisioning, operationEnded, pollStarted]);
+
+  // The paid company's poll stops after 5 minutes: «Check again» in the slot (N1).
+  useEffect(() => {
+    if (paidSeen === null) return;
+    const timer = window.setTimeout(() => setPaidStalled(true), Math.max(0, POLL_LIMIT_MS - (Date.now() - paidSeen.at)));
+    return () => window.clearTimeout(timer);
+  }, [paidSeen]);
 
   // After 30 s on «Being set up», the sentence changes (§4.37).
   const [slow, setSlow] = useState(false);
@@ -277,7 +310,7 @@ export function CompanySetupScreen({
     }
     if (answered.lifecycle === "ACTIVE" && mayOpen && tenantQuery.dataUpdatedAt >= shownAt) {
       // Set up just now: the shell opens on Projects with «{Company} is ready.» (§4.36).
-      if (was === "PROVISIONING") {
+      if (was === "PROVISIONING" || (was === "AWAITING_PAYMENT" && paidHere.current)) {
         navigate(
           { pathname: location.pathname, search: location.search },
           { replace: true, state: { companyReady: true } satisfies CompanyReadyState },
@@ -416,7 +449,30 @@ export function CompanySetupScreen({
           iso={deadline}
           sentence={awaitingPaymentText(deadline, now)}
         />
-        <p className="company-setup-pay">{PAY_SLOT_TEXT}</p>
+        {/* TAS-513 (art-director B2b): the owner's payment slot, with this
+            company's session; nobody else has one to show. */}
+        {/* The company's own answer decides, never the list row (api-contract-guard F7). */}
+        {canRead && me.data?.id !== undefined && tenantQuery.data?.ownerId === me.data.id ? (
+          <CreationPaySlot
+            company={name}
+            companyId={companyId}
+            creationDeadline={deadline}
+            factId={payFactId}
+            onCheckAgain={() => {
+              setPaidStalled(false);
+              setPaidSeen({ at: Date.now(), reads: tenantReads() });
+              void tenantQuery.refetch();
+            }}
+            onPaid={() => {
+              paidHere.current = true;
+              const reads = tenantReads();
+              setPaidSeen((seen) => seen ?? { at: Date.now(), reads });
+              void tenantQuery.refetch();
+            }}
+            stalled={paidStalled}
+            userId={me.data.id}
+          />
+        ) : null}
         {/* The owner's, and only with this company's session: without one the
             request would go with the account's and be refused (release-reviewer N1). */}
         {owner && canRead && tenant?.version ? (
@@ -506,7 +562,12 @@ export function CompanySetupScreen({
   return (
     <AuthShell entrance={continued ? "none" : "app"} theme={theme} toggleTheme={toggleTheme}>
       <div className="company-setup">
-        <h1 className="auth-title company-setup-title" ref={heading} tabIndex={-1}>
+        <h1
+          aria-describedby={returnedFromPayment && owner ? payFactId : undefined}
+          className="auth-title company-setup-title"
+          ref={heading}
+          tabIndex={-1}
+        >
           <span className="company-setup-name">{name ?? "This company"}</span>
           {stateLine ? <span className="company-setup-state">{stateLine}</span> : null}
         </h1>

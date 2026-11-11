@@ -13,6 +13,7 @@ const snapshot = (quotas: QuotaSnapshot["quotas"]): QuotaSnapshot => ({ tenantId
 const entitlement = (limits: Entitlement["limits"]): Entitlement => ({ tenantId: "t", version: "1", planVersionId: "p", limits });
 const plan = (overrides: Partial<PlanVersion> = {}): PlanVersion => ({
   id: "team-2",
+  kind: "PAID",
   code: "mock-team",
   name: "Team",
   version: "2",

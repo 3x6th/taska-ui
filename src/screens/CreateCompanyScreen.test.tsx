@@ -45,6 +45,8 @@ const plan = (id: string, name: string, amountMinor: string, state = "PUBLISHED"
   code: name.toLowerCase(),
   version: "1",
   name,
+  // The kind decides the free plan (develop `43d6c89d`), never the price.
+  kind: amountMinor === "0" ? "FREE" : "PAID",
   price: { amountMinor, currency: "EUR", exponent: 2 },
   period: amountMinor === "0" ? "NONE" : "CALENDAR_MONTH",
   limits: [{ kind: "PROJECT", limit: "1", unlimited: false }],

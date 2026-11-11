@@ -13,6 +13,13 @@ import { expect, type Page } from "@playwright/test";
 const PORT = Number(process.env.TASKA_E2E_PORT) || 5183;
 export const B2B = `http://localhost:${PORT + 2}`;
 
+/** TAS-513: the fixture invoices' ids (`MOCK_INVOICE_IDS`). */
+export const INVOICE = {
+  umbrellaRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e08",
+  umbrellaInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e02",
+  starkInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e06",
+} as const;
+
 export const COMPANY = {
   northwind: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b01",
   globex: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b02",
@@ -89,8 +96,8 @@ export async function switchCompany(page: Page, name: string, isMobile: boolean)
   await companyRow(page, new RegExp(`^${name}`)).click();
 }
 
-/** A section of the Company zone (TAS-522, DESIGN.md §5.10), in its rail's order. */
-export type ZoneSection = "General" | "Members" | "Plan";
+/** A section of the Company zone (TAS-522, DESIGN.md §5.10), in its rail's order — Billing the owner's only (TAS-513). */
+export type ZoneSection = "General" | "Members" | "Plan" | "Billing";
 
 const zonePath = (section: ZoneSection) => `/company/${section.toLowerCase()}`;
 
@@ -112,7 +119,11 @@ export async function openCompanyZone(page: Page, companyId: string, section: Zo
   await expect(page).toHaveURL(companyPath(companyId, "/company/general"));
   await expect(page.getByRole("heading", { level: 1, name: /General/ })).toBeFocused();
   const rail = page.getByRole("navigation", { name: "Company" });
-  await expect(rail.getByRole("link")).toHaveText(["General", "Members", "Plan", "Back to projects"]);
+  // Billing stands fourth for the company's owner only (TAS-513); the rest is every member's.
+  await expect(rail.getByRole("link", { name: "Back to projects" })).toBeVisible();
+  if (section === "Billing") await expect(rail.getByRole("link", { name: "Billing" })).toBeVisible();
+  const links = await rail.getByRole("link").allInnerTexts();
+  expect(links.filter((label) => label !== "Billing")).toEqual(["General", "Members", "Plan", "Back to projects"]);
   if (section !== "General") await rail.getByRole("link", { name: section }).click();
   await expect(page).toHaveURL(companyPath(companyId, zonePath(section)));
   await expect(rail.getByRole("link", { name: section })).toHaveAttribute("aria-current", "page");

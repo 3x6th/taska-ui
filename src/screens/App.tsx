@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../hooks/useMutation";
-import { useEffect } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { AuthShellFrame } from "../components/AuthShell";
@@ -26,6 +26,8 @@ import { AdminUsersSection } from "./admin/AdminUsersSection";
 import { adminSections } from "./admin/sections";
 import { AppFailureScreen } from "./AppFailureScreen";
 import { AuthCallbackScreen } from "./AuthCallbackScreen";
+import { BillingReturnScreen } from "./BillingReturnScreen";
+import { BILLING_CANCEL_ROUTE, BILLING_RETURN_ROUTE } from "./billingReturn";
 import { BoardScreen } from "./BoardScreen";
 import { CompaniesScreen } from "./CompaniesScreen";
 import { CreateCompanyScreen } from "./CreateCompanyScreen";
@@ -37,12 +39,22 @@ import { SettingsAppearanceSection } from "./settings/SettingsAppearanceSection"
 import { SettingsProfileSection } from "./settings/SettingsProfileSection";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { SettingsConnectedAppsSection } from "./settings/SettingsConnectedAppsSection";
+import { CompanyBillingSection } from "./company/CompanyBillingSection";
 import { CompanyGeneralSection } from "./company/CompanyGeneralSection";
+import { CompanyInvoiceSection } from "./company/CompanyInvoiceSection";
 import { CompanyMembersSection } from "./company/CompanyMembersSection";
 import { CompanyPlanSection } from "./company/CompanyPlanSection";
 import { CompanyScreen } from "./company/CompanyScreen";
 import { companySections, movedCompanySections } from "./company/sections";
 import { SettingsTokensSection } from "./settings/SettingsTokensSection";
+
+/**
+ * The mock's stand-in payment page (TAS-513, art-director B12) — in a mock
+ * build only. `VITE_TASKA_API_MODE` is replaced at build time, so in a REST
+ * build this is `null`, the route below is never declared and the chunk is
+ * never emitted.
+ */
+const MockCheckoutScreen = import.meta.env.VITE_TASKA_API_MODE === "mock" ? lazy(() => import("./MockCheckoutScreen")) : null;
 
 export interface ScreenProps {
   theme: Theme;
@@ -166,6 +178,35 @@ export function App() {
             </Route>
             <Route path="/invite" element={<LoginScreen {...screenProps} initialMode="invite" />} />
             <Route path="/auth/callback" element={<AuthCallbackScreen theme={theme} toggleTheme={toggleTheme} />} />
+            {/* Where a payment page sends the owner back to (TAS-513, A54):
+                static, without a company or an id — routed by the attempt
+                record, the address itself read for nothing. */}
+            <Route
+              path={BILLING_RETURN_ROUTE}
+              element={
+                <RequireSession>
+                  <BillingReturnScreen cancel={false} theme={theme} toggleTheme={toggleTheme} />
+                </RequireSession>
+              }
+            />
+            <Route
+              path={BILLING_CANCEL_ROUTE}
+              element={
+                <RequireSession>
+                  <BillingReturnScreen cancel theme={theme} toggleTheme={toggleTheme} />
+                </RequireSession>
+              }
+            />
+            {MockCheckoutScreen !== null ? (
+              <Route
+                path="/mock-checkout/:token"
+                element={
+                  <Suspense fallback={null}>
+                    <MockCheckoutScreen />
+                  </Suspense>
+                }
+              />
+            ) : null}
             {["/projects/*", "/browse/*", "/settings/*", "/company/*"].map((path) => (
               <Route
                 key={path}
@@ -231,6 +272,10 @@ export function App() {
                 <Route path="/company/general" element={<CompanyGeneralSection />} />
                 <Route path="/company/members" element={<CompanyMembersSection />} />
                 <Route path="/company/plan" element={<CompanyPlanSection />} />
+                {/* TAS-513: the owner's invoices, and one of them — where a
+                    return from the payment page lands. */}
+                <Route path="/company/billing" element={<CompanyBillingSection />} />
+                <Route path="/company/billing/:invoiceId" element={<CompanyInvoiceSection />} />
               </Route>
             </Route>
             <Route path="*" element={<NotFoundScreen />} />
