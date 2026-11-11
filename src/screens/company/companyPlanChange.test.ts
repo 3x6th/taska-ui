@@ -310,7 +310,10 @@ describe("renewal and automatic payments (B7, decision 1)", () => {
 
   it("the group's line by state, «Turn off» for On and Suspended only — and the question without a date when none was sent", () => {
     expect(autopayLineText("CONSENTED", null)).toBe("Taska takes this company’s payments automatically. You can still pay any invoice here yourself.");
-    expect(autopayLineText("DISABLED", "Umbrella")).toBe("You pay Umbrella’s invoices here yourself. This version of Taska can’t turn automatic payments on.");
+    // TAS-516 (T7): off until the owner sets them up — a new consent, which this build cannot take (A67).
+    expect(autopayLineText("DISABLED", "Umbrella")).toBe(
+      "You pay Umbrella’s invoices here yourself. Automatic payments stay off until you set them up, which this version of Taska can’t do yet.",
+    );
     expect(autopayLineText("PAUSED_BY_BANK", "Umbrella")).toBeNull();
     expect(["CONSENTED", "SUSPENDED", "DISABLED", "PAUSED_BY_BANK", null].map(canTurnOff)).toEqual([true, true, false, false, false]);
     expect(turnOffQuestion("Umbrella", THROUGH)).toMatch(/ If Umbrella isn’t paid for by Dec 2[56], .+, it becomes read-only\. /);

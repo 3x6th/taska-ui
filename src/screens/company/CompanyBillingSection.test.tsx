@@ -250,7 +250,10 @@ describe("«Automatic payments» (TAS-515, art-director B8, decision 1)", () => 
   it("Off says Taska can’t turn them on, with no button; Suspended offers «Turn off»; a state it does not know is drawn as it came", async () => {
     state.subscription = paid("DISABLED");
     const off = renderAt("/company/billing");
-    expect(await screen.findByText("You pay Northwind’s invoices here yourself. This version of Taska can’t turn automatic payments on.")).toBeInTheDocument();
+    // TAS-516 (T7): off until a new consent, which this build cannot take (A67).
+    expect(
+      await screen.findByText("You pay Northwind’s invoices here yourself. Automatic payments stay off until you set them up, which this version of Taska can’t do yet."),
+    ).toBeInTheDocument();
     expect(within(group()).queryByRole("button")).not.toBeInTheDocument();
     off.unmount();
     state.subscription = paid("SUSPENDED", null);
@@ -562,6 +565,33 @@ describe("«See Billing» (B2c)", () => {
         <CompanyStateBlock owner={false} restrictions={["PAYMENT_EXPIRED"]} />
       </MemoryRouter>,
     );
+    expect(screen.queryByRole("link", { name: "See Billing" })).not.toBeInTheDocument();
+  });
+
+  it("TAS-516 (B13): ends the owner's dispute line too — once per block, on the first line that earns it; never anybody else's", () => {
+    const both = render(
+      <MemoryRouter>
+        <CompanyStateBlock owner restrictions={["PAYMENT_EXPIRED", "PAYMENT_DISPUTE"]} />
+      </MemoryRouter>,
+    );
+    const lines = [...document.querySelectorAll(".company-general-state")].map((line) => line.textContent);
+    expect(lines[0]).toBe("A payment is disputed. Nothing in it can be changed, and no automatic payments are taken. See Billing");
+    expect(lines[1]).toBe("Its paid period has ended. Nothing in it can be changed until it’s paid for again. There’s no grace period, and it doesn’t move to a free plan on its own.");
+    expect(screen.getAllByRole("link", { name: "See Billing" })).toHaveLength(1);
+    both.unmount();
+    const dispute = render(
+      <MemoryRouter>
+        <CompanyStateBlock owner restrictions={["PAYMENT_DISPUTE"]} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: "See Billing" })).toHaveAttribute("href", "/company/billing");
+    dispute.unmount();
+    render(
+      <MemoryRouter>
+        <CompanyStateBlock owner={false} restrictions={["PAYMENT_DISPUTE"]} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText(/A payment is disputed\./).closest("p")).toHaveTextContent("A payment is disputed. Nothing in it can be changed.");
     expect(screen.queryByRole("link", { name: "See Billing" })).not.toBeInTheDocument();
   });
 });

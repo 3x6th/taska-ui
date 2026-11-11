@@ -254,7 +254,7 @@ export function autopayLineText(state: string, company: string | null): string |
     case "CONSENTED":
       return `Taska takes ${ownInside(company)} payments automatically. You can still pay any invoice here yourself.`;
     case "DISABLED":
-      return `You pay ${ownInside(company)} invoices here yourself. This version of Taska can’t turn automatic payments on.`;
+      return `You pay ${ownInside(company)} invoices here yourself. Automatic payments stay off until you set them up, which this version of Taska can’t do yet.`;
     case "SUSPENDED":
       return `Taska isn’t taking automatic payments for ${companyInside(company)} right now. You can pay its invoices here yourself.`;
     default:

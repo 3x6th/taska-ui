@@ -35,11 +35,12 @@ describe("the page's words", () => {
       { code: "PLATFORM_BLOCK", fact: "Blocked by Taska.", explanation: "No one can change anything in it, and only Taska can lift the block." },
       { code: "OWNER_PAUSE", fact: "Paused by its owner.", explanation: "No one can change anything in it while it’s paused." },
       // TAS-512: the three financial ones explained by role (§4.39).
-      { code: "PAYMENT_DISPUTE", fact: "A payment is disputed.", explanation: "Until it’s settled, nothing in it can be changed and no automatic payments are taken." },
+      // TAS-516 (T6): never a promise that access comes back once a dispute is settled, nor that renewing restores it.
+      { code: "PAYMENT_DISPUTE", fact: "A payment is disputed.", explanation: "Nothing in it can be changed, and no automatic payments are taken." },
       {
         code: "PAYMENT_EXPIRED",
         fact: "Its paid period has ended.",
-        explanation: "Nothing in it can be changed until you renew it. There’s no grace period, and it doesn’t move to a free plan on its own.",
+        explanation: "Nothing in it can be changed until it’s paid for again. There’s no grace period, and it doesn’t move to a free plan on its own.",
       },
       { code: "OVER_QUOTA", fact: "It’s over its plan’s limits.", explanation: "Nothing in it can be changed until it’s back within them." },
       { code: "MYSTERY", fact: "MYSTERY", explanation: null },
@@ -55,8 +56,8 @@ describe("the page's words", () => {
   it("TAS-512: the financial explanations by role, and «what still works» only when every restriction is financial", () => {
     const others = Object.fromEntries(stateLines(["PAYMENT_DISPUTE", "PAYMENT_EXPIRED", "OVER_QUOTA"], false).map((line) => [line.code, line.explanation]));
     expect(others).toEqual({
-      PAYMENT_DISPUTE: "Until it’s settled, nothing in it can be changed.",
-      PAYMENT_EXPIRED: "Nothing in it can be changed until its owner renews it.",
+      PAYMENT_DISPUTE: "Nothing in it can be changed.",
+      PAYMENT_EXPIRED: "Nothing in it can be changed until its owner pays for it again.",
       OVER_QUOTA: "Nothing in it can be changed until it’s back within them.",
     });
     expect(stillWorksText(["OVER_QUOTA"], true)).toBe(

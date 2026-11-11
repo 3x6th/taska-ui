@@ -284,7 +284,9 @@ test("Turn off asks first, then the group says Off — and nothing anywhere turn
   await band.getByRole("button", { name: "Turn off", exact: true }).click();
   await expect(page.getByRole("heading", { level: 2, name: "Automatic payments" })).toBeFocused();
   await expect(said(page)).toHaveText("Automatic payments are off for Umbrella.");
-  await expect(group).toContainText("OffYou pay Umbrella’s invoices here yourself. This version of Taska can’t turn automatic payments on.");
+  await expect(group).toContainText(
+    "OffYou pay Umbrella’s invoices here yourself. Automatic payments stay off until you set them up, which this version of Taska can’t do yet.",
+  );
   await expect(page.getByRole("button", { name: /Turn on/ })).toHaveCount(0);
   await expect(page.getByText(/Turn on/)).toHaveCount(0);
 
