@@ -2466,10 +2466,10 @@ Everything below is the entry as it stood, in the past tense.
     invoice, a non-WIRE, VOID or DRAFT invoice, a currency mismatch, a company DELETED or DELETING at any time, an
     unknown invoice. Money matched to an invoice that then expires is marked return-required on the receipt at expiry
     and never combines with money that arrived after the due date (D246, L06.4–5; fix round 1 — it used to vanish when a
-    late full payment settled the expired invoice; A97). **Known simplification at TAS-514, fixed in TAS-516 (`f58b228`):** money that
-    arrived by the due date and reaches the total should still pay the invoice when confirmed after expiry (B09,
-    `ai-business-spec.md:202`, `:247`); the mock currently returns it. And under `holdExpiry`, matched money plus a late
-    full payment settles without its return. A late partial renewal returns INCOMPLETE_BANK_PAYMENT; money for a PAID invoice, or for the first invoice
+    late full payment settled the expired invoice; A97). **A simplification at TAS-514, fixed in TAS-516 (`f58b228`):** money that
+    arrived by the due date and reaches the total pays the invoice even when confirmed after expiry (B09,
+    `ai-business-spec.md:202`, `:247`), unless its return has started; under `holdExpiry`, matched money is sent back
+    before a late full payment settles. A late partial renewal returns INCOMPLETE_BANK_PAYMENT; money for a PAID invoice, or for the first invoice
     of a company that has since opened, is DUPLICATE_PAYMENT; D216 applies only when the money arrived no later than the
     earlier of due and deadline. PARTIALLY_PAID invoices also expire at `dueAt`; `holdExpiry` stops that (develop's real
     behaviour, A85).

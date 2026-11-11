@@ -4844,7 +4844,7 @@ Build reviews in `docs/ai/reviews/TAS-514-*-build.md`, `TAS-514-release-reviewer
   mostly covers it (api-contract-guard N3, accepted).
 - **The matched card's lead** — §4.37's fixed «If it isn’t paid by {deadline}, it closes automatically.» sits right above
   «Your bank transfer has been matched.» (shared with TAS-513's PSP card; art-director).
-- **Dead class** `company-bank-reference` (`WireParts.tsx`) has no CSS — drop when next touched.
+- ~~**Dead class** `company-bank-reference`~~ — removed in TAS-516 (`018f3f3`).
 - **The open wire state with `remaining` = 0** has never been drawn in a browser (the mock can't produce it; unit tests
   only) — one look on the stand if the backend serves it.
 - ~~**The mock returns a timely full payment confirmed after expiry**~~ — fixed in TAS-516 (`f58b228`), with the 12 + 8
