@@ -4847,3 +4847,7 @@ Build reviews in `docs/ai/reviews/TAS-514-*-build.md`, `TAS-514-release-reviewer
 - **Dead class** `company-bank-reference` (`WireParts.tsx`) has no CSS — drop when next touched.
 - **The open wire state with `remaining` = 0** has never been drawn in a browser (the mock can't produce it; unit tests
   only) — one look on the stand if the backend serves it.
+- **The mock returns a timely full payment confirmed after expiry** — €12 matched on time and €8 arrived before `dueAt`,
+  confirmed after expiry, ends EXPIRED and «to be refunded» instead of PAID (a fix-round regression, mock only; A97).
+  Also under `holdExpiry`, matched money plus a late full payment settles with no return. To be fixed in TAS-516's mock
+  work; keep the €8-alone test and add the 12 + 8 case.
