@@ -23,6 +23,35 @@ import {
  */
 
 describe("Membership and Invitation", () => {
+  it("reads a deleted account's membership by the mark alone — never its address (TAS-529, ask A122)", () => {
+    const wire = {
+      id: "m1",
+      tenantId: "t1",
+      userId: "u1",
+      role: "MEMBER",
+      state: "ACTIVE",
+      isOwner: false,
+      displayName: "Deleted user",
+      email: "sofia@example.com",
+      avatarPath: "avatars/u1.png",
+      version: "4",
+    };
+    expect(toMembership({ ...wire, deleted: true })).toMatchObject({
+      userId: "u1",
+      role: "MEMBER",
+      state: "ACTIVE",
+      version: "4",
+      displayName: null,
+      email: null,
+      avatarPath: null,
+      deleted: true,
+    });
+    // Only `true`: a row merely called «Deleted user» is a person, with its address.
+    for (const mark of [false, "true", 1, undefined]) {
+      expect(toMembership({ ...wire, deleted: mark })).toMatchObject({ displayName: "Deleted user", email: "sofia@example.com", deleted: false });
+    }
+  });
+
   it("keeps a role, a state and a grant role this build does not know, as they came", () => {
     const member = toMembership({
       id: "m1",
@@ -48,6 +77,8 @@ describe("Membership and Invitation", () => {
       email: "a@example.com",
       avatarPath: "avatars/u1.png",
       version: "12",
+      // No mark: an unnamed row is not a deleted account (TAS-529).
+      deleted: false,
     });
     const page = toInvitationPage({
       items: [

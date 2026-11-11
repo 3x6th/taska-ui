@@ -29,6 +29,7 @@ const member = (userId: string, overrides: Partial<Membership> = {}): Membership
   avatarPath: null,
   version: "1",
   ...overrides,
+  deleted: false,
 });
 
 const invitation = (id: string, overrides: Partial<Invitation> = {}): Invitation => ({

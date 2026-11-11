@@ -110,6 +110,7 @@ const member = (userId: string, name: string, overrides: Partial<Membership> = {
   email: `${userId}@example.com`,
   avatarPath: null,
   version: "1",
+  deleted: false,
   ...overrides,
 });
 

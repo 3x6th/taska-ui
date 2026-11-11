@@ -3981,6 +3981,7 @@ function IssueWatchersSection({
     // re-read that settles this write.
     displayName: null,
     avatarUrl: null,
+    deleted: false,
   });
 
   /**

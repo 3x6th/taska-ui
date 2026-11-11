@@ -12,7 +12,14 @@ import {
 } from "../tenantMembers";
 import { tenantNameProblem, type CreateTenantInput, type ListBillingPlansParams, type ListTenantsParams } from "../tenants";
 import type { B2bTransport } from "../webSession";
-import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed } from "./MockTaskaApi";
+import {
+  MOCK_ACCOUNT_IDS,
+  MOCK_DELETED_ACCOUNT_ID,
+  MOCK_FORMER_ACCOUNT_ID,
+  MOCK_PROJECT_IDS,
+  MockTaskaStore,
+  type MockTenantSeed,
+} from "./MockTaskaApi";
 
 /*
  * The companies build's mock server (TAS-500, api-contract-guard §7, B7): the
@@ -138,6 +145,25 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v5";
  * - `clockOffsetMs` also applies a scheduled plan change once its
  *   `scheduledEffectiveAt` has passed.
  *
+ * A deleted account (TAS-529, api-contract-guard §6 and Addendum 2):
+ *
+ * - `deletedAccounts`: `[{"userId": "…", "cleanup": true}]` — the account is
+ *   deleted from now on: every summary of it on every read is the mark alone
+ *   (`deleted: true`, no name, address or picture), its memberships come back
+ *   marked, and the directory never finds it. `cleanup` (default `true`) is
+ *   the deletion's second half, done once: each ACTIVE or SUSPENDED membership
+ *   of the account removed — its seat, sessions, pending invitations, project
+ *   rows and assignments with it (`removeMembership`), and nothing written in
+ *   any history or inbox. `cleanup: false` is the window between the two
+ *   halves (`state-machines.md:132`): marked on every read, nothing removed.
+ *   It models a deletion the server accepted, so an account that owns a
+ *   company is not one to give it (an owner cannot be deleted); nothing here
+ *   checks. Taking an entry out unmarks the account — what the cleanup removed
+ *   stays removed.
+ *
+ * `MOCK_DELETED_ACCOUNT_ID` is deleted whatever the hooks say: the seed's own
+ * account after its cleanup (Initech's HLP-3).
+ *
  * Everything time- or hook-driven is evaluated on every read of the server's
  * state: there are no timers.
  */
@@ -172,6 +198,7 @@ export interface MockTenantHooks {
   applyPlan?: Record<string, string>;
   taskLifetime?: Record<string, number>;
   paymentDispute?: Record<string, boolean>;
+  deletedAccounts?: Array<{ userId: string; cleanup?: boolean }>;
 }
 
 /** The fixture companies' ids (fixed, `createdAt` ascending in this order). */
@@ -791,6 +818,8 @@ function seedTenants(seedAt: number): Pick<ServerState, "tenants" | "memberships
       member(ids.globex, anna, "MEMBER"),
       member(ids.initech, sofia, "TENANT_ADMIN"),
       member(ids.initech, anna, "MEMBER"),
+      // TAS-529: the deleted account's membership, ended by its deletion's cleanup — listed nowhere, holding no seat.
+      member(ids.initech, MOCK_DELETED_ACCOUNT_ID, "MEMBER", "REMOVED", 2),
       member(ids.umbrella, tom, "TENANT_ADMIN"),
       member(ids.umbrella, priya, "TENANT_ADMIN"),
       member(ids.umbrella, anna, "MEMBER", "SUSPENDED"),
@@ -962,6 +991,35 @@ const TENANT_SEEDS: Readonly<Record<string, MockTenantSeed>> = {
             assigneeId: sofia,
             reporterId: sofia,
           },
+          // TAS-529: HLP-3, the issue of a deleted account (`MOCK_DELETED_ACCOUNT_ID`), as it reads after the
+          // deletion's cleanup: reporter, assignee once, author of a comment, a work log entry and an
+          // attachment — and, beside it, an account nobody can name, drawn «Unknown». The assignment is
+          // gone (the cleanup writes no history), its ASSIGNED row stays.
+          {
+            summary: "Move the office VPN to the new gateway",
+            issueType: "TASK",
+            status: "IN_PROGRESS",
+            priority: "MEDIUM",
+            assigneeId: null,
+            reporterId: MOCK_DELETED_ACCOUNT_ID,
+            story: [
+              { minutesAfter: 10, kind: "history", eventType: "ASSIGNED", actorId: sofia, payload: { previousAssigneeId: null, assigneeId: MOCK_DELETED_ACCOUNT_ID } },
+              { minutesAfter: 30, kind: "history", eventType: "TRANSITIONED", actorId: MOCK_DELETED_ACCOUNT_ID, payload: { from: "TODO", to: "IN_PROGRESS" } },
+              { minutesAfter: 35, kind: "comment", authorId: MOCK_DELETED_ACCOUNT_ID, body: "The new gateway takes the old client profiles. Testing with two laptops first." },
+              {
+                minutesAfter: 50,
+                kind: "attachment",
+                uploadedBy: MOCK_DELETED_ACCOUNT_ID,
+                fileName: "vpn-client-profiles.txt",
+                contentType: "text/plain",
+                sizeBytes: 1824,
+                checksum: "6512bd43d9caa6e02c990b0a82652dca",
+              },
+              { minutesAfter: 70, kind: "worklog", authorId: MOCK_DELETED_ACCOUNT_ID, minutes: 120, workDate: "2026-06-09", comment: "Both laptops connect." },
+              { minutesAfter: 90, kind: "worklog", authorId: MOCK_FORMER_ACCOUNT_ID, minutes: 30, workDate: "2026-06-09", comment: null },
+              { minutesAfter: 120, kind: "comment", authorId: anna, body: "Thanks — I will roll it out to the rest of the floor." },
+            ],
+          },
         ],
       },
     ],
@@ -1119,6 +1177,7 @@ export class MockTenantServer {
     args: readonly unknown[] = [],
   ): Promise<T> {
     await this.delay(operation, 0);
+    const deleted = this.deletedAccountIds();
     const { grant, members, cleared } = this.read((state) => {
       const granted = this.authorize(state, bearer, kind);
       const tenantId = granted.tenantId;
@@ -1137,6 +1196,7 @@ export class MockTenantServer {
     if (grant.tenantId !== null && store !== this.accountStore) this.applyClears(grant.tenantId, cleared);
     if (!store.restoreSession(grant.userId)) throw problem(401, "AUTHENTICATION_REQUIRED", "Invalid session");
     if (store !== this.accountStore) store.scopeDirectory(members);
+    store.markDeletedAccounts(deleted);
     if (grant.tenantId === null || store === this.accountStore) return run(store);
     const counted = this.meetQuota(grant.tenantId, operation, args, store);
     const answer = await run(store);
@@ -2283,7 +2343,10 @@ export class MockTenantServer {
 
   /** `Membership` as the blueprint has it (its to-be — develop sends no profile, TAS-321); never `avatarPath`. */
   private wireMembership(state: ServerState, tenant: StoredTenant, membership: StoredMembership): unknown {
-    const profile = this.accountStore.accountProfile(membership.userId);
+    // A deleted account (TAS-529): the membership and the mark — no name, no
+    // address (ask A122's second option, which the blueprint cannot express).
+    const deleted = this.deletedAccountIds().has(membership.userId);
+    const profile = deleted ? null : this.accountStore.accountProfile(membership.userId);
     return {
       id: membership.id,
       tenantId: membership.tenantId,
@@ -2292,6 +2355,7 @@ export class MockTenantServer {
       state: this.membershipState(state, membership.tenantId, membership.userId) ?? membership.state,
       isOwner: tenant.ownerId === membership.userId,
       ...(profile ? { displayName: profile.displayName, email: profile.email } : {}),
+      ...(deleted ? { deleted: true } : {}),
       version: String(membership.version),
     };
   }
@@ -2772,6 +2836,18 @@ export class MockTenantServer {
       state.lifetimeApplied[projectId] = count;
       changed = true;
     }
+    // TAS-529: a deleted account's cleanup, once — a membership it removed is
+    // REMOVED, so a second load finds nothing left to remove.
+    for (const entry of Array.isArray(hooks.deletedAccounts) ? hooks.deletedAccounts : []) {
+      if (typeof entry?.userId !== "string" || entry.cleanup === false) continue;
+      for (const membership of state.memberships) {
+        if (membership.userId !== entry.userId || (membership.state !== "ACTIVE" && membership.state !== "SUSPENDED")) continue;
+        const tenant = state.tenants.find((item) => item.id === membership.tenantId);
+        if (!tenant) continue;
+        this.removeMembership(state, tenant, membership);
+        changed = true;
+      }
+    }
     // TAS-512: an announced plan once its date has passed, a plan the hook
     // applies, a payment dispute, and the quota kinds a company is over.
     const plans = typeof hooks.applyPlan === "object" && hooks.applyPlan !== null ? hooks.applyPlan : {};
@@ -2828,6 +2904,13 @@ export class MockTenantServer {
     } catch {
       this.memory = state;
     }
+  }
+
+  /** The accounts deleted now (TAS-529): the seed's own, and every `deletedAccounts` hook entry. */
+  private deletedAccountIds(): ReadonlySet<string> {
+    const entries = this.hooks().deletedAccounts;
+    const hooked = Array.isArray(entries) ? entries.flatMap((entry) => (typeof entry?.userId === "string" ? [entry.userId] : [])) : [];
+    return new Set([MOCK_DELETED_ACCOUNT_ID, ...hooked]);
   }
 
   private hooks(): MockTenantHooks {

@@ -226,6 +226,7 @@ describe("who may be the new owner, and the hand-over", () => {
     email: `${userId}@example.com`,
     avatarPath: null,
     version: "1",
+    deleted: false,
     ...overrides,
   });
 

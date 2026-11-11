@@ -7503,7 +7503,7 @@ describe("the activity feed's disclosure", () => {
     });
     seedHistory([
       assigned("history-1", "user-vera", "2026-08-01T09:00:00Z", {
-        "user-vera": { id: "user-vera", displayName: "Vera Former", avatarUrl: null },
+        "user-vera": { id: "user-vera", displayName: "Vera Former", avatarUrl: null, deleted: false },
       }),
       assigned("history-2", "user-tom", "2026-08-01T10:00:00Z"),
       assigned("history-3", "user-gone", "2026-08-01T11:00:00Z", {}),
@@ -8488,9 +8488,9 @@ describe("the author of an Activity event (TAS-398)", () => {
     ]);
     seedHistory([
       // Not on the project any more: only the event's own summary names her.
-      event({ id: "h-1", actorUserId: "user-priya", actor: { id: "user-priya", displayName: "Priya Nair", avatarUrl: null } }),
+      event({ id: "h-1", actorUserId: "user-priya", actor: { id: "user-priya", displayName: "Priya Nair", avatarUrl: null, deleted: false } }),
       // No summary (a blank name is none): the member list does.
-      event({ id: "h-2", occurredAt: "2026-08-01T10:00:00Z", actorUserId: "user-tom", actor: { id: "user-tom", displayName: null, avatarUrl: null } }),
+      event({ id: "h-2", occurredAt: "2026-08-01T10:00:00Z", actorUserId: "user-tom", actor: { id: "user-tom", displayName: null, avatarUrl: null, deleted: false } }),
       // Neither: Unknown.
       event({ id: "h-3", occurredAt: "2026-08-01T11:00:00Z", actorUserId: "user-gone", actor: null }),
     ]);

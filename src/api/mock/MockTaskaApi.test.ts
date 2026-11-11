@@ -1069,7 +1069,7 @@ describe("MockTaskaApi", () => {
 
       const { history: tas102 } = await api.getIssue(project.id, byKey("TAS-102").id);
       const priyas = tas102.find((event) => event.eventType === "UPDATED");
-      expect(priyas?.actor).toEqual({ id: priyas!.actorUserId, displayName: "Priya Nair", avatarUrl: null });
+      expect(priyas?.actor).toEqual({ id: priyas!.actorUserId, displayName: "Priya Nair", avatarUrl: null, deleted: false });
       // Priya is not on Taska Platform: the summary is what names her.
       const members = await api.listMembers(project.id);
       expect(members.some((member) => member.userId === priyas!.actorUserId)).toBe(false);
@@ -1737,6 +1737,7 @@ describe("MockTaskaApi", () => {
           id: issue.assignee!.id,
           displayName: member?.user?.displayName ?? expect.any(String),
           avatarUrl: member?.user?.avatarUrl ?? null,
+          deleted: false,
         });
       }
       const cardOfLabelled = cardsOf(board).find((issue) => issue.id === labelled.id)!;

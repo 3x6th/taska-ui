@@ -323,7 +323,7 @@ describe("the work log section", () => {
   // summary, then the member list, then Unknown (DESIGN.md §4.24).
   it("names the author from the row's summary, then the member list, then Unknown", async () => {
     state.worklogs = [
-      { ...entry, id: "w-a", authorUserId: "u-former", author: { id: "u-former", displayName: "Former Member", avatarUrl: null }, comment: "By a former member" },
+      { ...entry, id: "w-a", authorUserId: "u-former", author: { id: "u-former", displayName: "Former Member", avatarUrl: null, deleted: false }, comment: "By a former member" },
       { ...entry, id: "w-b", author: null, comment: "By a member" },
       { ...entry, id: "w-c", authorUserId: "u-gone", author: null, comment: "By nobody named" },
     ];
@@ -338,7 +338,7 @@ describe("the work log section", () => {
   });
 
   it("keeps a row's author when the edit's answer leaves it out", async () => {
-    state.worklogs = [{ ...entry, authorUserId: "u-former", author: { id: "u-former", displayName: "Former Member", avatarUrl: null } }];
+    state.worklogs = [{ ...entry, authorUserId: "u-former", author: { id: "u-former", displayName: "Former Member", avatarUrl: null, deleted: false } }];
     state.updateAnswer = { ...entry, authorUserId: "u-former", spentMinutes: 60 };
     // The re-read never answers, so the row drawn is the answer laid over it.
     state.rereadsHeld = true;
