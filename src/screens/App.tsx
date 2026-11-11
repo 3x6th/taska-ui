@@ -14,6 +14,7 @@ import { DEFAULT_SIGNED_IN_ROUTE, RequireSession } from "../components/RequireSe
 import type { Theme } from "../hooks/useTheme";
 import { useTheme } from "../hooks/useTheme";
 import { CREATE_COMPANY_ROUTE, OUTSIDE_COMPANY_ROUTES, forgetFreeUsed } from "../lib/companies";
+import { forgetSubscriptionIntents } from "./company/companyPlanChange";
 import { holdInviteToken, inviteTokenIn } from "../lib/inviteLink";
 import { AdminAuditSection } from "./admin/AdminAuditSection";
 import { AdminDataSection } from "./admin/AdminDataSection";
@@ -86,8 +87,10 @@ export function App() {
     mutationFn: () => taskaApi.logout(),
     onSuccess: () => {
       queryClient.clear();
-      // Known only until the account signs out (DESIGN.md §4.36, TAS-501).
+      // Known only until the account signs out (DESIGN.md §4.36, TAS-501) — and
+      // the subscription commands' keys and pending change with it (TAS-515).
       forgetFreeUsed();
+      forgetSubscriptionIntents();
       navigate("/login", { replace: true });
     },
   });
@@ -129,6 +132,7 @@ export function App() {
       // Cached answers belong to a session that no longer exists.
       queryClient.clear();
       forgetFreeUsed();
+      forgetSubscriptionIntents();
       navigate("/login", { replace: true, state: { from, expired: true } satisfies LoginRedirectState });
     });
   }, [from, onAuthRoute, navigate, queryClient]);

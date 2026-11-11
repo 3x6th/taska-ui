@@ -129,7 +129,7 @@ function renderPlan(options: { strict?: boolean; before?: (harness: ReturnType<t
   return { ...harness, unmount: view.unmount };
 }
 
-const ready = () => screen.findByText(/^The plan /);
+const ready = () => screen.findByText(/^The plan \S.* is on and what it uses\./);
 const labels = () => screen.queryAllByText(/./, { selector: "dt" }).map((node) => node.textContent);
 const dd = (label: string) => screen.getByText(label, { selector: "dt" }).nextElementSibling as HTMLElement;
 const IN_A_MONTH = new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString();
@@ -159,17 +159,17 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("who sees what (B1, art-director B4)", () => {
-  it("the owner: plan, price, paid until, automatic payments and the announced change — five reads", async () => {
+  it("the owner: plan, price, paid until, automatic payments and the scheduled change — five reads", async () => {
     renderPlan();
     expect(await ready()).toHaveTextContent("The plan Umbrella is on and what it uses.");
-    expect(labels()).toEqual(["Plan", "Price", "Paid until", "Automatic payments", "Announced change", "Projects", "Seats", "Storage", "Issues per project"]);
+    expect(labels()).toEqual(["Plan", "Price", "Paid until", "Automatic payments", "Scheduled change", "Projects", "Seats", "Storage", "Issues per project"]);
     expect(dd("Plan")).toHaveTextContent("Team · version 1");
     expect(dd("Price")).toHaveTextContent("€15 a month");
     expect(dd("Paid until").querySelector("time")).toHaveAttribute("dateTime", IN_A_MONTH);
     expect(dd("Automatic payments")).toHaveTextContent("On");
-    expect(dd("Announced change")).toHaveTextContent(/^From [A-Z][a-z]{2} \d{1,2}, (\d{4}, )?\d\d:\d\d: Team · version 2, €20 a month/);
-    // The only place limits come from the catalogue, labelled as announced.
-    expect(dd("Announced change")).toHaveTextContent("5 projects · 50 seats");
+    // TAS-515 (B6, B10): the owner's own NEXT_PERIOD choice — its line, then «From {date} · {limits}», one colon fewer.
+    expect(dd("Scheduled change")).toHaveTextContent(/^Team · version 2, €20 a monthFrom [A-Z][a-z]{2} \d{1,2}, (\d{4}, )?\d\d:\d\d · 5 projects · 50 seats$/);
+    expect(dd("Scheduled change").querySelector("time")).toHaveAttribute("dateTime", IN_A_MONTH);
     expect(state.calls.sort()).toEqual(["entitlement", "plans", "quotas", "subscription", "tenant"]);
   });
 
@@ -216,7 +216,24 @@ describe("who sees what (B1, art-director B4)", () => {
     expect(labels()).not.toContain("Price");
     expect(dd("Renewal")).toHaveTextContent("Cancelled");
     expect(dd("Renewal")).toHaveTextContent("When the paid period ends, Umbrella becomes read-only. It doesn’t move to a free plan on its own.");
-    expect(dd("Announced change")).toHaveTextContent(/, the plan changes\.$/);
+    expect(dd("Scheduled change")).toHaveTextContent(/^The plan changes from [A-Z][a-z]{2} \d{1,2}, (\d{4}, )?\d\d:\d\d\.$/);
+  });
+
+  it("TAS-515 F6: no Renewal row without a paid period — a company moved to Free never shows the old one as kept", async () => {
+    state.entitlementPlan = "free";
+    state.subscription = { ...state.subscription, planVersionId: "free", paidThrough: null, renewalCancelled: true, scheduledPlanVersionId: null, scheduledEffectiveAt: null };
+    renderPlan();
+    await ready();
+    expect(labels()).toEqual(["Plan", "Projects", "Seats", "Storage", "Issues per project"]);
+  });
+
+  it("TAS-515: past an unpaid boundary the scheduled plan stays without its date; under PAYMENT_EXPIRED the Renewal row has no second line", async () => {
+    state.restrictions = ["PAYMENT_EXPIRED"];
+    state.subscription = { ...state.subscription, renewalCancelled: true, scheduledEffectiveAt: null };
+    renderPlan();
+    await ready();
+    expect(dd("Scheduled change")).toHaveTextContent("Team · version 2, €20 a monthIts start date passed before it was paid for.");
+    expect(dd("Renewal")).toHaveTextContent(/^Cancelled$/);
   });
 });
 
@@ -252,7 +269,7 @@ describe("loading and failed reads (B8, art-director B9)", () => {
     renderPlan();
     expect(screen.getByRole("status")).toHaveTextContent("Loading plan");
     expect(document.querySelectorAll(".company-plan-loading .value-skeleton")).toHaveLength(10);
-    expect(screen.queryByText(/^The plan /)).toBeNull();
+    expect(screen.queryByText(/^The plan \S.* is on and what it uses\./)).toBeNull();
     await ready();
   });
 

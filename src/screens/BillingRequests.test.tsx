@@ -15,7 +15,8 @@ import { CompanyInvoiceSection } from "./company/CompanyInvoiceSection";
  * Its own file because `ScreenRequests.test.tsx` mocks the client as today's
  * build, which sends none of these.
  *
- * The guard's table: the list `getTenant ∥ me → listInvoices`; the invoice
+ * The guard's table: the list `getTenant ∥ me → listInvoices ∥ getSubscription`
+ * (TAS-515: the «Automatic payments» group, +1 read at the same depth); the invoice
  * `getTenant ∥ me → getInvoice`, with `listInvoices` only for an EXPIRED or
  * VOID one (F3); the card `getTenant → listInvoices` (F4, F7) — no `getInvoice`
  * without a payment out. The catalogue (`GET /billing/plans`, public) names the
@@ -109,6 +110,9 @@ function stubGateway() {
         if (path.startsWith("/billing/plans")) return json(200, { items: [] });
         if (path.startsWith(`/tenants/${server.tenantId}/billing/invoices?`)) return json(200, { items: [invoice()] });
         if (path === `/tenants/${server.tenantId}/billing/invoices/${INVOICE}`) return json(200, invoice());
+        if (path === `/tenants/${server.tenantId}/billing/subscription`) {
+          return json(200, { tenantId: server.tenantId, planVersionId: "plan-team", version: "4", paidThrough: "2099-01-02T09:00:00Z", renewalCancelled: false, autopayState: "CONSENTED" });
+        }
         if (path === `/tenants/${server.tenantId}`) return json(200, tenant());
         if (path.startsWith("/tenants")) return json(200, { items: [tenant()] });
         return json(404, { code: "NOT_FOUND", message: `No route ${method} ${path}` });
@@ -146,18 +150,26 @@ beforeEach(() => {
 const tenantRoute = (tenantId: string) => `GET /tenants/${tenantId}`;
 const invoicesRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/invoices?limit=100`;
 const invoiceRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/invoices/${INVOICE}`;
+const subscriptionRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/subscription`;
 
 describe("the request budget of Billing and the never-opened card (F9)", () => {
-  it("the list: getTenant ∥ me, then listInvoices — and nothing else of the company's", async () => {
+  it("the list: getTenant ∥ me, then listInvoices ∥ getSubscription — and nothing else of the company's", async () => {
     const from = await enter(NORTHWIND, "ACTIVE");
     const { wrapper } = companiesHarness({ companyId: NORTHWIND, path: "/company/billing" });
     const view = render(<CompanyBillingSection />, { wrapper });
     await screen.findByRole("link", { name: "TSK-2026-01008" });
+    await screen.findByRole("heading", { name: "Automatic payments" });
     const routes = sent(from);
-    expect(routes.map((entry) => entry.route).sort()).toEqual(["GET /users/me", invoicesRoute(NORTHWIND), tenantRoute(NORTHWIND)].sort());
-    const list = one(routes, invoicesRoute(NORTHWIND));
-    expect(list.started).toBeGreaterThan(one(routes, tenantRoute(NORTHWIND)).answered);
-    expect(list.started).toBeGreaterThan(one(routes, "GET /users/me").answered);
+    expect(routes.map((entry) => entry.route).sort()).toEqual(
+      ["GET /users/me", invoicesRoute(NORTHWIND), subscriptionRoute(NORTHWIND), tenantRoute(NORTHWIND)].sort(),
+    );
+    for (const route of [invoicesRoute(NORTHWIND), subscriptionRoute(NORTHWIND)]) {
+      const read = one(routes, route);
+      expect(read.started).toBeGreaterThan(one(routes, tenantRoute(NORTHWIND)).answered);
+      expect(read.started).toBeGreaterThan(one(routes, "GET /users/me").answered);
+    }
+    // Side by side, one depth: neither waits for the other.
+    expect(one(routes, subscriptionRoute(NORTHWIND)).started).toBeLessThan(one(routes, invoicesRoute(NORTHWIND)).answered);
     view.unmount();
   });
 

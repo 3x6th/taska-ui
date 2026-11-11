@@ -1,17 +1,42 @@
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Link } from "react-router-dom";
 import { taskaApi } from "../../api/client";
 import { apiErrorFacts, refusalCode } from "../../api/errors";
-import type { Tenant } from "../../api/tenants";
+import { isSendableVersion } from "../../api/tenantMembers";
+import type { PlanVersion, Subscription, Tenant } from "../../api/tenants";
 import { ApiNotice } from "../../components/ApiNotice";
 import { ErrorNote } from "../../components/ErrorNote";
-import { useCompanies, useCompanyName } from "../../hooks/useCompanies";
+import { useCompanies, useCompanyName, useWorkspace } from "../../hooks/useCompanies";
+import { useMutation } from "../../hooks/useMutation";
 import { TENANTS_QUERY_KEY, upsertTenant } from "../../lib/companies";
 import { useAccountQueryClient, useCompanyAddress } from "../../lib/companyAddress";
 import { ME_QUERY_KEY } from "../../lib/ownAvatarLink";
-import { planLimitsText, planPriceText, plansQueryOptions } from "../../lib/plans";
+import { planPriceText, plansQueryOptions } from "../../lib/plans";
+import { ChangePlanModal, type PlanChangeOutcome } from "./ChangePlanModal";
 import { COMPANY_SUBSCRIPTION_KEY, companySubscriptionOptions, companyTenantKey, companyTenantOptions } from "./companyGeneral";
-import { formatPaidUntil } from "./companyGeneralText";
+import { formatPaidUntil, type RefusalWords } from "./companyGeneralText";
+import { Strip } from "./CompanyMembersSection";
+import { intentFor, setPendingChange, settleIntent, usePendingChange, type PendingChange, type SubscriptionIntent } from "./companyPlanChange";
+import {
+  CHANGE_PLAN,
+  OPEN_INVOICE_LINK,
+  SCHEDULED_UNPAID_TEXT,
+  cancelRenewalQuestion,
+  cancelRenewalRowText,
+  changePlanRowText,
+  changedPlanLine,
+  isUnanswered,
+  pendingNoInvoiceText,
+  pendingUntilText,
+  planChangedStatus,
+  renewalCancelledStatus,
+  renewalEndedRowText,
+  renewalResumedStatus,
+  resumeRenewalRowText,
+  scheduledTail,
+  subscriptionRefusalWords,
+} from "./companyPlanChangeText";
 import { COMPANY_QUOTAS_KEY } from "./companyMembersQuery";
 import {
   BOUNDARY_AGAIN_MS,
@@ -29,7 +54,6 @@ import {
   STATE_READ_FAILED,
   SUBSCRIPTION_READ_FAILED,
   USAGE_READ_FAILED,
-  announcedTail,
   autopayWord,
   planById,
   planLeadText,
@@ -60,7 +84,15 @@ import { CompanyStateBlock } from "./CompanyStateBlock";
  *   what failed. Never «Free», «unlimited» or «0» for a read that failed.
  * - **Read again** only on B4's events — a `Tenant` answer that moved, a
  *   refused write (both in `CompanyGate`), and once at the owner's
- *   paid-through or announced date, again 60 s later. No poll.
+ *   paid-through or scheduled date, again 60 s later. No poll.
+ *
+ * TAS-515 (art-director B1, B2, B5–B7, B13 with the orchestrator's
+ * decisions): the owner's commands live in a zone at the end — «Change plan»
+ * and the renewal — and nobody else's DOM has them. **No command is
+ * optimistic**: rows change only from server reads, never from a command's
+ * answer, whose subscription is never cached nor sent back as `If-Match`.
+ * «Scheduled change» is the owner's own NEXT_PERIOD choice (A64); «Pending
+ * change» exists only for an AFTER_PAYMENT answer of this session (A63).
  */
 export function CompanyPlanSection() {
   const address = useCompanyAddress();
@@ -135,22 +167,20 @@ function CompanyPlan({ companyId }: { companyId: string }) {
   const plansRead = drawn("plans", plans);
   const subscriptionRead = drawn("subscription", subscription);
   const company = tenant?.name ?? listedName;
-
-  // 403 OWNER_REQUIRED (TAS-504 G6): who owns it is the re-read company's to
-  // say; another owner now — the owner's cache goes and the tab re-enters.
-  const ownerRefusedAt = refusalCode(subscription.error) === "OWNER_REQUIRED" ? subscription.errorUpdatedAt : 0;
+  const sessionId = useWorkspace()?.tenantSessionId ?? null;
+  const currentPlan =
+    entitlementRead.data && plansRead.data ? planById(plansRead.data, entitlementRead.data.planVersionId) : null;
+  // The answers' callbacks speak with the names on screen when they land.
+  const companyRef = useRef(company);
+  const currentRef = useRef<PlanVersion | null>(currentPlan);
   useEffect(() => {
-    if (ownerRefusedAt === 0 || meId === null) return;
-    let live = true;
-    void (async () => {
-      let reread: Tenant | null;
-      try {
-        reread = await queryClient.fetchQuery({ ...companyTenantOptions(companyId), staleTime: 0 });
-      } catch {
-        reread = null;
-      }
-      if (!live || reread === null || reread.ownerId === null || reread.ownerId === meId) return;
-      const answer = reread;
+    companyRef.current = company;
+    currentRef.current = currentPlan;
+  });
+
+  /** Another owner now (TAS-504 G6): the list row follows the company, the owner's cache goes, and the tab re-enters it. */
+  const followOwner = useCallback(
+    async (answer: Tenant) => {
       accountClient?.setQueryData<Tenant[]>(TENANTS_QUERY_KEY, (list) => (list ? upsertTenant(list, answer) : list));
       void accountClient?.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
       queryClient.removeQueries({ queryKey: COMPANY_SUBSCRIPTION_KEY });
@@ -159,11 +189,125 @@ function CompanyPlan({ companyId }: { companyId: string }) {
       } catch {
         // The page follows the company either way.
       }
+    },
+    [accountClient, companyId, queryClient],
+  );
+
+  /** The company read again; `null` when it could not be. */
+  const rereadTenant = useCallback(async (): Promise<Tenant | null> => {
+    try {
+      return await queryClient.fetchQuery({ ...companyTenantOptions(companyId), staleTime: 0 });
+    } catch {
+      return null;
+    }
+  }, [companyId, queryClient]);
+
+  // 403 OWNER_REQUIRED (TAS-504 G6): who owns it is the re-read company's to
+  // say; another owner now — the owner's cache goes and the tab re-enters.
+  const ownerRefusedAt = refusalCode(subscription.error) === "OWNER_REQUIRED" ? subscription.errorUpdatedAt : 0;
+  useEffect(() => {
+    if (ownerRefusedAt === 0 || meId === null) return;
+    let live = true;
+    void (async () => {
+      const reread = await rereadTenant();
+      if (!live || reread === null || reread.ownerId === null || reread.ownerId === meId) return;
+      await followOwner(reread);
     })();
     return () => {
       live = false;
     };
-  }, [accountClient, companyId, meId, ownerRefusedAt, queryClient]);
+  }, [followOwner, meId, ownerRefusedAt, rereadTenant]);
+
+  /* ------------------------------------------- the owner's commands (TAS-515) */
+
+  const [said, setSaid] = useState<{ text: string; seq: number } | null>(null);
+  const say = useCallback((text: string) => setSaid((current) => ({ text, seq: (current?.seq ?? 0) + 1 })), []);
+  const changeButton = useRef<HTMLButtonElement>(null);
+  const renewalButton = useRef<HTMLButtonElement>(null);
+  const pendingLink = useRef<HTMLAnchorElement>(null);
+  const [focusRequest, setFocusRequest] = useState<{ target: "change" | "renewal" | "pending"; seq: number } | null>(null);
+  const requestFocus = (target: "change" | "renewal" | "pending") => setFocusRequest((current) => ({ target, seq: (current?.seq ?? 0) + 1 }));
+  useEffect(() => {
+    if (focusRequest === null) return;
+    const node =
+      focusRequest.target === "pending" ? (pendingLink.current ?? changeButton.current) : focusRequest.target === "renewal" ? renewalButton.current : changeButton.current;
+    focusDrawn(node);
+  }, [focusRequest]);
+  const [changing, setChanging] = useState(false);
+  const pendingChange = usePendingChange(meId, companyId, sessionId);
+  // In force once a later entitlement names its plan: the pending row goes (decision 5).
+  const entitledPlan = entitlementRead.data?.planVersionId ?? null;
+  const entitledVersion = entitlementRead.data?.version ?? null;
+  useEffect(() => {
+    if (pendingChange === null || meId === null) return;
+    if (entitledPlan === pendingChange.planVersionId && entitledVersion !== pendingChange.since) setPendingChange(meId, companyId, null);
+  }, [companyId, entitledPlan, entitledVersion, meId, pendingChange]);
+  const [asking, setAsking] = useState(false);
+  const [renewalRefusal, setRenewalRefusal] = useState<(RefusalWords & { requestId: string | null; seq: number }) | null>(null);
+  const stripId = useId();
+
+  const renewal = useMutation({
+    mutationFn: async ({ intent, cancel }: { intent: SubscriptionIntent; cancel: boolean }) => {
+      if (cancel) await taskaApi.cancelSubscriptionRenewal(companyId, intent.version, intent.key);
+      else await taskaApi.resumeSubscriptionRenewal(companyId, intent.version, intent.key);
+      if (meId !== null) settleIntent(meId, companyId, intent, null);
+      // The rows follow the subscription read again, never the answer (guard §1, §7).
+      await queryClient.invalidateQueries({ queryKey: COMPANY_SUBSCRIPTION_KEY }).catch(() => undefined);
+    },
+    onSuccess: (_answer, { cancel }) => {
+      setAsking(false);
+      setRenewalRefusal(null);
+      const fresh = queryClient.getQueryData<Subscription>(COMPANY_SUBSCRIPTION_KEY) ?? null;
+      const through = fresh?.paidThrough ?? null;
+      say(cancel ? renewalCancelledStatus(companyRef.current, currentRef.current, through) : renewalResumedStatus(companyRef.current, through));
+      // One element for both commands: the label switched, focus stays and its ring is drawn (B7).
+      requestFocus("renewal");
+    },
+    onError: (error, { intent, cancel }) => {
+      if (meId !== null) settleIntent(meId, companyId, intent, error);
+      setAsking(false);
+      const words = subscriptionRefusalWords(cancel ? "cancelRenewal" : "resumeRenewal", error, companyRef.current);
+      setRenewalRefusal((current) => ({ ...words, requestId: apiErrorFacts(error).requestId, seq: (current?.seq ?? 0) + 1 }));
+      // The box under the row is not live; the page's status says it (B11).
+      say(words.text);
+      renewalButton.current?.focus();
+      if (isUnanswered(error)) return;
+      void queryClient.invalidateQueries({ queryKey: COMPANY_SUBSCRIPTION_KEY });
+      void (async () => {
+        const reread = await rereadTenant();
+        if (refusalCode(error) === "OWNER_REQUIRED" && reread !== null && reread.ownerId !== null && reread.ownerId !== meId) await followOwner(reread);
+      })();
+    },
+  });
+  const renewalBusy = renewal.isPending;
+  const sendRenewal = (cancel: boolean) => {
+    const version = subscriptionRead.data?.version ?? null;
+    if (renewalBusy || meId === null) return;
+    if (!isSendableVersion(version)) {
+      void queryClient.invalidateQueries({ queryKey: COMPANY_SUBSCRIPTION_KEY });
+      return;
+    }
+    const command = cancel ? "cancelRenewal" : "resumeRenewal";
+    const intent = intentFor(meId, companyId, command, command, version, sessionId);
+    setRenewalRefusal(null);
+    renewal.mutate({ intent, cancel });
+  };
+
+  const onChanged = (outcome: PlanChangeOutcome) => {
+    setChanging(false);
+    if (meId !== null) {
+      // Another accepted change replaces a pending one; an AFTER_PAYMENT one is pending in this session only (A63).
+      setPendingChange(
+        meId,
+        companyId,
+        outcome.effect === "AFTER_PAYMENT"
+          ? { planVersionId: outcome.target.id, invoice: outcome.invoice, sessionId, since: entitlementRead.data?.version ?? null }
+          : null,
+      );
+    }
+    say(planChangedStatus({ company: companyRef.current, target: outcome.target, effect: outcome.effect, effectiveAt: outcome.effectiveAt, invoice: outcome.invoice }));
+    requestFocus(outcome.effect === "AFTER_PAYMENT" && outcome.invoice.kind !== "none" ? "pending" : "change");
+  };
 
   // The owner's boundaries (B4): once when the local clock passes the
   // paid-through or the announced date, once more 60 s later, then never.
@@ -298,14 +442,17 @@ function CompanyPlan({ companyId }: { companyId: string }) {
 
   const catalogue = plansRead.data ?? null;
   const entitled = entitlementRead.data;
-  const current = entitled && catalogue ? planById(catalogue, entitled.planVersionId) : null;
+  const current = currentPlan;
   const planKnown = entitled !== undefined && catalogue !== null && entitled.planVersionId !== null;
   const price = owner && current ? planPriceText(current) : null;
   const paidThrough = sub?.paidThrough ?? null;
-  const announced =
-    sub !== null && sub.scheduledPlanVersionId !== null && sub.scheduledEffectiveAt !== null && catalogue !== null
+  const expired = tenant?.restrictions.includes("PAYMENT_EXPIRED") ?? false;
+  // The owner's own NEXT_PERIOD choice (decision 5, A64); its id alone once the boundary passed unpaid.
+  const scheduledChange =
+    sub !== null && sub.scheduledPlanVersionId !== null && catalogue !== null
       ? { at: sub.scheduledEffectiveAt, plan: planById(catalogue, sub.scheduledPlanVersionId) }
       : null;
+  const pending = owner && pendingChange !== null && catalogue !== null ? { change: pendingChange, plan: planById(catalogue, pendingChange.planVersionId) } : null;
   const lines = usageLines(quotasRead.data ?? null, entitled ?? null);
   const refreshFailed = reads.some(stale);
 
@@ -334,9 +481,11 @@ function CompanyPlan({ companyId }: { companyId: string }) {
         </Fact>,
       );
     }
-    if (sub.renewalCancelled === true) {
+    // Paid until, Renewal and Automatic payments only where a paid period was sent (decision 5, F6): a
+    // company moved to Free never shows the old one as kept. Past it the state block speaks, not the note.
+    if (paidThrough !== null && sub.renewalCancelled === true) {
       ownerFacts.push(
-        <Fact key="renewal" label="Renewal" note={renewalNote(company)}>
+        <Fact key="renewal" label="Renewal" note={expired ? null : renewalNote(company)}>
           Cancelled
         </Fact>,
       );
@@ -344,16 +493,51 @@ function CompanyPlan({ companyId }: { companyId: string }) {
     if (paidThrough !== null && sub.autopayState !== null) {
       ownerFacts.push(<Fact key="autopay" label="Automatic payments">{autopayWord(sub.autopayState)}</Fact>);
     }
-    if (announced !== null) {
-      const limits = announced.plan ? planLimitsText(announced.plan) : "";
+    if (scheduledChange !== null) {
+      const { at, plan } = scheduledChange;
+      const date = at === null ? null : <time dateTime={at}>{formatPaidUntil(at)}</time>;
       ownerFacts.push(
-        <Fact key="announced" label="Announced change" note={limits === "" ? null : limits}>
-          From <time dateTime={announced.at}>{formatPaidUntil(announced.at)}</time>
-          {announcedTail(announced.plan, announced.plan ? planPriceText(announced.plan) : null)}
+        <Fact
+          key="scheduled"
+          label="Scheduled change"
+          note={
+            at === null ? (
+              SCHEDULED_UNPAID_TEXT
+            ) : plan !== null ? (
+              <>
+                From {date}
+                {scheduledTail(plan)}
+              </>
+            ) : null
+          }
+        >
+          {plan !== null ? changedPlanLine(plan) : at !== null ? <>The plan changes from {date}.</> : <span className="company-plan-quiet">{NOT_IN_CATALOGUE}</span>}
+        </Fact>,
+      );
+    }
+    if (pending !== null) {
+      ownerFacts.push(
+        <Fact key="pending" label="Pending change" note={<PendingNote company={company} current={current} change={pending.change} linkRef={pendingLink} />}>
+          {pending.plan !== null ? changedPlanLine(pending.plan) : <span className="company-plan-quiet">{NOT_IN_CATALOGUE}</span>}
         </Fact>,
       );
     }
   }
+
+  // The owner's zone (B1, B2): a readable subscription and its version, else no command (guard §5).
+  const zone = owner && sub !== null && isSendableVersion(sub.version);
+  const cancelled = sub?.renewalCancelled ?? null;
+  const renewalRow =
+    !zone || paidThrough === null || cancelled === null
+      ? null
+      : !cancelled && !expired
+        ? { text: cancelRenewalRowText(company, current, paidThrough), action: "cancel" as const }
+        : cancelled && !expired
+          ? { text: resumeRenewalRowText(company, paidThrough), action: "resume" as const }
+          : cancelled
+            ? { text: renewalEndedRowText(company, paidThrough), action: null }
+            : null;
+  const bandOpen = asking && renewalRow?.action === "cancel";
 
   return (
     <div className="settings-plane">
@@ -391,13 +575,172 @@ function CompanyPlan({ companyId }: { companyId: string }) {
             ))}
           </dl>
         ) : null}
+
+        {zone ? (
+          <div className="company-general-zone company-plan-zone">
+            <div className="company-general-zone-row">
+              <div className="company-general-zone-line">
+                <p className="company-general-zone-text">{changePlanRowText(company)}</p>
+                <button
+                  aria-haspopup="dialog"
+                  className="secondary-button compact-button company-general-zone-button"
+                  onClick={() => {
+                    setAsking(false);
+                    setChanging(true);
+                  }}
+                  ref={changeButton}
+                  type="button"
+                >
+                  {CHANGE_PLAN}
+                </button>
+              </div>
+            </div>
+            {renewalRow !== null ? (
+              <div
+                className="company-general-zone-row"
+                onKeyDown={(event) => {
+                  if (bandOpen && event.key === "Escape") {
+                    event.preventDefault();
+                    if (!renewalBusy) {
+                      setAsking(false);
+                      renewalButton.current?.focus();
+                    }
+                  }
+                }}
+              >
+                <div className="company-general-zone-line">
+                  <p className="company-general-zone-text">{renewalRow.text}</p>
+                  {renewalRow.action !== null ? (
+                    // One element for both commands, so focus stays on it when the answer turns one into the other (B7).
+                    <button
+                      aria-controls={bandOpen ? stripId : undefined}
+                      aria-disabled={renewalBusy || undefined}
+                      aria-expanded={renewalRow.action === "cancel" ? bandOpen : undefined}
+                      className="secondary-button compact-button strip-trigger company-general-zone-button"
+                      onClick={() => {
+                        if (renewalBusy) return;
+                        if (renewalRow.action === "resume") {
+                          sendRenewal(false);
+                        } else if (bandOpen) {
+                          setAsking(false);
+                        } else {
+                          setRenewalRefusal(null);
+                          setAsking(true);
+                        }
+                      }}
+                      ref={renewalButton}
+                      type="button"
+                    >
+                      {renewalRow.action === "cancel" ? "Cancel renewal" : "Resume renewal"}
+                    </button>
+                  ) : null}
+                </div>
+                {bandOpen && paidThrough !== null ? (
+                  <Strip
+                    answer="Cancel renewal"
+                    busy={renewalBusy}
+                    cancelLabel="Keep renewal"
+                    className="company-plan-band"
+                    id={stripId}
+                    onAnswer={() => sendRenewal(true)}
+                    onCancel={() => {
+                      setAsking(false);
+                      renewalButton.current?.focus();
+                    }}
+                    sentence={cancelRenewalQuestion(company, current, paidThrough, sub?.autopayState === "CONSENTED")}
+                  />
+                ) : null}
+                {renewalRefusal ? (
+                  <ErrorNote key={renewalRefusal.seq} requestId={renewalRefusal.requestId} serverWords={renewalRefusal.words}>
+                    {renewalRefusal.text}
+                  </ErrorNote>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* One persistent region, a node per sentence (§5.6): mounted with the page, so it is listening when it speaks. */}
+        <div className="visually-hidden" role="status">
+          {said ? <span key={said.seq}>{said.text}</span> : null}
+        </div>
       </div>
+      {changing && zone ? (
+        <ChangePlanModal
+          company={company}
+          companyId={companyId}
+          meId={meId}
+          onChanged={onChanged}
+          onClose={() => {
+            setChanging(false);
+            changeButton.current?.focus();
+          }}
+          onOwnerLost={(answer) => {
+            setChanging(false);
+            heading()?.focus();
+            void followOwner(answer);
+          }}
+          sessionId={sessionId}
+        />
+      ) : null}
     </div>
   );
 }
 
+/** Focus handed back after a command, its ring drawn even after a pointer press (§5.9 «Успех»). */
+function focusDrawn(node: HTMLElement | null | undefined) {
+  if (!node) return;
+  try {
+    node.focus({ focusVisible: true } as FocusOptions);
+  } catch {
+    node.focus();
+  }
+}
+
+/**
+ * «Pending change»'s second line (decision 4): the invoice the answer named
+ * — its number when the read said it is this change's, «Open the invoice»
+ * when it could not be read — or that there is none yet.
+ */
+function PendingNote({
+  company,
+  current,
+  change,
+  linkRef,
+}: {
+  company: string | null;
+  current: PlanVersion | null;
+  change: PendingChange;
+  linkRef: RefObject<HTMLAnchorElement | null>;
+}) {
+  const { invoice } = change;
+  if (invoice.kind === "none") return <>{pendingNoInvoiceText(company, current)}</>;
+  const link = (text: string) => (
+    <Link
+      className="admin-note-link company-plan-invoice-link"
+      ref={linkRef}
+      state={{ focusHeading: true }}
+      to={`/company/billing/${encodeURIComponent(invoice.id)}`}
+    >
+      {text}
+    </Link>
+  );
+  if (invoice.kind === "verified" && invoice.number !== null) {
+    return (
+      <>
+        Starts once invoice {link(invoice.number)} is paid. {pendingUntilText(company, current)}
+      </>
+    );
+  }
+  return (
+    <>
+      Starts once its invoice is paid. {pendingUntilText(company, current)} {link(OPEN_INVOICE_LINK)}
+    </>
+  );
+}
+
 /** One `dt` / `dd` pair of §4.39's facts recipe, with the rule's second line when there is one. */
-function Fact({ label, note = null, children }: { label: string; note?: string | null; children: ReactNode }) {
+function Fact({ label, note = null, children }: { label: string; note?: ReactNode; children: ReactNode }) {
   return (
     <div>
       <dt>{label}</dt>

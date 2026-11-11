@@ -11,8 +11,8 @@ import { companyInside } from "./companyGeneralText";
  *
  * **Numbers are the server's** (api-contract-guard B2): the SEAT, PROJECT and
  * STORAGE_BYTES lines from the quota snapshot, TASK_LIFETIME from the
- * entitlement — the catalogue's limits only for the owner's announced terms,
- * labelled as such. Counts are added through `decimal` (BigInt), bytes go
+ * entitlement — the catalogue's limits only for the owner's scheduled change
+ * (TAS-515), labelled as such. Counts are added through `decimal` (BigInt), bytes go
  * through `formatBytes`; nothing is subtracted, no «left», no percentage, no
  * «days left». **One template whatever the numbers** (art-director B3): below
  * the limit, at it and over it read alike — the restriction block says the
@@ -61,16 +61,6 @@ export function autopayWord(state: string): string {
   }
 }
 
-/**
- * The owner's announced change after the date (the date itself is a `<time>`
- * the page draws): «: Team · version 2, €20 a month», or «, the plan changes.»
- * for an id the catalogue does not list.
- */
-export function announcedTail(plan: PlanVersion | null, price: string | null): string {
-  if (plan === null) return ", the plan changes.";
-  const { name, version } = planNameParts(plan);
-  return `: ${name}${version ?? ""}${price === null ? "" : `, ${price}`}`;
-}
 
 /* ---------------------------------------------------------------- usage */
 
