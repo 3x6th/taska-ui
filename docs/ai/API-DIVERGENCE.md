@@ -2357,11 +2357,15 @@ Everything below is the entry as it stood, in the past tense.
   `IssueWatcherResponseDto`, `ProjectMemberDetailsDto` and `Membership`; such a person is «Deleted user» with a neutral avatar
   (DESIGN §4.4) — no name, email, avatar or colour from the wire or any cache, `personFor` skips the member list; a blank or
   absent name stays «Unknown» and is never read as deleted; no string comparison, no polling, no per-id read, no directory
-  filter; deleted rows offer no controls (a presentation choice — develop would accept such writes). The marker never arrives
-  on the stand, but three changes ship in today's build too: the panel's current assignee outside the member list is one
-  active, disabled chip after «None» («Unknown» when unmarked); the reporter's unnamed avatar is labelled «Unknown»; assignee
+  filter; deleted rows offer no controls (a presentation choice: the contract defines no refusal; develop's project-member and
+  watcher routes would accept such writes). **Not behind a flag:** the REST mappers read the mark in both builds, and no
+  gateway sends it yet — the day A120 ships, today's build shows «Deleted user» too; only the mock marks anyone, and only in
+  the companies build. Three changes ship in today's build already: the panel's current assignee outside the member list is
+  one active, disabled chip after «None» (with the mark «Deleted user»; unmarked, the name the server's summary gives, or
+  «Unknown» when it names nobody); the reporter's unnamed avatar is labelled «Unknown»; assignee
   chips are `aria-pressed` with a decorative avatar (no duplicated name).
-- **Compensation: none.** Behind `VITE_TASKA_TENANTS`.
+- **Compensation: none.** The mock's marks and fixtures are behind `VITE_TASKA_TENANTS`; the reading of the mark is not
+  (see above).
 - **Mock answers where the blueprint is silent** (`MockTenantServer.ts` / `MockTaskaApi.ts`, `taska.mockServer.v5`, no
   `ServerState` change): the static tombstone `MOCK_DELETED_ACCOUNT_ID` (never in `users`, never named, its Initech membership
   REMOVED) is the reporter, a comment and a work log author, an attachment's uploader, a history actor and an ASSIGNED
@@ -2369,7 +2373,8 @@ Everything below is the entry as it stood, in the past tense.
   avatarUrl: null}`, never an email (field name and string invented, A120, A121). The hook `deletedAccounts: [{userId,
   cleanup}]` marks a seeded account at read time: `cleanup: true` (default) runs the existing removal once (after the
   cleanup), `cleanup: false` runs nothing (the window: still assignee, watcher, project member and ACTIVE company member). The
-  directory never finds a deleted account. Under A122's preferred option the server would omit a deleted account's company
+  directory never finds a deleted account. In the window, inviting a marked account's former email answers 409 «This email
+  belongs to a member of the tenant» (invented; the contract is silent, A122/A124). Under A122's preferred option the server would omit a deleted account's company
   membership, so the window's company row may not exist on REST.
 - **Removed by:** A120 (field, TAS-496), A121 (English string), A122 (Membership), A123 (directory statement); A124 (cleanup of
   assignments and watchers, refusals), A125 (audit snapshots), A126 (Activity proposal) on TAS-496 (comment 14540). If the
