@@ -366,7 +366,16 @@ function CompanyPlan({ companyId }: { companyId: string }) {
       );
     }
     if (outcome.withdrawal !== null) {
-      // A paid scheduled change still starts: the re-read says which (guard M-2).
+      // A paid scheduled change still starts: the re-read says which (guard M-2) — and only a read that
+      // succeeded after the answer may say it (N1). One that failed leaves the subscription from before
+      // the press in the cache; then the status stays neutral and the page's refresh notice speaks. Not
+      // a version check: develop's paid no-op does not move `Subscription.version`.
+      const read = queryClient.getQueryState<Subscription>(COMPANY_SUBSCRIPTION_KEY);
+      if (read?.status !== "success" || read.dataUpdatedAt < outcome.answeredAt) {
+        say(planChangedStatus({ company: companyRef.current, target: outcome.target, effect: null, effectiveAt: null, invoice: { kind: "none" } }));
+        requestFocus("change");
+        return;
+      }
       const kept = (fresh?.scheduledPlanVersionId ?? null) !== null;
       say(
         withdrawalStatus({

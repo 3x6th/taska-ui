@@ -199,6 +199,26 @@ test("choosing the plan it is on while a change is scheduled withdraws it", asyn
   await expect(zoneButton(page, "Change plan")).toBeFocused();
 });
 
+test("a withdrawal whose subscription re-read is refused claims nothing about a payment (N1)", async ({ page }) => {
+  await inCompany(page, "Consolidated", COMPANY.longName, "priya@example.com");
+  await openPlan(page, COMPANY.longName);
+  let change = await openChange(page);
+  await change.getByRole("radio", { name: /^Business/ }).check();
+  await answer(page).click();
+  await expect(fact(page, "Scheduled change")).toContainText("Business · version 1");
+
+  change = await openChange(page);
+  await change.getByRole("radio", { name: /^Team/ }).check();
+  // The dialog's own read has answered; the one after the command is refused, once.
+  await setHooks(page, { refuseNext: { getSubscription: { status: 409, code: "INVALID_STATE" } } });
+  await answer(page).click();
+  await expect(dialog(page)).toHaveCount(0);
+  await expect(said(page)).toHaveText(`${LONG_NAME}’s plan change was accepted.`);
+  await expect(said(page)).not.toContainText("paid");
+  await expect(page.getByText("The plan could not be refreshed. The last loaded details are shown.")).toBeVisible();
+  await expect(zoneButton(page, "Change plan")).toBeFocused();
+});
+
 test("cancel renewal asks first, keeps what is paid, and turns into Resume renewal — which undoes it", async ({ page }) => {
   await inCompany(page, "Umbrella", COMPANY.umbrella, "tom@example.com");
   await openPlan(page, COMPANY.umbrella);

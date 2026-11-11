@@ -49,6 +49,8 @@ export interface PlanChangeOutcome {
   invoice: ChangeInvoice;
   /** The current plan chosen while a change was scheduled: the plan that was scheduled (guard M-2). */
   withdrawal: { scheduled: PlanVersion | null } | null;
+  /** When the answer came: only a subscription read after it may say what the change came to (N1). */
+  answeredAt: number;
 }
 
 interface ShownRefusal extends RefusalWords {
@@ -175,6 +177,7 @@ export function ChangePlanModal({
         refusedTenant.current = company;
         throw error;
       }
+      const answeredAt = Date.now();
       if (meId !== null) settleIntent(meId, companyId, intent, null);
       // The invoice it named — presented as this change's only when it says so (decision 4) — read
       // beside the re-reads (guard L-6).
@@ -195,7 +198,7 @@ export function ChangePlanModal({
           ? reread(COMPANY_SUBSCRIPTION_KEY)
           : reread(COMPANY_SUBSCRIPTION_KEY, COMPANY_ENTITLEMENT_KEY, COMPANY_QUOTAS_KEY, companyTenantKey(companyId)),
       ]);
-      return { effect: answer.effect, target, effectiveAt: answer.effectiveAt, invoice, withdrawal };
+      return { effect: answer.effect, target, effectiveAt: answer.effectiveAt, invoice, withdrawal, answeredAt };
     },
     onSuccess: (outcome) => {
       // Free once taken is known to be used until sign-out, as a refusal is (release-reviewer L4).

@@ -33,6 +33,8 @@ const { fakeApi, state } = vi.hoisted(() => {
     refused: {} as Record<string, number>,
     /** TAS-515: what a renewal command answers. */
     renewalAnswer: (() => Promise.resolve({})) as () => Promise<unknown>,
+    /** TAS-515: what a plan change answers. */
+    changeAnswer: (() => Promise.resolve({})) as () => Promise<unknown>,
   };
   // A definite refusal: an answer that never came would be retried once (`retryUnanswered`).
   const refuse = (name: string, code = "SCOPE_DENIED") => {
@@ -94,6 +96,8 @@ const { fakeApi, state } = vi.hoisted(() => {
             ],
             state: "PUBLISHED",
           },
+          // TAS-515: a dearer plan to schedule, so the plan it is on can withdraw it.
+          { id: "business", kind: "PAID", code: "business", name: "Business", version: "1", price: { amountMinor: "4000", currency: "EUR", exponent: 2 }, period: "CALENDAR_MONTH", limits: [], state: "PUBLISHED" },
         ],
         nextCursor: null,
       })),
@@ -101,6 +105,7 @@ const { fakeApi, state } = vi.hoisted(() => {
       state.reentered += 1;
     },
     // TAS-515: the renewal commands, answered by the test.
+    changeSubscriptionPlan: () => state.changeAnswer(),
     cancelSubscriptionRenewal: () => state.renewalAnswer(),
     resumeSubscriptionRenewal: () => state.renewalAnswer(),
   };
@@ -144,6 +149,7 @@ beforeEach(() => {
   state.owner = "tom";
   state.restrictions = [];
   state.renewalAnswer = () => Promise.resolve({});
+  state.changeAnswer = () => Promise.resolve({});
   state.calls = [];
   state.entitlementPlan = "team-1";
   state.fail = new Set();
@@ -570,5 +576,52 @@ describe("TAS-515: a renewal refusal whose re-read changed the row (art-director
     expect(document.querySelector(".company-plan-band")).toHaveTextContent(
       /^Umbrella stays on Team until .+\. When its last paid period ends, it becomes read-only: everything can still be read/,
     );
+  });
+});
+
+describe("TAS-515 N1: what a withdrawal came to is said only from a subscription read after the answer", () => {
+  const withdraw = async () => {
+    state.entitlementPlan = "team-2";
+    state.subscription = { ...state.subscription, planVersionId: "team-2", scheduledPlanVersionId: "business", scheduledEffectiveAt: IN_A_MONTH };
+    const view = renderPlan();
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "Change plan" }));
+    const dialog = await screen.findByRole("dialog", { name: "Change plan" });
+    const team = await within(dialog).findByRole("radio", { name: /^Team/ });
+    await waitFor(() => expect(team).toBeEnabled());
+    fireEvent.click(team);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change plan" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    return view;
+  };
+  const status = () => document.querySelector(".settings-column > .visually-hidden[role=status]");
+  const immediate = { subscription: null, effect: "IMMEDIATE", invoiceId: null, effectiveAt: null, operationId: "op-1" };
+
+  it("the re-read failed: the cached schedule from before the press is no evidence — the status is neutral, the refresh notice speaks", async () => {
+    // Unpaid, the server dropped the schedule — but the read after the answer is refused, once and for good.
+    state.changeAnswer = () => {
+      state.subscription = { ...state.subscription, scheduledPlanVersionId: null, scheduledEffectiveAt: null, version: "3" };
+      state.fail.add("subscription");
+      return Promise.resolve(immediate);
+    };
+    await withdraw();
+    await waitFor(() => expect(status()).toHaveTextContent("Umbrella’s plan change was accepted."));
+    expect(status()).not.toHaveTextContent(/paid/);
+    expect(screen.getByText("The plan could not be refreshed. The last loaded details are shown.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Change plan" })).toHaveFocus());
+  });
+
+  it("the re-read answered: a schedule still there is a paid one that still starts; gone, it was dropped", async () => {
+    // Paid: develop's withdrawal is a no-op, and the schedule is still there when read again.
+    state.changeAnswer = () => Promise.resolve(immediate);
+    const paid = await withdraw();
+    await waitFor(() => expect(status()).toHaveTextContent(/^The change to Business is already paid for, so it still starts /));
+    paid.unmount();
+    state.changeAnswer = () => {
+      state.subscription = { ...state.subscription, scheduledPlanVersionId: null, scheduledEffectiveAt: null, version: "3" };
+      return Promise.resolve(immediate);
+    };
+    await withdraw();
+    await waitFor(() => expect(status()).toHaveTextContent("The change to Business is dropped. Umbrella stays on Team."));
   });
 });
