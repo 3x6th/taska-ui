@@ -255,7 +255,9 @@ test("Plan › «Try again» in flight keeps the page — no skeleton, every fai
 /**
  * The refusal's sentence and the focused submit both inside the modal body's
  * visible rect (§4.40 «Отказы квоты», art-director B2) — measured in one
- * evaluate, after the fonts, so nothing moves between the reads.
+ * evaluate, after the fonts, so nothing moves between the reads. The refusal's
+ * box is the one holding the live sentence (or the dialog's only box): New
+ * issue may hold the issue counter's failure too (TAS-528, art-director N2).
  */
 async function expectRefusalInView(dialog: Locator, submit: string) {
   const rects = await dialog.evaluate(async (node, name) => {
@@ -267,7 +269,7 @@ async function expectRefusalInView(dialog: Locator, submit: string) {
     const button = [...node.querySelectorAll("button")].find((item) => item.textContent?.trim() === name);
     return {
       body: box(node.querySelector(".modal-body")),
-      note: box(node.querySelector(".error-note")),
+      note: box(node.querySelector('[role="alert"]')?.closest(".error-note") ?? node.querySelector(".error-note")),
       button: box(button),
       viewport: window.innerHeight,
     };
