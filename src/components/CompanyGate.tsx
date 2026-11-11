@@ -19,6 +19,7 @@ import {
 } from "../lib/companies";
 import { useCompanies, useCompanyName, useDocumentTitle, useWorkspace } from "../hooks/useCompanies";
 import type { Theme } from "../hooks/useTheme";
+import { refreshAccountReads } from "../lib/accountChange";
 import { createQueryClient } from "../lib/queryClient";
 import { CompanyClosedScreen, CompanyUnavailableScreen } from "../screens/CompanyClosedScreen";
 import { CompanySetupScreen } from "../screens/CompanySetupScreen";
@@ -217,6 +218,12 @@ export function CompanyGate({
   } else if ((entry.status === "closed" || entry.status === "refused") && session.sessionId !== null) {
     setSession(newSessionClient(null, session.generation + 1));
   }
+
+  // The account's password or email changed, here or in another tab (TAS-527,
+  // api-contract-guard §6): this company's client reads the account again —
+  // the top bar, My profile, Settings › Account show the address it answers.
+  const accountReadsClient = session.client;
+  useEffect(() => taskaApi.onAccountChanged(() => refreshAccountReads(accountReadsClient)), [accountReadsClient]);
 
   // What makes the tab read its plan again (TAS-512, api-contract-guard B4):
   // a write refused READ_ONLY, CAPABILITY_DISABLED or QUOTA_EXCEEDED anywhere

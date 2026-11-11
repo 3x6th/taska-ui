@@ -31,6 +31,8 @@ const { fakeApi, state } = vi.hoisted(() => {
       return state.enterError ? Promise.reject(state.enterError) : new Promise(() => {});
     },
     onWorkspaceClosed: () => () => {},
+    // TAS-527.
+    onAccountChanged: () => () => {},
     onWorkspaceLeft: (listener: (event: WorkspaceLeftEvent) => void) => {
       state.left.add(listener);
       return () => state.left.delete(listener);

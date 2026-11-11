@@ -2,7 +2,7 @@ import { useQueries, useQueryClient, type UseQueryOptions, type UseQueryResult }
 import { useMutation } from "../hooks/useMutation";
 import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { ACCOUNT_LOCKED_REASON, apiErrorFacts, isAccountLocked, isDisplayNameInvalid, isSignupDisabled } from "../api/errors";
 import type { InvitationPreview } from "../domain/types";
@@ -10,6 +10,9 @@ import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
 import { AuthShell } from "../components/AuthShell";
 import { useCompanyAddress } from "../lib/companyAddress";
+import { FORGOT_PASSWORD_ROUTE } from "../lib/recoveryLink";
+import { RECOVERED_NOTICE } from "./accountText";
+import type { ForgotPasswordState } from "./ForgotPasswordScreen";
 import { ErrorNote } from "../components/ErrorNote";
 import { ProviderChoices } from "../components/ProviderChoices";
 import { useAuthMethods } from "../hooks/useAuthMethods";
@@ -176,6 +179,8 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // not a re-read that might race the sign-out.
   const [signedInElsewhere, setSignedInElsewhere] = useState(() => taskaApi.hasSession());
   const [activated, setActivated] = useState(Boolean(redirect?.activated));
+  /** The companies build's password reset just finished (TAS-527): the same slot and focus as `activated`, its own words. */
+  const [recovered, setRecovered] = useState(Boolean(redirect?.recovered));
   /**
    * Set afresh each time the methods' answer takes the open tab away, so focus
    * that was in the panel can follow (§4.31): to the Sign in tab — or, when
@@ -304,7 +309,14 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // explanation only belongs over the sign-in form: "Your session expired. Sign
   // in to continue." above a form headed "Activate account" describes neither.
   const expiredNotice = active === "signin" && redirect?.expired ? "Your session expired. Sign in to continue." : null;
-  const activatedNotice = active === "signin" && activated ? "Password set. Sign in with your email and new password." : null;
+  const activatedNotice =
+    active !== "signin"
+      ? null
+      : activated
+        ? "Password set. Sign in with your email and new password."
+        : recovered
+          ? RECOVERED_NOTICE
+          : null;
   // It is about activating, and there is nothing to activate once the preview
   // has refused the link (§4.27): it goes with the form.
   // A `SIGNUP` link's own words, swapped in the same commit as the rest of them.
@@ -343,6 +355,11 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
       setMode("signin");
       setActivated(true);
       setNewPassword("");
+      setFocusRequest({ target: "email" });
+    }
+    if (redirect?.recovered) {
+      setMode("signin");
+      setRecovered(true);
       setFocusRequest({ target: "email" });
     }
     const arrived = providerRefusalFromState(redirect?.providerRefusal);
@@ -396,7 +413,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // arrival long past. The notice itself is this screen's state from here on,
   // and goes the way §4.27 and §4.31 say it goes. The remembered page stays in
   // the entry: it is where the next sign-in goes, reload or not (§5.1).
-  const stateToDrop = Boolean(redirect?.activated || redirect?.providerRefusal);
+  const stateToDrop = Boolean(redirect?.activated || redirect?.recovered || redirect?.providerRefusal);
   useEffect(() => {
     if (stateToDrop) {
       navigate(location.pathname, { replace: true, state: from ? ({ from } satisfies LoginRedirectState) : null });
@@ -406,6 +423,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const switchTo = (next: AuthMode) => {
     setMode(next);
     setActivated(false);
+    setRecovered(false);
     setProviderRefusal(null);
     setSignupClosed(null);
     // A shown password does not follow the reader to the other tab (§4.27).
@@ -488,6 +506,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     },
     onMutate: () => {
       setActivated(false);
+      setRecovered(false);
       setProviderRefusal(null);
       setSignupClosed(null);
     },
@@ -679,7 +698,21 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                     Administrator accounts sign in with a code sent by email. This version of Taska can’t ask for it yet.
                   </p>
                 ) : null}
-                <p className="auth-hint">Forgot your password? Taska has no password reset yet.</p>
+                {companies ? (
+                  // The companies build (TAS-527, art-director B2): the way to a
+                  // reset link, in the hint's own slot — a router link, so the
+                  // hash build goes to `#/forgot-password`; the typed address
+                  // travels in router state, never in the URL.
+                  <Link
+                    className="auth-ghost"
+                    state={(email.trim() ? { email: email.trim() } : {}) satisfies ForgotPasswordState}
+                    to={FORGOT_PASSWORD_ROUTE}
+                  >
+                    Forgot your password?
+                  </Link>
+                ) : (
+                  <p className="auth-hint">Forgot your password? Taska has no password reset yet.</p>
+                )}
               </>
             ) : capturedToken === null ? (
               <>

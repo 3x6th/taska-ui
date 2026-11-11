@@ -7,6 +7,7 @@ import { ROUTER_MODE } from "./lib/appLinks";
 import { captureInviteLink } from "./lib/inviteLink";
 import { captureOAuthCallback } from "./lib/oauthCallback";
 import { createQueryClient } from "./lib/queryClient";
+import { captureRecoveryLink } from "./lib/recoveryLink";
 import { tenantsEnabled } from "./lib/tenancy";
 import { App } from "./screens/App";
 import "./styles.css";
@@ -24,6 +25,12 @@ const Router = ROUTER_MODE === "hash" ? HashRouter : BrowserRouter;
 // with a one-time code, which is taken out here, held in memory, and the
 // address becomes the app's own callback route. Only on that path.
 captureOAuthCallback(window, import.meta.env.BASE_URL, ROUTER_MODE);
+
+// The companies build's password-recovery link (TAS-527): `/reset-password?token=`
+// at the base, taken out here and held in memory **before** the invitation's
+// capture below, which would otherwise read its `?token=` as an invitation's.
+// Only on that path, and only in that build — today's build is as it was.
+if (tenantsEnabled) captureRecoveryLink(window, import.meta.env.BASE_URL, ROUTER_MODE);
 
 // Before the router reads the address (TAS-208, DESIGN.md §4.27): the invitation
 // email's `?token=` is a query the hash build's router never sees, so it is

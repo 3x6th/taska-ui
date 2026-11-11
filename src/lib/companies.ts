@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { refusalCode, refusalReasons } from "../api/errors";
 import type { TaskaApi } from "../api/TaskaApi";
 import { isKnownTenantLifecycle, readAllTenants, type Tenant } from "../api/tenants";
+import { FORGOT_PASSWORD_ROUTE, RESET_PASSWORD_ROUTE } from "./recoveryLink";
 
 /*
  * The companies build's address and list rules (TAS-500, DESIGN.md §4.33,
@@ -31,8 +32,19 @@ export interface ContinuedShellState {
 export const isContinuedShell = (state: unknown): boolean =>
   typeof state === "object" && state !== null && (state as ContinuedShellState).continuedShell === true;
 
-/** The routes that live outside `/c/{companyId}` (§5.1). Everything else in the app lives inside it. */
-export const OUTSIDE_COMPANY_ROUTES: readonly string[] = ["/login", "/invite", "/auth/callback", COMPANIES_ROUTE];
+/**
+ * The routes that live outside `/c/{companyId}` (§5.1). Everything else in the
+ * app lives inside it. Since TAS-527 the two pages of a password reset too —
+ * public, with no company to be in, and reached from Settings inside one.
+ */
+export const OUTSIDE_COMPANY_ROUTES: readonly string[] = [
+  "/login",
+  "/invite",
+  "/auth/callback",
+  COMPANIES_ROUTE,
+  FORGOT_PASSWORD_ROUTE,
+  RESET_PASSWORD_ROUTE,
+];
 
 /** Where a company's address opens when nothing more specific was asked for. */
 export const COMPANY_HOME = "/projects";
@@ -68,7 +80,7 @@ export function splitCompanyRoute(path: string): { companyId: string; rest: stri
   return { companyId, rest };
 }
 
-/** Whether an app path is one of the four that live outside the companies (§5.1). */
+/** Whether an app path is one of those that live outside the companies (§5.1). */
 export function isOutsideCompanies(path: string): boolean {
   const pathname = pathnameOf(path);
   return OUTSIDE_COMPANY_ROUTES.some((route) => pathname === route || pathname.startsWith(`${route}/`));
@@ -77,7 +89,7 @@ export function isOutsideCompanies(path: string): boolean {
 /**
  * The path an address without a company would open inside one (§5.1:
  * «Адрес без префикса — замена на тот же путь в компании вкладки»), or `null`
- * for one that is not an in-company page: the four outside routes, `/admin`
+ * for one that is not an in-company page: the outside routes, `/admin`
  * (absent in the companies build, §4.16) and anything unknown answer for
  * themselves.
  */
