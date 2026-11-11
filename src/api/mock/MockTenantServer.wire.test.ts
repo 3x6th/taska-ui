@@ -235,6 +235,69 @@ describe("the admin's hooks (§7.3–7.5)", () => {
     expect((await api.listRefunds(CY)).items[0]).toMatchObject({ reasonCode: "INCOMPLETE_BANK_PAYMENT", amount: money("800") });
   });
 
+  it("TAS-516 (guard N1, G2): 12 on time, expired, then 8 that arrived on time confirmed after — together they pay it: PAID, 20 allocated", async () => {
+    const { api, setHooks, state } = await inCyberdyne();
+    const before = (await api.getSubscription(CY)).paidThrough;
+    setHooks(confirm("r-12", "1200"));
+    const due = (await api.getInvoice(CY, RENEWAL)).dueAt ?? "";
+    setHooks({ clockOffsetMs: 6 * DAY });
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "EXPIRED", matchedUnallocated: money("1200") });
+    expect(state().wireReceipts.find((item) => item.id === "r-12")).toMatchObject({ outcome: "RETURN_REQUIRED" });
+    setHooks({
+      wireReceipts: [
+        { id: "r-12", tenantId: CY, amountMinor: "1200" },
+        { id: "r-8", tenantId: CY, amountMinor: "800", occurredAt: new Date(Date.parse(due) - DAY).toISOString() },
+      ],
+      confirmWire: { "r-12": RENEWAL, "r-8": RENEWAL },
+    });
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "PAID", allocated: money("2000"), matchedUnallocated: money("0"), remaining: money("0") });
+    for (const id of ["r-12", "r-8"]) expect(state().wireReceipts.find((item) => item.id === id)).toMatchObject({ outcome: "ALLOCATED", unallocated: money("0") });
+    // Nothing of it is left to go back, and the company is paid for again — its ended period renewed from the settlement.
+    setHooks({ returnUnallocated: ["r-12", "r-8"] });
+    expect((await api.listRefunds(CY)).items.filter((refund) => refund.reasonCode !== "LATE_FIRST_PAYMENT")).toEqual([]);
+    expect(Date.parse((await api.getSubscription(CY)).paidThrough ?? "")).toBeGreaterThan(Date.parse(before ?? "") + 30 * DAY);
+    expect(state().tenants.find((tenant) => tenant.id === CY)?.restrictions).not.toContain("PAYMENT_EXPIRED");
+  });
+
+  it("TAS-516 (guard N1): a return once started is never undone — the 12 whose return began stays to go back, and the 8 alone pays nothing", async () => {
+    const { api, setHooks, state } = await inCyberdyne();
+    setHooks({ ...confirm("r-12", "1200"), returnUnallocated: ["r-12"] });
+    const due = (await api.getInvoice(CY, RENEWAL)).dueAt ?? "";
+    setHooks({ clockOffsetMs: 6 * DAY });
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "EXPIRED" });
+    expect(state().wireReceipts.find((item) => item.id === "r-12")).toMatchObject({ outcome: "RETURN_REQUIRED", refundId: expect.any(String) });
+    setHooks({
+      wireReceipts: [
+        { id: "r-12", tenantId: CY, amountMinor: "1200" },
+        { id: "r-8", tenantId: CY, amountMinor: "800", occurredAt: new Date(Date.parse(due) - DAY).toISOString() },
+      ],
+      confirmWire: { "r-12": RENEWAL, "r-8": RENEWAL },
+    });
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "EXPIRED", allocated: money("0"), matchedUnallocated: money("2000") });
+    for (const id of ["r-12", "r-8"]) expect(state().wireReceipts.find((item) => item.id === id)).toMatchObject({ outcome: "RETURN_REQUIRED" });
+  });
+
+  it("TAS-516 (guard G2 hole): under holdExpiry, 12 matched and a late full 20 — the 20 pays it and the 12 is set to go back, never left matched", async () => {
+    const { api, setHooks, state } = await inCyberdyne();
+    setHooks({ ...confirm("r-12", "1200"), holdExpiry: [RENEWAL] });
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "PARTIALLY_PAID" });
+    setHooks({ clockOffsetMs: 6 * DAY });
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "PARTIALLY_PAID", matchedUnallocated: money("1200") });
+    expect(state().wireReceipts.find((item) => item.id === "r-12")).toMatchObject({ outcome: "MATCHED" });
+    setHooks({
+      wireReceipts: [
+        { id: "r-12", tenantId: CY, amountMinor: "1200" },
+        { id: "r-20", tenantId: CY, amountMinor: "2000" },
+      ],
+      confirmWire: { "r-12": RENEWAL, "r-20": RENEWAL },
+    });
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "PAID", allocated: money("2000") });
+    expect(state().wireReceipts.find((item) => item.id === "r-20")).toMatchObject({ outcome: "ALLOCATED" });
+    expect(state().wireReceipts.find((item) => item.id === "r-12")).toMatchObject({ outcome: "RETURN_REQUIRED", unallocated: money("1200") });
+    setHooks({ returnUnallocated: ["r-12"] });
+    expect((await api.listRefunds(CY)).items[0]).toMatchObject({ reasonCode: "INCOMPLETE_BANK_PAYMENT", amount: money("1200"), state: "REQUESTED" });
+  });
+
   it("25 against 20: PAID at 20, 5 left on the receipt and returned as EXCESS; the subscription runs on", async () => {
     const { api, setHooks } = await inCyberdyne();
     const before = (await api.getSubscription(CY)).paidThrough;

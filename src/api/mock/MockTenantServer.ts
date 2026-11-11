@@ -220,10 +220,10 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v8";
  *   Taska, its reason from what happened (EXCESS, LATE_FIRST_PAYMENT,
  *   CLOSED_CREATION, INCOMPLETE_BANK_PAYMENT, DUPLICATE_PAYMENT); never
  *   automatic, never coverage. Money matched on time is marked
- *   return-required on its receipt when the invoice expires (G2, L06.4–5): from
- *   then on it goes back whatever the invoice becomes — a later payment, even
- *   one that settles the invoice, never takes it — and before then nothing of
- *   it goes back;
+ *   return-required on its receipt when the invoice expires (G2, L06.4–5):
+ *   from then on nothing but a timely payment reaching the total takes it —
+ *   a late one that settles the invoice never does — and a return, once
+ *   started, is never undone; before it expires none of it goes back;
  * - `refundProgress`: `{[receiptId]: state}` — the receipt's refund moves to
  *   that state (APPROVED and REJECTED decided now, SUBMITTING submitted now);
  *   CONFIRMED gives the money back — the receipt holds nothing and the
@@ -242,7 +242,8 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v8";
  * - `refuseNext`, `delayMs` and `loseAnswer` take `getInvoiceDocument`,
  *   `listRefunds` and `getTenantCapabilities`;
  * - `clockOffsetMs` also expires a PARTIALLY_PAID invoice at its `dueAt`; its
- *   `matchedUnallocated` stays until its return is CONFIRMED.
+ *   `matchedUnallocated` stays until its return is CONFIRMED or a later
+ *   settlement pays the invoice and zeroes it.
  *
  * The stand-in payment page (`/mock-checkout/{token}`, the mock build only)
  * reads its checkout by an opaque token only this server maps back
@@ -806,8 +807,8 @@ interface StoredWireReceipt {
   confirmedAt?: string;
   /**
    * `RETURN_REQUIRED` (G2, L06.4–5): money matched on time to an invoice that
-   * then expired — it goes back, whatever happens to the invoice afterwards;
-   * no later payment is ever added to it or settled with it.
+   * then expired — it goes back unless, before its return has started, a
+   * timely payment reaches the total (it then joins the settlement, `confirmReceipt`).
    */
   outcome?: "MATCHED" | "RETURN_REQUIRED" | "ALLOCATED" | "LATE_FIRST_PAYMENT" | "CLOSED_CREATION" | "LATE_PARTIAL" | "DUPLICATE_PAYMENT";
   unallocated: StoredMoney;
@@ -1107,8 +1108,9 @@ function markPaid(invoice: StoredInvoice): void {
 
 /**
  * An invoice has expired (G2, L06.4–5): the money matched to it on time is set
- * to go back, on its receipts — so a return follows the receipt, and a later
- * payment never adds to it or settles with it.
+ * to go back, on its receipts — so a return follows the receipt, and only a
+ * timely payment reaching the total can still settle with it, while no return
+ * has started.
  */
 function markReturnRequired(state: ServerState, invoiceId: string): void {
   for (const receipt of state.wireReceipts) {
@@ -4531,8 +4533,8 @@ export class MockTenantServer {
         if (invoice && invoice.state === "OPEN") this.settle(state, invoice, Date.parse(checkout.settleAt), open);
       }
     }
-    // TAS-514: a PARTIALLY_PAID one expires too, its matched money kept until its return is confirmed —
-    // unless `holdExpiry` keeps it past its due date, as develop does.
+    // TAS-514: a PARTIALLY_PAID one expires too, its matched money kept until its return is confirmed or a
+    // later settlement pays the invoice — unless `holdExpiry` keeps it past its due date, as develop does.
     const held = new Set(Array.isArray(hooks.holdExpiry) ? hooks.holdExpiry : []);
     for (const invoice of state.invoices) {
       if (!PAYABLE_BY_WIRE.has(invoice.state) || Date.parse(invoice.dueAt) > now || held.has(invoice.id)) continue;
@@ -4693,16 +4695,16 @@ export class MockTenantServer {
       return true;
     };
     if (invoice.state === "PAID") return done("DUPLICATE_PAYMENT", receipt.amount);
-    // What this money may join (G2): receipts matched to it and still waiting — never money already set to go back.
-    const waiting = state.wireReceipts
-      .filter((item) => item.invoiceId === invoice.id && item.outcome === "MATCHED")
-      .reduce((sum, item) => addMoney(sum, item.amount), zeroOf(invoice.total));
+    // What this money may join (G2, TAS-516's guard): receipts matched to it and still waiting, and money set to go back
+    // whose return has not started — on time and reaching the total, it pays the invoice even if confirmed after expiry.
+    const joinable = (item: StoredWireReceipt) => item.invoiceId === invoice.id && (item.outcome === "MATCHED" || (item.outcome === "RETURN_REQUIRED" && item.refundId === undefined));
+    const waiting = state.wireReceipts.filter(joinable).reduce((sum, item) => addMoney(sum, item.amount), zeroOf(invoice.total));
     const matched = addMoney(waiting, receipt.amount);
     const enough = BigInt(matched.amountMinor) >= BigInt(invoice.total.amountMinor);
-    /** One allocation of the whole total: every receipt matched to it allocated, the excess left on this one. */
+    /** One allocation of the whole total: every receipt joined to it allocated, the excess left on this one. */
     const allocate = () => {
       for (const other of state.wireReceipts) {
-        if (other.invoiceId === invoice.id && other.outcome === "MATCHED") {
+        if (joinable(other)) {
           other.outcome = "ALLOCATED";
           other.unallocated = zeroOf(other.amount);
         }
@@ -4743,6 +4745,8 @@ export class MockTenantServer {
       // D247: a late renewal of a live company is paid by this money alone, with a new month from now.
       if (BigInt(receipt.amount.amountMinor) < BigInt(invoice.total.amountMinor)) return done("LATE_PARTIAL", receipt.amount);
       const excess = subtractMoney(receipt.amount, invoice.total);
+      // Money matched to it and still waiting (under `holdExpiry`) is not taken by this payment: it goes back.
+      markReturnRequired(state, invoice.id);
       this.settle(state, invoice, now, open);
       return done("ALLOCATED", excess);
     }
