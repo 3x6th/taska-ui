@@ -17,6 +17,16 @@ import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress"
 import { companyWriteRefusalText, quotaRefusalText, writeRefusalText } from "../lib/companyRestrictions";
 import { CompanyMarkerWord } from "../components/CompanyMarkerWord";
 import { refreshAfterRefusal } from "./settings/companyPlan";
+import { keyFor, type SentIntent } from "../lib/intentKey";
+import { NewIssueCount } from "../components/ProjectIssueCount";
+import {
+  ISSUE_CREATE_UNCONFIRMED,
+  createIssueSignature,
+  createLeftOpen,
+  createUnconfirmed,
+  unconfirmedServerWords,
+} from "../lib/issueCreateIntent";
+import { projectTaskQuotaKey } from "../lib/projectTaskQuota";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Shapes, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
 import {
   useEffect,
@@ -31,7 +41,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import type { CreateIssueLinkInput, CreateProjectLabelInput, IssueWriteAnswer, UpdateIssueInput } from "../api/TaskaApi";
+import type { CreateIssueInput, CreateIssueLinkInput, CreateProjectLabelInput, IssueWriteAnswer, UpdateIssueInput } from "../api/TaskaApi";
 import {
   ATTACHMENT_ACCEPTED_SUMMARY,
   ATTACHMENT_ACCEPT_ATTRIBUTE,
@@ -49,6 +59,7 @@ import {
   isTransitionConflict,
   isWorkspaceClosed,
   IssueVersionConflictError,
+  refusalCode,
   reportable,
 } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
@@ -7042,7 +7053,9 @@ function CreateIssueModal({
   onCreated: (issue: Issue) => void;
 }) {
   const queryClient = useQueryClient();
-  const formCompany = useCompanyName(useCompanyAddress()?.companyId ?? null);
+  /** The companies build's company: only there is the project's issue counter read and drawn (TAS-528, B5). */
+  const formCompanyId = useCompanyAddress()?.companyId ?? null;
+  const formCompany = useCompanyName(formCompanyId);
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
   const meta = useMeta();
@@ -7217,26 +7230,58 @@ function CreateIssueModal({
    * L-1): set by the submit itself, before `mutate`, and cleared when the create
    * settles. `isPending` alone is not enough — react-query tells React on a
    * timeout, so a second press inside the same task, or before that timeout,
-   * still reads the first as not sent, and there is no idempotency key on a
-   * create to make the second one harmless.
+   * still reads the first as not sent. The draft's key (below) would make that
+   * second send a replay rather than a second issue, but a press in flight asks
+   * nothing more (§4.1), so it is not sent at all.
    */
   const createOut = useRef(false);
+  /**
+   * The draft's `Idempotency-Key` (TAS-528, api-contract-guard H1) — the
+   * precedent `keyFor` / `SentIntent` of Members (TAS-502). Every press sends
+   * the draft's signature (`createIssueSignature`: the project and every sent
+   * field); the key is reused only when the same signature is sent again after
+   * an answer that never came or said nothing about it — no status, 408, 429,
+   * 5xx (`createLeftOpen`) — so a retry after a lost answer is the server's
+   * replay of the issue it made, not a second issue and a second unit of the
+   * plan's limit. Any other answer, any change to a sent field, and a success
+   * mint a new one. In flight the key counts as open: its answer is not in.
+   */
+  const sentCreate = useRef<SentIntent | null>(null);
+  /**
+   * The reader's own create went through (TAS-528, art-director B6): when the
+   * form goes, the project's cached issue counter goes with it, so the next
+   * New issue or Edit project shows the skeleton and the server's new number,
+   * never the one from before this create. Removed only once the form has
+   * unmounted — removed under the open form, its own read would be rebuilt and
+   * sent at once; the next open asks instead (guard §3: +0 at the create).
+   */
+  const created = useRef({ issue: false });
+  useEffect(() => {
+    const outcome = created.current;
+    return () => {
+      if (outcome.issue) queryClient.removeQueries({ queryKey: projectTaskQuotaKey(projectId), exact: true });
+    };
+  }, [projectId, queryClient]);
   /** Where a refusal brings the modal body's view (§4.40 «Отказы квоты»). */
   const submitRef = useRef<HTMLButtonElement>(null);
   const createIssue = useMutation({
-    // From a column's "+", in that column's status (backend TAS-428); from
-    // "New", no status — the server's `TODO`. A refusal (the type's workflow
-    // lacks the status, which the form switches off but the server decides) is
-    // the form's slot below: the server's words and the request id (§5.5).
-    mutationFn: ({ type }: { type: IssueTypeCode; label: string }) =>
-      taskaApi.createIssue(projectId, {
-        issueType: type,
-        ...(inStatus ? { statusKey: inStatus.statusKey } : {}),
-        priority,
-        summary,
-        description,
-        ...planningInput(planning),
-      }),
+    // The body the submit built, under the draft's key. A refusal (the type's
+    // workflow lacks the status, which the form switches off but the server
+    // decides) is the form's slot below: the server's words and the request id
+    // (§5.5).
+    mutationFn: async ({ input }: { type: IssueTypeCode; label: string; input: CreateIssueInput }) => {
+      const signature = createIssueSignature(projectId, input);
+      const key = keyFor(sentCreate.current, signature);
+      sentCreate.current = { signature, key, open: true };
+      try {
+        const issue = await taskaApi.createIssue(projectId, input, key);
+        sentCreate.current = null;
+        return issue;
+      } catch (error) {
+        sentCreate.current = { signature, key, open: createLeftOpen(error) };
+        throw error;
+      }
+    },
     // The panel's rule, on this form's one write: the slot holds a single line,
     // so a date refusal must not caption the answer to a create, and a create
     // that is refused must not be silent behind one (TAS-231, art-director).
@@ -7259,8 +7304,17 @@ function CreateIssueModal({
         void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
         typeSelectRef.current?.focus();
       }
+      // The companies build (TAS-528, art-director B6, guard B3): a refusal by
+      // the plan's limit or a restriction may mean the counter moved — the
+      // open form's line is read again once, in place, the number it holds
+      // staying until the answer. Never counted here.
+      const refused = refusalCode(error);
+      if (formCompanyId !== null && (refused === "QUOTA_EXCEEDED" || refused === "READ_ONLY" || refused === "CAPABILITY_DISABLED")) {
+        void queryClient.invalidateQueries({ queryKey: projectTaskQuotaKey(projectId), exact: true });
+      }
     },
     onSuccess: async (issue) => {
+      created.current.issue = true;
       await invalidateBoard(queryClient, projectId);
       onCreated(issue);
     },
@@ -7445,11 +7499,20 @@ function CreateIssueModal({
   // The companies build (TAS-512): a quota refusal says §4.40's sentence, a
   // restriction §4.35's — the draft stays, the form stays editable, focus stays.
   const companyRefused = createIssue.isError ? companyWriteRefusalText(createIssue.error, "issue", { company: formCompany, projectKey }) : null;
+  // Both builds (TAS-528, art-director BLK-1): the answer never came or said
+  // nothing about the create — no status, 408, 5xx; a 429 keeps its words. The
+  // draft's key makes the same press safe, and the sentence says so; the
+  // browser's «Failed to fetch» alone said neither.
+  const unconfirmed = createIssue.isError && createUnconfirmed(createIssue.error);
   const formNotice =
     dateNotice && !archived
       ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE
       : createIssue.isError && reportable(createIssue.error)
-        ? (typeRefused ?? companyRefused ?? refusalWords(createIssue.error) ?? createIssue.error.message)
+        ? (typeRefused ??
+          companyRefused ??
+          (unconfirmed ? ISSUE_CREATE_UNCONFIRMED : null) ??
+          refusalWords(createIssue.error) ??
+          createIssue.error.message)
         : null;
   /**
    * The slot holds this form's `PROJECT_ARCHIVED` refusal, which says what the
@@ -7539,7 +7602,18 @@ function CreateIssueModal({
           if (createIssue.isPending || createOut.current) return;
           if (summary.trim() && issueType && !noTypeHasStatus) {
             createOut.current = true;
-            createIssue.mutate({ type: issueType, label: issueTypeLabel(issueType, issueTypes) });
+            // From a column's "+", in that column's status (backend TAS-428);
+            // from "New", no status — the server's `TODO`. Built here, once, so
+            // what is sent is what the draft's key is bound to.
+            const input: CreateIssueInput = {
+              issueType,
+              ...(inStatus ? { statusKey: inStatus.statusKey } : {}),
+              priority,
+              summary,
+              description,
+              ...planningInput(planning),
+            };
+            createIssue.mutate({ type: issueType, label: issueTypeLabel(issueType, issueTypes), input });
           }
         }}
       >
@@ -7763,6 +7837,10 @@ function CreateIssueModal({
             </div>
           </div>
         </fieldset>
+        {/* The project's issue counter (TAS-528, §4.43): its own row after
+            Planning and before the refusal slot, so it never stands between a
+            refusal and the buttons (art-director B1). Companies build only. */}
+        {formCompanyId ? <NewIssueCount companyId={formCompanyId} projectId={projectId} /> : null}
         {/* The `key` is the date refusal's sequence number, so the same
             sentence twice over remounts this node rather than re-rendering
             identical text: a live region that emits no mutation announces
@@ -7781,8 +7859,17 @@ function CreateIssueModal({
             // and has no id (§5.6, TAS-397). Outside the alert, under it.
             requestId={dateNotice && !archived ? null : apiErrorFacts(createIssue.error).requestId}
             // A type refusal's sentence is the form's own, so the server's words
-            // follow it on the detail line (§5.5, TAS-437).
-            serverWords={typeRefused && !(dateNotice && !archived) ? refusalWords(createIssue.error) : null}
+            // follow it on the detail line (§5.5, TAS-437); so does the
+            // unconfirmed create's, when there was an HTTP answer (TAS-528).
+            serverWords={
+              dateNotice && !archived
+                ? null
+                : typeRefused
+                  ? refusalWords(createIssue.error)
+                  : unconfirmed && companyRefused === null
+                    ? unconfirmedServerWords(createIssue.error)
+                    : null
+            }
           >
             {formNotice}
           </ErrorNote>

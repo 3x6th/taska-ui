@@ -1,5 +1,6 @@
 import { decimal, type QuotaSnapshot, type QuotaUsage } from "../../api/tenantMembers";
 import type { Entitlement, PlanVersion } from "../../api/tenants";
+import { group } from "../../lib/digits";
 import { formatBytes, planName } from "../../lib/plans";
 import { companyInside } from "./companyGeneralText";
 
@@ -86,7 +87,6 @@ export interface UsageLine {
 /** §4.36's order; a kind this build does not know comes after, as it came. */
 const USAGE_ORDER: readonly string[] = ["PROJECT", "SEAT", "STORAGE_BYTES", "TASK_LIFETIME"];
 
-const group = (digits: string) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 /** A snapshot row's line, by the one template (art-director B3). `null` for a row whose counts are not the blueprint's decimal. */
 function snapshotLine(row: QuotaUsage): UsageLine | null {

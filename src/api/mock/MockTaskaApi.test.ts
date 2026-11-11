@@ -309,16 +309,16 @@ describe("MockTaskaApi", () => {
     it("refuses to create an issue of a type the project does not allow, and creates one it does", async () => {
       const ops = (await api.listProjects()).find((item) => item.projectKey === "OPS")!;
       const input = { summary: "Rotate the keys", description: "", priority: "LOW" as const };
-      await expect(api.createIssue(ops.id, { ...input, issueType: "STORY" })).rejects.toMatchObject({
+      await expect(api.createIssue(ops.id, { ...input, issueType: "STORY" }, crypto.randomUUID())).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
         message: "Issue type STORY is not defined in this project",
       });
       // A key outside `IssueTypeDto`'s pattern is the gateway's, before the project.
-      await expect(api.createIssue(ops.id, { ...input, issueType: "story" })).rejects.toMatchObject({
+      await expect(api.createIssue(ops.id, { ...input, issueType: "story" }, crypto.randomUUID())).rejects.toMatchObject({
         code: "BAD_REQUEST",
         message: "Invalid issue type key",
       });
-      await expect(api.createIssue(ops.id, { ...input, issueType: "BUG" })).resolves.toMatchObject({ issueType: "BUG" });
+      await expect(api.createIssue(ops.id, { ...input, issueType: "BUG" }, crypto.randomUUID())).resolves.toMatchObject({ issueType: "BUG" });
     });
 
     // TAS-173: WEB is the project where values this build does not know can be
@@ -361,11 +361,11 @@ describe("MockTaskaApi", () => {
       const ops = projects.find((item) => item.projectKey === "OPS")!;
       const input = { summary: "Quarterly plan", description: "", priority: "MEDIUM", issueType: "EPIC" };
 
-      await expect(api.createIssue(ops.id, input)).rejects.toMatchObject({
+      await expect(api.createIssue(ops.id, input, crypto.randomUUID())).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
         message: "Issue type EPIC is not defined in this project",
       });
-      const epic = await api.createIssue(web.id, input);
+      const epic = await api.createIssue(web.id, input, crypto.randomUUID());
       expect(epic).toMatchObject({ issueType: "EPIC", status: "TODO" });
 
       const workflow = (await api.getProjectContext(web.id)).workflows.EPIC!;
@@ -382,16 +382,16 @@ describe("MockTaskaApi", () => {
       const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
       const base = { summary: "From a column", description: "", priority: "MEDIUM" };
 
-      const epic = await api.createIssue(web.id, { ...base, issueType: "EPIC", statusKey: "IN_REVIEW" });
+      const epic = await api.createIssue(web.id, { ...base, issueType: "EPIC", statusKey: "IN_REVIEW" }, crypto.randomUUID());
       expect(epic).toMatchObject({ issueType: "EPIC", status: "IN_REVIEW" });
       const inReview = (await api.getBoard(web.id, { includeDone: true })).columns.find((c) => c.statusKey === "IN_REVIEW");
       expect(inReview?.issues.map((issue) => issue.id)).toContain(epic.id);
       // Without a status: TODO, as before.
-      await expect(api.createIssue(web.id, { ...base, issueType: "TASK" })).resolves.toMatchObject({ status: "TODO" });
+      await expect(api.createIssue(web.id, { ...base, issueType: "TASK" }, crypto.randomUUID())).resolves.toMatchObject({ status: "TODO" });
 
       // TASK runs on the shared default, which has no In Review.
       const refusal = await api
-        .createIssue(web.id, { ...base, issueType: "TASK", statusKey: "IN_REVIEW" })
+        .createIssue(web.id, { ...base, issueType: "TASK", statusKey: "IN_REVIEW" }, crypto.randomUUID())
         .catch((error: unknown) => error);
       expect(apiErrorFacts(refusal)).toMatchObject({
         code: "FAILED_PRECONDITION",
@@ -400,7 +400,7 @@ describe("MockTaskaApi", () => {
       });
       // The binding's refusal comes before the type key's.
       for (const statusKey of ["in_review", "", "A", "IN REVIEW"]) {
-        await expect(api.createIssue(web.id, { ...base, issueType: "not a type", statusKey })).rejects.toMatchObject({
+        await expect(api.createIssue(web.id, { ...base, issueType: "not a type", statusKey }, crypto.randomUUID())).rejects.toMatchObject({
           code: "INVALID_ARGUMENT",
           message: "Invalid request parameters",
         });
@@ -412,10 +412,10 @@ describe("MockTaskaApi", () => {
 
     it("accepts a priority /meta lists and refuses one it does not, on create and on edit", async () => {
       await expect(
-        api.createIssue(project.id, { summary: "Hot fix", description: "", priority: "URGENT", issueType: "TASK" }),
+        api.createIssue(project.id, { summary: "Hot fix", description: "", priority: "URGENT", issueType: "TASK" }, crypto.randomUUID()),
       ).resolves.toMatchObject({ priority: "URGENT" });
       await expect(
-        api.createIssue(project.id, { summary: "Hot fix", description: "", priority: "BLOCKER", issueType: "TASK" }),
+        api.createIssue(project.id, { summary: "Hot fix", description: "", priority: "BLOCKER", issueType: "TASK" }, crypto.randomUUID()),
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Invalid request parameters" });
 
       const [issue] = (await api.listIssues(project.id)).items;
@@ -568,7 +568,7 @@ describe("MockTaskaApi", () => {
       const meta = await api.getMeta();
       meta.priorities!.length = 0;
       await expect(
-        api.createIssue(project.id, { summary: "Still fine", description: "", priority: "URGENT", issueType: "TASK" }),
+        api.createIssue(project.id, { summary: "Still fine", description: "", priority: "URGENT", issueType: "TASK" }, crypto.randomUUID()),
       ).resolves.toMatchObject({ priority: "URGENT" });
       expect((await api.getMeta()).priorities).toHaveLength(4);
     });
@@ -860,7 +860,7 @@ describe("MockTaskaApi", () => {
       await api.archiveProject(project.id);
       const version = (await api.getIssue(project.id, issue.id)).issue.version;
       const writes: [string, () => Promise<unknown>][] = [
-        ["createIssue", () => api.createIssue(project.id, { issueType: "TASK", summary: "Late", description: "", priority: "LOW" })],
+        ["createIssue", () => api.createIssue(project.id, { issueType: "TASK", summary: "Late", description: "", priority: "LOW" }, crypto.randomUUID())],
         ["updateIssue", () => api.updateIssue(project.id, issue.id, { summary: "Late" }, version)],
         ["transitionIssue", () => api.transitionIssue(project.id, issue.id, "any")],
         ["deleteIssue", () => api.deleteIssue(project.id, issue.id)],
@@ -1211,7 +1211,7 @@ describe("MockTaskaApi", () => {
         summary: "Filed by Anna",
         description: "",
         priority: "LOW",
-      });
+      }, crypto.randomUUID());
 
       const { issue, history } = await api.getIssue(project.id, created.id);
       expect(issue.isWatching).toBe(true);
@@ -2368,7 +2368,7 @@ describe("MockTaskaApi", () => {
         startDate: "2026-09-01",
         dueDate: "2026-09-30",
         originalEstimateMinutes: 600,
-      });
+      }, crypto.randomUUID());
 
       expect(created).toMatchObject({
         storyPoints: 2.5,
@@ -2387,7 +2387,7 @@ describe("MockTaskaApi", () => {
           priority: "LOW",
           startDate: "2026-09-30",
           dueDate: "2026-09-01",
-        }),
+        }, crypto.randomUUID()),
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     });
 
@@ -2456,7 +2456,7 @@ describe("MockTaskaApi", () => {
               summary: `Tiebreak twin ${n}`,
               description: "",
               priority: "LOW",
-            }),
+            }, crypto.randomUUID()),
           );
         }
         const hits = await api.searchIssues({ query: "Tiebreak twin", projectId: project.id, pageSize: 100 });
@@ -2577,7 +2577,7 @@ describe("MockTaskaApi", () => {
         summary: "Unassigned needle for the search",
         description: "Nobody owns this one yet.",
         priority: "LOW",
-      });
+      }, crypto.randomUUID());
 
       const { items } = await api.searchIssues({ query: "needle", projectId: project.id, pageSize: 100 });
       const hit = items.find((item) => item.id === created.id);
@@ -2618,7 +2618,7 @@ describe("MockTaskaApi", () => {
         summary: "Doomed haystack entry",
         description: "About to be deleted.",
         priority: "LOW",
-      });
+      }, crypto.randomUUID());
       await api.deleteIssue(project.id, created.id);
 
       const { items } = await api.searchIssues({ query: "haystack", projectId: project.id, pageSize: 100 });
@@ -2894,7 +2894,7 @@ describe("MockTaskaApi", () => {
         summary: "Rotate the signing key",
         description: "",
         priority: "LOW",
-      });
+      }, crypto.randomUUID());
       const [createdRow] = (await api.listNotifications()).items;
       expect(createdRow).toMatchObject({
         notificationType: "ISSUE_CREATED",
@@ -7414,7 +7414,7 @@ describe("MockTaskaApi", () => {
 
         await api.deleteProjectIssueType(id, "BUG", { moveIssuesTo: "TASK", expectedGeneration: generation });
         await api.createProjectIssueType(id, { code: "BUG", name: "Bug", color: "red" });
-        await api.createIssue(id, { issueType: "BUG", summary: "Again", description: "", priority: "MEDIUM" });
+        await api.createIssue(id, { issueType: "BUG", summary: "Again", description: "", priority: "MEDIUM" }, crypto.randomUUID());
         await expect(api.deleteProjectIssueType(id, "BUG", { moveIssuesTo: "TASK" })).rejects.toMatchObject({
           code: "ABORTED",
           details: { reason: "ISSUE_TYPE_GENERATION_REQUIRED" },

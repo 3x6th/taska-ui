@@ -136,6 +136,10 @@ function fakeTransport() {
       tenantId, version: "3", planVersionId: "plan-free", coveragePeriodId: "period-1", validFrom: "2026-05-01T09:00:00Z", validUntil: "2026-12-07T09:00:00Z",
       restrictions: [], limits: [{ kind: "TASK_LIFETIME", limit: "50", unlimited: false }], features: ["projects.basic"], issuedAt: "2026-11-05T10:00:00Z",
     })),
+    // TAS-528.
+    getProjectTaskQuota: vi.fn<B2bTransport["getProjectTaskQuota"]>(async (_bearer, _tenantId, projectId) => ({
+      kind: "TASK_LIFETIME", projectId, used: "47", reserved: "0", limit: "50", unlimited: false, version: "48",
+    })),
   };
 }
 

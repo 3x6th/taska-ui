@@ -17,6 +17,7 @@ import {
   toInvitationPage,
   toMembership,
   toMembershipPage,
+  toProjectTaskQuota,
   toQuotaSnapshot,
   type CreateInvitationInput,
   type Invitation,
@@ -25,6 +26,7 @@ import {
   type ListCompanyPageParams,
   type Membership,
   type MembershipPage,
+  type ProjectTaskQuota,
   type QuotaSnapshot,
 } from "./tenantMembers";
 import {
@@ -198,6 +200,9 @@ export interface B2bTransport {
 
   /** `GET /tenants/{tenantId}/billing/entitlement` with that company's WEB_TENANT — 200 `Entitlement`, every member's read (TAS-512). */
   getEntitlement(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
+
+  /** `GET /tenants/{tenantId}/projects/{projectId}/task-quota` with that company's WEB_TENANT — 200 `QuotaUsage` (TAS-528). */
+  getProjectTaskQuota(bearer: string | null, tenantId: string, projectId: string, signal: AbortSignal): Promise<unknown>;
 }
 
 /** `AccessSession` as this layer reads it: the four strings it needs, `tenantId` only on a company session. */
@@ -1115,6 +1120,22 @@ export class WebSessionClient {
     return ofCompany(
       toEntitlement(await this.inCompany(tenantId, (bearer, signal) => this.transport.getEntitlement(bearer, tenantId, signal))),
       tenantId,
+    );
+  }
+
+  /**
+   * `GET /tenants/{t}/projects/{p}/task-quota` (TAS-528, api-contract-guard
+   * §4): with the tab's company session of that company only (`inCompany`),
+   * and a **read** (`read: true`, not `content`): a `CAPABILITY_DISABLED` with
+   * a pause's or a block's reasons marks the tab as every content read's does,
+   * the closing codes close it, `PAYMENT_PENDING` tells the shell — and a 404
+   * is the project's answer, never the company's. The answer narrowed by
+   * `toProjectTaskQuota`: another kind or another project is a failed read.
+   */
+  async getProjectTaskQuota(tenantId: string, projectId: string): Promise<ProjectTaskQuota> {
+    return toProjectTaskQuota(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.getProjectTaskQuota(bearer, tenantId, projectId, signal), { read: true }),
+      projectId,
     );
   }
 

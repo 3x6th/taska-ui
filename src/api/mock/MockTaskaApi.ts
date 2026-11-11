@@ -88,6 +88,7 @@ import type {
   ListCompanyPageParams,
   Membership,
   MembershipPage,
+  ProjectTaskQuota,
   QuotaSnapshot,
 } from "../tenantMembers";
 import {
@@ -4191,6 +4192,29 @@ export class MockTaskaStore {
   /** Whether `projectId` is one of this store's projects and not archived — an invitation's grant may name it (TAS-502). */
   hasOpenProject(projectId: string): boolean {
     return this.projects.some((project) => project.id === projectId && !project.archivedAt);
+  }
+
+  /**
+   * The companies build's project ACL for a read (TAS-528): one of this
+   * store's projects, archived ones included, of which the signed-in reader is
+   * a member in any role — or any of them for a company admin, an implicit
+   * project ADMIN. Never called in today's build.
+   */
+  canReadProject(projectId: string, companyAdmin: boolean): boolean {
+    if (!this.projects.some((project) => project.id === projectId)) return false;
+    return companyAdmin || (this.membersByProject[projectId]?.some((member) => member.userId === this.currentUserId) ?? false);
+  }
+
+  /**
+   * A new issue's lifecycle check, ahead of the companies build's counter
+   * (TAS-528, api-contract-guard M2): the project's existence and the archive
+   * refusal exactly as `createIssue` makes them, so an archived project at
+   * its limit answers `PROJECT_ARCHIVED`, not `QUOTA_EXCEEDED`. Never called
+   * in today's build.
+   */
+  refuseIssueCreateLifecycle(projectId: string): void {
+    this.getProject(projectId);
+    this.refuseArchivedWrite(projectId);
   }
 
   /**
@@ -9796,6 +9820,10 @@ export class MockTaskaApi implements TaskaApi {
     throw new TenancyUnavailableError("getEntitlement");
   }
 
+  async getProjectTaskQuota(_tenantId: string, _projectId: string): Promise<ProjectTaskQuota> {
+    throw new TenancyUnavailableError("getProjectTaskQuota");
+  }
+
   async getMeta(): Promise<EnumDictionaries> {
     return wait(this.store.getMeta());
   }
@@ -9877,7 +9905,13 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.getIssueByKey(issueKey));
   }
 
-  async createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
+  /**
+   * The key is accepted and not replayed here: this mock never loses an answer
+   * or answers 5xx, so the form never sends one key twice to it (TAS-528, H1).
+   * The companies build's server replays by key in front of this store
+   * (`MockTenantServer.serve`), as the gateway does.
+   */
+  async createIssue(projectId: string, input: CreateIssueInput, _idempotencyKey: string): Promise<Issue> {
     return wait(this.store.createIssue(projectId, input));
   }
 

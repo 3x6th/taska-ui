@@ -224,14 +224,14 @@ describe("parity: a new issue at the task limit (§5)", () => {
     const { api: rest } = await inNorthwind();
     const input = { summary: "One more", description: "", issueType: "TASK", priority: "LOW" } as const;
     const facts = (error: unknown) => ({ status: apiErrorFacts(error).status, code: refusalCode(error), reasons: [...refusalReasons(error)], id: typeof apiErrorFacts(error).requestId });
-    const viaRest = await rest.createIssue(MOCK_PROJECT_IDS.web, input).catch((failure: unknown) => failure);
+    const viaRest = await rest.createIssue(MOCK_PROJECT_IDS.web, input, crypto.randomUUID()).catch((failure: unknown) => failure);
     vi.unstubAllGlobals();
 
     const local = new MemoryStorage();
     const mock = createCompaniesMockApi({ local, session: new MemoryStorage(), locks: createLocalLockManager(), events: null, latencyMs: 0, ownershipWaitMs: 25 });
     await mock.signIn({ email: "anna@example.com", password: "x" });
     await mock.enterCompany(NORTHWIND);
-    const viaMock = await mock.createIssue(MOCK_PROJECT_IDS.web, input).catch((failure: unknown) => failure);
+    const viaMock = await mock.createIssue(MOCK_PROJECT_IDS.web, input, crypto.randomUUID()).catch((failure: unknown) => failure);
     expect(facts(viaRest)).toEqual({ status: 422, code: "QUOTA_EXCEEDED", reasons: [], id: "string" });
     expect(facts(viaMock)).toEqual(facts(viaRest));
   });

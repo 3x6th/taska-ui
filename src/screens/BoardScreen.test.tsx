@@ -8309,6 +8309,81 @@ describe("Create issue in flight and refused", () => {
       scroll.mockRestore();
     }
   });
+
+  /*
+   * One `Idempotency-Key` per draft (TAS-528, api-contract-guard H1), in
+   * today's build as in the companies one: the form is the same. The key goes
+   * again only with the same body after an answer that never came or said
+   * nothing (no status, 408, 429, 5xx) — so a retry after a lost answer is the
+   * server's replay, not a second issue.
+   */
+  const sentKeys = () => creates.mock.calls.map((call) => (call as unknown[])[2]);
+  /** Presses Create issue once the previous press has settled, and waits for the send. */
+  const pressAgain = async (button: HTMLElement, count: number) => {
+    await waitFor(() => expect(button).not.toHaveAttribute("aria-disabled"));
+    fireEvent.click(button);
+    await waitFor(() => expect(creates).toHaveBeenCalledTimes(count));
+  };
+
+  it("a create whose answer never came goes again with the same key (H1)", async () => {
+    creates = vi.spyOn(fakeApi, "createIssue");
+    failNextCreate(new TypeError("Failed to fetch"));
+    const button = await filledForm();
+    fireEvent.click(button);
+    // Said as what it is, and what to do (art-director BLK-1) — never the browser's «Failed to fetch» alone.
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/^Taska couldn’t confirm the issue was created. Press Create issue again without changing anything — it won’t create a second one.$/);
+    expect(alert.closest(".error-note")?.querySelector(".error-note-detail")).toBeNull();
+    expect(button).toHaveFocus();
+    await pressAgain(button, 2);
+    const [first, second] = sentKeys();
+    expect(first).toEqual(expect.any(String));
+    expect(second).toBe(first);
+    expect(createCalls()[1]).toEqual(createCalls()[0]);
+  });
+
+  it("the key stays through 503 and a lost answer, and is new after a definite refusal and after a changed field (H1)", async () => {
+    creates = vi.spyOn(fakeApi, "createIssue");
+    const button = await filledForm();
+    failNextCreate(Object.assign(new Error("Unavailable"), { status: 503, code: "UNAVAILABLE" }));
+    await pressAgain(button, 1);
+    failNextCreate(new TypeError("Failed to fetch"));
+    await pressAgain(button, 2);
+    failNextCreate(Object.assign(new Error("Quota exceeded"), { status: 422, code: "QUOTA_EXCEEDED" }));
+    await pressAgain(button, 3);
+    failNextCreate(new TypeError("Failed to fetch"));
+    await pressAgain(button, 4);
+    const dialog = within(screen.getByRole("dialog", { name: "New issue" }));
+    fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "One issue, reworded" } });
+    await pressAgain(button, 5);
+    const [k1, k2, k3, k4, k5] = sentKeys();
+    // 503 and the lost answer: the same request, the same key.
+    expect(k2).toBe(k1);
+    expect(k3).toBe(k1);
+    // The 422 answered it: the next press is a new request.
+    expect(k4).not.toBe(k3);
+    // The summary changed: a new request again.
+    expect(k5).not.toBe(k4);
+    expect(new Set([k1, k4, k5]).size).toBe(3);
+  });
+
+  it("a 503 says the create could not be confirmed, the server's words and the id under it, outside the alert; a 429 keeps its words (BLK-1)", async () => {
+    const button = await filledForm();
+    const dialog = within(screen.getByRole("dialog", { name: "New issue" }));
+    failNextCreate(Object.assign(new Error("issue-service is unavailable"), { status: 503, code: "UNAVAILABLE", requestId: "req-503" }));
+    fireEvent.click(button);
+    const alert = await dialog.findByRole("alert");
+    expect(alert).toHaveTextContent(/^Taska couldn’t confirm the issue was created. Press Create issue again without changing anything — it won’t create a second one.$/);
+    const detail = alert.closest(".error-note")?.querySelector(".error-note-detail") as HTMLElement;
+    expect(detail).toHaveTextContent("issue-service is unavailable");
+    expect(within(detail).getByRole("button", { name: "Copy request id req-503" })).toBeVisible();
+    expect(detail.closest("[role='alert']")).toBeNull();
+
+    failNextCreate(Object.assign(new Error("Too many requests"), { status: 429, code: "RATE_LIMITED", requestId: "req-429" }));
+    await waitFor(() => expect(button).not.toHaveAttribute("aria-disabled"));
+    fireEvent.click(button);
+    await waitFor(() => expect(dialog.getByRole("alert")).toHaveTextContent(/^Too many requests$/));
+  });
 });
 
 describe("the channel mark on history and comments (TAS-412, TAS-425, TAS-464)", () => {

@@ -19,6 +19,7 @@ import type {
   ListCompanyPageParams,
   Membership,
   MembershipPage,
+  ProjectTaskQuota,
   QuotaSnapshot,
 } from "./tenantMembers";
 import type {
@@ -580,9 +581,9 @@ export interface CreateIssueInput {
    * Nothing here checks it first: the form offers only types whose workflow
    * has the column's status, and the server stays the authority.
    *
-   * The `Idempotency-Key` binds it with every other field of the create; the
-   * rest leg mints a key per call, so a retry is a new request rather than a
-   * replay of another body.
+   * The `Idempotency-Key` binds it with every other field of the create
+   * (`createIssue`'s third argument, the caller's since TAS-528): the same key
+   * goes again only with the same body.
    */
   statusKey?: IssueStatusKey;
   summary: string;
@@ -1620,6 +1621,23 @@ export interface TaskaApi {
    * request (`TenancyUnavailableError`).
    */
   getEntitlement(tenantId: string): Promise<Entitlement>;
+  /**
+   * `GET /tenants/{tenantId}/projects/{projectId}/task-quota` (TAS-528, the
+   * blueprint's `getProjectTaskQuota`, TAS-460 — not on the stand) — the
+   * project's lifetime issue counter, `project.read` for any role, with the
+   * tab's company session of that company only (another company:
+   * `WorkspaceClosedError`, no request). A read (`read: true`, not content):
+   * its `CAPABILITY_DISABLED` is an answer about the company. Narrowed to
+   * `ProjectTaskQuota`; an answer of another kind or naming another project
+   * rejects (`TaskQuotaAnswerError`). **It authorises nothing** — the create
+   * checks and counts in its own transaction (contracts.md:101), and nothing
+   * here is ever incremented. Refusals: 400, 401, 403 (`SCOPE_DENIED`, the
+   * closing codes, `CAPABILITY_DISABLED` with reasons), 404
+   * `RESOURCE_NOT_FOUND` (a project the reader cannot read, concealed), 409
+   * `PAYMENT_PENDING` / `INVALID_STATE`, 429, 503. Today's build refuses it
+   * without a request (`TenancyUnavailableError`).
+   */
+  getProjectTaskQuota(tenantId: string, projectId: string): Promise<ProjectTaskQuota>;
 
   /**
    * `GET /meta` — the enum dictionaries (backend TAS-217), read once per
@@ -2085,7 +2103,18 @@ export interface TaskaApi {
    * and nothing here reads them.
    */
   getIssueByKey(issueKey: string): Promise<Issue>;
-  createIssue(projectId: string, input: CreateIssueInput): Promise<Issue>;
+  /**
+   * `POST /projects/{projectId}/issues` with `Idempotency-Key: {idempotencyKey}`
+   * — the caller's, one per draft (TAS-528, api-contract-guard H1): the same
+   * key goes again only on a retry of the same body after an answer that never
+   * came (no status, 408, 429, 5xx), and a new one after any other answer, any
+   * change to a sent field, and a success. The gateway binds the key to every
+   * field of the create; a replay of the same body answers the issue it made
+   * (and counts nothing in the companies build), another body with the same
+   * key is refused (legacy `FAILED_PRECONDITION`, the blueprint's 409
+   * `IDEMPOTENCY_CONFLICT`).
+   */
+  createIssue(projectId: string, input: CreateIssueInput, idempotencyKey: string): Promise<Issue>;
   /**
    * `PATCH /issues/{issueId}` with `If-Match: "<expectedVersion>"` — a merge
    * patch under optimistic locking (backend TAS-215, develop `60d62ee`). One

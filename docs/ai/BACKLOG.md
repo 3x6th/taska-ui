@@ -4664,11 +4664,11 @@ into the fix round.
   on the stand (`openapi.yml` has no `QUOTA_EXCEEDED`, `READ_ONLY` or `CAPABILITY_DISABLED`), but a legacy task limit
   (TAS-460) would speak of «its plan's limit» (guard N4, art-director 8).
 - **`ForeignCompanyAnswerError` leaves no trace for a developer** — a `console.warn` with the requested and answered ids
-  (guard N6).
+  (guard N6). TAS-528's `TaskQuotaAnswerError` has the same gap, and a malformed 200 also loses its `X-Request-Id`.
 - **A failed `/users/me` on Plan** (and General) shows the owner the non-owner page and lead with no ErrorNote (guard N7,
   release-reviewer L-6; TAS-504's pattern).
-- **The mock's TASK_LIFETIME breach counts archived projects' counters** (L04 says live projects), and an archived
-  project at the limit answers 422 before the archived refusal (guard N8).
+- ~~**The mock's TASK_LIFETIME breach counts archived projects' counters**~~ — answered by develop (archived projects are
+  live: `retired_at IS NULL`), and the mock now checks archived before the counter (TAS-528).
 - **A rename moves `Tenant.version`**, so the owner's subscription is re-read on General — by B4; asks A31 / A49 remove it
   (guard N9).
 - **`.company-marker` duplicates `.admin-readonly`** (§5.8) with identical tokens — one shared class (art-director 6).
@@ -4688,3 +4688,20 @@ into the fix round.
 - **Scroll-to-submit ignores where focus is**: Enter in Summary at a refusal scrolls the focused field out of the modal
   body (scrollTop 65 at 1440×810, 381 at 320×568) — §4.40 says only when focus stays on the submit; scroll only when
   the submit has focus (release-reviewer wave 2, low 2).
+
+### Left by TAS-528 pre-build (project issue counter, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-528-*.md` (git-ignored); divergence in `API-DIVERGENCE.md` «TAS-528».
+
+- **Permanent project deletion** — split to TAS-531, blocked by TAS-459 (asks A112, A113). The guard's rules for the later
+  build are in its ruling §2.
+- **The counter on the project's own reads** (A115 / A45) would remove the +1 read per dialog open.
+- **Modal padding drift** — the code's modal padding 16 and header 12 14 vs «18» and «15 18» in §2.4 / §4.11; `.modal-actions`
+  sits inside the body without §4.11's `--surface-2` footer (art-director N5, pre-existing).
+- **Unit tests for two e2e-only regressions** — the counter rendering in today's build and a stale cached number after the
+  reader's own create are caught only by Playwright; a BoardScreen unit test for each (release-reviewer 1).
+- **A lost create answer, then Cancel** leaves the cached counter; reopening within 20 s shows the pre-create number —
+  optionally re-read once in place after an indefinite failure (release-reviewer 4; the guard made it optional).
+- **The mock checks restrictions before a create's key receipt** — develop replays a succeeded key first, so a same-key
+  retry after a lost answer under a newly READ_ONLY company answers 201 on develop and 403 on the mock (guard N3, TAS-528).
+- **`TaskQuotaAnswerError` and `ForeignCompanyAnswerError` lose the request id** — see TAS-512's N6 line (guard N4, TAS-528).

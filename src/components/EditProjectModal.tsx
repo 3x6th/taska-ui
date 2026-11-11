@@ -8,11 +8,13 @@ import type { Project, ProjectContext, ProjectStats } from "../domain/types";
 import { PROJECT_STATS_KEY } from "../lib/boardQuery";
 import { focusLost } from "../lib/focusTrap";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
+import { useCompanyAddress } from "../lib/companyAddress";
 import { refusalWords } from "../lib/projectArchive";
 import { projectContextKey } from "../lib/projectContext";
 import { ColorSwatches, type ColorChoice } from "./ColorSwatches";
 import { ErrorNote } from "./ErrorNote";
 import { Modal } from "./Modal";
+import { EditProjectIssueCount } from "./ProjectIssueCount";
 
 /**
  * The project's own three editable fields — `PATCH /projects/{projectId}`,
@@ -62,6 +64,8 @@ export function EditProjectModal({
   unlisted?: boolean;
 }) {
   const queryClient = useQueryClient();
+  /** The companies build's company (TAS-528): only there is the project's issue counter read and drawn. */
+  const companyId = useCompanyAddress()?.companyId ?? null;
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? "");
   /** What the description box opened with: text that differs from it is text-work, and holds `Esc` (§4.11). */
@@ -363,6 +367,11 @@ export function EditProjectModal({
             <span className="field-note">Prefixes every issue key in this project, so it cannot change.</span>
           </dd>
         </dl>
+
+        {/* The companies build's «Issues» row (TAS-528, §4.43): read when the
+            dialog opens, as the server counts — kept as last read if the
+            project is archived under the dialog. Today's build: nothing. */}
+        {companyId ? <EditProjectIssueCount companyId={companyId} projectId={project.id} /> : null}
 
         <label className="field">
           <span>Name</span>

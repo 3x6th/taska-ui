@@ -171,7 +171,7 @@ describe("the quota snapshot (§5)", () => {
 describe("the task limit (§5, B5)", () => {
   it("Northwind's WEB at 50 refuses a new issue 422 QUOTA_EXCEEDED, no reasons — editing, moving and commenting go on", async () => {
     const { api } = await inCompany("anna@example.com", NW);
-    expect(facts(await caught(api.createIssue(MOCK_PROJECT_IDS.web, issue)))).toEqual({ status: 422, code: "QUOTA_EXCEEDED", reasons: [] });
+    expect(facts(await caught(api.createIssue(MOCK_PROJECT_IDS.web, issue, key())))).toEqual({ status: 422, code: "QUOTA_EXCEEDED", reasons: [] });
     const page = await api.listIssues(MOCK_PROJECT_IDS.web);
     const target = page.items[0];
     await expect(api.updateIssue(MOCK_PROJECT_IDS.web, target.id, { summary: "Still editable" }, target.version)).resolves.toBeTruthy();
@@ -183,29 +183,29 @@ describe("the task limit (§5, B5)", () => {
   it("TAS takes three more, then 422 — and deleting one frees nothing; the counter is the server's, not the issue numbers", async () => {
     const { api } = await inCompany("anna@example.com", NW);
     const made = [];
-    for (let left = 3; left > 0; left -= 1) made.push(await api.createIssue(MOCK_PROJECT_IDS.taska, issue));
+    for (let left = 3; left > 0; left -= 1) made.push(await api.createIssue(MOCK_PROJECT_IDS.taska, issue, key()));
     expect(made).toHaveLength(3);
-    expect(refusalCode(await caught(api.createIssue(MOCK_PROJECT_IDS.taska, issue)))).toBe("QUOTA_EXCEEDED");
+    expect(refusalCode(await caught(api.createIssue(MOCK_PROJECT_IDS.taska, issue, key())))).toBe("QUOTA_EXCEEDED");
     await api.deleteIssue(MOCK_PROJECT_IDS.taska, made[0].id);
-    expect(refusalCode(await caught(api.createIssue(MOCK_PROJECT_IDS.taska, issue)))).toBe("QUOTA_EXCEEDED");
+    expect(refusalCode(await caught(api.createIssue(MOCK_PROJECT_IDS.taska, issue, key())))).toBe("QUOTA_EXCEEDED");
   });
 
   it("the restriction first, then the project's own check, then the counter", async () => {
     const { api, hooks } = await inCompany("anna@example.com", NW, (set) => set({ platformBlock: { [NW]: true } }));
-    expect(facts(await caught(api.createIssue(MOCK_PROJECT_IDS.web, issue)))).toEqual({ status: 403, code: "READ_ONLY", reasons: ["PLATFORM_BLOCK"] });
+    expect(facts(await caught(api.createIssue(MOCK_PROJECT_IDS.web, issue, key())))).toEqual({ status: 403, code: "READ_ONLY", reasons: ["PLATFORM_BLOCK"] });
     hooks({ platformBlock: { [NW]: false }, taskLifetime: { [MOCK_TENANT_PROJECT_IDS.globexWeb]: 50 } });
     // Globex's WEB is at its limit — and it is not Northwind's: the project check answers first.
-    expect(apiErrorFacts(await caught(api.createIssue(MOCK_TENANT_PROJECT_IDS.globexWeb, issue))).code).toBe("NOT_FOUND");
+    expect(apiErrorFacts(await caught(api.createIssue(MOCK_TENANT_PROJECT_IDS.globexWeb, issue, key()))).code).toBe("NOT_FOUND");
   });
 
   it("a paid plan without a task limit: Umbrella's RND at 50 takes more", async () => {
     const { api } = await inCompany("tom@example.com", UM);
-    await expect(api.createIssue(MOCK_TENANT_PROJECT_IDS.umbrellaResearch, issue)).resolves.toMatchObject({ issueKey: "RND-1" });
+    await expect(api.createIssue(MOCK_TENANT_PROJECT_IDS.umbrellaResearch, issue, key())).resolves.toMatchObject({ issueKey: "RND-1" });
   });
 
   it("the counters live in the shared storage", async () => {
     const { api, local } = await inCompany("anna@example.com", NW);
-    await api.createIssue(MOCK_PROJECT_IDS.mob, issue);
+    await api.createIssue(MOCK_PROJECT_IDS.mob, issue, key());
     const stored = JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}") as { taskLifetime: Record<string, { count: number }> };
     expect(stored.taskLifetime[MOCK_PROJECT_IDS.mob].count).toBe(13);
   });
@@ -293,7 +293,7 @@ describe("the lifecycle clock and the hooks (§5)", () => {
     // Readable, and every NORMAL write READ_ONLY with its reason.
     const page = await api.listIssues(MOCK_TENANT_PROJECT_IDS.longNameProject);
     expect(page.items.length).toBeGreaterThan(0);
-    expect(facts(await caught(api.createIssue(MOCK_TENANT_PROJECT_IDS.longNameProject, issue)))).toEqual({
+    expect(facts(await caught(api.createIssue(MOCK_TENANT_PROJECT_IDS.longNameProject, issue, key())))).toEqual({
       status: 403,
       code: "READ_ONLY",
       reasons: ["OVER_QUOTA"],

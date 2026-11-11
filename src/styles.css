@@ -1085,6 +1085,61 @@ h1 {
   gap: 4px 9px;
 }
 
+/* The project's issue counter (TAS-528, DESIGN.md §4.43), companies build
+   only. Edit project's «Issues» row under Key: the count 13/400 `--fg`, then
+   `.field-note`'s «Deleted issues still count.», 2 apart. One template at,
+   below and over the limit: no colour, no `--danger`, no accent. */
+.project-issue-count {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-issue-count-value {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  text-wrap: pretty;
+}
+
+/* New issue's line under Planning: 11.5/400 `--fg-2` (7.26 / 6.75 on
+   `--surface`). */
+.new-issue-count {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  text-wrap: pretty;
+}
+
+/* Loading, each bar sits in the very line box its text will take — the same
+   font size and line height — so nothing below moves when the answer lands
+   (art-director B4): 160×11 in New issue's 16.67; 160×13 and 140×11 in Edit
+   project's 18.85 and 15.53. Centred by its own margin from the line box's top
+   (`1lh` is that box), not by `vertical-align: middle`, which centres on the
+   font's x-height and left the bars 3.67 / 2.00 off (art-director N1, TAS-528):
+   the margin box stays inside the line box, so its height is unchanged. */
+.new-issue-count .value-skeleton,
+.project-issue-count .value-skeleton {
+  width: 160px;
+  height: 11px;
+  margin-top: calc((1lh - 11px) / 2);
+  vertical-align: top;
+}
+
+.project-issue-count-value .value-skeleton {
+  height: 13px;
+  margin-top: calc((1lh - 13px) / 2);
+}
+
+.project-issue-count .field-note .value-skeleton {
+  width: 140px;
+}
+
 /* The locked-account refusal, and only it (TAS-237): "Account is locked until
    14:55" over "Try again later.", the second centred against the first.
 
