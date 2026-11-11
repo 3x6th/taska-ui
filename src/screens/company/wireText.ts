@@ -328,7 +328,12 @@ export function downloadRefusalWords(error: unknown, company: string | null): { 
 /* ------------------------------------------------------ refunds (B11) */
 
 export const REFUNDS_TITLE = "Refunds";
-export const REFUNDS_LEAD = "Refunds go back to the account the money came from. When they arrive depends on the banks.";
+/**
+ * TAS-516's T5: the row words are Taska's own facts, the crediting is the
+ * banks' — said once here, tied to the group, never with a number (A95), and
+ * so no row needs its own «arrived» or «received» (guard Q6).
+ */
+export const REFUNDS_LEAD = "Refunds go back to the account the money came from. The dates below are Taska’s — when the money shows in that account depends on the banks.";
 export const REFUNDS_READ_FAILED = "Refunds could not be loaded.";
 
 /** A refund's reason (B11, line 1); a code this build does not know, as it came. */
@@ -378,37 +383,81 @@ export function refundMarker(state: string | null): string | null {
 }
 
 /**
- * The row's second line after the method (B11, decision 6): «Taska aims to
- * send it by {date}» only for a REQUESTED or APPROVED bank-transfer refund that
- * carries `sendDueAt` — never as an arrival, never the reconciliation target —
- * else «Requested {date}»; UNKNOWN «Taska is checking whether it went
- * through»; FAILED «It didn’t go through», no retry promised.
+ * One segment of a row's dated line (TAS-516): the word, and its day when it has
+ * one — the segment wraps as a whole (B9), the date in a `<time>`. `ChainStep`s
+ * are shared by a refund's history and a dispute's dates.
  */
-export function refundTail(refund: Refund, now: Date = new Date()): string | null {
-  const day = (iso: string | null) => (iso !== null ? formatDue(iso, now) : null);
-  switch (refund.state) {
-    case "REQUESTED":
-    case "APPROVED":
-      if (refund.sourceMethod === "WIRE" && refund.sendDueAt !== null) return `Taska aims to send it by ${day(refund.sendDueAt)}`;
-      return refund.requestedAt !== null ? `Requested ${day(refund.requestedAt)}` : null;
-    case "SUBMITTING":
-      return "Being sent";
-    case "UNKNOWN":
-      return "Taska is checking whether it went through";
-    case "CONFIRMED":
-      return refund.confirmedAt !== null ? `Refunded ${day(refund.confirmedAt)}` : "Refunded";
-    case "FAILED":
-      return "It didn’t go through";
-    case "REJECTED":
-      return refund.decidedAt !== null ? `Declined ${day(refund.decidedAt)}` : "Declined";
-    default:
-      return null;
-  }
+export interface ChainStep {
+  word: string;
+  /** «Oct 12», the formatted date; `iso` is its `dateTime`. */
+  day: string | null;
+  iso: string | null;
 }
 
-/** The second line whole (B11): «{method} · {tail}» — no invoice, ever (A81). */
-export const refundMetaText = (refund: Refund, now: Date = new Date()) =>
-  [methodText(refund.sourceMethod), refundTail(refund, now)].filter((part): part is string => part !== null && part !== "").join(" · ");
+/** A step dated by `iso`, in the row's short date format. */
+export const datedStep = (word: string, iso: string, now: Date): ChainStep => ({ word, day: formatDue(iso, now), iso });
+/** A step with no date. */
+export const plainStep = (word: string): ChainStep => ({ word, day: null, iso: null });
+
+/** A step's words: «Requested Oct 12». */
+export const stepText = (step: ChainStep) => (step.day !== null ? `${step.word} ${step.day}` : step.word);
+
+/** The refund states after a decision to go ahead (T3): never `REJECTED`. */
+const APPROVED_STATES: ReadonlySet<string> = new Set(["APPROVED", "SUBMITTING", "UNKNOWN", "CONFIRMED", "FAILED"]);
+/** The refund states it was sent in (T3, guard B8): «Sent» never on `SUBMITTING` or `UNKNOWN`. */
+const SENT_STATES: ReadonlySet<string> = new Set(["CONFIRMED", "FAILED"]);
+
+/**
+ * A refund's history (TAS-516's T3): the method, then each step **only from its
+ * own field** — a step's date never inferred from a later state, a skipped step
+ * simply omitted — then what it is doing now. Requested, decided, sent and
+ * refunded stay separate: approval or sending is never money received
+ * (guard B8). «Taska aims to send it by {date}» is the server's `sendDueAt` only —
+ * for a REQUESTED or APPROVED bank-transfer refund, never as an arrival and
+ * never a client's deadline (B11, D252); FAILED promises no retry.
+ */
+export function refundChain(refund: Refund, now: Date = new Date()): ChainStep[] {
+  const state = refund.state ?? "";
+  const method = methodText(refund.sourceMethod);
+  const steps: ChainStep[] = method !== null && method !== "" ? [plainStep(method)] : [];
+  if (refund.requestedAt !== null) steps.push(datedStep("Requested", refund.requestedAt, now));
+  if (APPROVED_STATES.has(state) && refund.decidedAt !== null) steps.push(datedStep("Approved", refund.decidedAt, now));
+  if (state === "REJECTED") steps.push(refund.decidedAt !== null ? datedStep("Declined", refund.decidedAt, now) : plainStep("Declined"));
+  if (SENT_STATES.has(state) && refund.submittedAt !== null) steps.push(datedStep("Sent", refund.submittedAt, now));
+  if (state === "CONFIRMED") steps.push(refund.confirmedAt !== null ? datedStep("Refunded", refund.confirmedAt, now) : plainStep("Refunded"));
+  if ((state === "REQUESTED" || state === "APPROVED") && refund.sourceMethod === "WIRE" && refund.sendDueAt !== null) {
+    steps.push(datedStep("Taska aims to send it by", refund.sendDueAt, now));
+  }
+  if (state === "SUBMITTING") steps.push(plainStep("Being sent"));
+  if (state === "UNKNOWN") steps.push(plainStep("Taska is checking whether it went through"));
+  if (state === "FAILED") steps.push(plainStep("It didn’t go through"));
+  return steps;
+}
+
+/** The second line whole (B11, T3): the chain, joined at « · » — no invoice, ever (A81). */
+export const refundMetaText = (refund: Refund, now: Date = new Date()) => refundChain(refund, now).map(stepText).join(" · ");
+
+/** The refund states still on the way (T4). */
+const LIVE_STATES: ReadonlySet<string> = new Set(["REQUESTED", "APPROVED", "SUBMITTING", "UNKNOWN"]);
+
+/**
+ * A refund's third line (TAS-516's T4), or `null`: what a full refund of a
+ * subscription's coverage does — before it goes through and once it has — then
+ * the bank fee where Taska bears it. A refund of unallocated money never speaks
+ * about access (B10): an excess returned does not end the paid period.
+ */
+export function refundConsequenceText(refund: Refund): string | null {
+  const state = refund.state ?? "";
+  const sentences: string[] = [];
+  if (refund.kind === "SUBSCRIPTION_FULL") {
+    if (LIVE_STATES.has(state)) sentences.push("If the refund goes through, the period this payment paid for ends and automatic payments turn off.");
+    else if (state === "CONFIRMED") sentences.push("The period this payment paid for no longer counts.");
+  }
+  if (refund.sourceMethod === "WIRE" && refund.feeBearer === "TASKA" && LIVE_STATES.has(state)) {
+    sentences.push("Taska pays the bank fee, so the full amount is sent back.");
+  }
+  return sentences.length > 0 ? sentences.join(" ") : null;
+}
 
 const requestedMs = (refund: Refund) => {
   const at = refund.requestedAt !== null ? Date.parse(refund.requestedAt) : Number.NaN;

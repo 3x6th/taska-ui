@@ -1,7 +1,7 @@
 import { Check, Copy, Download } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { Invoice, InvoiceDetail, Refund, WireInstructions } from "../../api/billing";
-import { InvoiceMarker } from "./BillingParts";
+import { InvoiceMarker, StepChain } from "./BillingParts";
 import { formatInvoiceMoney } from "./billingText";
 import type { useInvoiceDownload } from "./companyBilling";
 import {
@@ -25,8 +25,9 @@ import {
   needsTotalRow,
   receivedOf,
   referenceNote,
+  refundChain,
+  refundConsequenceText,
   refundMarker,
-  refundMetaText,
   refundReasonText,
   sellerLines,
   type CopyField,
@@ -195,7 +196,7 @@ export function BankTransferGroup({
           <dt>Reference</dt>
           <dd>
             <span className="company-bank-value-row">
-              <span className="company-bank-value company-bank-mono company-bank-reference" ref={(node) => void (values.current.reference = node)}>
+              <span className="company-bank-value company-bank-mono" ref={(node) => void (values.current.reference = node)}>
                 {details.reference}
               </span>
               {copyButton("reference", details.reference)}
@@ -325,28 +326,38 @@ export function InvoiceSnapshot({ invoice }: { invoice: InvoiceDetail }) {
   );
 }
 
-/** «Refunds {n}» on Billing (B11): its own list — no invoice, no link, no action; shown only when there is one. */
+/**
+ * «Refunds {n}» on Billing (B11; TAS-516 T3–T5): its own list — no invoice, no
+ * link, no action; shown only when there is one. Line 2 is the refund's history,
+ * each step from its own field; line 3 what it means; the lead, tied to the
+ * group, says the dates are Taska's and the crediting the banks'.
+ */
 export function RefundsGroup({ refunds }: { refunds: readonly Refund[] }) {
   const titleId = useId();
+  const leadId = useId();
   if (refunds.length === 0) return null;
   return (
-    <section aria-labelledby={titleId} className="company-group company-refunds">
+    <section aria-describedby={leadId} aria-labelledby={titleId} className="company-group company-refunds">
       <h2 className="company-group-title" id={titleId}>
         {REFUNDS_TITLE}
         <span className="company-group-count">{refunds.length}</span>
       </h2>
-      <p className="company-refunds-lead">{REFUNDS_LEAD}</p>
+      <p className="company-refunds-lead" id={leadId}>
+        {REFUNDS_LEAD}
+      </p>
       <ul className="company-refund-list">
         {refunds.map((refund) => {
           const word = refundMarker(refund.state);
+          const consequence = refundConsequenceText(refund);
           return (
-            <li className="company-refund-row" key={refund.id}>
+            <li className={consequence !== null ? "company-refund-row has-line3" : "company-refund-row"} key={refund.id}>
               <div className="company-refund-text">
                 <p className="company-refund-reason">{refundReasonText(refund.reasonCode)}</p>
                 <p className="company-refund-meta">
-                  {refundMetaText(refund)}
+                  <StepChain steps={refundChain(refund)} />
                   <InvoiceMarker className="company-invoice-marker-inline" word={word} />
                 </p>
+                {consequence !== null ? <p className="company-refund-consequence">{consequence}</p> : null}
               </div>
               <span className="company-refund-amount">{refund.amount !== null ? formatInvoiceMoney(refund.amount) : null}</span>
               <span className="company-refund-status">

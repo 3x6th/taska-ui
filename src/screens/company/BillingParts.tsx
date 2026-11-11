@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import type { PaymentState } from "./billingText";
+import type { ChainStep } from "./wireText";
 
 /*
  * What Company › Billing's list, its invoice and the never-opened card share
@@ -26,6 +27,32 @@ export function PaymentStateBlock({ state, factId, after }: { state: PaymentStat
         </p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * A row's dated line (TAS-516, art-director B9): each segment kept whole, so a
+ * line only ever breaks at « · » — the dot stays on the line it closes.
+ */
+export function StepChain({ steps }: { steps: readonly ChainStep[] }) {
+  return (
+    <>
+      {steps.map((step, index) => (
+        <Fragment key={index}>
+          {index > 0 ? " " : null}
+          <span className="company-step">
+            {step.word}
+            {step.day !== null && step.iso !== null ? (
+              <>
+                {" "}
+                <time dateTime={step.iso}>{step.day}</time>
+              </>
+            ) : null}
+            {index < steps.length - 1 ? " ·" : null}
+          </span>
+        </Fragment>
+      ))}
+    </>
   );
 }
 

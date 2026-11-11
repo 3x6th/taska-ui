@@ -1,7 +1,7 @@
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { taskaApi } from "../../api/client";
-import { readAllInvoices, readAllRefunds, type Checkout, type Invoice, type ReturnTarget } from "../../api/billing";
+import { readAllDisputes, readAllInvoices, readAllRefunds, type Checkout, type Invoice, type ReturnTarget } from "../../api/billing";
 import {
   CHECKOUT_ATTEMPT_PREFIX,
   browserCheckoutLocks,
@@ -63,6 +63,18 @@ export const companyRefundsOptions = (companyId: string) =>
   queryOptions({
     queryKey: COMPANY_REFUNDS_KEY,
     queryFn: () => readAllRefunds((params) => taskaApi.listRefunds(companyId, params)),
+    retry: retryUnanswered,
+  });
+
+/* ---------------------------------------------------- disputes (TAS-516) */
+
+export const COMPANY_DISPUTES_KEY = ["company-disputes"] as const;
+
+/** Every dispute, all pages (guard B3) — the owner's; never joined to an invoice or to the restrictions (A91). */
+export const companyDisputesOptions = (companyId: string) =>
+  queryOptions({
+    queryKey: COMPANY_DISPUTES_KEY,
+    queryFn: () => readAllDisputes((params) => taskaApi.listDisputes(companyId, params)),
     retry: retryUnanswered,
   });
 
