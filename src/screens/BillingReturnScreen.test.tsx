@@ -59,6 +59,20 @@ describe("routing by the records (N5)", () => {
     expect(JSON.parse(window.localStorage.getItem(checkoutAttemptKey("tom", "u", "inv-1")) ?? "{}").leftAt).toBeUndefined();
   });
 
+  it("nothing to route to: «Open Billing» for a reader with one company, «All companies» otherwise (NB4)", async () => {
+    renderReturn();
+    expect(await screen.findByText("We can’t find a payment started in this browser — open Billing to see its state.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("link", { name: "Open Billing" })).toHaveAttribute("href", "/c/u/company/billing"));
+    expect(screen.queryByRole("link", { name: "All companies" })).not.toBeInTheDocument();
+  });
+
+  it("the return address clears the record's «left» mark; the cancel address sets it (R1)", async () => {
+    record("u", "inv-1", { checkoutId: "co-1", leftAt: "2026-11-11T09:05:00Z" });
+    const { go } = renderReturn();
+    await waitFor(() => expect(go).toHaveBeenCalled());
+    expect(JSON.parse(window.localStorage.getItem(checkoutAttemptKey("tom", "u", "inv-1")) ?? "{}")).not.toHaveProperty("leftAt");
+  });
+
   it("one with a checkout is routed — the other, without one, does not make a choice of two", async () => {
     record("u", "inv-1");
     record("u", "inv-2", { checkoutId: "co-2", startedAt: "2026-11-11T08:00:00Z" });

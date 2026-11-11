@@ -451,7 +451,8 @@ export function CompanySetupScreen({
         />
         {/* TAS-513 (art-director B2b): the owner's payment slot, with this
             company's session; nobody else has one to show. */}
-        {owner && canRead && me.data?.id ? (
+        {/* The company's own answer decides, never the list row (api-contract-guard F7). */}
+        {canRead && me.data?.id !== undefined && tenantQuery.data?.ownerId === me.data.id ? (
           <CreationPaySlot
             company={name}
             companyId={companyId}

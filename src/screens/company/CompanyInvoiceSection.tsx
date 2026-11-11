@@ -14,6 +14,7 @@ import {
   NO_LONGER_PAYABLE_TEXT,
   OPENING_PAYMENT_LABEL,
   OPENING_PAYMENT_STATUS,
+  REOPEN_FAILED_TEXT,
   billingOwnerOnlyText,
   expiredState,
   failedState,
@@ -21,6 +22,7 @@ import {
   inProgressState,
   invoiceTitle,
   isPayable,
+  isZeroMoney,
   methodText,
   notFoundState,
   paidState,
@@ -28,6 +30,7 @@ import {
   purposeText,
   replacedByText,
   replacementOf,
+  statusFollowsBlock,
   statusWord,
   watchedPaymentState,
   type PaymentState,
@@ -83,7 +86,9 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
   const watch = usePaymentWatch({ companyId, invoiceId, record, enabled: reader.owner });
   const invoiceQuery = watch.invoiceQuery;
   const invoice = invoiceQuery.data ?? null;
-  const list = useQuery({ ...companyInvoicesOptions(companyId), enabled: reader.owner });
+  // The list only to name the invoice that replaced this one (api-contract-guard F3).
+  const endedUnpaid = invoice?.state === "EXPIRED" || invoice?.state === "VOID";
+  const list = useQuery({ ...companyInvoicesOptions(companyId), enabled: reader.owner && endedUnpaid });
   const plans = useQuery(plansQueryOptions(taskaApi), accountClient ?? undefined);
   const press = usePayInvoice({ companyId, userId: reader.meId, returnTarget: "BILLING", company: reader.company });
   const rereadAfterPaid = useRereadAfterPaid();
@@ -92,6 +97,8 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
   const payButton = useRef<HTMLButtonElement>(null);
   const returnButton = useRef<HTMLButtonElement>(null);
   const [returning, setReturning] = useState(false);
+  /** «Return to payment»'s read refused (F2): said under the block, with its id; remounted per press. */
+  const [reopenFailure, setReopenFailure] = useState<{ error: unknown; key: number } | null>(null);
   useRestoredFromCache(() => setReturning(false));
 
   // Back from the provider loaded this page afresh: the attempt reads as left (N3).
@@ -231,40 +238,59 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
         {inFlight ? OPENING_PAYMENT_LABEL : payLabel(invoice)}
       </button>
     );
-  } else if (state?.action === "return" && unresolved(record)) {
-    const checkoutId = record.checkoutId;
-    action = (
-      <button
-        aria-disabled={returning || undefined}
-        className="secondary-button compact-button company-invoice-again"
-        onClick={(event) => {
-          if (returning) return;
-          setReturning(true);
-          press.noteLeaving(invoiceId, event.currentTarget);
-          void returnToPayment(companyId, checkoutId)
-            .then((went) => {
-              if (!went) {
+  } else {
+    // «Return to payment» only when the last read of the checkout carried its page (F2); «Check again»
+    // after it once the reads have stopped on an open one, or alone (art-director N9).
+    const reopen =
+      state?.action === "return" && unresolved(record) && watch.checkout?.redirect != null ? (
+        <button
+          aria-disabled={returning || undefined}
+          className="secondary-button compact-button company-invoice-again"
+          key="return"
+          onClick={(event) => {
+            if (returning || !unresolved(record)) return;
+            const sent = record;
+            setReturning(true);
+            setReopenFailure(null);
+            press.noteLeaving(invoiceId, event.currentTarget);
+            void returnToPayment(companyId, sent.checkoutId, invoiceId).then(
+              (found) => {
+                if (found === "went") return;
                 setReturning(false);
+                if (found === "lost") {
+                  // Not this invoice's checkout (F5): the watch's not-found path.
+                  setOutcome("not-found");
+                  closeAttempt(sent.userId, companyId, invoiceId, sent.key);
+                  return;
+                }
                 void watch.checkoutQuery.refetch();
-              }
-            })
-            .catch(() => {
-              setReturning(false);
-              void watch.checkoutQuery.refetch();
-            });
-        }}
-        ref={returnButton}
-        type="button"
-      >
-        Return to payment
-      </button>
-    );
-  } else if (state?.action === "check") {
-    action = (
-      <button className="secondary-button compact-button company-invoice-again" onClick={watch.checkAgain} type="button">
-        Check again
-      </button>
-    );
+              },
+              (error: unknown) => {
+                setReturning(false);
+                setReopenFailure((previous) => ({ error, key: (previous?.key ?? 0) + 1 }));
+              },
+            );
+          }}
+          ref={returnButton}
+          type="button"
+        >
+          Return to payment
+        </button>
+      ) : null;
+    const check =
+      state?.action === "check" || state?.alsoCheck === true ? (
+        <button className="secondary-button compact-button company-invoice-again" key="check" onClick={watch.checkAgain} type="button">
+          Check again
+        </button>
+      ) : null;
+    if (reopen !== null || check !== null) {
+      action = (
+        <>
+          {reopen}
+          {check}
+        </>
+      );
+    }
   }
 
   return (
@@ -278,7 +304,11 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
               <>
                 {" "}
                 {replacedByText}{" "}
-                <Link className="admin-note-link" to={`/company/billing/${encodeURIComponent(replacement.id)}`}>
+                <Link
+                  className="admin-note-link company-invoice-replacement"
+                  state={{ focusHeading: true }}
+                  to={`/company/billing/${encodeURIComponent(replacement.id)}`}
+                >
                   {replacement.number ?? "Invoice"}
                 </Link>
                 .
@@ -292,6 +322,13 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
             {OPENING_PAYMENT_STATUS}
           </span>
         ) : null}
+        {reopenFailure !== null ? (
+          <div className="company-invoice-refusal">
+            <ErrorNote key={reopenFailure.key} live="alert" requestId={apiErrorFacts(reopenFailure.error).requestId}>
+              {REOPEN_FAILED_TEXT}
+            </ErrorNote>
+          </div>
+        ) : null}
         {refusal ? (
           <div className="company-invoice-refusal">
             <ErrorNote key={refusal.key} live="alert" requestId={refusal.requestId} serverWords={refusal.words.words}>
@@ -300,12 +337,14 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
           </div>
         ) : null}
         <dl className="settings-details company-invoice-facts">
-          <Fact label="Status">{capitalised(statusWord(invoice.state, unresolved(record)))}</Fact>
+          {/* «Confirming» only while the block says so (art-director blocker 3): a left one shows the invoice's word. */}
+          <Fact label="Status">{capitalised(statusWord(invoice.state, unresolved(record) && statusFollowsBlock(state)))}</Fact>
           {invoice.total ? <Fact label="Amount">{formatInvoiceMoney(invoice.total)}</Fact> : null}
-          {invoice.allocated && !/^0+$/.test(invoice.allocated.amountMinor) ? (
+          {/* Part of it paid only (NB1): a paid invoice has neither line. */}
+          {invoice.allocated && !isZeroMoney(invoice.allocated) && invoice.state !== "PAID" ? (
             <Fact label="Paid so far">{formatInvoiceMoney(invoice.allocated)}</Fact>
           ) : null}
-          {invoice.remaining && invoice.total && invoice.remaining.amountMinor !== invoice.total.amountMinor ? (
+          {invoice.remaining && invoice.total && !isZeroMoney(invoice.remaining) && invoice.remaining.amountMinor !== invoice.total.amountMinor ? (
             <Fact label="Left to pay">{formatInvoiceMoney(invoice.remaining)}</Fact>
           ) : null}
           {purposeText(invoice.purpose) ? <Fact label="For">{purposeText(invoice.purpose)}</Fact> : null}

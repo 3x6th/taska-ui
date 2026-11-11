@@ -95,7 +95,14 @@ const invoice = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const checkout = (checkoutState: string) => ({ id: "co-1", invoiceId: "inv-renewal", state: checkoutState, expiresAt: null, redirect: null });
+/** A checkout as read: an open one carries its page (a stand-in that goes nowhere), any other none. */
+const checkout = (checkoutState: string) => ({
+  id: "co-1",
+  invoiceId: "inv-renewal",
+  state: checkoutState,
+  expiresAt: null,
+  redirect: checkoutState === "CREATED" || checkoutState === "PENDING" ? { go: () => {} } : null,
+});
 
 /** An unresolved attempt of the renewal, as the Pay press leaves it. */
 function attempt(extra: Record<string, unknown> = {}) {
@@ -128,8 +135,9 @@ describe("the rail and who sees Billing (B1, §7)", () => {
     renderAt("/company/billing");
     await waitFor(() => expect(within(rail()).getAllByRole("link").map((link) => link.textContent)).toEqual(["General", "Members", "Plan", "Billing", "Back to projects"]));
     expect(within(rail()).getByRole("link", { name: "Billing" })).toHaveAttribute("aria-current", "page");
-    expect(await screen.findByText("Invoices for Northwind and how they were paid.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Invoices2");
+    // The lead and «Invoices» stand above the skeleton already (NB3); the count comes with the list.
+    await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Invoices2"));
+    expect(screen.getByText("Invoices for Northwind and how they were paid.")).toBeInTheDocument();
     const rows = screen.getAllByRole("listitem").filter((item) => item.classList.contains("company-invoice-row"));
     expect(rows.map((row) => within(row).getByRole("link").textContent)).toEqual(["TSK-2026-01008", "TSK-2026-01002"]);
     expect(rows[0]).toHaveTextContent(/Renewal · Due Dec 4/);
@@ -259,6 +267,81 @@ describe("the invoice and its payment's state (B5–B7)", () => {
     expect(block()).toBeEmptyDOMElement();
   });
 
+  it("a left attempt: the list shows the invoice's word and no Pay; the page's Status is the invoice's word too (blocker 3)", async () => {
+    attempt({ leftAt: "2026-11-11T09:05:00Z" });
+    state.checkout = async () => checkout("PENDING");
+    const list = renderAt("/company/billing");
+    const row = (await screen.findByRole("link", { name: "TSK-2026-01008" })).closest("li") as HTMLElement;
+    expect(within(row).getAllByText("unpaid").length).toBeGreaterThan(0);
+    expect(within(row).queryByText("confirming")).not.toBeInTheDocument();
+    expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+    list.unmount();
+    renderAt("/company/billing/inv-renewal");
+    await waitFor(() => expect(block()).toHaveTextContent("You left the payment page."));
+    expect(document.querySelector(".company-invoice-facts dd")).toHaveTextContent(/^Unpaid$/);
+  });
+
+  it("the number link lands on the invoice with focus on its heading (blocker 2)", async () => {
+    renderAt("/company/billing");
+    fireEvent.click(await screen.findByRole("link", { name: "TSK-2026-01008" }));
+    const heading = await screen.findByRole("heading", { level: 1, name: /Invoice TSK-2026-01008/ });
+    await waitFor(() => expect(heading).toHaveFocus());
+  });
+
+  it("the row's Pay keeps its label in flight — aria-disabled, the hidden status says it (blocker 1)", async () => {
+    state.createHangs = true;
+    renderAt("/company/billing");
+    const row = (await screen.findByRole("link", { name: "TSK-2026-01008" })).closest("li") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: "Pay" }));
+    await waitFor(() => expect(within(row).getByRole("button", { name: "Pay" })).toHaveAttribute("aria-disabled", "true"));
+    expect(within(row).getByText("Opening the payment page.")).toHaveClass("visually-hidden");
+    expect(screen.queryByText("Opening payment page")).not.toBeInTheDocument();
+  });
+
+  it("a paid invoice has no «Paid so far» or «Left to pay» (NB1); an open one reads no list (F3)", async () => {
+    state.invoices[0] = invoice({ state: "PAID", allocated: state.EUR("2000"), remaining: state.EUR("0") });
+    const paid = renderAt("/company/billing/inv-renewal");
+    await screen.findByRole("heading", { level: 1, name: /Invoice TSK-2026-01008/ });
+    await waitFor(() => expect(document.querySelectorAll(".company-invoice-facts dt").length).toBeGreaterThan(0));
+    const labels = [...document.querySelectorAll(".company-invoice-facts dt")].map((dt) => dt.textContent);
+    expect(labels).not.toContain("Paid so far");
+    expect(labels).not.toContain("Left to pay");
+    expect(state.calls).not.toContain("listInvoices");
+    paid.unmount();
+    state.invoices[0] = invoice({ state: "PARTIALLY_PAID", allocated: state.EUR("1200"), remaining: state.EUR("800") });
+    renderAt("/company/billing/inv-renewal");
+    await waitFor(() => expect([...document.querySelectorAll(".company-invoice-facts dt")].map((dt) => dt.textContent)).toContain("Left to pay"));
+    expect([...document.querySelectorAll(".company-invoice-facts dt")].map((dt) => dt.textContent)).toContain("Paid so far");
+  });
+
+  it("«Return to payment» only when the checkout read carried its page; a refused re-read is said with its id (F2)", async () => {
+    attempt({ leftAt: "2026-11-11T09:05:00Z" });
+    state.checkout = async () => ({ ...checkout("PENDING"), redirect: null });
+    const bare = renderAt("/company/billing/inv-renewal");
+    await waitFor(() => expect(block()).toHaveTextContent("You left the payment page."));
+    expect(screen.queryByRole("button", { name: "Return to payment" })).not.toBeInTheDocument();
+    bare.unmount();
+    state.checkout = async () => checkout("PENDING");
+    renderAt("/company/billing/inv-renewal");
+    const again = await screen.findByRole("button", { name: "Return to payment" });
+    state.checkout = () => Promise.reject(Object.assign(new Error("down"), { status: 503, code: "DEPENDENCY_UNAVAILABLE", requestId: "rid-reopen", details: null, reasons: [] }));
+    fireEvent.click(again);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Taska couldn’t reopen the payment page.");
+    expect(screen.getByText("rid-reopen")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Return to payment" })).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("«Return to payment» finding another invoice's checkout takes the not-found path, opening nothing (F5)", async () => {
+    attempt({ leftAt: "2026-11-11T09:05:00Z" });
+    state.checkout = async () => checkout("PENDING");
+    renderAt("/company/billing/inv-renewal");
+    const again = await screen.findByRole("button", { name: "Return to payment" });
+    state.checkout = async () => ({ ...checkout("PENDING"), invoiceId: "another-invoice" });
+    fireEvent.click(again);
+    await waitFor(() => expect(block()).toHaveTextContent("This payment wasn’t found in Northwind."));
+    expect(window.localStorage.getItem(checkoutAttemptKey("tom", "n", "inv-renewal"))).toBeNull();
+  });
+
   it("a checkout this company does not have: said, and nothing offered", async () => {
     attempt();
     state.checkout = () => Promise.reject(Object.assign(new Error("not found"), { status: 404, code: "RESOURCE_NOT_FOUND", requestId: "r", details: null, reasons: [] }));
@@ -267,12 +350,16 @@ describe("the invoice and its payment's state (B5–B7)", () => {
     expect(screen.queryByRole("button", { name: /^Pay/ })).not.toBeInTheDocument();
   });
 
-  it("an expired invoice can no longer be paid, and names the invoice that replaced it", async () => {
+  it("an expired invoice can no longer be paid, and names the invoice that replaced it — read from the list, with focus to land on its heading", async () => {
     state.invoices = [invoice({ state: "EXPIRED" }), invoice({ id: "inv-new", number: "TSK-2026-01010", replacesInvoiceId: "inv-renewal" })];
     renderAt("/company/billing/inv-renewal");
     expect(await screen.findByText("This invoice can no longer be paid.")).toBeInTheDocument();
-    expect(await screen.findByRole("link", { name: "TSK-2026-01010" })).toHaveAttribute("href", "/company/billing/inv-new");
+    const replacement = await screen.findByRole("link", { name: "TSK-2026-01010" });
+    expect(replacement).toHaveAttribute("href", "/company/billing/inv-new");
+    expect(state.calls).toContain("listInvoices");
     expect(screen.queryByRole("button", { name: /^Pay/ })).not.toBeInTheDocument();
+    fireEvent.click(replacement);
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Invoice TSK-2026-01010/ })).toHaveFocus());
   });
 });
 

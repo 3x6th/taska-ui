@@ -9,6 +9,7 @@ import {
   NO_INVOICE_YET_TEXT,
   OPENING_PAYMENT_LABEL,
   OPENING_PAYMENT_STATUS,
+  REOPEN_FAILED_TEXT,
   SECURE_PAGE_NOTE,
   expiredState,
   failedState,
@@ -69,21 +70,25 @@ export function CreationPaySlot({
   const invoices = useQuery(companyInvoicesOptions(companyId));
   const attempts = useCheckoutAttempts(userId, companyId);
   const listed = listedInvoices(invoices.data ?? []);
-  // The invoice an unresolved payment is of, else the open first payment.
-  const watched = listed.find((invoice) => unresolved(attempts.get(invoice.id))) ?? null;
-  // A first payment already PAID — settled before this card read it — is the one the company is opening on.
-  const chosen: Invoice | null =
-    watched ??
+  // A payment out is watched from its record at once, not after the list (api-contract-guard F4); else the
+  // open first payment — or one already PAID, settled before this card read it, the one the company opens on.
+  const outstanding = [...attempts.values()].find((item) => unresolved(item)) ?? null;
+  const listChoice =
     listed.find((invoice) => invoice.purpose === "INITIAL" && isPayable(invoice)) ??
     listed.find(isPayable) ??
     listed.find((invoice) => invoice.purpose === "INITIAL" && invoice.state === "PAID") ??
     null;
-  const record = chosen ? (attempts.get(chosen.id) ?? null) : null;
-  const watch = usePaymentWatch({ companyId, invoiceId: chosen?.id ?? null, record, enabled: chosen !== null });
-  const invoice = watch.invoiceQuery.data ?? chosen;
+  const invoiceId = outstanding?.invoiceId ?? listChoice?.id ?? null;
+  const record = invoiceId !== null ? (attempts.get(invoiceId) ?? null) : null;
+  // Read once (F4): without a watch the list row is the invoice; with one, the watch reads it.
+  const watch = usePaymentWatch({ companyId, invoiceId, record, enabled: invoiceId !== null, readUnwatched: false });
+  const listRow = invoiceId !== null ? (listed.find((invoice) => invoice.id === invoiceId) ?? null) : null;
+  const invoice: Invoice | null = watch.invoiceQuery.data ?? listRow;
   const press = usePayInvoice({ companyId, userId, returnTarget: "CREATION", company, creationDeadline });
   const [outcome, setOutcome] = useState<Outcome>(null);
   const [returning, setReturning] = useState(false);
+  /** «Return to payment»'s read refused (F2): said under the block, with its id; remounted per press. */
+  const [reopenFailure, setReopenFailure] = useState<{ error: unknown; key: number } | null>(null);
   useRestoredFromCache(() => setReturning(false));
   const returnButton = useRef<HTMLButtonElement>(null);
 
@@ -95,39 +100,39 @@ export function CreationPaySlot({
   const returnFocusHandled = useRef(0);
   useEffect(() => {
     if (press.returnFocusRequest <= returnFocusHandled.current || returnButton.current === null) return;
-    if (chosen === null || press.returnFocusInvoice !== chosen.id) return;
+    if (invoiceId === null || press.returnFocusInvoice !== invoiceId) return;
     returnFocusHandled.current = press.returnFocusRequest;
     returnButton.current.focus();
   });
 
-  const invoiceState = watch.invoiceQuery.data?.state ?? null;
+  const invoiceState = invoice?.state ?? null;
   const checkoutState = watch.checkout?.state ?? null;
   useEffect(() => {
-    if (chosen === null) return;
+    if (invoiceId === null) return;
     if (invoiceState === "PAID") {
-      if (record !== null) closeAttempt(userId, companyId, chosen.id, record.key);
+      if (record !== null) closeAttempt(userId, companyId, invoiceId, record.key);
       onPaid();
       return;
     }
     if (record !== null && (invoiceState === "EXPIRED" || invoiceState === "VOID")) {
-      closeAttempt(userId, companyId, chosen.id, record.key);
+      closeAttempt(userId, companyId, invoiceId, record.key);
       return;
     }
     if (!unresolved(record)) return;
     const close = (next: Outcome) => {
       setOutcome(next);
-      closeAttempt(userId, companyId, chosen.id, record.key);
+      closeAttempt(userId, companyId, invoiceId, record.key);
     };
-    if (invoiceState === "EXPIRED" || invoiceState === "VOID") close(null);
-    else if (checkoutState === "FAILED") close("failed");
+    if (checkoutState === "FAILED") close("failed");
     else if (checkoutState === "EXPIRED") close("expired");
     else if (watch.lost) close("not-found");
     // The company is the card's to follow; this only reports the invoice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [record, invoiceState, checkoutState, watch.lost, chosen?.id]);
+  }, [record, invoiceState, checkoutState, watch.lost, invoiceId]);
 
-  if (invoices.isPending) return null;
-  if (invoices.isError && invoices.data === undefined) {
+  const watching = unresolved(record);
+  if (invoices.isPending && !watching) return null;
+  if (invoices.isError && invoices.data === undefined && !watching) {
     return (
       <div className="company-setup-slot">
         <ErrorNote key={invoices.errorUpdatedAt} requestId={apiErrorFacts(invoices.error).requestId}>
@@ -165,16 +170,24 @@ export function CreationPaySlot({
   } else if (outcome === "failed") state = failedState();
   else if (outcome === "expired") state = expiredState();
   else if (outcome === "not-found") state = notFoundState(company);
-  else if (chosen !== null && press.inProgress === chosen.id) state = inProgressState(null);
+  else if (invoiceId !== null && press.inProgress === invoiceId) state = inProgressState(null);
 
-  if (invoice === null) {
+  if (invoice === null && !watching) {
     return <p className="company-setup-pay">{NO_INVOICE_YET_TEXT}</p>;
   }
 
   const offerPay =
-    isPayable(invoice) && !unresolved(record) && press.inProgress !== invoice.id && outcome !== "not-found" && (state === null || state.action === "pay");
-  const inFlight = press.pending === invoice.id;
-  const refusal = press.refusal?.invoiceId === invoice.id ? press.refusal : null;
+    invoice !== null &&
+    isPayable(invoice) &&
+    !unresolved(record) &&
+    press.inProgress !== invoice.id &&
+    outcome !== "not-found" &&
+    (state === null || state.action === "pay");
+  const inFlight = invoice !== null && press.pending === invoice.id;
+  const refusal = invoice !== null && press.refusal?.invoiceId === invoice.id ? press.refusal : null;
+  // «Return to payment» only when the last read of the checkout carried its page (F2).
+  const offerReturn = state?.action === "return" && unresolved(record) && watch.checkout?.redirect != null;
+  const offerCheck = state?.action === "check" || state?.alsoCheck === true;
 
   return (
     <div className="company-setup-slot">
@@ -196,35 +209,58 @@ export function CreationPaySlot({
           <p className="company-setup-pay-note">{SECURE_PAGE_NOTE}</p>
         </>
       ) : null}
-      {state?.action === "return" && unresolved(record) ? (
-        <button
-          aria-disabled={returning || undefined}
-          className="secondary-button compact-button company-setup-again"
-          onClick={(event) => {
-            if (returning) return;
-            setReturning(true);
-            press.noteLeaving(record.invoiceId, event.currentTarget);
-            const done = (went: boolean) => {
-              if (went) return;
-              setReturning(false);
-              void watch.checkoutQuery.refetch();
-            };
-            void returnToPayment(companyId, record.checkoutId).then(done, () => done(false));
-          }}
-          ref={returnButton}
-          type="button"
-        >
-          Return to payment
-        </button>
+      {offerReturn || offerCheck ? (
+        // «Check again» after «Return to payment», in that order (N9).
+        <div className="company-setup-actions">
+          {offerReturn && unresolved(record) ? (
+            <button
+              aria-disabled={returning || undefined}
+              className="secondary-button compact-button company-setup-again"
+              onClick={(event) => {
+                if (returning) return;
+                const sent = record;
+                setReturning(true);
+                setReopenFailure(null);
+                press.noteLeaving(sent.invoiceId, event.currentTarget);
+                void returnToPayment(companyId, sent.checkoutId, sent.invoiceId).then(
+                  (found) => {
+                    if (found === "went") return;
+                    setReturning(false);
+                    if (found === "lost") {
+                      // Not this invoice's checkout (F5): the watch's not-found path.
+                      setOutcome("not-found");
+                      closeAttempt(userId, companyId, sent.invoiceId, sent.key);
+                      return;
+                    }
+                    void watch.checkoutQuery.refetch();
+                  },
+                  (error: unknown) => {
+                    setReturning(false);
+                    setReopenFailure((previous) => ({ error, key: (previous?.key ?? 0) + 1 }));
+                  },
+                );
+              }}
+              ref={returnButton}
+              type="button"
+            >
+              Return to payment
+            </button>
+          ) : null}
+          {offerCheck ? (
+            <button
+              className="secondary-button compact-button company-setup-again"
+              onClick={() => (unresolved(record) ? watch.checkAgain() : onCheckAgain?.())}
+              type="button"
+            >
+              Check again
+            </button>
+          ) : null}
+        </div>
       ) : null}
-      {state?.action === "check" ? (
-        <button
-          className="secondary-button compact-button company-setup-again"
-          onClick={() => (unresolved(record) ? watch.checkAgain() : onCheckAgain?.())}
-          type="button"
-        >
-          Check again
-        </button>
+      {reopenFailure !== null ? (
+        <ErrorNote key={reopenFailure.key} live="alert" requestId={apiErrorFacts(reopenFailure.error).requestId}>
+          {REOPEN_FAILED_TEXT}
+        </ErrorNote>
       ) : null}
       {inFlight ? (
         <span className="visually-hidden" role="status">

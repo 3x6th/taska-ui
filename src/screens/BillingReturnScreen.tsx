@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
-import { closeCreationAttempts, listCheckoutAttempts, markLeft, type CheckoutAttempt } from "../api/checkoutAttempt";
+import { clearLeft, closeCreationAttempts, listCheckoutAttempts, markLeft, type CheckoutAttempt } from "../api/checkoutAttempt";
 import { apiErrorFacts } from "../api/errors";
 import { AuthShell } from "../components/AuthShell";
 import { AddressLink } from "../components/CompanyRouter";
@@ -86,7 +86,8 @@ export function BillingReturnScreen({ cancel, theme, toggleTheme }: { cancel: bo
         setLanding({ kind: "several", attempts });
         return;
       }
-      const attempt = attempts[0];
+      // The return address: whatever the cancel address or Back once said is over (R1).
+      const attempt = cancel ? attempts[0] : clearLeft(storage, attempts[0]);
       const workspace = await taskaApi.settleWorkspace();
       if (workspace !== null && workspace.tenantId !== attempt.tenantId) {
         setLanding({ kind: "elsewhere", attempt });
@@ -112,10 +113,25 @@ export function BillingReturnScreen({ cancel, theme, toggleTheme }: { cancel: bo
   }, [landing.kind, unreadable]);
 
   const nameOf = (tenantId: string) => companies.data?.find((tenant) => tenant.id === tenantId)?.name ?? "this company";
+  /**
+   * The way on when there is nothing to route to (N6; art-director NB4): «Open
+   * Billing» when the reader has exactly one company to point at, otherwise
+   * «All companies».
+   */
+  const only = companies.data?.length === 1 ? companies.data[0] : null;
+  const wayOn =
+    only !== null ? (
+      <AddressLink className="auth-ghost company-setup-all" path={companyRoute(only.id, "/company/billing")}>
+        Open Billing
+      </AddressLink>
+    ) : (
+      <AddressLink className="auth-ghost company-setup-all" path={COMPANIES_ROUTE} state={{ focusHeading: true, continuedShell: true }}>
+        All companies
+      </AddressLink>
+    );
 
   // The account could not be read, so neither can its records (N6): said, with the way on.
   if (unreadable) {
-    const only = companies.data?.length === 1 ? companies.data[0] : null;
     return (
       <AuthShell entrance="app" theme={theme} toggleTheme={toggleTheme}>
         <div className="company-setup billing-return">
@@ -123,15 +139,7 @@ export function BillingReturnScreen({ cancel, theme, toggleTheme }: { cancel: bo
             Payment
           </h1>
           <ErrorNote requestId={apiErrorFacts(me.error).requestId}>{CHECK_FAILED_TEXT}</ErrorNote>
-          {only !== null ? (
-            <AddressLink className="auth-ghost company-setup-all" path={companyRoute(only.id, "/company/billing")}>
-              Open Billing
-            </AddressLink>
-          ) : (
-            <AddressLink className="auth-ghost company-setup-all" path={COMPANIES_ROUTE} state={{ focusHeading: true, continuedShell: true }}>
-              All companies
-            </AddressLink>
-          )}
+          {wayOn}
         </div>
       </AuthShell>
     );
@@ -159,7 +167,7 @@ export function BillingReturnScreen({ cancel, theme, toggleTheme }: { cancel: bo
           <p className="auth-text company-setup-text">
             {BELONGS_TO_TEXT}{" "}
             <AddressLink
-              className="admin-note-link"
+              className="admin-note-link billing-return-company"
               path={attemptTarget(landing.attempt)}
               state={{ checkoutReturn: true } satisfies CheckoutReturnState}
             >
@@ -187,9 +195,13 @@ export function BillingReturnScreen({ cancel, theme, toggleTheme }: { cancel: bo
             </ul>
           </>
         ) : null}
-        <AddressLink className="auth-ghost company-setup-all" path={COMPANIES_ROUTE} state={{ focusHeading: true, continuedShell: true }}>
-          All companies
-        </AddressLink>
+        {landing.kind === "none" ? (
+          wayOn
+        ) : (
+          <AddressLink className="auth-ghost company-setup-all" path={COMPANIES_ROUTE} state={{ focusHeading: true, continuedShell: true }}>
+            All companies
+          </AddressLink>
+        )}
       </div>
     </AuthShell>
   );

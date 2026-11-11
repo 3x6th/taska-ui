@@ -127,10 +127,15 @@ describe("the payment's state (B7)", () => {
       action: "return",
     });
     expect(watched({ checkout: checkout("SUCCEEDED"), stage: "slow" }).action).toBeNull();
+    // Five minutes on an open checkout: its page and «Check again» after it; on a SUCCEEDED one, «Check again» only (N9).
     expect(watched({ checkout: checkout("PENDING"), stage: "stopped" })).toMatchObject({
       explanation: "Taska hasn’t heard back yet. Check again in a few minutes. Don’t pay again.",
-      action: "check",
+      action: "return",
+      alsoCheck: true,
     });
+    expect(watched({ checkout: checkout("SUCCEEDED"), stage: "stopped" })).toMatchObject({ action: "check" });
+    expect(watched({ checkout: checkout("SUCCEEDED"), stage: "stopped" }).alsoCheck).toBeUndefined();
+    expect(watched({ checkout: checkout("UNKNOWN"), stage: "stopped" })).toMatchObject({ action: null });
   });
 
   it("a way back through the cancel address is «You left the payment page.» with «Return to payment» — never a new checkout", () => {
@@ -140,8 +145,9 @@ describe("the payment's state (B7)", () => {
       explanation: "The invoice is still unpaid.",
       action: "return",
     });
-    // Before the checkout has answered — Back from the provider (N3) — it reads as left already.
-    expect(watched({ checkout: null, left: true })).toMatchObject({ kind: "left", action: "return" });
+    // Before the checkout has answered it is «Confirming», left or not (release-reviewer R1).
+    expect(watched({ checkout: null, left: true })).toMatchObject({ kind: "confirming", action: null });
+    expect(watched({ checkout: checkout("PENDING"), left: true, stage: "stopped" })).toMatchObject({ kind: "left", action: "return", alsoCheck: true });
     // The hint never overrides the server: a success or a payment wins.
     expect(watched({ checkout: checkout("SUCCEEDED"), left: true }).kind).toBe("confirming");
     expect(watched({ invoice: invoice({ state: "PAID" }), checkout: checkout("PENDING"), left: true }).kind).toBe("paid");

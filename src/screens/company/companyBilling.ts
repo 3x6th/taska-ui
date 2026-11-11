@@ -300,8 +300,10 @@ export function usePayInvoice(options: {
         void queryClient.invalidateQueries({ queryKey: companyTenantKey(companyId) });
         void accountClient?.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
       }
-      if (code === "INVALID_STATE") {
-        // Re-read, and follow it: still payable means another attempt is active (A57).
+      if (code === "INVALID_STATE" || code === "IDEMPOTENCY_CONFLICT") {
+        // Re-read, and follow it: still payable means another attempt is active (A57). The key's
+        // conflict is followed the same way (api-contract-guard F1): the record pins its body, so
+        // develop's IDEMPOTENCY_CONFLICT for another active key is that answer.
         let fresh: Invoice | null;
         try {
           fresh = await queryClient.fetchQuery({ ...companyInvoiceOptions(companyId, invoice.id), staleTime: 0 });
@@ -358,12 +360,17 @@ export function useRestoredFromCache(onRestore: () => void): void {
   }, []);
 }
 
+/** What «Return to payment» found (F2, F5): the page opened, no page to open, or a checkout that is not this invoice's. */
+export type ReturnOutcome = "went" | "unavailable" | "lost";
+
 /** «Return to payment» (the guard's §4, addendum Q4): the same checkout's page, from a fresh read — never a new checkout. */
-export async function returnToPayment(companyId: string, checkoutId: string): Promise<boolean> {
+export async function returnToPayment(companyId: string, checkoutId: string, invoiceId: string): Promise<ReturnOutcome> {
   const checkout = await taskaApi.getCheckout(companyId, checkoutId);
-  if (checkout.redirect === null || (checkout.state !== "CREATED" && checkout.state !== "PENDING")) return false;
+  // Bound to the record's invoice (api-contract-guard F5): another's is a lost checkout, never opened.
+  if (checkout.invoiceId !== null && checkout.invoiceId !== invoiceId) return "lost";
+  if (checkout.redirect === null || (checkout.state !== "CREATED" && checkout.state !== "PENDING")) return "unavailable";
   checkout.redirect.go();
-  return true;
+  return "went";
 }
 
 /* ------------------------------------------------------------ the watch */
@@ -384,8 +391,15 @@ export const isLostCheckout = (error: unknown) =>
  * PAID, EXPIRED or VOID or the checkout FAILED or EXPIRED. No spinner, no
  * timer on screen.
  */
-export function usePaymentWatch(options: { companyId: string; invoiceId: string | null; record: CheckoutAttempt | null; enabled: boolean }) {
-  const { companyId, invoiceId, record, enabled } = options;
+export function usePaymentWatch(options: {
+  companyId: string;
+  invoiceId: string | null;
+  record: CheckoutAttempt | null;
+  enabled: boolean;
+  /** `false`: the invoice is read only while a payment of it is watched — the card has its list row (F4). */
+  readUnwatched?: boolean;
+}) {
+  const { companyId, invoiceId, record, enabled, readUnwatched = true } = options;
   const checkoutId = unresolved(record) ? record.checkoutId : null;
   const watching = enabled && checkoutId !== null && invoiceId !== null;
   const [startedAt, setStartedAt] = useState(() => Date.now());
@@ -407,7 +421,7 @@ export function usePaymentWatch(options: { companyId: string; invoiceId: string 
 
   const invoiceQuery = useQuery({
     ...companyInvoiceOptions(companyId, invoiceId ?? ""),
-    enabled: enabled && invoiceId !== null,
+    enabled: enabled && invoiceId !== null && (readUnwatched || watching),
     ...(watching ? { staleTime: 0, refetchOnWindowFocus: "always" as const } : {}),
     refetchInterval: (query) => {
       if (!live || INVOICE_ENDED.has(query.state.data?.state ?? "")) return false;

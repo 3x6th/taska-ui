@@ -4,6 +4,8 @@ import type { TaskaApi } from "../api/TaskaApi";
 import type { Tenant } from "../api/tenants";
 import { TENANT_CREATION_KEY } from "../api/tenantCreation";
 import { TENANTS_QUERY_KEY } from "../lib/companies";
+import { checkoutAttemptKey } from "../api/checkoutAttempt";
+import { POLL_LIMIT_MS } from "./companySetupText";
 import { companiesHarness } from "../test/companiesHarness";
 import { CompanySetupScreen } from "./CompanySetupScreen";
 
@@ -26,6 +28,7 @@ const { fakeApi, state } = vi.hoisted(() => {
     me: "tom",
     invoices: [] as unknown[],
     checkout: null as null | (() => Promise<unknown>),
+    listHangs: false,
   };
   const api = {
     getCurrentUser: async () => ({ id: state.me, email: `${state.me}@example.com`, displayName: state.me, status: "ACTIVE" }),
@@ -47,16 +50,19 @@ const { fakeApi, state } = vi.hoisted(() => {
     },
     listBillingPlans: async () => ({ items: [], nextCursor: null }),
     // TAS-513: the owner's payment slot.
-    listInvoices: async () => {
+    listInvoices: () => {
       state.reads.push("invoices");
-      return { items: state.invoices, nextCursor: null };
+      return state.listHangs ? new Promise(() => {}) : Promise.resolve({ items: state.invoices, nextCursor: null });
     },
     getInvoice: async (_tenantId: string, invoiceId: string) => {
       state.reads.push("invoice");
       return (state.invoices as Array<{ id: string }>).find((invoice) => invoice.id === invoiceId);
     },
     createCheckout: () => (state.checkout ? state.checkout() : new Promise(() => {})),
-    getCheckout: async () => ({ id: "co", invoiceId: "inv-1", state: "PENDING", expiresAt: null, redirect: null }),
+    getCheckout: async () => {
+      state.reads.push("checkout");
+      return { id: "co", invoiceId: "inv-1", state: "PENDING", expiresAt: null, redirect: null };
+    },
     currentWorkspace: () => null,
     onWorkspaceChange: () => () => {},
   };
@@ -103,6 +109,7 @@ beforeEach(() => {
   window.localStorage.clear();
   state.invoices = [INITIAL];
   state.checkout = null;
+  state.listHangs = false;
   state.tenant = tenant();
   state.operation = null;
   state.reads = [];
@@ -175,6 +182,61 @@ describe("awaiting the first payment", () => {
     // On arrival, on the slot's word, then at the cadence (1 s, 2 s…).
     await waitFor(() => expect(state.reads.filter((read) => read === "tenant").length).toBeGreaterThanOrEqual(4), { timeout: 6000 });
   }, 10_000);
+
+  it("TAS-513 (L3): five minutes after the paid invoice the card stops reading the company and offers «Check again», which reads it again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      state.invoices = [{ ...INITIAL, state: "PAID", allocated: INITIAL.total, remaining: { ...INITIAL.total, amountMinor: "0" } }];
+      renderCard();
+      await waitFor(() => expect(document.querySelector(".company-payment-state")).toHaveTextContent("Confirming the payment."));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_LIMIT_MS + 1000);
+      });
+      await waitFor(() =>
+        expect(document.querySelector(".company-payment-state")).toHaveTextContent(
+          "Confirming the payment. Taska hasn’t heard back yet. Check again in a few minutes. Don’t pay again.",
+        ),
+      );
+      const stopped = state.reads.filter((read) => read === "tenant").length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(state.reads.filter((read) => read === "tenant").length).toBe(stopped);
+      fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(state.reads.filter((read) => read === "tenant").length).toBeGreaterThanOrEqual(stopped + 2);
+      expect(screen.queryByRole("button", { name: "Check again" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 20_000);
+
+  it("TAS-513 (F4): without a payment out the invoice is the list's row — no getInvoice; with one, its record starts the watch before the list answers", async () => {
+    const first = renderCard();
+    await screen.findByRole("button", { name: "Pay €20.00" });
+    expect(state.reads).not.toContain("invoice");
+    first.unmount();
+    state.reads = [];
+    state.listHangs = true;
+    window.localStorage.setItem(
+      checkoutAttemptKey("tom", ID, "inv-1"),
+      JSON.stringify({ v: 1, userId: "tom", tenantId: ID, invoiceId: "inv-1", key: "k", returnTarget: "CREATION", startedAt: "2026-11-11T09:00:00Z", checkoutId: "co" }),
+    );
+    renderCard();
+    await waitFor(() => expect(state.reads).toEqual(expect.arrayContaining(["invoice", "checkout"])));
+    await waitFor(() => expect(document.querySelector(".company-payment-state")).toHaveTextContent("Confirming the payment."));
+  });
+
+  it("TAS-513 (F7): the slot waits for the company's own answer — a list row naming the reader is not enough", async () => {
+    state.tenant = tenant({ ownerId: "sofia" });
+    renderCard({ row: tenant({ ownerId: "tom" }) });
+    await waitFor(() => expect(state.reads).toContain("tenant"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(state.reads).not.toContain("invoices");
+    expect(screen.queryByRole("button", { name: /^Pay/ })).not.toBeInTheDocument();
+  });
 
   it("TAS-513: a payment the server will not take says so under Pay, with the reservation's end, and keeps focus on Pay", async () => {
     state.checkout = () =>

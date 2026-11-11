@@ -67,6 +67,8 @@ export default function MockCheckoutScreen() {
         <p className="mock-checkout-lead">
           This page stands in for the payment provider on the mock server. No card is asked for and nothing is charged.
         </p>
+        {/* Under the lead (art-director NB6): what is drawn below is a record of it, not a choice. */}
+        {page === null || !page.open ? <p className="mock-checkout-lead">This test checkout is no longer open.</p> : null}
         {page !== null ? (
           <>
             <dl className="settings-details mock-checkout-facts">
@@ -101,14 +103,11 @@ export default function MockCheckoutScreen() {
             ))}
           </div>
         ) : (
-          <>
-            <p className="mock-checkout-lead">This test checkout is no longer open.</p>
-            <div className="mock-checkout-outcomes">
-              <a className="secondary-button mock-checkout-outcome" href={appUrl(BILLING_RETURN_ROUTE)}>
-                Back to Taska
-              </a>
-            </div>
-          </>
+          <div className="mock-checkout-outcomes">
+            <a className="secondary-button mock-checkout-outcome" href={appUrl(BILLING_RETURN_ROUTE)}>
+              Back to Taska
+            </a>
+          </div>
         )}
       </div>
     </main>

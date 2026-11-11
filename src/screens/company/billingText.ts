@@ -26,6 +26,8 @@ export const OPENING_PAYMENT_LABEL = "Opening payment page";
 export const OPENING_PAYMENT_STATUS = "Opening the payment page.";
 export const NO_LONGER_PAYABLE_TEXT = "This invoice can no longer be paid.";
 export const NO_INVOICE_YET_TEXT = "There’s no invoice to pay yet. It appears here once Taska issues it.";
+/** «Return to payment»'s fresh read of the checkout refused (api-contract-guard F2; the orchestrator's wording). */
+export const REOPEN_FAILED_TEXT = "Taska couldn’t reopen the payment page.";
 export const SECURE_PAGE_NOTE = "You’ll pay on a secure page from our payment provider and come back here.";
 
 export const billingLeadText = (company: string | null) => `Invoices for ${companyInside(company)} and how they were paid.`;
@@ -63,6 +65,8 @@ export function formatInvoiceMoney(money: Money): string {
 }
 
 const isZero = (money: Money | null) => money !== null && /^0+$/.test(money.amountMinor);
+/** A `Money` of nothing — its minor units all zeros. */
+export const isZeroMoney = (money: Money) => /^0+$/.test(money.amountMinor);
 const sameMoney = (a: Money | null, b: Money | null) =>
   a !== null && b !== null && a.amountMinor === b.amountMinor && a.currency === b.currency && a.exponent === b.exponent;
 
@@ -205,9 +209,21 @@ export interface PaymentState {
     | "unreadable";
   fact: string;
   explanation: string;
-  /** The one control the block offers: Pay again, the same payment page again, or a manual re-read. */
+  /** The control the block offers: Pay again, the same payment page again, or a manual re-read. */
   action: "pay" | "return" | "check" | null;
+  /**
+   * «Check again» after «Return to payment» (art-director N9): five minutes on
+   * an open checkout keep its page and add the manual re-read after it.
+   */
+  alsoCheck?: boolean;
 }
+
+/**
+ * The invoice page's Status word (art-director blocker 3): «confirming» only
+ * while the block itself says so — confirming or the bank's UNKNOWN — and the
+ * invoice's own word otherwise, «You left the payment page.» included.
+ */
+export const statusFollowsBlock = (state: PaymentState | null) => state !== null && (state.kind === "confirming" || state.kind === "unknown");
 
 /** How long the watch has been at it (art-director B6): the copy changes at 30 s, the reads stop at 5 min. */
 export type WatchStage = "fresh" | "slow" | "stopped";
@@ -245,10 +261,17 @@ export function watchedPaymentState(input: {
   }
   if (state === "FAILED") return failedState();
   if (state === "EXPIRED") return expiredState();
-  // Back from the provider — the cancel address, or Back itself (the orchestrator's N3) — before the checkout
-  // has answered too: a SUCCEEDED, UNKNOWN or ended one still overrides it the moment it does.
-  if ((state === null || state === "CREATED" || state === "PENDING") && left) {
-    return { kind: "left", fact: "You left the payment page.", explanation: "The invoice is still unpaid.", action: "return" };
+  // Back from the provider — the cancel address, or Back itself (the orchestrator's N3) — once the checkout
+  // has answered open: before its first answer it is «Confirming» (release-reviewer R1), and a SUCCEEDED,
+  // UNKNOWN or ended one overrides the hint.
+  if ((state === "CREATED" || state === "PENDING") && left) {
+    return {
+      kind: "left",
+      fact: "You left the payment page.",
+      explanation: "The invoice is still unpaid.",
+      action: "return",
+      ...(stage === "stopped" ? { alsoCheck: true } : {}),
+    };
   }
   if (state === null || state === "CREATED" || state === "PENDING" || state === "SUCCEEDED") {
     const open = state === "CREATED" || state === "PENDING";
@@ -261,8 +284,10 @@ export function watchedPaymentState(input: {
           : stage === "slow"
             ? `This is taking a while. You can leave this page — the invoice will show the result. ${DONT_PAY_AGAIN}`
             : "Taska is checking it with the payment provider. This page updates on its own — don’t pay again.",
-      // Stopped: «Check again»; past 30 s on an open checkout, its page again (the guard's §4 table).
-      action: stage === "stopped" ? "check" : stage === "slow" && open ? "return" : null,
+      // Past 30 s on an open checkout, its page again (the guard's §4 table); stopped, «Check again» —
+      // after «Return to payment» on an open one, alone on a SUCCEEDED one (art-director N9).
+      action: open && stage !== "fresh" ? "return" : stage === "stopped" ? "check" : null,
+      ...(open && stage === "stopped" ? { alsoCheck: true } : {}),
     };
   }
   return {

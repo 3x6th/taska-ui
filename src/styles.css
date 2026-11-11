@@ -4206,7 +4206,14 @@ h1 {
   margin-top: 22px;
 }
 
+/* The list owns the tracks and every row is a subgrid of them (art-director
+   blocker 1): amounts and markers share one right edge, and a Pay in flight
+   moves nothing. The 10 between columns is each later column's own padding,
+   so an empty action column takes none. */
 .company-invoice-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  column-gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -4215,11 +4222,18 @@ h1 {
 /* §4.38's row without the avatar: a hairline between rows, no hover (B3). */
 .company-invoice-row {
   display: grid;
+  grid-column: 1 / -1;
   align-items: center;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
-  column-gap: 10px;
+  grid-template-columns: subgrid;
+  column-gap: 0;
   min-height: 48px;
   padding: 8px 0;
+}
+
+.company-invoice-amount,
+.company-invoice-status,
+.company-invoice-action:not(:empty) {
+  padding-left: 10px;
 }
 
 .company-invoice-row + .company-invoice-row {
@@ -4230,7 +4244,19 @@ h1 {
   min-width: 0;
 }
 
-/* The number links the invoice: the UI font, not mono; underlined on hover and focus. */
+/* The number links the invoice: the UI font, not mono; underlined on hover and
+   focus. A 28 target whose 5.5 above and below are taken back, «See Plan»'s
+   recipe (blocker 4); 44 below 820. The «replaced by» and «belongs to» links
+   take the same. */
+.company-invoice-number,
+.company-invoice-replacement,
+.billing-return-company {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  margin: -5.5px 0;
+}
+
 .company-invoice-number {
   border-radius: 3px;
   color: var(--fg);
@@ -4323,8 +4349,11 @@ h1 {
   margin-top: 8px;
 }
 
+/* «Return to payment» then «Check again», 8 apart, in that order (N9). */
 .company-invoice-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 14px;
 }
 
@@ -4368,20 +4397,30 @@ h1 {
   text-wrap: pretty;
 }
 
-.company-setup-again {
+.company-setup-actions {
+  display: flex;
+  flex-wrap: wrap;
   align-self: flex-start;
+  gap: 8px;
 }
 
 /* The way back from the payment page (`/billing/return`): the card's rhythm. */
 .billing-return-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   margin: 0;
   padding: 0;
   color: var(--fg);
   font-size: 13px;
   list-style: none;
+}
+
+/* Each choice a 28 target (blocker 4), 44 below 820. */
+.billing-return-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
 }
 
 .billing-return-when {
@@ -4418,8 +4457,11 @@ h1 {
   text-align: left;
 }
 
+/* Left-aligned with the `dl` above it (NB6). */
 .mock-checkout-id {
+  align-self: stretch;
   margin: 0;
+  text-align: left;
   color: var(--fg-2);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -4445,17 +4487,41 @@ h1 {
   .company-billing-pay,
   .company-invoice-pay,
   .company-invoice-again,
-  .company-setup-again {
+  .company-setup-again,
+  .billing-return-link {
     min-height: 44px;
+  }
+
+  /* The number, «replaced by» and «belongs to» links: 44 from their 28 without growing the line. */
+  .company-invoice-number,
+  .company-invoice-replacement,
+  .billing-return-company {
+    position: relative;
+  }
+
+  .company-invoice-number::before,
+  .company-invoice-replacement::before,
+  .billing-return-company::before {
+    position: absolute;
+    content: "";
+    inset: -8px -4px;
   }
 }
 
 /* Below 560 two columns: the number, its meta and the marker after it on the
    left; the amount and Pay under it on the right (B3). */
 @media (max-width: 559px) {
-  .company-invoice-row {
+  .company-invoice-list {
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .company-invoice-row {
     row-gap: 6px;
+  }
+
+  /* The amount on the number's line (NB2). */
+  .company-invoice-row.is-payable {
+    align-items: start;
   }
 
   .company-invoice-text {

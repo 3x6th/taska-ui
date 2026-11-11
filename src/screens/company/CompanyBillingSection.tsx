@@ -10,7 +10,6 @@ import {
   ENDED_INVOICE_STATES,
   INVOICES_EMPTY_TEXT,
   INVOICES_READ_FAILED,
-  OPENING_PAYMENT_LABEL,
   OPENING_PAYMENT_STATUS,
   billingLeadText,
   billingOwnerOnlyText,
@@ -91,7 +90,7 @@ function CompanyBilling({ companyId }: { companyId: string }) {
       </div>
     );
   }
-  if (!opened) return <BillingLoading />;
+  if (!opened) return <BillingLoading company={reader.company} owner />;
   const failure = retrying ?? (invoices.isError && invoices.data === undefined ? { error: invoices.error, at: invoices.errorUpdatedAt } : null);
 
   const listed = listedInvoices(invoices.data ?? []);
@@ -136,16 +135,21 @@ function CompanyBilling({ companyId }: { companyId: string }) {
             ) : (
               <ul className="company-invoice-list">
                 {listed.map((invoice) => {
-                  const confirming = unresolved(attempts.get(invoice.id));
+                  // A record left by the cancel address or Back is not «confirming» (art-director blocker 3):
+                  // the invoice's own word, no Pay; its page offers «Return to payment».
+                  const record = attempts.get(invoice.id);
+                  const confirming = unresolved(record) && record.leftAt === undefined;
                   const word = statusWord(invoice.state, confirming);
                   const inFlight = press.pending === invoice.id;
                   const refusal = press.refusal?.invoiceId === invoice.id ? press.refusal : null;
                   return (
-                    <li className="company-invoice-row" key={invoice.id}>
+                    <li className={payable(invoice) ? "company-invoice-row is-payable" : "company-invoice-row"} key={invoice.id}>
                       <div className="company-invoice-text">
+                        {/* Lands with focus on the invoice's heading (art-director blocker 2, B11). */}
                         <Link
                           className="company-invoice-number"
                           data-invoice-link={invoice.id}
+                          state={{ focusHeading: true }}
                           to={`/company/billing/${encodeURIComponent(invoice.id)}`}
                         >
                           {invoice.number ?? "Invoice"}
@@ -167,7 +171,8 @@ function CompanyBilling({ companyId }: { companyId: string }) {
                             onClick={(event) => void press.pay(invoice, event.currentTarget)}
                             type="button"
                           >
-                            {inFlight ? OPENING_PAYMENT_LABEL : "Pay"}
+                            {/* §4.1's default in flight (blocker 1): the label stays, so the row does not reflow. */}
+                            Pay
                           </button>
                         ) : null}
                       </div>
@@ -200,24 +205,41 @@ function CompanyBilling({ companyId }: { companyId: string }) {
   );
 }
 
-/** Three rows of bars (B3): no spinner; the hidden status says what is loading. */
-function BillingLoading() {
+/**
+ * Three rows of bars (B3): no spinner; the hidden status says what is loading.
+ * Once the reader is known to be the owner, the lead and «Invoices» (no count)
+ * stand above them, so the page does not jump when the list lands (NB3).
+ */
+function BillingLoading({ company = null, owner = false }: { company?: string | null; owner?: boolean }) {
+  const rows = (
+    <ul aria-hidden="true" className="company-invoice-list">
+      {[0, 1, 2].map((index) => (
+        <li className="company-invoice-row company-invoice-skeleton" key={index}>
+          <div className="company-invoice-text">
+            <span className="value-skeleton company-invoice-skeleton-number" />
+            <span className="value-skeleton company-invoice-skeleton-meta" />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
   return (
     <div className="settings-plane">
       <div aria-busy="true" className="settings-column company-billing company-billing-loading">
         <span className="visually-hidden" role="status">
           {BILLING_LOADING_TEXT}
         </span>
-        <ul aria-hidden="true" className="company-invoice-list">
-          {[0, 1, 2].map((index) => (
-            <li className="company-invoice-row company-invoice-skeleton" key={index}>
-              <div className="company-invoice-text">
-                <span className="value-skeleton company-invoice-skeleton-number" />
-                <span className="value-skeleton company-invoice-skeleton-meta" />
-              </div>
-            </li>
-          ))}
-        </ul>
+        {owner ? (
+          <>
+            <p className="settings-lead">{billingLeadText(company)}</p>
+            <div className="company-group company-billing-group">
+              <h2 className="company-group-title">Invoices</h2>
+              {rows}
+            </div>
+          </>
+        ) : (
+          rows
+        )}
       </div>
     </div>
   );
