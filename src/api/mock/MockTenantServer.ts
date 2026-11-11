@@ -384,7 +384,7 @@ export const MOCK_INVOICE_IDS = {
   /** Stark Industries' first payment: OPEN, due at its creation deadline. */
   starkInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e06",
   wayneInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e07",
-  /** Umbrella's renewal of Team v1: OPEN, due a week after its paid-through. */
+  /** Umbrella's renewal of Team v1: OPEN, due at its paid-through. */
   umbrellaRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e08",
 } as const;
 
@@ -1128,7 +1128,8 @@ function seedTenants(
         "OPEN",
         MOCK_PLAN_IDS.teamRetired,
         iso(seedAt - DAY),
-        Date.parse(umbrellaPaid.paidThrough ?? iso(seedAt)) + 7 * DAY - (seedAt - DAY),
+        // Due at the paid-through, never after it (TAS-515, art-director NB4): as the calendar issues it.
+        Date.parse(umbrellaPaid.paidThrough ?? iso(seedAt)) - (seedAt - DAY),
       ),
     ],
     invoiceSeq: 1009,
@@ -2641,8 +2642,10 @@ export class MockTenantServer {
         this.toFree(state, tenant, session.userId);
         effectiveAt = new Date(now).toISOString();
       } else if (effect === "IMMEDIATE") {
-        // The plan it is on: the scheduled change, if any, is dropped (SPC 221-247).
-        this.supersede(state, tenant, false);
+        // The plan it is on: an unpaid scheduled change is dropped (SPC 221-247); a paid one is kept —
+        // on develop `applied()` has granted its period, so this is a no-op and it still starts at its
+        // date (guard M-2, A76).
+        if (sub.activeChange?.paidAt === undefined) this.supersede(state, tenant, false);
         tenant.subscription = { ...tenant.subscription, version: nextVersion(tenant.subscription.version) };
         effectiveAt = new Date(now).toISOString();
       } else {

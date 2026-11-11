@@ -178,6 +178,18 @@ describe("the effect, by develop's rule (§0.1)", () => {
     expect(stateOf(local).invoices.find((invoice) => invoice.id === scheduled.invoiceId)?.state).toBe("VOID");
   });
 
+  it("the plan it is on, once the scheduled change is paid, is a no-op: the schedule stays and still starts at its date (guard M-2)", async () => {
+    const { api, desk, setHooks, version } = await inCompany("priya@example.com", LN, { settlementDelayMs: 0 });
+    const scheduled = await api.changeSubscriptionPlan(LN, to(MOCK_PLAN_IDS.business), await version(), key());
+    await pay(api, desk, LN, scheduled.invoiceId as string);
+    const withdrawn = await api.changeSubscriptionPlan(LN, to(MOCK_PLAN_IDS.team), await version(), key());
+    expect(withdrawn.effect).toBe("IMMEDIATE");
+    const kept = await api.getSubscription(LN);
+    expect(kept).toMatchObject({ planVersionId: MOCK_PLAN_IDS.team, scheduledPlanVersionId: MOCK_PLAN_IDS.business, scheduledEffectiveAt: scheduled.effectiveAt });
+    setHooks({ clockOffsetMs: Date.parse(scheduled.effectiveAt as string) - Date.now() + 1000 });
+    await expect(api.getSubscription(LN)).resolves.toMatchObject({ planVersionId: MOCK_PLAN_IDS.business, scheduledPlanVersionId: null });
+  });
+
   it("a second selection supersedes the first and VOIDs its invoice", async () => {
     const { api, local, version } = await inCompany("tom@example.com", UM);
     const first = await api.changeSubscriptionPlan(UM, to(MOCK_PLAN_IDS.starter), await version(), key());
