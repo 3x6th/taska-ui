@@ -6,6 +6,7 @@ import { checkoutAttemptKey } from "../../api/checkoutAttempt";
 import { companiesHarness } from "../../test/companiesHarness";
 import { App } from "../App";
 import { CompanyStateBlock } from "./CompanyStateBlock";
+import { CreationPaySlot } from "./CreationPaySlot";
 
 /*
  * Company › Billing as the app routes it (TAS-513, art-director B1, B3–B7,
@@ -663,5 +664,129 @@ describe("TAS-514: refunds, the wire invoice and its document", () => {
     expect(alert.closest(".error-note")).toHaveTextContent("rid-doc");
     expect(download).toHaveFocus();
     expect(state.calls.filter((call) => call === "getInvoiceDocument")).toHaveLength(1);
+  });
+});
+
+describe("TAS-514 fix round 1", () => {
+  const BANK = { beneficiaryName: "Taska Mock S.L. (test only)", iban: "XX00MOCK0000000000000000", bic: "MOCKESM0XXX", bankName: "Mock Bank", reference: "TASKA-TSK-2026-01008" };
+  const wireRenewal = (overrides: Record<string, unknown> = {}) =>
+    invoice({ paymentMethod: "WIRE", wireInstructions: BANK, dueAt: "2099-12-04T09:00:00Z", ...overrides });
+  const fact = (label: string) =>
+    [...document.querySelectorAll(".company-invoice-facts > div")].find((row) => row.querySelector("dt")?.textContent === label)?.querySelector("dd") ?? null;
+
+  /** The not-yet-open card's slot, alone, as the setup card mounts it for the owner. */
+  function renderSlot(stalled: boolean, onCheckAgain = vi.fn()) {
+    const onPaid = vi.fn();
+    render(
+      <CreationPaySlot
+        company="Acme Wire"
+        companyId="n"
+        creationDeadline="2099-12-11T09:00:00Z"
+        factId="fact"
+        onCheckAgain={onCheckAgain}
+        onPaid={onPaid}
+        stalled={stalled}
+        userId="tom"
+      />,
+      { wrapper: companiesHarness({ companyId: "n", path: "/projects" }).wrapper },
+    );
+    return { onPaid, onCheckAgain };
+  }
+
+  it("a PAID wire first invoice on the not-yet-open card: «matched», opening — no slot line, amount, PDF, bank details or note", async () => {
+    state.invoices = [wireRenewal({ id: "inv-first", number: "TSK-2026-01009", purpose: "INITIAL", state: "PAID", allocated: state.EUR("2000"), remaining: state.EUR("0") })];
+    state.refunds = [
+      {
+        id: "rf-late",
+        tenantId: "n",
+        kind: "UNALLOCATED_RETURN",
+        state: "REQUESTED",
+        amount: state.EUR("2000"),
+        reasonCode: "LATE_FIRST_PAYMENT",
+        sourceMethod: "WIRE",
+        requestedAt: "2026-11-10T09:00:00Z",
+        confirmedAt: null,
+        feeBearer: "TASKA",
+        sendDueAt: null,
+        decidedAt: null,
+      },
+    ];
+    const { onPaid } = renderSlot(false);
+    await waitFor(() =>
+      expect(block()).toHaveTextContent(
+        "Your bank transfer has been matched. Taska is opening Acme Wire. This page opens it when it’s ready — don’t send the transfer again.",
+      ),
+    );
+    expect(onPaid).toHaveBeenCalled();
+    expect(block()).not.toHaveTextContent(/payment provider|Confirming/);
+    // The late money's line stays above it.
+    expect(await screen.findByText("The €20.00 that arrived after an earlier invoice was due is to be refunded to the account it came from.")).toBeInTheDocument();
+    expect(screen.queryByText(/Invoice TSK-2026-01009/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/€0\.00/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Download PDF/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Bank transfer" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/matches bank transfers/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check again" })).not.toBeInTheDocument();
+  });
+
+  it("…and once the card's poll has stopped: «hasn’t opened yet» and «Check again», which reads the company again", async () => {
+    state.invoices = [wireRenewal({ id: "inv-first", purpose: "INITIAL", state: "PAID", allocated: state.EUR("2000"), remaining: state.EUR("0") })];
+    const { onCheckAgain } = renderSlot(true);
+    await waitFor(() =>
+      expect(block()).toHaveTextContent("Your bank transfer has been matched. Acme Wire hasn’t opened yet. Check again in a few minutes — don’t send the transfer again."),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    expect(onCheckAgain).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /Download PDF/ })).not.toBeInTheDocument();
+  });
+
+  it("an open wire first invoice still draws its card form", async () => {
+    state.invoices = [wireRenewal({ id: "inv-first", number: "TSK-2026-01009", purpose: "INITIAL" })];
+    renderSlot(false);
+    expect(await screen.findByRole("region", { name: "Bank transfer" })).toBeInTheDocument();
+    expect(screen.getByText("Invoice TSK-2026-01009 · €20.00 · Bank transfer")).toBeInTheDocument();
+  });
+
+  it("an expired wire invoice with money to go back: no «Left to pay», and Received without its second line", async () => {
+    state.invoices = [wireRenewal({ state: "EXPIRED", matchedUnallocated: state.EUR("1200"), remaining: state.EUR("800") })];
+    renderAt("/company/billing/inv-renewal");
+    expect(await screen.findByText(/that arrived for it is to be refunded/)).toHaveTextContent(
+      "This invoice can no longer be paid. The €12.00 that arrived for it is to be refunded.",
+    );
+    expect(fact("Received")).toHaveTextContent(/^€12\.00$/);
+    expect(fact("Left to pay")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Bank transfer" })).not.toBeInTheDocument();
+  });
+
+  it("an open wire invoice with all of it matched: «all of it has arrived», no bank details, Received without «Counts only…»", async () => {
+    state.invoices = [wireRenewal({ matchedUnallocated: state.EUR("2000"), remaining: state.EUR("0") })];
+    renderAt("/company/billing/inv-renewal");
+    await waitFor(() =>
+      expect(block()).toHaveTextContent(
+        "All of the bank transfer has arrived. Taska hasn’t applied it to this invoice yet, so the invoice isn’t marked as paid — don’t send the transfer again.",
+      ),
+    );
+    expect(fact("Received")).toHaveTextContent(/^€20\.00$/);
+    expect(screen.queryByRole("region", { name: "Bank transfer" })).not.toBeInTheDocument();
+  });
+
+  it("a part-paid wire renewal: Received with its line, Left to pay — and no third sentence in the note", async () => {
+    state.invoices = [wireRenewal({ state: "PARTIALLY_PAID", matchedUnallocated: state.EUR("1200"), remaining: state.EUR("800") })];
+    renderAt("/company/billing/inv-renewal");
+    const bank = await screen.findByRole("region", { name: "Bank transfer" });
+    await waitFor(() => expect(bank).toHaveTextContent("within 24 hours of the money arriving"));
+    expect(bank).not.toHaveTextContent(/still renews/);
+    expect(fact("Received")).toHaveTextContent("€12.00Counts only once all €20.00 has arrived.");
+    expect(fact("Left to pay")).toHaveTextContent("€8.00");
+  });
+
+  it("Items (G3): no group when the answer carried no lines; «lists no items» only for an empty list", async () => {
+    state.invoices = [invoice({ lines: null })];
+    renderAt("/company/billing/inv-renewal");
+    await screen.findByRole("button", { name: "Pay €20.00" });
+    expect(screen.queryByRole("region", { name: "Items" })).not.toBeInTheDocument();
+    state.invoices = [invoice({ id: "inv-empty", lines: [] })];
+    renderAt("/company/billing/inv-empty");
+    expect(await screen.findByText("This invoice lists no items.")).toBeInTheDocument();
   });
 });

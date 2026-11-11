@@ -4747,8 +4747,9 @@ h1 {
   word-break: normal;
 }
 
-/* The reference exactly as received, selected whole by a press. */
-.company-bank-reference {
+/* A value with a Copy — beneficiary, IBAN, BIC, reference — selected whole by
+   a press (AD N1): touch and hold would otherwise take one word of it. */
+.company-bank-value-row > .company-bank-value {
   user-select: all;
 }
 
@@ -4856,6 +4857,7 @@ h1 {
 
 /* «Received» (B7) and its second line. */
 .company-invoice-received {
+  color: var(--fg);
   font-variant-numeric: tabular-nums;
 }
 

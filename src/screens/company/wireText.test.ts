@@ -26,6 +26,7 @@ import {
   sellerLines,
   showsBankDetails,
   toBeRefundedText,
+  wireMatchedState,
   wireState,
 } from "./wireText";
 
@@ -92,7 +93,11 @@ describe("the wire state (B3, decision 3)", () => {
       fact: "Bank details for this invoice aren’t available yet.",
       explanation: "Don’t send money for it until they appear here.",
     });
-    expect(wireState(wire({ matchedUnallocated: EUR("2000"), remaining: EUR("0") }), { now: BEFORE })?.fact).toBe("All of the bank transfer has arrived.");
+    expect(wireState(wire({ matchedUnallocated: EUR("2000"), remaining: EUR("0") }), { now: BEFORE })).toMatchObject({
+      fact: "All of the bank transfer has arrived.",
+      explanation: "Taska hasn’t applied it to this invoice yet, so the invoice isn’t marked as paid — don’t send the transfer again.",
+      action: null,
+    });
     for (const invoice of [wire({ paymentMethod: "PSP" }), wire({ state: "PAID" }), wire({ state: "EXPIRED" }), wire({ state: "VOID" })]) {
       expect(wireState(invoice, { now: BEFORE })).toBeNull();
     }
@@ -156,14 +161,37 @@ describe("the reconciliation target (B6, decision 4)", () => {
     expect(purposeSentence({ ...base, restrictions: ["PLATFORM_BLOCK"], invoice: wire() })).toBeNull();
     expect(purposeSentence({ ...base, invoice: wire({ purpose: "PLAN_CHANGE" }) })).toBeNull();
     expect(purposeSentence({ ...base, invoice: wire({ purpose: "INITIAL" }) })).toBeNull();
-    const first = purposeSentence({ ...base, lifecycle: "AWAITING_PAYMENT", creationDeadline: "2026-12-11T09:00:00Z", invoice: wire({ purpose: "INITIAL" }) });
-    expect(first).toMatch(
-      new RegExp(
-        `^If it arrives after ${DATE_TIME}, it’s refunded, and Taska issues a new invoice while Cyberdyne Systems is still waiting for its first payment\\. Cyberdyne Systems still closes if it isn’t paid by ${DATE_TIME}\\.$`,
-      ),
+  });
+
+  it("a first payment (fix round decision 3): a new invoice and the deadline only when the deadline is later than the due date — as instants", () => {
+    const awaiting = { company: "Cyberdyne Systems", restrictions: [] as string[], lifecycle: "AWAITING_PAYMENT", now: BEFORE, invoice: wire({ purpose: "INITIAL" }) };
+    expect(purposeSentence({ ...awaiting, creationDeadline: "2026-12-11T09:00:00Z" })).toMatch(
+      new RegExp(`^If it arrives after ${DATE_TIME}, it’s refunded and Taska issues a new invoice\\. Cyberdyne Systems still closes if it isn’t paid by ${DATE_TIME}\\.$`),
     );
-    const sameDay = purposeSentence({ ...base, lifecycle: "AWAITING_PAYMENT", creationDeadline: "2026-12-04T09:00:00Z", invoice: wire({ purpose: "INITIAL" }) });
-    expect(sameDay).not.toContain("still closes");
+    // The same instant written another way is not later; an earlier deadline or none promises no new invoice.
+    for (const deadline of ["2026-12-04T09:00:00.000Z", "2026-12-04T10:00:00+01:00", "2026-12-01T09:00:00Z", null]) {
+      expect(purposeSentence({ ...awaiting, creationDeadline: deadline }), String(deadline)).toMatch(new RegExp(`^If it arrives after ${DATE_TIME}, it’s refunded\\.$`));
+    }
+    expect(purposeSentence({ ...awaiting, company: null, creationDeadline: "2026-12-11T09:00:00Z" })).toContain("This company still closes");
+  });
+
+  it("only while nothing has arrived (fix round decision 2): no third sentence once money is matched — a renewal, before and after its due date", () => {
+    const renewal = { company: "Cyberdyne Systems", restrictions: [] as string[], lifecycle: "ACTIVE", creationDeadline: null };
+    for (const now of [BEFORE, AFTER]) {
+      expect(purposeSentence({ ...renewal, now, invoice: partial() }), now.toISOString()).toBeNull();
+      expect(purposeSentence({ ...renewal, now, invoice: wire({ matchedUnallocated: EUR("1200"), remaining: EUR("800") }) })).toBeNull();
+      expect(purposeSentence({ ...renewal, now, invoice: wire({ state: "PARTIALLY_PAID", matchedUnallocated: null }) })).toBeNull();
+      expect(purposeSentence({ ...renewal, now, invoice: wire() })).not.toBeNull();
+    }
+  });
+
+  it("only while nothing has arrived (fix round decision 2): no third sentence once money is matched — a first payment, before and after its due date", () => {
+    const first = { company: "Cyberdyne Systems", restrictions: [] as string[], lifecycle: "AWAITING_PAYMENT", creationDeadline: "2026-12-11T09:00:00Z" };
+    for (const now of [BEFORE, AFTER]) {
+      expect(purposeSentence({ ...first, now, invoice: partial({ purpose: "INITIAL" }) }), now.toISOString()).toBeNull();
+      expect(purposeSentence({ ...first, now, invoice: wire({ purpose: "INITIAL", matchedUnallocated: EUR("500"), remaining: EUR("1500") }) })).toBeNull();
+      expect(purposeSentence({ ...first, now, invoice: wire({ purpose: "INITIAL" }) })).not.toBeNull();
+    }
   });
 });
 
@@ -292,5 +320,62 @@ describe("refunds (B11, decision 6)", () => {
     );
     expect(lateFirstPaymentLine(refund({ state: "FAILED", amount: EUR("2000") }))).toContain("didn’t go through");
     expect(cardWireLine(wire())).toBe("Invoice TSK-2026-00904 · €20.00 · Bank transfer");
+  });
+});
+
+describe("fix round 1", () => {
+  it("«all of it has arrived» only from matched money with a remaining the server says is zero (G1)", () => {
+    // An absent remaining, or a zero total with nothing matched: never a claim that money arrived.
+    expect(wireState(wire({ remaining: null }), { now: BEFORE })?.fact).toBe("Waiting for the bank transfer.");
+    expect(wireState(wire({ total: EUR("0"), remaining: EUR("0") }), { now: BEFORE })?.fact).toBe("Waiting for the bank transfer.");
+    expect(wireState(wire({ remaining: null, wireInstructions: null }), { now: BEFORE })?.fact).toBe("Bank details for this invoice aren’t available yet.");
+    expect(wireState(wire({ matchedUnallocated: EUR("2000"), remaining: null }), { now: BEFORE })?.fact).not.toBe("All of the bank transfer has arrived.");
+    expect(wireState(wire({ matchedUnallocated: EUR("2000"), remaining: EUR("0"), wireInstructions: null }), { now: AFTER })?.fact).toBe(
+      "All of the bank transfer has arrived.",
+    );
+  });
+
+  it("the card's slot line names an amount only while something is left to send", () => {
+    expect(cardWireLine(wire({ matchedUnallocated: EUR("2000"), remaining: EUR("0") }))).toBe("Invoice TSK-2026-00904 · Bank transfer");
+    expect(cardWireLine(wire({ remaining: null }))).toBe("Invoice TSK-2026-00904 · Bank transfer");
+    expect(cardWireLine(partial())).toBe("Invoice TSK-2026-00904 · €8.00 · Bank transfer");
+  });
+
+  it("a matched first transfer on a company not open yet: opening, then «Check again» once the poll stops (fix round decision 1)", () => {
+    expect(wireMatchedState("Acme Wire", false)).toEqual({
+      kind: "wire",
+      fact: "Your bank transfer has been matched.",
+      explanation: "Taska is opening Acme Wire. This page opens it when it’s ready — don’t send the transfer again.",
+      action: null,
+    });
+    expect(wireMatchedState("Acme Wire", true)).toEqual({
+      kind: "wire",
+      fact: "Your bank transfer has been matched.",
+      explanation: "Acme Wire hasn’t opened yet. Check again in a few minutes — don’t send the transfer again.",
+      action: "check",
+    });
+    expect(wireMatchedState(null, false).explanation).toBe("Taska is opening this company. This page opens it when it’s ready — don’t send the transfer again.");
+    expect(wireMatchedState(null, true).explanation).toMatch(/^This company hasn’t opened yet\./);
+    for (const stalled of [false, true]) expect(wireMatchedState("Acme", stalled).explanation).not.toContain("payment provider");
+  });
+
+  it("refunds are ordered by instant, not by string", () => {
+    const at = (id: string, requestedAt: string | null): Refund => ({
+      id,
+      tenantId: "t",
+      kind: "UNALLOCATED_RETURN",
+      state: "REQUESTED",
+      amount: EUR("100"),
+      reasonCode: "EXCESS",
+      sourceMethod: "WIRE",
+      requestedAt,
+      confirmedAt: null,
+      feeBearer: "TASKA",
+      sendDueAt: null,
+      decidedAt: null,
+    });
+    // «…00.500Z» sorts before «…00Z» as a string, but is the later instant; «+01:00» is an hour earlier than it reads.
+    const listed = listedRefunds([at("a", "2026-11-10T09:00:00Z"), at("b", "2026-11-10T09:00:00.500Z"), at("c", "2026-11-10T09:30:00+01:00"), at("d", null)]);
+    expect(listed.map((item) => item.id)).toEqual(["b", "a", "c", "d"]);
   });
 });

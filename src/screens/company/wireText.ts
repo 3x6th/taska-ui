@@ -57,12 +57,18 @@ export function wireState(invoice: Invoice, options: { now?: Date; sentence3?: s
   const due = invoice.dueAt !== null ? dueText(invoice.dueAt, now) : null;
   const received = receivedOf(invoice);
   const kind = "wire" as const;
-  if (invoice.wireInstructions === null && positive(invoice.remaining)) {
-    return { kind, fact: "Bank details for this invoice aren’t available yet.", explanation: "Don’t send money for it until they appear here.", action: null };
+  // All of it matched and not yet applied (the guard's §4 row, fix round decision 4): only from matched money
+  // with a `remaining` the server says is zero — never from an absent `remaining` or a zero total (G1).
+  if (received !== null && invoice.remaining !== null && isZeroMoney(invoice.remaining)) {
+    return {
+      kind,
+      fact: "All of the bank transfer has arrived.",
+      explanation: "Taska hasn’t applied it to this invoice yet, so the invoice isn’t marked as paid — don’t send the transfer again.",
+      action: null,
+    };
   }
-  if (!positive(invoice.remaining)) {
-    // All of it matched, not yet applied (the guard's §4 row): no bank details, nothing to send.
-    return { kind, fact: "All of the bank transfer has arrived.", explanation: "Taska is confirming it — don’t send it again.", action: null };
+  if (invoice.wireInstructions === null) {
+    return { kind, fact: "Bank details for this invoice aren’t available yet.", explanation: "Don’t send money for it until they appear here.", action: null };
   }
   const late = pastDue(invoice, now);
   const receivedText = received !== null ? formatInvoiceMoney(received) : null;
@@ -187,11 +193,16 @@ export function reconciliationSentences(targetSeconds: number | null): [string, 
 /**
  * The note's third sentence, by the invoice's purpose (B6 with Q7, decision 4):
  * a RENEWAL renews late too — not while the platform blocks the company; a
- * first payment late is refunded, and a new invoice is issued only while the
- * company still waits for its first payment; a PLAN_CHANGE has none (A88).
+ * first payment late is refunded, with a new invoice only when the creation's
+ * deadline is later than the due date; a PLAN_CHANGE has none (A88).
+ *
+ * **Only while nothing has arrived** (fix round decision 2, D246): once money
+ * is matched — PARTIALLY_PAID, or `matchedUnallocated` above zero — a late
+ * remainder pays nothing on its own and everything received goes back, which
+ * the state block already says; no sentence, for either purpose.
  */
 export function purposeSentence(input: {
-  invoice: Pick<Invoice, "purpose" | "dueAt">;
+  invoice: Pick<Invoice, "purpose" | "dueAt" | "state" | "matchedUnallocated">;
   company: string | null;
   restrictions: readonly string[];
   lifecycle: string | null;
@@ -202,16 +213,19 @@ export function purposeSentence(input: {
   const now = input.now ?? new Date();
   const due = invoice.dueAt !== null ? dueText(invoice.dueAt, now) : null;
   const after = due !== null ? `If it arrives after ${due}` : "If it arrives late";
+  if (invoice.state === "PARTIALLY_PAID" || receivedOf(invoice) !== null) return null;
   if (invoice.purpose === "RENEWAL") {
     if (input.restrictions.includes("PLATFORM_BLOCK")) return null;
     return `${after}, it still renews ${companyInside(company)}, but the new month starts when Taska matches it.`;
   }
   if (invoice.purpose === "INITIAL" && input.lifecycle === "AWAITING_PAYMENT") {
-    const closes =
-      input.creationDeadline !== null && input.creationDeadline !== invoice.dueAt
-        ? ` ${companyStart(company)} still closes if it isn’t paid by ${dueText(input.creationDeadline, now)}.`
-        : "";
-    return `${after}, it’s refunded, and Taska issues a new invoice while ${companyInside(company)} is still waiting for its first payment.${closes}`;
+    // Instants, not strings (fix round decision 3): «…Z» and «….000Z» are the same moment.
+    const dueMs = invoice.dueAt !== null ? Date.parse(invoice.dueAt) : Number.NaN;
+    const deadlineMs = input.creationDeadline !== null ? Date.parse(input.creationDeadline) : Number.NaN;
+    if (input.creationDeadline !== null && !Number.isNaN(dueMs) && !Number.isNaN(deadlineMs) && deadlineMs > dueMs) {
+      return `${after}, it’s refunded and Taska issues a new invoice. ${companyStart(company)} still closes if it isn’t paid by ${dueText(input.creationDeadline, now)}.`;
+    }
+    return `${after}, it’s refunded.`;
   }
   return null;
 }
@@ -396,21 +410,47 @@ export function refundTail(refund: Refund, now: Date = new Date()): string | nul
 export const refundMetaText = (refund: Refund, now: Date = new Date()) =>
   [methodText(refund.sourceMethod), refundTail(refund, now)].filter((part): part is string => part !== null && part !== "").join(" · ");
 
-/** Newest `requestedAt` first, then by id — the order the screen draws (B11). */
+const requestedMs = (refund: Refund) => {
+  const at = refund.requestedAt !== null ? Date.parse(refund.requestedAt) : Number.NaN;
+  return Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at;
+};
+
+/** Newest `requestedAt` first — by instant, not by string —, then by id; the order the screen draws (B11). */
 export const listedRefunds = (refunds: readonly Refund[]) =>
   [...refunds].sort((a, b) => {
-    const left = a.requestedAt ?? "";
-    const right = b.requestedAt ?? "";
+    const left = requestedMs(a);
+    const right = requestedMs(b);
     return left < right ? 1 : left > right ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
   });
 
 /* ---------------------------------------------- the never-opened card (B14) */
 
-/** The card's slot line for a wire first payment (B14): «Invoice {number} · {remaining} · Bank transfer». */
+/**
+ * The card's slot line for a wire first payment (B14): «Invoice {number} ·
+ * {remaining} · Bank transfer» — the amount only while something is left to
+ * send, else «Invoice {number} · Bank transfer» (fix round decision 4).
+ */
 export const cardWireLine = (invoice: Invoice) =>
-  [invoice.number !== null ? `Invoice ${invoice.number}` : "Invoice", invoice.remaining !== null ? formatInvoiceMoney(invoice.remaining) : null, "Bank transfer"]
+  [invoice.number !== null ? `Invoice ${invoice.number}` : "Invoice", positive(invoice.remaining) ? formatInvoiceMoney(invoice.remaining) : null, "Bank transfer"]
     .filter((part): part is string => part !== null)
     .join(" · ");
+
+/**
+ * A bank-transfer first invoice the server reads PAID while the company has
+ * not opened yet (fix round decision 1, art-director B1) — the card's poll is
+ * still reading it. Fresh: no action; once the poll has stopped (`stalled`),
+ * «Check again». Never «with the payment provider»: nobody paid online.
+ */
+export function wireMatchedState(company: string | null, stalled: boolean): PaymentState {
+  return {
+    kind: "wire",
+    fact: "Your bank transfer has been matched.",
+    explanation: stalled
+      ? `${companyStart(company)} hasn’t opened yet. Check again in a few minutes — don’t send the transfer again.`
+      : `Taska is opening ${companyInside(company)}. This page opens it when it’s ready — don’t send the transfer again.`,
+    action: stalled ? "check" : null,
+  };
+}
 
 /**
  * The card's line for a first payment that arrived late (decision 7): what

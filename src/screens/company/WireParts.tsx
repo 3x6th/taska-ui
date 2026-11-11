@@ -242,11 +242,17 @@ export function DownloadPdfButton({
   );
 }
 
-/** «Items» (B8): the invoice's lines as issued, a «Total» row when there is more than one or any tax, the FX quote under them. */
+/**
+ * «Items» (B8): the invoice's lines as issued, a «Total» row when there is more
+ * than one or any tax, the FX quote under them. An answer that carried no list
+ * of lines draws no group at all; «This invoice lists no items.» is said only
+ * for an empty one (G3).
+ */
 export function InvoiceItems({ invoice }: { invoice: InvoiceDetail }) {
   const titleId = useId();
-  const lines = invoice.lines ?? [];
+  const lines = invoice.lines;
   const fx = invoice.fxQuote ? fxQuoteText(invoice.fxQuote) : null;
+  if (lines == null) return null;
   return (
     <section aria-labelledby={titleId} className="company-group company-invoice-items">
       <h2 className="company-group-title" id={titleId}>

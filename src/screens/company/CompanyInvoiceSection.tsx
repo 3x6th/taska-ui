@@ -477,14 +477,22 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
           {received !== null && invoice.state !== "PAID" ? (
             <Fact label="Received">
               <span className="company-invoice-received">{formatInvoiceMoney(received)}</span>
-              {isWireOpen(invoice) && invoice.total ? <span className="company-invoice-fact-note">{receivedNote(invoice.total)}</span> : null}
+              {/* Only while it can still be paid and something is left (fix round decision 4). */}
+              {isWireOpen(invoice) && invoice.total && invoice.remaining !== null && !isZeroMoney(invoice.remaining) ? (
+                <span className="company-invoice-fact-note">{receivedNote(invoice.total)}</span>
+              ) : null}
             </Fact>
           ) : null}
           {/* Part of it paid only (NB1): a paid invoice has neither line. */}
           {invoice.allocated && !isZeroMoney(invoice.allocated) && invoice.state !== "PAID" ? (
             <Fact label="Paid so far">{formatInvoiceMoney(invoice.allocated)}</Fact>
           ) : null}
-          {invoice.remaining && invoice.total && !isZeroMoney(invoice.remaining) && invoice.remaining.amountMinor !== invoice.total.amountMinor ? (
+          {/* Only while it can still be paid (fix round decision 5): an expired one invites no transfer. */}
+          {(invoice.state === "OPEN" || invoice.state === "PARTIALLY_PAID") &&
+          invoice.remaining &&
+          invoice.total &&
+          !isZeroMoney(invoice.remaining) &&
+          invoice.remaining.amountMinor !== invoice.total.amountMinor ? (
             <Fact label="Left to pay">{formatInvoiceMoney(invoice.remaining)}</Fact>
           ) : null}
           {purposeText(invoice.purpose) ? <Fact label="For">{purposeText(invoice.purpose)}</Fact> : null}

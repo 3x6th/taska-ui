@@ -331,7 +331,7 @@ test("the never-opened card with a wire first invoice: its bank details, no Pay 
   await expect(page.getByRole("button", { name: /^Pay/ })).toHaveCount(0);
   await expect(bankValue(page, "Reference").locator(".company-bank-reference")).toHaveText("TASKA-TSK-2026-01009");
   await expect(bank(page).locator(".company-bank-note")).toContainText(
-    /it’s refunded, and Taska issues a new invoice while Acme Wire is still waiting for its first payment\. Acme Wire still closes if it isn’t paid by [A-Z][a-z]{2} \d{1,2}, \d\d:\d\d\./,
+    /If it arrives after [A-Z][a-z]{2} \d{1,2}, \d\d:\d\d, it’s refunded and Taska issues a new invoice\. Acme Wire still closes if it isn’t paid by [A-Z][a-z]{2} \d{1,2}, \d\d:\d\d\./,
   );
   await expect(page.getByRole("button", { name: "Download PDF of invoice TSK-2026-01009" })).toBeVisible();
 
@@ -357,4 +357,41 @@ test("the never-opened card with a wire first invoice: its bank details, no Pay 
     "The €20.00 that arrived after an earlier invoice was due is to be refunded to the account it came from.",
   );
   await expect(bankValue(page, "Reference").locator(".company-bank-reference")).toHaveText("TASKA-TSK-2026-01010");
+});
+
+test("a first transfer matched while the company's own read lags: «matched», Taska is opening it — no slot line, amount, PDF or bank details", async ({ page }) => {
+  await signIn(page, "nina@example.com");
+  await expect(page).toHaveURL(`${B2B}/companies`);
+  await setHooks(page, { issueMethod: { "*": "WIRE" } });
+  await page.getByRole("link", { name: "Create a company" }).click();
+  await page.getByLabel("Company name").fill("Acme Matched");
+  await page.getByRole("radio", { name: /^Team/ }).check();
+  await page.getByRole("button", { name: "Create company" }).click();
+  await expect(page).toHaveURL(new RegExp(`^${B2B}/c/[0-9a-f-]{36}/projects$`));
+  await expect(page.getByText(/^Invoice TSK-2026-01009 · €20\.00 · Bank transfer$/)).toBeVisible();
+  const tenantId = new URL(page.url()).pathname.split("/")[2];
+  const invoiceId = await page.evaluate(
+    (id) =>
+      (JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { invoices: Array<{ id: string; tenantId: string }> }).invoices.find(
+        (invoice) => invoice.tenantId === id,
+      )?.id,
+    tenantId,
+  );
+  // The admin confirms a full, timely transfer; the company's own read is slow to say it opened.
+  await setHooks(page, {
+    issueMethod: { "*": "WIRE" },
+    wireReceipts: [{ id: "r-full", tenantId, amountMinor: "2000" }],
+    confirmWire: { "r-full": invoiceId },
+    delayMs: { getTenant: 15_000 },
+  });
+  await comeBack(page);
+  await expect(stateBlock(page)).toHaveText(
+    "Your bank transfer has been matched. Taska is opening Acme Matched. This page opens it when it’s ready — don’t send the transfer again.",
+  );
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Acme MatchedAwaiting first payment");
+  await expect(page.getByText(/· Bank transfer$/)).toHaveCount(0);
+  await expect(page.getByText(/€0\.00/)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Download PDF/ })).toHaveCount(0);
+  await expect(bank(page)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Pay/ })).toHaveCount(0);
 });

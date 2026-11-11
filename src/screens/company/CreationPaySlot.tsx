@@ -14,6 +14,7 @@ import {
   purposeSentence,
   reconciliationSentences,
   showsBankDetails,
+  wireMatchedState,
   wireState,
 } from "./wireText";
 import {
@@ -190,6 +191,10 @@ export function CreationPaySlot({
     // Paid is the company opening, never a line here (B7's CREATION row): «Confirming» until it does.
     const paidYet = invoice?.state === "PAID" ? { ...invoice, state: "OPEN" } : invoice;
     state = watchedPaymentState({ invoice: paidYet, checkout: watch.checkout, left: record.leftAt !== undefined, stage: watch.stage, company, reopened: false });
+  } else if (invoice?.state === "PAID" && invoice.paymentMethod === "WIRE") {
+    // TAS-514 (fix round decision 1): a bank transfer matched, the company not open yet — the same poll and
+    // «Check again», in the transfer's own words; no slot line, amount, PDF or bank details.
+    state = wireMatchedState(company, stalled);
   } else if (invoice?.state === "PAID") {
     // Settled; the company has not opened yet: «Confirming» while the card polls it, «Check again» once it gave up (N1).
     state = watchedPaymentState({
@@ -232,8 +237,9 @@ export function CreationPaySlot({
     );
   }
 
-  // TAS-514 (B14): a first payment by bank transfer — its card form, no Pay.
-  if (invoice !== null && invoice.paymentMethod === "WIRE" && !watching) {
+  // TAS-514 (B14): a first payment by bank transfer still waiting for its money — its card form, no Pay.
+  // A PAID one is the opening above, drawn by the shared path below (fix round decision 1).
+  if (invoice !== null && isWireOpen(invoice) && !watching) {
     const sentence3 = purposeSentence({ invoice, company, restrictions: [], lifecycle: "AWAITING_PAYMENT", creationDeadline });
     const wire = wireState(invoice, { sentence3 });
     const bank = showsBankDetails(invoice) && invoice.wireInstructions !== null ? invoice.wireInstructions : null;
