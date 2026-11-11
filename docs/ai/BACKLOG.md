@@ -4707,6 +4707,10 @@ Rulings in `docs/ai/reviews/TAS-529-*.md` (git-ignored); divergence in `API-DIVE
   board is read again (builder, fix round 2).
 - **Assignee filter chips** have no `aria-pressed`, and the kept «Deleted user» chip is named only by its avatar's label
   (release-reviewer re-verdict 2, Low; predates TAS-529).
+- **An issue read's mark is not kept for the screen** — with context and board read before the deletion, opening an issue
+  that marks the person leaves their card face named, and a later panel whose read never mentions them still offers their
+  chip; fold `markedDeleted` into the board's screen-life set (an effect callback from `IssuePanel`, not a parent setState
+  during render) and make §4.4 say «любого чтения» again. Only in the window before cleanup (art-director re-verdict 4).
 - **Three sources of `deletedIdsInIssue` untested** — watchers, uploaders, history actors/participants
   (`BoardScreen.tsx` ~7948-7953); one unit test: a stale named member who is a marked watcher isn't offered as a chip
   (release-reviewer re-verdict note 1).
