@@ -285,12 +285,13 @@ describe("a refund (TAS-514, decision 6)", () => {
     for (const dropped of ["pay-1", "WIRE_RETURN_ES_V1", "businessDays", "evidenceCompletedAt", "decisionDueAt"]) expect(serialised).not.toContain(dropped);
   });
 
-  it("TAS-516 (guard Q3): a bank transfer is sent only once its evidence is complete — a wire submittedAt without it is not kept", () => {
+  it("TAS-516 (T3): submittedAt from its own field only — no other field filters it, on a bank transfer or online", () => {
     const { evidenceCompletedAt: _evidence, ...noEvidence } = refundWire;
-    expect(toRefund(noEvidence)?.submittedAt).toBeNull();
-    // Online there is no evidence to complete.
+    expect(toRefund(noEvidence)?.submittedAt).toBe("2026-11-12T09:00:00Z");
     expect(toRefund({ ...noEvidence, sourceMethod: "PSP" })?.submittedAt).toBe("2026-11-12T09:00:00Z");
     expect(toRefund({ ...refundWire, submittedAt: "not a date" })?.submittedAt).toBeNull();
+    const { submittedAt: _submitted, ...unsent } = refundWire;
+    expect(toRefund(unsent)?.submittedAt).toBeNull();
   });
 
   it("TAS-516 (guard F1): a 2xx that is not a page is no answer — never an empty list", () => {

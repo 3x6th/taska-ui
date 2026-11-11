@@ -526,9 +526,6 @@ export function toRefund(wire: unknown): Refund | null {
   if (row === null) return null;
   const id = text(row.id);
   if (id === null) return null;
-  const sourceMethod = text(row.sourceMethod);
-  // The SLA set is all-or-nothing, and a wire refund is sent only once its evidence is complete (guard Q3).
-  const submitted = sourceMethod === "WIRE" && instant(row.evidenceCompletedAt) === null ? null : instant(row.submittedAt);
   return {
     id,
     tenantId: text(row.tenantId),
@@ -536,13 +533,14 @@ export function toRefund(wire: unknown): Refund | null {
     state: text(row.state),
     amount: toMoney(row.amount),
     reasonCode: text(row.reasonCode),
-    sourceMethod,
+    sourceMethod: text(row.sourceMethod),
     requestedAt: instant(row.requestedAt),
     confirmedAt: instant(row.confirmedAt),
     feeBearer: text(row.feeBearer),
     sendDueAt: instant(row.sendDueAt),
     decidedAt: instant(row.decidedAt),
-    submittedAt: submitted,
+    // From its own field only (T3; guard build review, deviation 2) — never filtered by another.
+    submittedAt: instant(row.submittedAt),
   };
 }
 
