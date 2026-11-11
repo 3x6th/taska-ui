@@ -1,3 +1,5 @@
+import { apiErrorFacts } from "./errors";
+
 /*
  * The account's own credentials (TAS-527): a password reset by email, a
  * password change, and an email change confirmed with a code — the B2B
@@ -41,6 +43,28 @@ export interface EmailChangeChallenge {
 }
 
 const text = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
+
+/**
+ * A 2xx whose body is not what the status promises — a 201 with no
+ * email-change challenge (api-contract-guard build review, finding 4). The
+ * server answered, so the press **was** answered: the screen says its own
+ * «not changed» sentence, never «could not be reached», and the next press is
+ * a new intent with a new key rather than a replay of the same unreadable
+ * answer. The client's own rule, so its message is empty, as
+ * `ForeignCompanyAnswerError`'s is: no client words are shown as the server's,
+ * and `apiErrorFacts` finds no status, code or request id in it.
+ */
+export class MalformedAnswerError extends Error {
+  constructor() {
+    super("");
+    this.name = "MalformedAnswerError";
+  }
+}
+
+/** Whether a press got an answer: an HTTP status, or an answer this build could not read. */
+export function wasAnswered(error: unknown): boolean {
+  return error instanceof MalformedAnswerError || apiErrorFacts(error).status !== null;
+}
 
 /** Any 202 is the acknowledgement; only its wait is read (see `DeliveryAcknowledgement`). */
 export function toDeliveryAcknowledgement(wire: unknown): DeliveryAcknowledgement {

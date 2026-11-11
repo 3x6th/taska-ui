@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MemoryStorage } from "../test/memoryStorage";
-import { WorkspaceClosedError, refusalReasons } from "./errors";
+import { WorkspaceClosedError, apiErrorFacts, refusalReasons } from "./errors";
 import { LAST_COMPANY_KEY } from "../lib/lastCompany";
 import {
   LEGACY_ACCESS_TOKEN_KEY,
@@ -15,7 +15,7 @@ import {
 } from "./webSession";
 import type { WorkspaceClosedEvent, WorkspaceLeftEvent, WorkspacePendingEvent, WorkspaceRestrictedEvent } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
-import { ACCOUNT_REVISION_KEY } from "./accountCredentials";
+import { ACCOUNT_REVISION_KEY, MalformedAnswerError, wasAnswered } from "./accountCredentials";
 
 /*
  * The companies build's session layer (TAS-500) against a scripted transport.
@@ -1542,9 +1542,13 @@ describe("the account's credentials: credentials, bodies, proof and the cross-ta
   it("a challenge for another purpose, or without an id, is refused as malformed; a strange delivery is kept as sent", async () => {
     const { client, transport } = await inNorthwind();
     transport.requestAccountEmailChange.mockResolvedValueOnce({ challengeId: "c", purpose: "DELETE_ACCOUNT", expiresAt: "2026-11-11T10:10:00Z", delivery: "EMAIL", maskedDestination: "m" });
-    await expect(client.requestAccountEmailChange("new@example.com", "p", "k1")).rejects.toThrow("no email-change challenge");
+    await expect(client.requestAccountEmailChange("new@example.com", "p", "k1")).rejects.toBeInstanceOf(MalformedAnswerError);
     transport.requestAccountEmailChange.mockResolvedValueOnce({ purpose: "CHANGE_EMAIL" });
-    await expect(client.requestAccountEmailChange("new@example.com", "p", "k2")).rejects.toThrow("no email-change challenge");
+    const malformed = await client.requestAccountEmailChange("new@example.com", "p", "k2").catch((error: unknown) => error);
+    expect(malformed).toBeInstanceOf(MalformedAnswerError);
+    // Answered, with nothing of anybody's server in it: no status, code, id or words.
+    expect(wasAnswered(malformed)).toBe(true);
+    expect(apiErrorFacts(malformed)).toEqual({ message: null, requestId: null, status: null, code: null, details: null });
     transport.requestAccountEmailChange.mockResolvedValueOnce({ challengeId: "c", purpose: "CHANGE_EMAIL", expiresAt: "soon", delivery: "PIGEON" });
     await expect(client.requestAccountEmailChange("new@example.com", "p", "k3")).resolves.toEqual({
       challengeId: "c",
@@ -1554,13 +1558,15 @@ describe("the account's credentials: credentials, bodies, proof and the cross-ta
     });
   });
 
-  it("proof: a 401 that survives a successful rotation is the command's own refusal — answered as it came, nobody signed out (F3)", async () => {
+  it("proof: a 401 that survives a successful rotation is the command's own refusal — the retry's, as it came, nobody signed out (F3)", async () => {
     const { client, transport, local } = await inNorthwind();
     const expired = vi.fn();
     client.onSessionExpired(expired);
-    const first = refusal(401, "AUTHENTICATION_REQUIRED");
-    transport.changeAccountPassword.mockRejectedValueOnce(first).mockRejectedValueOnce(refusal(401, "AUTHENTICATION_REQUIRED"));
-    await expect(client.changeAccountPassword("typo", "a long new password", "key-1")).rejects.toBe(first);
+    // The first may be an expired access token's; the retry's is the command's own, and its id is the one to show.
+    const first = Object.assign(refusal(401, "AUTHENTICATION_REQUIRED"), { requestId: "rid-expired-token" });
+    const second = Object.assign(refusal(401, "AUTHENTICATION_REQUIRED"), { requestId: "rid-the-command" });
+    transport.changeAccountPassword.mockRejectedValueOnce(first).mockRejectedValueOnce(second);
+    await expect(client.changeAccountPassword("typo", "a long new password", "key-1")).rejects.toBe(second);
     // Rotated once, sent twice with the same key and body, and the account lives on.
     expect(transport.refreshWebSession).toHaveBeenCalledTimes(1);
     expect(transport.changeAccountPassword.mock.calls).toEqual([

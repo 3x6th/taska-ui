@@ -170,15 +170,20 @@ describe("the account's credentials on the wire (TAS-527)", () => {
     const api = await inNorthwind();
     const expired = vi.fn();
     api.onSessionExpired(expired);
-    answers["PUT /account/password"] = () =>
-      new Response(JSON.stringify({ title: "Wrong password", status: 401, code: "AUTHENTICATION_REQUIRED", requestId: "rid-401" }), {
+    // The first 401 is an expired access token's, the second the command's own — the one to show.
+    let puts = 0;
+    answers["PUT /account/password"] = () => {
+      puts += 1;
+      const requestId = puts === 1 ? "rid-expired-token" : "rid-the-command";
+      return new Response(JSON.stringify({ title: "Wrong password", status: 401, code: "AUTHENTICATION_REQUIRED", requestId }), {
         status: 401,
         headers: { "Content-Type": "application/problem+json" },
       });
+    };
     const error = await api.changeAccountPassword("typo", "a long new password", "k-p").catch((failure: unknown) => failure);
-    expect(apiErrorFacts(error)).toMatchObject({ status: 401, requestId: "rid-401" });
-    const puts = sent.filter((request) => request.url.endsWith("/account/password"));
-    expect(puts.map((request) => [request.authorization, request.key])).toEqual([
+    expect(apiErrorFacts(error)).toMatchObject({ status: 401, requestId: "rid-the-command" });
+    const sentPuts = sent.filter((request) => request.url.endsWith("/account/password"));
+    expect(sentPuts.map((request) => [request.authorization, request.key])).toEqual([
       ["Bearer g0-access", "k-p"],
       ["Bearer g1-access", "k-p"],
     ]);

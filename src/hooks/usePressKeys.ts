@@ -1,5 +1,5 @@
 import { useMemo, useRef } from "react";
-import { apiErrorFacts } from "../api/errors";
+import { wasAnswered } from "../api/accountCredentials";
 import { newIdempotencyKey } from "../api/tenantCreation";
 
 /**
@@ -26,9 +26,13 @@ export function usePressKeys() {
         pending.current = { key, body: sent };
         return key;
       },
-      /** The press was answered — a success, or a refusal with a status: the next press is a new intent. */
+      /**
+       * The press was answered — a success, a refusal with a status, or an
+       * answer this build could not read (`MalformedAnswerError`): the next
+       * press is a new intent.
+       */
       answered(error?: unknown): void {
-        if (error === undefined || apiErrorFacts(error).status !== null) pending.current = null;
+        if (error === undefined || wasAnswered(error)) pending.current = null;
       },
       /** An edit, «Start over», «Send again»: a new intent, whatever came back before. */
       drop(): void {

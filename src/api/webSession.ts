@@ -1,6 +1,7 @@
 import { clearLastCompany, readLastCompany, writeLastCompany } from "../lib/lastCompany";
 import {
   ACCOUNT_REVISION_KEY,
+  MalformedAnswerError,
   emailChangeConfirmBody,
   emailChangeStartBody,
   passwordChangeBody,
@@ -1202,7 +1203,7 @@ export class WebSessionClient {
     const challenge = toEmailChangeChallenge(
       await this.accountCommand((bearer) => this.transport.requestAccountEmailChange(bearer, body, idempotencyKey)),
     );
-    if (challenge === null) throw new Error("The answer held no email-change challenge.");
+    if (challenge === null) throw new MalformedAnswerError();
     return challenge;
   }
 
@@ -1714,10 +1715,11 @@ export class WebSessionClient {
    * `proof` (TAS-527, api-contract-guard F3) is for a command that carries a
    * credential of its own — the current password: a 401 on the retry **after
    * a rotation that succeeded** proves the account session is alive, so that
-   * 401 is the command's own refusal, and the first one is answered as it
-   * came. Without it the same 401 reads as the account dying, and one typed
-   * password would sign every tab out. A refused rotation is still the
-   * account dying, with `proof` or without.
+   * 401 is the command's own refusal, and it is answered as it came — the
+   * retry's, whose request id is the one that names the refusal (the first
+   * may have been an expired access token's). Without it the same 401 reads as
+   * the account dying, and one typed password would sign every tab out. A
+   * refused rotation is still the account dying, with `proof` or without.
    */
   private async withAccount<T>(send: (bearer: string) => Promise<T>, options: { proof?: boolean } = {}): Promise<T> {
     const account = this.readAccount();
@@ -1735,7 +1737,7 @@ export class WebSessionClient {
         return await send(renewed.accessToken);
       } catch (retryError) {
         if (apiErrorFacts(retryError).status === 401) {
-          if (options.proof === true) throw error;
+          if (options.proof === true) throw retryError;
           throw new AccountGone(true);
         }
         throw retryError;
