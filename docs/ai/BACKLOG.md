@@ -4785,13 +4785,17 @@ Rulings in `docs/ai/reviews/TAS-515-*.md` (git-ignored); divergence in `API-DIVE
   dialog is ruled (art-director B10) and not built.
 - **An AFTER_PAYMENT change is invisible after a reload** (A63): Plan shows no Pending change, and a new selection can
   supersede it unnoticed.
-- **The renewal row is hidden when renewal is on but the paid period has ended** (PAYMENT_EXPIRED without a cancel): no
-  ruling covers it. Builder's proposal: «The paid period ended {date}. To use {Company} again, pay its renewal in Billing
-  or change its plan.» — for art-director.
+- ~~The renewal row is hidden when renewal is on but the paid period has ended~~ — **ruled at build review**: keep it
+  hidden; Plan reads no invoices, and the §4.39 block already says it with «See Billing».
 - **No request-budget pin for opening «Change plan»** (+1 `getSubscription`) in `BillingRequests.test.tsx`.
 - **Pending changes and open intents are module-level, keyed by the company session**: re-entering the company drops
   them (a lost answer then needs a fresh press with a new key).
 - **The mock's renewal calendar issues a RENEWAL for Initech at clock offsets of 25–32 days**: future specs using those
   offsets will see an extra invoice.
-- **A paid NEXT_PERIOD change superseded by a new selection** is dropped without a refund on the mock (edge, not built;
-  develop's answer unknown).
+- **A paid NEXT_PERIOD change superseded by a later AFTER_PAYMENT selection** is forfeited without a refund on develop
+  (`window()` supersedes every GRANTED period on settlement); the UI can't warn — whether a schedule is paid isn't on
+  the wire (A76, A63).
+- **An in-session pending AFTER_PAYMENT change can't be withdrawn** from the dialog (develop allows it by choosing the
+  current plan, SPC 167, 221): pass the pending change into `planChoices` (api-contract-guard L-7).
+- **The vendored gateway `openapi.yml` is one route behind** develop (`GET /tenants/{tenantId}/capabilities`) — fold into
+  the re-vendor line above.

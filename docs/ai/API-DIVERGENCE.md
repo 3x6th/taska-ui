@@ -2362,7 +2362,23 @@ Everything below is the entry as it stood, in the past tense.
     A61.
   - The PLAN_CHANGE invoice is followed only when `PlanChange.invoiceId` is present (develop never sets it); otherwise
     «There's no invoice for this change yet», no Pay. Removal: A62 (with A53, TAS-356).
-  - An AFTER_PAYMENT change is shown only in the session that made it; after a reload nothing. Removal: A63.
+  - An AFTER_PAYMENT change is shown only in the session that made it; after a reload nothing. The in-session row is
+    cleared by a heuristic: a subscription re-read after the acceptance with another version **and** a
+    `scheduledPlanVersionId` (a NEXT_PERIOD selection superseded it — an AFTER_PAYMENT selection nulls the schedule,
+    SPC 315-340), or an entitlement with another version **and** another plan (a FREE move elsewhere). A withdrawal or
+    another AFTER_PAYMENT change made in another tab stays invisible. Removal: A63.
+  - Whether a scheduled change is already paid is not on the wire. Withdrawing it (choosing the current plan) is
+    worded «…dropped — unless it's already paid for; then it still starts on that date.» and the result is read from
+    the re-read subscription. On develop a paid NEXT_PERIOD change cannot be withdrawn: `applied()` keeps the schedule
+    and choosing the current plan is an IMMEDIATE no-op (SPC 221); a later AFTER_PAYMENT selection nulls the schedule
+    but leaves the granted future period, and on its settlement `window()` supersedes every GRANTED period — the paid
+    future period is forfeited without a refund. Removal: A76 (409 or a defined refund path, and a «paid» marker; A63's
+    `state`).
+  - Cancelling renewal does not cancel a scheduled change; a paid one still starts at the boundary (develop reads the
+    renewal flags only in `RenewalCalendar.java:44-73`). With a schedule the copy speaks of «its last paid period», not a
+    date. Removal: A66 extended (decide whether cancelling drops an unpaid schedule).
+  - The PLAN_CHANGE invoice page reads `getEntitlement` once more (owner, `purpose = PLAN_CHANGE`, usually cached) for
+    «… is now on {plan}» and «Until {plan} starts…». Removal: A75 extended to the invoice page, or A43's plan snapshot.
   - `scheduledPlanVersionId` / `scheduledEffectiveAt` are read as the owner's own NEXT_PERIOD change. Removal: A64.
   - Withdrawal of a scheduled change and re-buying under PAYMENT_EXPIRED both go through choosing the current plan
     (`Subscription.planVersionId`), offered only when it equals `Entitlement.planVersionId`. Removal: A74.
@@ -2387,7 +2403,8 @@ Everything below is the entry as it stood, in the past tense.
   → 409 `INVALID_STATE`; `EXPECTED_VERSION_REQUIRED` → 428; FREE admission unavailable → 503 `DEPENDENCY_UNAVAILABLE`);
   the mandate version answered deliberately unequal to the subscription version (it starts at 41; the mandate id is
   derived from the tenant id). The Umbrella Team v1 → v2 «announcement» seed is gone, so Umbrella's seeded renewal
-  01008 now renews Team v1 at €15. Also invented: the AFTER_PAYMENT invoice is due 7 days after the command; cancel
+  01008 now renews Team v1 at €15 (due at its `paidThrough`, not after it). A withdrawal over a **paid** scheduled
+  change is an IMMEDIATE no-op that keeps the schedule, as on develop. Also invented: the AFTER_PAYMENT invoice is due 7 days after the command; cancel
   needs a current paid period and resume accepts an ended one (else 409 `INVALID_STATE`), and both move the version
   even when nothing changes (A72); a withdrawal is IMMEDIATE, drops the schedule and VOIDs the older PLAN_CHANGE invoice
   but not a RENEWAL; VOIDing an invoice expires its open checkouts; Paid → FREE also lifts PAYMENT_EXPIRED; FREE → FREE
@@ -2400,8 +2417,8 @@ Everything below is the entry as it stood, in the past tense.
   The FREE ledger stays as in the fixtures: Tom keeps his allowance (Umbrella → Free applies at once); the refusal is
   Priya on the long-named company. Fixed in the mock: PLAN_CHANGE settled like a renewal (F1), a scheduled plan applied
   without payment (F2), a dispute leaving autopay on (F7).
-- **Turning the flag on** additionally needs TAS-354 and TAS-355 behind a gateway REST route, and asks A62, A63, A65
-  and A70 answered; «Turn on» needs A67.
+- **Turning the flag on** additionally needs TAS-354 and TAS-355 behind a gateway REST route, and asks A62, A63, A65,
+  A70 and A76 answered; «Turn on» needs A67.
 - **Removal:** with the flag, after a stand probe — Free → immediate with no Paid until; cheaper → invoice → PAID → a
   new month; dearer → scheduled → paid → switch at the date; cancel → read-only at the end; 412 from a second tab;
   a same-key replay returns the same answer.
