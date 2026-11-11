@@ -43,7 +43,8 @@ const {
     /** Counts by project, `null` where the answer carries none; a count not stated here is the default. */
     counts: Record<string, { issueCount?: number | null; memberCount?: number | null }>;
     /** The member preview by project, when a test needs other than one row. */
-    previews: Record<string, { userId: string; displayName: string }[]>;
+    /** A row with `deleted` is a deleted account's (TAS-529): the mark, and no `user`. */
+    previews: Record<string, { userId: string; displayName: string; deleted?: true }[]>;
     statsReads: number;
     /** Projects added after the first read, as a create would. */
     added: string[];
@@ -163,12 +164,16 @@ const {
           projectId,
           issueCount: state.counts[projectId]?.issueCount !== undefined ? state.counts[projectId].issueCount : (issueCounts[projectId] ?? 0),
           memberCount: state.counts[projectId]?.memberCount !== undefined ? state.counts[projectId].memberCount : 1,
-          members: (state.previews[projectId] ?? [{ userId: "user-anna", displayName: "Anna Ivanova" }]).map((row) => ({
-            userId: row.userId,
-            role: "MEMBER" as const,
-            addedAt: now,
-            user: { displayName: row.displayName, email: `${row.userId}@example.com`, avatarUrl: null },
-          })),
+          members: (state.previews[projectId] ?? [{ userId: "user-anna", displayName: "Anna Ivanova" }]).map((row) =>
+            row.deleted
+              ? { userId: row.userId, role: "MEMBER" as const, addedAt: now, deleted: true as const }
+              : {
+                  userId: row.userId,
+                  role: "MEMBER" as const,
+                  addedAt: now,
+                  user: { displayName: row.displayName, email: `${row.userId}@example.com`, avatarUrl: null },
+                },
+          ),
         }));
     },
     updateProject: async (projectId: string, input: Record<string, unknown>) => {
@@ -230,7 +235,7 @@ const {
     statsCountsFor: (projectId: string, counts: { issueCount?: number | null; memberCount?: number | null }) => {
       state.counts[projectId] = { ...state.counts[projectId], ...counts };
     },
-    previewFor: (projectId: string, rows: { userId: string; displayName: string }[]) => {
+    previewFor: (projectId: string, rows: { userId: string; displayName: string; deleted?: true }[]) => {
       state.previews[projectId] = rows;
     },
     statsReads: () => state.statsReads,
@@ -426,6 +431,25 @@ describe("project cards state what they know", () => {
     ]);
     expect(alpha).toHaveAccessibleName(/12 members/);
     expect(within(alpha).queryByText(/\+\d/)).not.toBeInTheDocument();
+  });
+
+  it("draws a deleted account's face in its place in the stack, as the neutral circle (TAS-529)", async () => {
+    previewFor("project-a", [
+      { userId: "user-anna", displayName: "Anna Ivanova" },
+      { userId: "user-sofia", displayName: "ignored", deleted: true },
+      { userId: "user-tom", displayName: "Tom Baker" },
+    ]);
+    statsCountsFor("project-a", { memberCount: 3 });
+    renderProjects();
+
+    const alpha = await findCard("Alpha");
+    await waitFor(() => expect(alpha.querySelectorAll(".avatar-stack .avatar")).toHaveLength(3));
+    const faces = [...alpha.querySelectorAll(".avatar-stack .avatar")];
+    expect(faces.map((face) => face.getAttribute("aria-label"))).toEqual(["Anna Ivanova", "Deleted user", "Tom Baker"]);
+    expect(faces[1]).toHaveClass("avatar-deleted");
+    expect(faces[1].getAttribute("style")).toBeNull();
+    expect(faces[1].textContent).toBe("");
+    expect(alpha).toHaveAccessibleName(/3 members/);
   });
 
   // Loading and unknown were the same em dash, so every visit began by telling

@@ -13,7 +13,9 @@ import type { DirectoryUser, GlobalRole, Project, ProjectMember, ProjectRole } f
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useUnanswered } from "../hooks/useUnanswered";
 import { PROJECT_STATS_KEY } from "../lib/boardQuery";
+import { DELETED_USER, DELETED_USER_IN_SENTENCE } from "../lib/deletedUser";
 import { keyBadgeStyle } from "../lib/format";
+import { deletedPerson } from "../lib/people";
 import { projectContextKey } from "../lib/projectContext";
 import { shortKey } from "../screens/admin/columns";
 import type { Membership } from "../api/tenantMembers";
@@ -72,8 +74,10 @@ interface MemberSubject {
   self: boolean;
 }
 
-function subjectOf(member: Pick<ProjectMember, "userId" | "user">, currentUserId?: string): MemberSubject {
+function subjectOf(member: Pick<ProjectMember, "userId" | "user" | "deleted">, currentUserId?: string): MemberSubject {
   const self = currentUserId !== undefined && member.userId === currentUserId;
+  // A deleted account (TAS-529): the UI's own two words, never an id or a name.
+  if (member.deleted) return { name: DELETED_USER, inSentence: DELETED_USER_IN_SENTENCE, self: false };
   if (member.user) return { name: member.user.displayName, inSentence: member.user.displayName, self };
   const id = shortKey(member.userId);
   return { name: `The member with ID ${id}`, inSentence: `the member with ID ${id}`, self };
@@ -131,7 +135,13 @@ type PendingConfirm = { kind: "remove"; userId: string } | { kind: "demote"; use
  *   anybody, and stop being protected as the last admin with one.
  */
 interface RowControls {
-  frozen: { unnamedAdmins: number } | null;
+  /**
+   * `deletedAdmins` (TAS-529, art-director B9): ADMIN rows of deleted
+   * accounts beside a frozen admin. Like a row with no account, such a row
+   * covers nobody — the server still counts it — and it is named for what it
+   * is in the note rather than called an ID.
+   */
+  frozen: { unnamedAdmins: number; deletedAdmins: number } | null;
   canChangeRole: boolean;
   canRemove: boolean;
 }
@@ -1316,6 +1326,7 @@ function MemberRow({
   const confirmId = useId();
   const cancelButton = useRef<HTMLButtonElement | null>(null);
   const named = Boolean(member.user);
+  const deleted = member.deleted === true;
   // The reader's own row stands for an account even when the read named nobody
   // on it: they are signed in (see `RowControls`).
   const withAccount = named || subject.self;
@@ -1363,7 +1374,9 @@ function MemberRow({
         label={named ? undefined : subject.self ? "You" : "Unknown"}
         size="sm"
         user={
-          member.user
+          deleted
+            ? deletedPerson(member.userId)
+            : member.user
             ? {
                 id: member.userId,
                 displayName: member.user.displayName,
@@ -1374,11 +1387,13 @@ function MemberRow({
         }
       />
       <span className="member-who">
-        <span className="member-name">
-          {named ? member.user?.displayName : subject.self ? "You" : "Unknown"}
+        <span className={`member-name${deleted ? " person-deleted" : ""}`}>
+          {deleted ? DELETED_USER : named ? member.user?.displayName : subject.self ? "You" : "Unknown"}
           {subject.self && named ? <span className="member-you"> (you)</span> : null}
         </span>
-        {named ? (
+        {/* One line for a deleted account (TAS-529, art-director §5): no
+            address and no id — nothing the account carried. */}
+        {deleted ? null : named ? (
           member.user?.email ? <span className="member-line">{member.user.email}</span> : null
         ) : withAccount ? (
           // The reader's own row with no name on it: their id, and no sentence
@@ -1435,7 +1450,9 @@ function MemberRow({
         <span aria-hidden="true" className="member-remove-slot" />
       ) : null}
 
-      {isProjectAdmin && frozen ? <p className="member-row-note">{frozenNoteText(subject, frozen.unnamedAdmins)}</p> : null}
+      {isProjectAdmin && frozen ? (
+        <p className="member-row-note">{frozenNoteText(subject, frozen.unnamedAdmins, frozen.deletedAdmins)}</p>
+      ) : null}
 
       {confirm ? (
         <div className="member-confirm" id={confirmId}>
@@ -1500,6 +1517,9 @@ function isSettledAdmin(member: ProjectMember, rolesInFlight: RolesInFlight): bo
  */
 function rowControls(member: ProjectMember, guard: AdminGuard): RowControls {
   const { members, rolesInFlight, currentUserId, isProjectAdmin } = guard;
+  // A deleted account's row offers nothing (TAS-529, art-director B6) — a
+  // presentation choice: the server would take an ordinary removal of it.
+  if (member.deleted) return { frozen: null, canChangeRole: false, canRemove: false };
   const withAccount = hasAccount(member, currentUserId);
   const cover = members.filter(
     (other) =>
@@ -1508,9 +1528,13 @@ function rowControls(member: ProjectMember, guard: AdminGuard): RowControls {
       (!withAccount || hasAccount(other, currentUserId)),
   ).length;
   const unnamedAdmins = members.filter(
-    (other) => other.role === "ADMIN" && !hasAccount(other, currentUserId),
+    (other) => other.role === "ADMIN" && !other.deleted && !hasAccount(other, currentUserId),
   ).length;
-  const frozen = member.role === "ADMIN" && cover === 0 ? { unnamedAdmins: withAccount ? unnamedAdmins : 0 } : null;
+  const deletedAdmins = members.filter((other) => other.role === "ADMIN" && other.deleted).length;
+  const frozen =
+    member.role === "ADMIN" && cover === 0
+      ? { unnamedAdmins: withAccount ? unnamedAdmins : 0, deletedAdmins: withAccount ? deletedAdmins : 0 }
+      : null;
   return {
     frozen,
     // A role select only for a person: a row with no account has nobody to give
@@ -1548,16 +1572,27 @@ const ARCHIVED_BEFORE_CONFIRM_TEXT = "This project was archived before you confi
  * rows are ids no account came back for, which the server would count and
  * nobody can sign in as.
  */
-function frozenNoteText(subject: MemberSubject, unnamedAdmins: number): string {
-  if (unnamedAdmins === 0) {
+function frozenNoteText(subject: MemberSubject, unnamedAdmins: number, deletedAdmins = 0): string {
+  if (unnamedAdmins === 0 && deletedAdmins === 0) {
     return subject.self
       ? "You are this project’s only admin, so your role cannot change and you cannot be removed until someone else is an admin."
       : `${subject.name} is this project’s only admin, so this role cannot change and they cannot be removed until someone else is an admin.`;
   }
-  const others = unnamedAdmins === 1 ? "the other admin is an ID" : "the other admins are IDs";
+  // Who the other admin rows are: IDs no account came back for, deleted
+  // accounts (TAS-529), or both.
+  const others =
+    deletedAdmins === 0
+      ? unnamedAdmins === 1
+        ? "the other admin is an ID no account came back for"
+        : "the other admins are IDs no account came back for"
+      : unnamedAdmins === 0
+        ? deletedAdmins === 1
+          ? "the other admin is a deleted user"
+          : "the other admins are deleted users"
+        : "the other admins are deleted users or IDs no account came back for";
   return subject.self
-    ? `You are this project’s only admin with an account — ${others} no account came back for — so your role cannot change and you cannot be removed until someone with an account is an admin.`
-    : `${subject.name} is this project’s only admin with an account — ${others} no account came back for — so this role cannot change and they cannot be removed until someone with an account is an admin.`;
+    ? `You are this project’s only admin with an account — ${others} — so your role cannot change and you cannot be removed until someone with an account is an admin.`
+    : `${subject.name} is this project’s only admin with an account — ${others} — so this role cannot change and they cannot be removed until someone with an account is an admin.`;
 }
 
 /**

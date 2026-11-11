@@ -337,6 +337,34 @@ describe("the work log section", () => {
     expect(gone.querySelector(".avatar")).toHaveAttribute("aria-label", "Unknown");
   });
 
+  // TAS-529: a deleted account is «Deleted user» in the head, on §4.4's
+  // neutral circle, and «a deleted user» inside the row's accessible names;
+  // what the reader may do with the entry does not change.
+  it("names a deleted author by the mark alone, «a deleted user» in the sentences, the permissions unchanged", async () => {
+    state.worklogs = [
+      {
+        ...entry,
+        id: "w-d",
+        authorUserId: "u-sofia",
+        author: { id: "u-sofia", displayName: null, avatarUrl: null, deleted: true },
+        comment: "By a deleted account",
+      },
+    ];
+    renderSection({ isProjectAdmin: true });
+
+    const row = (await screen.findByText("By a deleted account")).closest("li") as HTMLElement;
+    const head = row.querySelector(".worklog-head strong");
+    expect(head).toHaveTextContent(/^Deleted user$/);
+    expect(head).toHaveClass("person-deleted");
+    const circle = row.querySelector(".avatar");
+    expect(circle).toHaveClass("avatar-deleted");
+    expect(circle).toHaveAttribute("aria-label", "Deleted user");
+    expect(circle?.getAttribute("style")).toBeNull();
+    const edit = within(row).getByRole("button", { name: /^Edit / });
+    expect(edit.getAttribute("aria-label")).toMatch(/ by a deleted user$/);
+    expect(within(row).getByRole("button", { name: /^Delete / }).getAttribute("aria-label")).toMatch(/ by a deleted user$/);
+  });
+
   it("keeps a row's author when the edit's answer leaves it out", async () => {
     state.worklogs = [{ ...entry, authorUserId: "u-former", author: { id: "u-former", displayName: "Former Member", avatarUrl: null, deleted: false } }];
     state.updateAnswer = { ...entry, authorUserId: "u-former", spentMinutes: 60 };

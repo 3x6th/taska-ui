@@ -6,8 +6,9 @@ import { refusalWords } from "../lib/projectArchive";
 import type { AddIssueWorklogInput, UpdateIssueWorklogInput } from "../api/TaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE, WORKLOG_COMMENT_MAX_LENGTH } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
-import type { IssueWorklog, IssueWorklogPage, User } from "../domain/types";
-import { personFor } from "../lib/people";
+import type { IssueWorklog, IssueWorklogPage } from "../domain/types";
+import { DELETED_USER_IN_SENTENCE } from "../lib/deletedUser";
+import { personFor, type Person } from "../lib/people";
 import { formatDuration } from "../lib/planning";
 import {
   WORKLOG_DURATION_HINT,
@@ -35,8 +36,6 @@ import { ErrorNote } from "./ErrorNote";
 import { issueWorklogsKey, issueWorklogsOptions, type IssueWorklogPages } from "./issueWorklogsQuery";
 import { RequestId } from "./RequestId";
 import { Unknown } from "./Unknown";
-
-type Person = Pick<User, "id" | "displayName" | "color" | "avatarUrl">;
 
 /** The id an optimistic entry carries until the server answers. No server row can have it. */
 const optimisticWorklogPrefix = "tk-optimistic-worklog-";
@@ -105,7 +104,7 @@ export function IssueWorklogSection({
    */
   archived?: boolean;
   currentUserId?: string;
-  userById: Map<string, Person>;
+  userById: ReadonlyMap<string, Person>;
   /** The panel started this read before the section mounted; whatever it answered is not asked again on mount. */
   prefetched: boolean;
   /** The panel's issue-write queue (see above). */
@@ -560,7 +559,9 @@ function WorklogRow({
   // §4.15's word for a person nobody here can name — the comments and the
   // watchers say the same.
   const name = author?.displayName ?? "Unknown";
-  const what = `${duration} logged on ${day} by ${name}`;
+  // A sentence about a deleted author takes «a deleted user» (TAS-529, §1),
+  // never the name slot's capitalised «Deleted user».
+  const what = `${duration} logged on ${day} by ${author?.deleted ? DELETED_USER_IN_SENTENCE : name}`;
   const problems = editing?.attempted ? worklogDraftProblems(editing.draft, today, worklog.workDate) : {};
 
   return (
@@ -585,7 +586,7 @@ function WorklogRow({
         }}
       >
         <p className="worklog-head">
-          <strong>{name}</strong>
+          <strong className={author?.deleted ? "person-deleted" : undefined}>{name}</strong>
           <span className="worklog-duration">{duration}</span>
           <time dateTime={worklog.workDate}>{day}</time>
         </p>

@@ -82,7 +82,8 @@ import { UserProfileMenu } from "../components/UserProfileMenu";
 import { useMeta } from "../hooks/useMeta";
 import { carriesFiles, closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
 import { focusLost, tabbables } from "../lib/focusTrap";
-import { personFor, type NamedBy, type Person } from "../lib/people";
+import { DELETED_USER, DELETED_USER_IN_SENTENCE } from "../lib/deletedUser";
+import { deletedPerson, personFor, type NamedBy, type Person } from "../lib/people";
 import {
   BOARD_PAGE_SIZE_PER_COLUMN,
   NO_BOARD_FILTERS,
@@ -128,7 +129,6 @@ import type {
   ProjectIssueType,
   ProjectMember,
   ProjectWorkflow,
-  User,
   WorkflowStatus,
   WorkflowTransition,
 } from "../domain/types";
@@ -1265,7 +1265,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           All
         </button>
         <div className="assignee-row">
-          {members.map((member) => (
+          {/* A deleted account's row is not drawn (TAS-529, art-director B7):
+              nobody can be picked out by a circle that names nobody. */}
+          {members.filter((member) => !member.deleted).map((member) => (
             <button
               className={`avatar-filter ${assigneeFilter === member.userId ? "is-active" : ""}`}
               key={member.userId}
@@ -2117,9 +2119,14 @@ function IssueCard({
  * still somebody: a filled circle in the id's palette, no initials, called
  * "Unknown assignee" — never the dashed empty circle, which says nobody is
  * assigned. No card is ever named from anywhere but the board read.
+ *
+ * A deleted account (TAS-529) — marked so by the board read, or by the
+ * context's member row of the same id — is §4.4's neutral circle, «Deleted
+ * user», and borrows nothing: not the member row's colour, not a picture.
  */
 function CardFace({ assignee, userById }: { assignee: BoardIssue["assignee"]; userById: ReadonlyMap<string, Person> }) {
   if (!assignee) return <Avatar size="sm" />;
+  if (assignee.deleted || userById.get(assignee.id)?.deleted) return <Avatar size="sm" user={deletedPerson(assignee.id)} />;
   if (assignee.displayName === null) {
     return <Avatar hideInitials label="Unknown assignee" size="sm" user={{ id: assignee.id, displayName: "Unknown assignee", avatarUrl: null }} />;
   }
@@ -2342,7 +2349,7 @@ function IssuePanel({
    * as an answer rather than simply leaving a row bare.
    */
   membersUnknown: boolean;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  userById: ReadonlyMap<string, Person>;
   canEdit: boolean;
   /**
    * Narrower than `canEdit`, and read by two sections, not one. The
@@ -2975,6 +2982,18 @@ function IssuePanel({
   // Named by the issue read itself since TAS-246; the member list is the
   // fallback for a summary the server could not fill (`personFor`).
   const reporter = personFor(issue.reporterId, issue.reporter, userById);
+  // The member chips (TAS-226): the people the server takes as an assignee,
+  // and the current assignee whatever their role now. Never a deleted
+  // account's row (TAS-529, art-director B7) — it is nobody to assign.
+  const assigneeChips = members.filter(
+    (member) => !member.deleted && (canBeAssigned(member) || member.userId === issue.assigneeId),
+  );
+  // Only once the member read has answered: before that every assignee is "not
+  // a member chip", and the chip would jump into the row and out again.
+  const heldBy =
+    membersAnswered && issue.assigneeId && !assigneeChips.some((member) => member.userId === issue.assigneeId)
+      ? heldByChip(issue.assigneeId, issue.assignee, userById)
+      : null;
   // Every word the panel says about a code: the type's from the registry by
   // §6's type rule (TAS-417), the rest by the one label rule (TAS-173).
   const typeShown = shownType ?? issue.issueType;
@@ -3431,6 +3450,24 @@ function IssuePanel({
               }}
               user={null}
             />
+            {/* The current assignee when no member chip below is them
+                (TAS-529, art-director B5): somebody no longer on the
+                project, or a deleted account — whose row is never offered.
+                Drawn from the issue read itself, which names them (or marks
+                them), with no read of its own: one chip right after "None",
+                active, and a real `disabled` — pressing it would send the
+                assignment again — so it is not a Tab stop and "None" stays
+                the way to clear it. */}
+            {heldBy ? (
+              <AssigneeChip
+                active
+                disabled
+                hideInitials={heldBy.unnamed}
+                label={heldBy.label}
+                onClick={() => undefined}
+                user={heldBy.person}
+              />
+            ) : null}
             {/* Offered only to the people the server takes as an assignee
                 (`canBeAssigned`), where every member used to get a chip and a
                 VIEWER's was a request the server refuses.
@@ -3441,35 +3478,34 @@ function IssuePanel({
                 assignment, not an offer — `disabled`, because pressing an
                 active chip sends the assignment again, and for this person
                 that is the refused request. The board's assignee filter keeps
-                everyone: it asks who holds an issue, not who may. */}
-            {members
-              .filter((member) => canBeAssigned(member) || member.userId === issue.assigneeId)
-              .map((member) => {
-                const assignable = canBeAssigned(member);
-                return (
-                  <AssigneeChip
-                    active={issue.assigneeId === member.userId}
-                    disabled={!canEdit || !assignable}
-                    key={member.userId}
-                    label={member.user?.displayName.split(" ")[0] ?? "User"}
-                    onClick={() => {
-                      if (canEdit && assignable) editIssue({ assigneeId: member.userId });
-                    }}
-                    user={
-                      member.user
-                        ? {
-                            id: member.userId,
-                            displayName: member.user.displayName,
-                            color: member.user.color,
-                            // Same row, same reason as the filter above: the
-                            // picture is already in hand.
-                            avatarUrl: member.user.avatarUrl,
-                          }
-                        : null
-                    }
-                  />
-                );
-              })}
+                everyone but a deleted account: it asks who holds an issue, not
+                who may. */}
+            {assigneeChips.map((member) => {
+              const assignable = canBeAssigned(member);
+              return (
+                <AssigneeChip
+                  active={issue.assigneeId === member.userId}
+                  disabled={!canEdit || !assignable}
+                  key={member.userId}
+                  label={member.user?.displayName.split(" ")[0] ?? "User"}
+                  onClick={() => {
+                    if (canEdit && assignable) editIssue({ assigneeId: member.userId });
+                  }}
+                  user={
+                    member.user
+                      ? {
+                          id: member.userId,
+                          displayName: member.user.displayName,
+                          color: member.user.color,
+                          // Same row, same reason as the filter above: the
+                          // picture is already in hand.
+                          avatarUrl: member.user.avatarUrl,
+                        }
+                      : null
+                  }
+                />
+              );
+            })}
           </div>
           <span id={typeRowId}>Type</span>
           {canEdit ? (
@@ -3519,7 +3555,10 @@ function IssuePanel({
           </div>
           <span>Reporter</span>
           <div className="person-line">
-            <Avatar user={reporter} size="sm" />
+            {/* Labelled like the name beside it (art-director N1, TAS-529):
+                without it an unnamed reporter's circle announced
+                "Unassigned". */}
+            <Avatar label="Unknown" user={reporter} size="sm" />
             <strong>{reporter?.displayName ?? "Unknown"}</strong>
           </div>
           <span>Created</span>
@@ -3870,7 +3909,7 @@ function IssueWatchersSection({
   /** The member read answered. Three states, not two — see the panel's own prop. */
   membersAnswered: boolean;
   membersUnknown: boolean;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  userById: ReadonlyMap<string, Person>;
   /**
    * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}` as this
    * section uses them: to add or remove *somebody else*, which the server allows
@@ -3958,7 +3997,8 @@ function IssueWatchersSection({
       watchers.find((watcher) => watcher.userId === userId),
     );
   const subscribed = useMemo(() => new Set(watchers.map((watcher) => watcher.userId)), [watchers]);
-  const addable = members.filter((member) => !subscribed.has(member.userId));
+  // Never a deleted account's row (TAS-529, art-director B7): nobody to subscribe.
+  const addable = members.filter((member) => !member.deleted && !subscribed.has(member.userId));
 
   /**
    * One write, and the issue read re-asked — which since TAS-246 is where the
@@ -4122,7 +4162,11 @@ function IssueWatchersSection({
   const planFocusHandoff = (userId: string) => {
     const leaving = rowButtons.current.get(userId);
     if (!leaving || document.activeElement !== leaving) return;
-    const list = watchersCache.get()?.watchers ?? [];
+    // Among the rows that have a ✕ to land on: a deleted account's row has
+    // none (TAS-529), so the next one that does — else the heading.
+    const list = (watchersCache.get()?.watchers ?? []).filter(
+      (watcher) => watcher.userId === userId || rowButtons.current.has(watcherRowKey(watcher)),
+    );
     const index = list.findIndex((watcher) => watcher.userId === userId);
     if (index < 0) return;
     const neighbour = list[index + 1] ?? list[index - 1];
@@ -4429,7 +4473,7 @@ function IssueWatchersSection({
             // "You" also makes the "(you)" beside it a tautology, so the mark
             // goes: it exists to pick the reader out of a list of names, and
             // there is no name here to pick out of.
-            const { name, named, reader } = watcherSubject(userById, watcher.userId, currentUserId, watcher);
+            const { name, named, reader, deleted } = watcherSubject(userById, watcher.userId, currentUserId, watcher);
             const pending = watcher.id === optimisticWatcherId;
             const removing = removeWatcher.isPending && removeWatcher.variables === watcher.userId;
             const key = watcherRowKey(watcher);
@@ -4458,11 +4502,15 @@ function IssueWatchersSection({
                     the circle to exist at all, so a static capture of this row
                     is unchanged. */}
                 <Avatar user={person} label={name} size="sm" />
-                <span className="watcher-name">
+                <span className={`watcher-name${deleted ? " person-deleted" : ""}`}>
                   {name}
-                  {mine && person ? <span className="watcher-you"> (you)</span> : null}
+                  {mine && person && !deleted ? <span className="watcher-you"> (you)</span> : null}
                 </span>
-                {isProjectAdmin ? (
+                {/* A deleted account's row offers nothing (TAS-529, art-director
+                    B6): the subscription stays the server's to clear, and the
+                    ✕'s place is kept, empty, so the names keep their column. */}
+                {isProjectAdmin && deleted ? <span aria-hidden="true" className="watcher-remove-slot" /> : null}
+                {isProjectAdmin && !deleted ? (
                   <button
                     // Three arms for `watcherSubject`'s three states, in its
                     // order and on its own flags. This was the last of the
@@ -4576,21 +4624,24 @@ function IssueWatchersSection({
  * `named: true`, for the reason the lookup below gives.
  */
 function watcherSubject(
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>,
+  userById: ReadonlyMap<string, Person>,
   userId: string,
   currentUserId?: string,
   row?: NamedBy,
-): { name: string; named: boolean; reader: boolean } {
+): { name: string; named: boolean; reader: boolean; deleted: boolean } {
   // The row's own name first, since TAS-246 — the server's answer about the
   // person, carried with the read being drawn — then the member map, through
   // the one function every person on the panel is resolved by. For the map,
   // whether it *has* them, never whether the name it holds is non-empty: an
   // empty `displayName` on a member row is the server's answer about that
   // person, and this section is not the place that overrides it.
+  //
+  // A deleted account (TAS-529) is `personFor`'s first answer: «Deleted user»,
+  // and `deleted` so the row draws no ✕ and no "(you)".
   const person = personFor(userId, row, userById);
-  if (person) return { name: person.displayName, named: true, reader: false };
-  if (currentUserId && userId === currentUserId) return { name: "You", named: false, reader: true };
-  return { name: "Unknown", named: false, reader: false };
+  if (person) return { name: person.displayName, named: true, reader: false, deleted: person.deleted === true };
+  if (currentUserId && userId === currentUserId) return { name: "You", named: false, reader: true, deleted: false };
+  return { name: "Unknown", named: false, reader: false, deleted: false };
 }
 
 /**
@@ -5230,7 +5281,7 @@ function IssueAttachmentsSection({
   canEdit: boolean;
   isProjectAdmin: boolean;
   currentUserId?: string;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  userById: ReadonlyMap<string, Person>;
 }) {
   const queryClient = useQueryClient();
   // The companies build (TAS-512): the company a refusal names, and the plan reads an upload's refusal re-reads (B4).
@@ -5977,7 +6028,7 @@ function CommentsSection({
    */
   archived: boolean;
   currentUserId?: string;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  userById: ReadonlyMap<string, Person>;
   /**
    * The panel started this read before the section mounted, so whatever that
    * read answered — a failure too — is not asked again on mount. See
@@ -6200,7 +6251,7 @@ function CommentItem({
   onAcceptConfirm,
 }: {
   comment: IssueComment;
-  author?: Pick<User, "id" | "displayName" | "color" | "avatarUrl">;
+  author?: Person;
   canManage: boolean;
   editing: boolean;
   /** This row's Delete has asked, and its strip is open. */
@@ -6252,7 +6303,7 @@ function CommentItem({
         }}
       >
         <p className="comment-head">
-          <strong>{author?.displayName ?? "Unknown"}</strong>
+          <strong className={author?.deleted ? "person-deleted" : undefined}>{author?.displayName ?? "Unknown"}</strong>
           {via ? <span className="via-mark">{via}</span> : null}
           <time>{when}</time>
           {/* Not `comment.updatedAt &&`: the server stamps that field on insert
@@ -6360,28 +6411,55 @@ function AssigneeChip({
   active,
   disabled,
   ariaDisabled = false,
+  hideInitials = false,
   onClick,
 }: {
-  user: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
+  user: Person | null;
   label: string;
   active: boolean;
   disabled: boolean;
   /** Pressable, focusable, and announced as unavailable; `onClick` has to refuse the press itself. */
   ariaDisabled?: boolean;
+  /** A person the server did not name: the id's fill, no initials (TAS-202's N3). */
+  hideInitials?: boolean;
   onClick: () => void;
 }) {
   return (
+    // `aria-pressed` and a decorative circle (art-director N2, TAS-529): the
+    // chip is a toggle among the assignees, and its label already says who —
+    // the circle's own name made every chip announce its person twice.
     <button
       aria-disabled={ariaDisabled || undefined}
+      aria-pressed={active}
       className={`assignee-chip ${active ? "is-active" : ""}`}
       disabled={disabled}
       onClick={onClick}
       type="button"
     >
-      <Avatar user={user} size="sm" />
+      <Avatar decorative hideInitials={hideInitials} user={user} size="sm" />
       <span>{label}</span>
     </button>
   );
+}
+
+/**
+ * The chip for an assignee no member chip stands for (TAS-529, art-director
+ * B5) — out of the issue read alone. A deleted account (the mark on the
+ * summary, or on the context's row of the id) is «Deleted user» on §4.4's
+ * neutral circle; somebody the read names is their name on their own circle,
+ * by the chips' first-name rule; somebody it does not name is «Unknown» on the
+ * id's fill without initials — never the dashed circle, which is "None".
+ * Neither word is ever split.
+ */
+function heldByChip(
+  assigneeId: string,
+  assignee: NamedBy | null | undefined,
+  userById: ReadonlyMap<string, Person>,
+): { person: Person; label: string; unnamed: boolean } {
+  const person = personFor(assigneeId, assignee, userById);
+  if (person?.deleted) return { person, label: DELETED_USER, unnamed: false };
+  if (person) return { person, label: person.displayName.split(" ")[0] || person.displayName, unnamed: false };
+  return { person: { id: assigneeId, displayName: "Unknown", avatarUrl: null }, label: "Unknown", unnamed: true };
 }
 
 /**
@@ -6430,7 +6508,7 @@ function ActivitySection({
   priorities,
 }: {
   history: IssueHistoryEvent[];
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  userById: ReadonlyMap<string, Person>;
   /** The issue's workflow statuses, which name a status the build has no word for. */
   statuses?: readonly WorkflowStatus[];
   /** `GET /meta`'s priorities, which name a priority the build has no word for. */
@@ -6489,8 +6567,8 @@ function ActivityItem({
   isLast,
 }: {
   event: IssueHistoryEvent;
-  user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl">;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  user?: Person;
+  userById: ReadonlyMap<string, Person>;
   names: HistoryNames;
   isLast: boolean;
 }) {
@@ -6510,7 +6588,8 @@ function ActivityItem({
       <Avatar user={user} label="Unknown" size="sm" />
       <div>
         <p>
-          <strong>{user?.displayName ?? "Unknown"}</strong> {historyText(event, userById, names)}
+          <strong className={user?.deleted ? "person-deleted" : undefined}>{user?.displayName ?? "Unknown"}</strong>{" "}
+          {historyText(event, userById, names)}
         </p>
         {via ? (
           <div className="activity-meta">
@@ -7829,31 +7908,34 @@ function CreateIssueModal({
   );
 }
 
-function toUserMap(members: ProjectMember[]) {
-  return new Map(
-    members
-      .filter((member) => member.user)
-      .map((member) => [
-        member.userId,
-        {
-          // The membership row carries the id, the nested summary does not —
-          // and the id is what an avatar's colour is computed from.
-          id: member.userId,
-          displayName: member.user!.displayName,
-          color: member.user!.color,
-          // Straight off the member row, which declares it inline
-          // (`ProjectMemberDetailsDto.avatar`, docs/contract/openapi.yml) — so
-          // every face this map draws costs nothing beyond the one member read
-          // the board already makes. The server fills it since TAS-225 (see
-          // `User.avatarUrl`), and the reader's own new face shows through the
-          // profile menu's cache write before the next member refetch brings
-          // it. Nothing here ever asks
-          // `GET /users/{userId}/avatar`, which would be one request per person
-          // on the board.
-          avatarUrl: member.user!.avatarUrl,
-        },
-      ]),
-  );
+function toUserMap(members: ProjectMember[]): Map<string, Person> {
+  const people = new Map<string, Person>();
+  for (const member of members) {
+    // A deleted account's row (TAS-529) is in the map as the mark alone, so
+    // `personFor` answers «Deleted user» for that id before it could fall back
+    // to anything older.
+    if (member.deleted) people.set(member.userId, deletedPerson(member.userId));
+    else if (member.user) {
+      people.set(member.userId, {
+        // The membership row carries the id, the nested summary does not —
+        // and the id is what an avatar's colour is computed from.
+        id: member.userId,
+        displayName: member.user.displayName,
+        color: member.user.color,
+        // Straight off the member row, which declares it inline
+        // (`ProjectMemberDetailsDto.avatar`, docs/contract/openapi.yml) — so
+        // every face this map draws costs nothing beyond the one member read
+        // the board already makes. The server fills it since TAS-225 (see
+        // `User.avatarUrl`), and the reader's own new face shows through the
+        // profile menu's cache write before the next member refetch brings
+        // it. Nothing here ever asks
+        // `GET /users/{userId}/avatar`, which would be one request per person
+        // on the board.
+        avatarUrl: member.user.avatarUrl,
+      });
+    }
+  }
+  return people;
 }
 
 /** What names a code in the activity feed beyond the build's own words (TAS-173). */
@@ -7864,7 +7946,7 @@ interface HistoryNames {
 
 function historyText(
   event: IssueHistoryEvent,
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>,
+  userById: ReadonlyMap<string, Person>,
   names: HistoryNames = {},
 ) {
   if (event.eventType === "CREATED") return "created this issue";
@@ -7881,8 +7963,10 @@ function historyText(
     const assigneeId = event.payload.to ?? event.payload.assigneeId;
     if (!assigneeId || typeof assigneeId !== "string") return "cleared the assignee";
     // The event's own summary of the person first — a former member included
-    // (backend TAS-431, `participants`) — then the member list (§4.26).
-    return `assigned ${personFor(assigneeId, event.participants?.[assigneeId], userById)?.displayName || "someone"}`;
+    // (backend TAS-431, `participants`) — then the member list (§4.26). A
+    // deleted account is the sentence's own words, never a name (TAS-529).
+    const assigned = personFor(assigneeId, event.participants?.[assigneeId], userById);
+    return `assigned ${assigned?.deleted ? DELETED_USER_IN_SENTENCE : assigned?.displayName || "someone"}`;
   }
   if (event.eventType === "PRIORITY") {
     const to = event.payload.to;
