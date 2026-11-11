@@ -1,5 +1,16 @@
 import type { AccessTokenScopes } from "./accessTokens";
-import type { AutopayConsentResult, ChangePlanInput, Checkout, Invoice, InvoicePage, PlanChange, ReturnTarget } from "./billing";
+import type {
+  AutopayConsentResult,
+  ChangePlanInput,
+  Checkout,
+  CompanyDurations,
+  InvoiceDetail,
+  InvoiceDocument,
+  InvoicePage,
+  PlanChange,
+  RefundPage,
+  ReturnTarget,
+} from "./billing";
 import type {
   CreateTenantInput,
   CreateTenantResult,
@@ -1633,15 +1644,52 @@ export interface TaskaApi {
    * one asked for — rejects (`ForeignCompanyAnswerError`). Control plane: a
    * refusal marks nothing. **Nothing here is payment evidence but
    * `Invoice.state = PAID`** — a checkout's `SUCCEEDED` is an observation, and
-   * a return address says nothing at all. No `createInvoice`: the INITIAL
-   * invoice of a paid company is the server's to issue (A53, TAS-514). Today's
-   * build refuses all four without a request (`TenancyUnavailableError`).
+   * a return address says nothing at all. No `createInvoice`: every invoice is
+   * the server's to issue (A53, A62, the renewal calendar), and since TAS-514
+   * nothing switches an issued invoice's method either (A78). Today's build
+   * refuses all of them without a request (`TenancyUnavailableError`).
    */
 
-  /** `GET /tenants/{tenantId}/billing/invoices` — one page, as sent (`readAllInvoices` follows the cursor). */
+  /**
+   * `GET /tenants/{tenantId}/billing/invoices` — one page, as sent
+   * (`readAllInvoices` follows the cursor). Each row the list's shape: no
+   * buyer, seller, lines or FX quote; a WIRE invoice in EUR carries its bank
+   * details (`wireInstructions`, all five or none — TAS-514 §2).
+   */
   listInvoices(tenantId: string, params?: ListCompanyPageParams): Promise<InvoicePage>;
-  /** `GET /tenants/{tenantId}/billing/invoices/{invoiceId}`. Narrowed: no buyer, seller, lines, FX or wire details. */
-  getInvoice(tenantId: string, invoiceId: string): Promise<Invoice>;
+  /**
+   * `GET /tenants/{tenantId}/billing/invoices/{invoiceId}` — the whole
+   * invoice (TAS-514 §1, §2): the list's fields and its snapshots as issued
+   * (buyer, seller, lines, FX quote), never merged with the company's data
+   * now. Never the coverage period: it is not on the wire (A82).
+   */
+  getInvoice(tenantId: string, invoiceId: string): Promise<InvoiceDetail>;
+  /**
+   * `GET /tenants/{tenantId}/billing/invoices/{invoiceId}/document` (TAS-514
+   * §3) — the invoice's PDF by an authenticated fetch with the tab's company
+   * session (`Accept: application/pdf, application/problem+json,
+   * application/json`); «No presigned bearer URL». A 2xx that is not
+   * `application/pdf` is `UnreadableAnswerError`; a refusal is the gateway's
+   * `ApiError` with its request id — 403 `OWNER_REQUIRED`, 404 (no such invoice
+   * here, or no document yet), 503 `POLICY_NOT_CONFIGURED` (no approved
+   * format) / `DEPENDENCY_UNAVAILABLE`, 429 (A79). The bytes go to `saveBlob`
+   * and nowhere else.
+   */
+  getInvoiceDocument(tenantId: string, invoiceId: string): Promise<InvoiceDocument>;
+  /**
+   * `GET /tenants/{tenantId}/billing/refunds` (TAS-514) — one page, as sent
+   * (`readAllRefunds` follows the cursor); the owner's (403 `OWNER_REQUIRED`
+   * for anybody else). **No refund names an invoice** (A81): a screen never
+   * ties one to an invoice.
+   */
+  listRefunds(tenantId: string, params?: ListCompanyPageParams): Promise<RefundPage>;
+  /**
+   * `GET /tenants/{tenantId}/capabilities` (TAS-514 Q3) — read for its
+   * durations only: `WIRE_RECONCILIATION_TARGET_SECONDS`, or `null`. Every
+   * member may read it; the screens ask only for an owner's open wire
+   * invoice. Deployed on the gateway, missing from the vendored contract (F7).
+   */
+  getTenantCapabilities(tenantId: string): Promise<CompanyDurations>;
   /**
    * `POST /tenants/{tenantId}/billing/invoices/{invoiceId}/checkout` — body
    * exactly `{returnTarget, confirmed: true}`, the caller's `Idempotency-Key`,

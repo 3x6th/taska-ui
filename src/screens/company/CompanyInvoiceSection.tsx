@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { taskaApi } from "../../api/client";
@@ -11,6 +11,18 @@ import { companyEntitlementOptions } from "./companyPlan";
 import { nowOnText, planChangeInvoiceText } from "./companyPlanChangeText";
 import { planById, planNameParts } from "./companyPlanText";
 import { PaymentStateBlock } from "./BillingParts";
+import { BankTransferGroup, DownloadPdfButton, InvoiceItems, InvoiceSnapshot } from "./WireParts";
+import {
+  isWireOpen,
+  pastDue,
+  purposeSentence,
+  receivedNote,
+  receivedOf,
+  reconciliationSentences,
+  showsBankDetails,
+  toBeRefundedText,
+  wireState,
+} from "./wireText";
 import {
   INVOICE_READ_FAILED,
   NO_LONGER_PAYABLE_TEXT,
@@ -39,12 +51,17 @@ import {
 } from "./billingText";
 import {
   closeAttempt,
+  companyDurationsOptions,
+  companyInvoiceKey,
   companyInvoicesOptions,
   returnToPayment,
   unresolved,
   useCheckoutAttempts,
+  useInvoiceDownload,
+  usePassedAt,
   usePayInvoice,
   usePaymentWatch,
+  useReadOnReturn,
   useRereadAfterPaid,
   useBillingReader,
   useRestoredFromCache,
@@ -70,6 +87,14 @@ import type { CheckoutReturnState } from "../billingReturn";
  * which plan paying it moves the company to, and «Paid.» adds that it is on
  * it only once the entitlement read after the settlement names that plan —
  * the one read this page adds, for a PLAN_CHANGE invoice only.
+ *
+ * TAS-514 (art-director B1–B10, the orchestrator's decisions 2–5): the page in
+ * order — the state, the action row (Pay · «Download PDF»), «Bank transfer»
+ * for an open wire invoice, the facts with «Received», «Items», and «Billing
+ * details» as issued. A wire invoice is read on arrival, on every return to
+ * the tab and once when the local clock passes its due date — never polled —
+ * and the company's capabilities are read beside it for the reconciliation
+ * target. What the clock decides is wording only.
  */
 export function CompanyInvoiceSection() {
   const address = useCompanyAddress();
@@ -100,6 +125,13 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
   const press = usePayInvoice({ companyId, userId: reader.meId, returnTarget: "BILLING", company: reader.company });
   const rereadAfterPaid = useRereadAfterPaid();
   const [outcome, setOutcome] = useState<Outcome>(null);
+  /** A wire invoice read open this visit and then PAID: «Paid.» says so (B3), and the company is read again once. */
+  const [wireSettled, setWireSettled] = useState(false);
+  const wireSeenOpen = useRef(false);
+  const queryClient = useQueryClient();
+  const download = useInvoiceDownload(companyId, reader.company);
+  /** The action row's one refusal slot (B10): the newer of Pay's, «Return to payment»'s and Download's. */
+  const [lastRefusal, setLastRefusal] = useState<"pay" | "reopen" | "download" | null>(null);
   /** When this visit saw the payment settle: «is now on» needs an entitlement read after it. */
   const [paidAt, setPaidAt] = useState<number | null>(null);
   const [hadExpired, setHadExpired] = useState(false);
@@ -123,12 +155,14 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
     returnButton.current.focus();
   });
 
-  // The company's PAYMENT_EXPIRED while the payment is out: «open for changes again» is said only when the re-read lost it.
+  // The company's PAYMENT_EXPIRED while the payment is out — or, TAS-514, while a wire invoice is open:
+  // «open for changes again» is said only when the re-read lost it.
   const expiredNow = reader.tenant?.restrictions.includes("PAYMENT_EXPIRED") ?? false;
+  const awaitingWire = invoice !== null && isWireOpen(invoice);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- latched from the company's answer while a payment is out.
-    if (unresolved(record) && expiredNow) setHadExpired(true);
-  }, [record, expiredNow]);
+    if ((unresolved(record) || awaitingWire) && expiredNow) setHadExpired(true);
+  }, [record, awaitingWire, expiredNow]);
   const reopened = hadExpired && reader.tenant !== null && !expiredNow;
 
   // The record closes on the server's word (api-contract-guard §2) — and what it said stays on screen.
@@ -156,6 +190,33 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
     else if (checkoutState === "EXPIRED") close("expired");
     else if (watch.lost) close("not-found");
   }, [record, reader.meId, invoiceState, checkoutState, watch.lost, companyId, invoiceId, rereadAfterPaid]);
+
+  // TAS-514: a wire invoice is never polled (B3) — read on return to the tab and once at its due date.
+  const wireOpen = awaitingWire;
+  const rereadInvoice = () => void queryClient.invalidateQueries({ queryKey: companyInvoiceKey(invoiceId) });
+  useReadOnReturn(reader.owner && wireOpen, rereadInvoice);
+  usePassedAt(wireOpen ? (invoice?.dueAt ?? null) : null, rereadInvoice);
+  const durations = useQuery({ ...companyDurationsOptions(companyId), enabled: reader.owner && wireOpen });
+  useEffect(() => {
+    if (invoice === null || invoice.paymentMethod !== "WIRE") return;
+    if (isWireOpen(invoice)) wireSeenOpen.current = true;
+    else if (invoice.state === "PAID" && wireSeenOpen.current && !wireSettled) {
+      setWireSettled(true);
+      setPaidAt(Date.now());
+      rereadAfterPaid(companyId);
+    }
+  }, [invoice, wireSettled, companyId, rereadAfterPaid]);
+  // The newest refusal takes the slot (B10).
+  const payRefusalKey = press.refusal?.invoiceId === invoiceId ? press.refusal.key : null;
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- follows the press's own refusal.
+    if (payRefusalKey !== null) setLastRefusal("pay");
+  }, [payRefusalKey]);
+  const downloadRefusalKey = download.refusal?.invoiceId === invoiceId ? download.refusal.key : null;
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- follows the press's own refusal.
+    if (downloadRefusalKey !== null) setLastRefusal("download");
+  }, [downloadRefusalKey]);
 
   // The heading: «Company › Billing › Invoice {number}» (B5).
   const title = reader.owner && invoice !== null ? invoiceTitle(invoice) : null;
@@ -209,6 +270,7 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
   else if (outcome === "expired" && invoice !== null && isPayable(invoice)) state = expiredState();
   else if (outcome === "not-found") state = notFoundState(reader.company);
   else if (press.inProgress === invoiceId) state = inProgressState(null);
+  else if (wireSettled && invoice?.state === "PAID") state = paidState(invoice, reader.company, reopened, nowOn);
 
   if (invoice === null) {
     if (invoiceQuery.isError) {
@@ -237,6 +299,18 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
     }
     return <InvoiceLoading state={state} factId={factId} />;
   }
+
+  // TAS-514: a wire invoice's own state (B3) — from the invoice, the clock for its wording only.
+  const sentence3 = purposeSentence({
+    invoice,
+    company: reader.company,
+    restrictions: reader.tenant?.restrictions ?? [],
+    lifecycle: reader.tenant?.lifecycle ?? null,
+    creationDeadline: reader.tenant?.creationDeadline ?? null,
+  });
+  const late = pastDue(invoice);
+  if (state === null) state = wireState(invoice, { sentence3 });
+  const received = receivedOf(invoice);
 
   const offerPay =
     isPayable(invoice) && !unresolved(record) && press.inProgress !== invoiceId && outcome !== "not-found" && (state === null || state.action === "pay");
@@ -291,6 +365,7 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
               (error: unknown) => {
                 setReturning(false);
                 setReopenFailure((previous) => ({ error, key: (previous?.key ?? 0) + 1 }));
+                setLastRefusal("reopen");
               },
             );
           }}
@@ -316,6 +391,21 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
     }
   }
 
+  // «Download PDF» on every listed invoice (B10): the refusal says what there is.
+  const offerDownload = invoice.state !== "DRAFT";
+  const shown = lastRefusal ?? (refusal ? "pay" : reopenFailure !== null ? "reopen" : download.refusal?.invoiceId === invoiceId ? "download" : null);
+  const downloadRefusal = download.refusal?.invoiceId === invoiceId ? download.refusal : null;
+  const bank = showsBankDetails(invoice) && invoice.wireInstructions !== null ? invoice.wireInstructions : null;
+  const [sentence1, sentence2] = reconciliationSentences(durations.data?.wireReconciliationTargetSeconds ?? null);
+  // Sentence 3 is said by the state block once the due date has passed (B3's third row) — once on the page.
+  const note = (
+    <>
+      {durations.isPending ? <span aria-hidden="true" className="value-skeleton company-bank-note-skeleton" /> : <p>{sentence1}</p>}
+      <p>{sentence2}</p>
+      {sentence3 !== null && !late ? <p>{sentence3}</p> : null}
+    </>
+  );
+
   return (
     <div className="settings-plane">
       <div className="settings-column company-billing company-invoice">
@@ -338,37 +428,71 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
                 .
               </>
             ) : null}
+            {/* TAS-514 (Q4): the money that arrived for an expired invoice goes back — never tied to a refund row. */}
+            {invoice.state === "EXPIRED" && received !== null ? <> {toBeRefundedText(received)}</> : null}
           </p>
         ) : null}
-        {action !== null ? <div className="company-invoice-actions">{action}</div> : null}
+        {action !== null || offerDownload ? (
+          <div className="company-invoice-actions">
+            {action}
+            {offerDownload ? <DownloadPdfButton invoice={invoice} press={download} /> : null}
+          </div>
+        ) : null}
         {inFlight ? (
           <span className="visually-hidden" role="status">
             {OPENING_PAYMENT_STATUS}
           </span>
         ) : null}
-        {reopenFailure !== null ? (
+        {/* The download's progress, one persistent region (B10): «Downloading…», then «…downloaded.». */}
+        <span className="visually-hidden" role="status">
+          {download.status !== null ? <span key={download.status.seq}>{download.status.text}</span> : null}
+        </span>
+        {shown === "reopen" && reopenFailure !== null ? (
           <div className="company-invoice-refusal">
             <ErrorNote key={reopenFailure.key} live="alert" requestId={apiErrorFacts(reopenFailure.error).requestId}>
               {REOPEN_FAILED_TEXT}
             </ErrorNote>
           </div>
         ) : null}
-        {refusal ? (
+        {shown === "pay" && refusal ? (
           <div className="company-invoice-refusal">
             <ErrorNote key={refusal.key} live="alert" requestId={refusal.requestId} serverWords={refusal.words.words}>
               {refusal.words.text}
             </ErrorNote>
           </div>
         ) : null}
+        {shown === "download" && downloadRefusal !== null ? (
+          <div className="company-invoice-refusal">
+            <ErrorNote key={downloadRefusal.key} live="alert" requestId={downloadRefusal.requestId} serverWords={downloadRefusal.words}>
+              {downloadRefusal.text}
+            </ErrorNote>
+          </div>
+        ) : null}
+        {bank !== null ? <BankTransferGroup details={bank} invoice={invoice} note={note} /> : null}
         <dl className="settings-details company-invoice-facts">
           {/* «Confirming» only while the block says so (art-director blocker 3): a left one shows the invoice's word. */}
           <Fact label="Status">{capitalised(statusWord(invoice.state, unresolved(record) && statusFollowsBlock(state)))}</Fact>
           {invoice.total ? <Fact label="Amount">{formatInvoiceMoney(invoice.total)}</Fact> : null}
+          {/* TAS-514 (F2, B7): bank money matched to it and not applied — its own fact, never «Paid so far». */}
+          {received !== null && invoice.state !== "PAID" ? (
+            <Fact label="Received">
+              <span className="company-invoice-received">{formatInvoiceMoney(received)}</span>
+              {/* Only while it can still be paid and something is left (fix round decision 4). */}
+              {isWireOpen(invoice) && invoice.total && invoice.remaining !== null && !isZeroMoney(invoice.remaining) ? (
+                <span className="company-invoice-fact-note">{receivedNote(invoice.total)}</span>
+              ) : null}
+            </Fact>
+          ) : null}
           {/* Part of it paid only (NB1): a paid invoice has neither line. */}
           {invoice.allocated && !isZeroMoney(invoice.allocated) && invoice.state !== "PAID" ? (
             <Fact label="Paid so far">{formatInvoiceMoney(invoice.allocated)}</Fact>
           ) : null}
-          {invoice.remaining && invoice.total && !isZeroMoney(invoice.remaining) && invoice.remaining.amountMinor !== invoice.total.amountMinor ? (
+          {/* Only while it can still be paid (fix round decision 5): an expired one invites no transfer. */}
+          {(invoice.state === "OPEN" || invoice.state === "PARTIALLY_PAID") &&
+          invoice.remaining &&
+          invoice.total &&
+          !isZeroMoney(invoice.remaining) &&
+          invoice.remaining.amountMinor !== invoice.total.amountMinor ? (
             <Fact label="Left to pay">{formatInvoiceMoney(invoice.remaining)}</Fact>
           ) : null}
           {purposeText(invoice.purpose) ? <Fact label="For">{purposeText(invoice.purpose)}</Fact> : null}
@@ -390,6 +514,8 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
           ) : null}
           {methodText(invoice.paymentMethod) ? <Fact label="Payment">{methodText(invoice.paymentMethod)}</Fact> : null}
         </dl>
+        <InvoiceItems invoice={invoice} />
+        <InvoiceSnapshot invoice={invoice} />
       </div>
     </div>
   );

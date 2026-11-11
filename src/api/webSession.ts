@@ -14,19 +14,27 @@ import { TRANSPORT_FAILURE_REASON } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
 import {
   UnreadableAnswerError,
+  documentFileName,
   httpsOnly,
+  isPdfType,
   toAutopayConsentResult,
   toCheckout,
-  toInvoice,
+  toCompanyDurations,
+  toInvoiceDetail,
   toInvoicePage,
   toPlanChange,
+  toRefundPage,
   type AutopayConsentResult,
   type ChangePlanInput,
   type Checkout,
-  type Invoice,
+  type CompanyDurations,
+  type DocumentAnswer,
+  type InvoiceDetail,
+  type InvoiceDocument,
   type InvoicePage,
   type PlanChange,
   type RedirectPolicy,
+  type RefundPage,
   type ReturnTarget,
 } from "./billing";
 import { clearCheckoutAttempts } from "./checkoutAttempt";
@@ -230,6 +238,23 @@ export interface B2bTransport {
   createCheckout(bearer: string | null, tenantId: string, invoiceId: string, returnTarget: ReturnTarget, idempotencyKey: string): Promise<unknown>;
   /** `GET /tenants/{tenantId}/billing/checkout/{checkoutId}` — 200 `Checkout`. */
   getCheckout(bearer: string | null, tenantId: string, checkoutId: string, signal: AbortSignal): Promise<unknown>;
+
+  /*
+   * TAS-514: the invoice's document, the company's refunds — the owner's —
+   * and its capabilities' durations (every member's), with that company's
+   * WEB_TENANT.
+   */
+
+  /**
+   * `GET /tenants/{tenantId}/billing/invoices/{invoiceId}/document` — 200
+   * `application/pdf`, answered as its type, its readable disposition and its
+   * bytes; a refusal rejects as every other route's does.
+   */
+  getInvoiceDocument(bearer: string | null, tenantId: string, invoiceId: string, signal: AbortSignal): Promise<DocumentAnswer>;
+  /** `GET /tenants/{tenantId}/billing/refunds?cursor&limit` — 200 `RefundPage`. */
+  listRefunds(bearer: string | null, tenantId: string, params: ListCompanyPageParams, signal: AbortSignal): Promise<unknown>;
+  /** `GET /tenants/{tenantId}/capabilities` — 200 `Capabilities`. */
+  getTenantCapabilities(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
 
   /*
    * The company's plan change, renewal and automatic payments (TAS-515), the
@@ -1177,8 +1202,9 @@ export class WebSessionClient {
   /*
    * api-contract-guard's pre-build design §1: the tab's company session of that
    * company only (`inCompany`), control plane — no `read` option, so a refusal
-   * marks nothing. Each answer is narrowed (`toInvoice` keeps no buyer, seller,
-   * lines or wire details; `toCheckout` keeps the page address only inside
+   * marks nothing. Each answer is narrowed (a list row keeps no buyer, seller,
+   * lines or FX quote, and a wire invoice's bank details only whole —
+   * TAS-514 §2; `toCheckout` keeps the page address only inside
    * `CheckoutRedirect`, and only one `redirectPolicy` accepts) and bound to what
    * was asked: another company, invoice or checkout is a failed read
    * (`ForeignCompanyAnswerError`).
@@ -1192,13 +1218,52 @@ export class WebSessionClient {
     return page;
   }
 
-  async getInvoice(tenantId: string, invoiceId: string): Promise<Invoice> {
-    const invoice = toInvoice(
+  /** The whole invoice (TAS-514 §2): its snapshots as issued, bound to the invoice and the company asked for. */
+  async getInvoice(tenantId: string, invoiceId: string): Promise<InvoiceDetail> {
+    const invoice = toInvoiceDetail(
       await this.inCompany(tenantId, (bearer, signal) => this.transport.getInvoice(bearer, tenantId, invoiceId, signal)),
     );
     if (invoice === null) throw new Error("The answer held no invoice.");
     if (invoice.id !== invoiceId) throw new ForeignCompanyAnswerError();
     return ofCompany(invoice, tenantId);
+  }
+
+  /*
+   * TAS-514 (api-contract-guard §3, decision 5): the document by the tab's
+   * company session of that company only (`inCompany`) — another company is
+   * refused without a request —, control plane, so a refusal marks nothing; a
+   * 401 renews and resends once, as every request here does, and an answer
+   * that lands after the context moved (a sign-out, a switch) is dropped
+   * unsaved (`WorkspaceClosedError`). Only `application/pdf` is a document: any
+   * other 2xx is `UnreadableAnswerError`. The file name only from a readable,
+   * sanitised `Content-Disposition`.
+   */
+  async getInvoiceDocument(tenantId: string, invoiceId: string): Promise<InvoiceDocument> {
+    const answer = await this.inCompany(tenantId, (bearer, signal) => this.transport.getInvoiceDocument(bearer, tenantId, invoiceId, signal));
+    if (!isPdfType(answer.contentType)) throw new UnreadableAnswerError();
+    return { blob: answer.body, fileName: documentFileName(answer.disposition) };
+  }
+
+  /** The owner's refunds (TAS-514): control plane; one naming another company is a failed read. */
+  async listRefunds(tenantId: string, params: ListCompanyPageParams = {}): Promise<RefundPage> {
+    const page = toRefundPage(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.listRefunds(bearer, tenantId, params, signal)),
+    );
+    for (const refund of page.items) ofCompany(refund, tenantId);
+    return page;
+  }
+
+  /**
+   * The company's durations (TAS-514 Q3): every member's read, control plane
+   * — a refusal marks nothing. A body that is not an object is no answer
+   * (`UnreadableAnswerError`); one naming another company a failed read.
+   */
+  async getTenantCapabilities(tenantId: string): Promise<CompanyDurations> {
+    const durations = toCompanyDurations(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.getTenantCapabilities(bearer, tenantId, signal)),
+    );
+    if (durations === null) throw new UnreadableAnswerError();
+    return ofCompany(durations, tenantId);
   }
 
   /** The body is the two fields exactly, in one order, so a retry with the same key sends the same bytes. */

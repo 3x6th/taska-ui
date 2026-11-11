@@ -4806,3 +4806,48 @@ Rulings in `docs/ai/reviews/TAS-515-*.md` (git-ignored); divergence in `API-DIVE
 - **Re-buy Pending row copy** (art-director): on a re-buy of the current plan under PAYMENT_EXPIRED, «Starts a new month
   once invoice {number} is paid. Until then, {Company} stays read-only.» instead of «…stays on {current}» naming the
   same plan.
+
+### Left by TAS-514 pre-build (wire invoices, documents, refunds, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-514-*.md` (git-ignored); divergence in `API-DIVERGENCE.md` «TAS-514».
+
+- **Billing details editor** — the story's How 1 «edit the billing profile for future invoices» is not delivered: no
+  backend operation exists (A77, TAS-356). The art-director's B12 (group, page `/company/billing/details`, the B12a form
+  and its refusal table) is ruled and waits for A77.
+- **«Pay by bank transfer instead»** on a PSP invoice — not offered (A78); the art-director's B13 page and the §4.40
+  «Pay by» choice wait for it.
+- **Re-vendor the gateway `openapi.yml`** — now needed: TAS-514 calls `GET …/tenants/{tenantId}/capabilities`, which the
+  vendored snapshot (`758f8fc6`) lacks (api-contract-guard F7); fold into the re-vendor line above.
+- **Duplicate payments between arrival and an admin's record** — the owner sees nothing until a platform admin records
+  the bank statement, so payers may send twice (ends as a DUPLICATE_PAYMENT return) until A80.
+
+### Left by TAS-514 build (2026-11-11)
+
+Build reviews in `docs/ai/reviews/TAS-514-*-build.md`, `TAS-514-release-reviewer-wave1.md`, fix-round decisions in
+`TAS-514-fix-round-decisions.md` (git-ignored).
+
+- **A closed or cancelled creation's refund is invisible** — its session is refused (A2+), so D216's return and any other
+  money returned for a creation that never opened is not shown to anyone in the UI.
+- **A bank-paid month's start date** is not shown (A82): D247's «new month from the confirmation» shows only through
+  Plan's Paid until.
+- **Clipboard failure selects the spaced IBAN** — the selection is the print form with spaces while Copy copies the
+  electronic form; a bank form with `maxlength=34` may reject a pasted selection (release-reviewer N1, art-director N2).
+- **The card's refunds read** — a failed `listRefunds` on the never-opened card is silent, and a return to the tab
+  re-reads the invoices but not the refunds (release-reviewer N5).
+- **Silent failures lose their request id** — the capabilities read (`companyBilling.ts` durations) and the card's
+  refunds read drop the `requestId` when they fail quietly by design (api-contract-guard).
+- **Layout, accepted** — at 320 the card's «Invoice {number} · {amount} · Bank transfer» wraps mid-phrase; the Refunds
+  amount column sits ~6 px off the Invoices column at 1440 (separate lists).
+- **No automated guard for mock strings in the REST bundle** — checked by hand per story; a `npm run check` step that
+  builds REST and greps the fixtures would make it permanent (api-contract-guard G5).
+- **INITIAL's «Taska issues a new invoice»** doesn't carry «only until {Company} closes»; the next sentence about closing
+  mostly covers it (api-contract-guard N3, accepted).
+- **The matched card's lead** — §4.37's fixed «If it isn’t paid by {deadline}, it closes automatically.» sits right above
+  «Your bank transfer has been matched.» (shared with TAS-513's PSP card; art-director).
+- **Dead class** `company-bank-reference` (`WireParts.tsx`) has no CSS — drop when next touched.
+- **The open wire state with `remaining` = 0** has never been drawn in a browser (the mock can't produce it; unit tests
+  only) — one look on the stand if the backend serves it.
+- **The mock returns a timely full payment confirmed after expiry** — €12 matched on time and €8 arrived before `dueAt`,
+  confirmed after expiry, ends EXPIRED and «to be refunded» instead of PAID (a fix-round regression, mock only; A97).
+  Also under `holdExpiry`, matched money plus a late full payment settles with no return. To be fixed in TAS-516's mock
+  work; keep the €8-alone test and add the 12 + 8 case.

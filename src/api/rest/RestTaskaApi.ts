@@ -126,7 +126,19 @@ import type {
   QuotaSnapshot,
 } from "../tenantMembers";
 import { WebSessionClient, type B2bTransport, type LockManagerLike } from "../webSession";
-import type { AutopayConsentResult, ChangePlanInput, Checkout, Invoice, InvoicePage, PlanChange, ReturnTarget } from "../billing";
+import type {
+  AutopayConsentResult,
+  ChangePlanInput,
+  Checkout,
+  CompanyDurations,
+  DocumentAnswer,
+  InvoiceDetail,
+  InvoiceDocument,
+  InvoicePage,
+  PlanChange,
+  RefundPage,
+  ReturnTarget,
+} from "../billing";
 import type {
   AccessToken,
   AccessTokenList,
@@ -1612,8 +1624,26 @@ export class RestTaskaApi implements TaskaApi {
     return this.companies("listInvoices").listInvoices(tenantId, params);
   }
 
-  async getInvoice(tenantId: string, invoiceId: string): Promise<Invoice> {
+  async getInvoice(tenantId: string, invoiceId: string): Promise<InvoiceDetail> {
     return this.companies("getInvoice").getInvoice(tenantId, invoiceId);
+  }
+
+  /*
+   * TAS-514: the invoice's document, the refunds and the company's durations,
+   * by the session layer with the tab's company session, for that company
+   * only. Today's build: no request.
+   */
+
+  async getInvoiceDocument(tenantId: string, invoiceId: string): Promise<InvoiceDocument> {
+    return this.companies("getInvoiceDocument").getInvoiceDocument(tenantId, invoiceId);
+  }
+
+  async listRefunds(tenantId: string, params?: ListCompanyPageParams): Promise<RefundPage> {
+    return this.companies("listRefunds").listRefunds(tenantId, params);
+  }
+
+  async getTenantCapabilities(tenantId: string): Promise<CompanyDurations> {
+    return this.companies("getTenantCapabilities").getTenantCapabilities(tenantId);
   }
 
   async createCheckout(tenantId: string, invoiceId: string, returnTarget: ReturnTarget, idempotencyKey: string): Promise<Checkout> {
@@ -1812,6 +1842,11 @@ export class RestTaskaApi implements TaskaApi {
         ),
       getCheckout: (bearer, tenantId, checkoutId, signal) =>
         send(`${tenantPath(tenantId)}/billing/checkout/${this.segment(checkoutId)}`, {}, bearer, signal),
+      // TAS-514. The document is bytes, not JSON (`transmitDocument`); the other two are reads like any.
+      getInvoiceDocument: (bearer, tenantId, invoiceId, signal) =>
+        this.transmitDocument(`${tenantPath(tenantId)}/billing/invoices/${this.segment(invoiceId)}/document`, bearer, signal),
+      listRefunds: (bearer, tenantId, params, signal) => send(`${tenantPath(tenantId)}/billing/refunds${page(params)}`, {}, bearer, signal),
+      getTenantCapabilities: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/capabilities`, {}, bearer, signal),
       // TAS-515. `If-Match` is `Subscription.version` for all four, never the
       // mandate's; the bodies field by field in the blueprint's order, so a
       // retry with the same key sends the same bytes; resume has none.
@@ -4186,6 +4221,33 @@ export class RestTaskaApi implements TaskaApi {
       ...(signal ? { signal } : {}),
     });
     return this.readAnswer<T>(response);
+  }
+
+  /**
+   * The invoice's document (TAS-514 §3): a GET with the bearer the session
+   * layer chose, `Accept` naming the PDF first and the two refusal types after
+   * it. A 2xx is answered as its `Content-Type`, its `Content-Disposition` —
+   * `null` unless the gateway exposes it to CORS (A79) — and its bytes, which
+   * the session layer accepts only as `application/pdf`; a refusal is read as
+   * every other one is (`readAnswer`). The token never goes in the address.
+   */
+  private async transmitDocument(path: string, bearer: string | null, signal?: AbortSignal): Promise<DocumentAnswer> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: "GET",
+      headers: {
+        Accept: "application/pdf, application/problem+json, application/json",
+        ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+      },
+      // Never from or into the browser's HTTP cache: the bytes go to `saveBlob` and nowhere else (A79).
+      cache: "no-store",
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) await this.readAnswer<never>(response);
+    return {
+      contentType: response.headers.get("Content-Type"),
+      disposition: response.headers.get("Content-Disposition"),
+      body: await response.blob(),
+    };
   }
 
   /**

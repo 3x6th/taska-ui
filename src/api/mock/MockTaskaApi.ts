@@ -90,7 +90,18 @@ import type {
   MembershipPage,
   QuotaSnapshot,
 } from "../tenantMembers";
-import type { AutopayConsentResult, ChangePlanInput, Checkout, Invoice, InvoicePage, PlanChange, ReturnTarget } from "../billing";
+import type {
+  AutopayConsentResult,
+  ChangePlanInput,
+  Checkout,
+  CompanyDurations,
+  InvoiceDetail,
+  InvoiceDocument,
+  InvoicePage,
+  PlanChange,
+  RefundPage,
+  ReturnTarget,
+} from "../billing";
 import {
   ATTACHMENT_BUCKET,
   ATTACHMENT_MAX_SIZE_BYTES,
@@ -9802,8 +9813,21 @@ export class MockTaskaApi implements TaskaApi {
     throw new TenancyUnavailableError("listInvoices");
   }
 
-  async getInvoice(_tenantId: string, _invoiceId: string): Promise<Invoice> {
+  async getInvoice(_tenantId: string, _invoiceId: string): Promise<InvoiceDetail> {
     throw new TenancyUnavailableError("getInvoice");
+  }
+
+  // TAS-514: the document, the refunds and the durations — `MockTenantServer`'s too.
+  async getInvoiceDocument(_tenantId: string, _invoiceId: string): Promise<InvoiceDocument> {
+    throw new TenancyUnavailableError("getInvoiceDocument");
+  }
+
+  async listRefunds(_tenantId: string, _params?: ListCompanyPageParams): Promise<RefundPage> {
+    throw new TenancyUnavailableError("listRefunds");
+  }
+
+  async getTenantCapabilities(_tenantId: string): Promise<CompanyDurations> {
+    throw new TenancyUnavailableError("getTenantCapabilities");
   }
 
   async createCheckout(_tenantId: string, _invoiceId: string, _returnTarget: ReturnTarget, _idempotencyKey: string): Promise<Checkout> {
