@@ -4708,3 +4708,5 @@ Rulings in `docs/ai/reviews/TAS-527-*.md` (git-ignored); divergence in `API-DIVE
 - **The hash-mode recovery link and capture** are unit-tested only (no hash-mode B2B e2e server).
 - **A lost-answer reset retried with the same key** may meet a spent token on a real server and say the link no longer works
   after the reset took (backend A108; optional copy for that case).
+- **`/login` flashes «Sign in | Accept invite»** until `GET /auth/methods` answers (166 ms on a cold load), and again after a
+  reset because `queryClient.removeQueries()` clears the cached methods — TAS-426's tabs (art-director, TAS-527 re-review).
