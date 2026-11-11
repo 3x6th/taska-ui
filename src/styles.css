@@ -4961,7 +4961,8 @@ h1 {
   text-wrap: pretty;
 }
 
-.company-refund-list {
+.company-refund-list,
+.company-dispute-list {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   column-gap: 0;
@@ -4970,7 +4971,13 @@ h1 {
   list-style: none;
 }
 
-.company-refund-row {
+/* «Disputes» (TAS-516, B5): the same recipe with no amount column — text · marker. */
+.company-dispute-list {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.company-refund-row,
+.company-dispute-row {
   display: grid;
   grid-column: 1 / -1;
   align-items: center;
@@ -4980,8 +4987,15 @@ h1 {
   padding: 8px 0;
 }
 
-.company-refund-row + .company-refund-row {
+.company-refund-row + .company-refund-row,
+.company-dispute-row + .company-dispute-row {
   border-top: 1px solid var(--border);
+}
+
+/* A row with a line 3 aligns to its first line (B6): amount and marker beside the reason, not the middle of three lines. */
+.company-refund-row.has-line3,
+.company-dispute-row.has-line3 {
+  align-items: start;
 }
 
 .company-refund-text {
@@ -5003,6 +5017,21 @@ h1 {
   font-size: 11.5px;
   font-weight: 400;
   line-height: 1.45;
+}
+
+/* A dated segment of a row's line 2 (B9, N1): whole, so «Requested Oct 12» never splits; an undated tail wraps as text. */
+.company-step.is-dated {
+  white-space: nowrap;
+}
+
+/* Line 3: what the refund or dispute means (T1, T4). */
+.company-refund-consequence {
+  margin: 2px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-wrap: pretty;
 }
 
 .company-refund-amount {

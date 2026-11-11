@@ -147,6 +147,7 @@ function fakeTransport() {
       body: new Blob(["%PDF-1.4"], { type: "application/pdf" }),
     })),
     listRefunds: vi.fn<B2bTransport["listRefunds"]>(async () => ({ items: [] })),
+    listDisputes: vi.fn<B2bTransport["listDisputes"]>(async () => ({ items: [] })),
     getTenantCapabilities: vi.fn<B2bTransport["getTenantCapabilities"]>(async (_bearer, tenantId) => ({ tenantId, durationsSeconds: {} })),
     // TAS-515.
     changeSubscriptionPlan: vi.fn<B2bTransport["changeSubscriptionPlan"]>(async (_bearer, tenantId) => ({

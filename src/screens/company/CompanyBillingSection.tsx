@@ -49,8 +49,19 @@ import {
   primaryPayable,
   statusWord,
 } from "./billingText";
-import { closeAttempt, companyInvoicesOptions, companyRefundsOptions, unresolved, useBillingReader, useCheckoutAttempts, usePayInvoice } from "./companyBilling";
+import {
+  closeAttempt,
+  companyDisputesOptions,
+  companyInvoicesOptions,
+  companyRefundsOptions,
+  unresolved,
+  useBillingReader,
+  useCheckoutAttempts,
+  usePayInvoice,
+} from "./companyBilling";
+import { DisputesGroup } from "./DisputesGroup";
 import { RefundsGroup } from "./WireParts";
+import { DISPUTES_READ_FAILED, listedDisputes } from "./disputeText";
 import { REFUNDS_READ_FAILED, listedRefunds } from "./wireText";
 import { apiErrorFacts } from "../../api/errors";
 
@@ -68,6 +79,11 @@ import { apiErrorFacts } from "../../api/errors";
  * TAS-514 (art-director B11, decision 6): «Refunds» under the invoices, from
  * `listRefunds` (all pages) read beside them — shown only when there is one,
  * never tied to an invoice (A81).
+ *
+ * TAS-516 (art-director B2–B8, guard B3, B10): «Disputes» between Automatic
+ * payments and Invoices, from `listDisputes` (all pages) beside them — shown only
+ * when there is one; each row says only what its own state and outcome say.
+ * Order on the page: Automatic payments → Disputes → Invoices → Refunds.
  */
 export function CompanyBillingSection() {
   const address = useCompanyAddress();
@@ -79,7 +95,7 @@ interface Failure {
   error: unknown;
   at: number;
 }
-type BillingRead = "subscription" | "invoices" | "refunds";
+type BillingRead = "subscription" | "disputes" | "invoices" | "refunds";
 
 function CompanyBilling({ companyId }: { companyId: string }) {
   const reader = useBillingReader(companyId);
@@ -88,6 +104,17 @@ function CompanyBilling({ companyId }: { companyId: string }) {
   const subscription = useQuery({ ...companySubscriptionOptions(companyId), enabled: reader.owner });
   // TAS-514: the refunds, beside them (guard §8: +1 read, depth 2).
   const refunds = useQuery({ ...companyRefundsOptions(companyId), enabled: reader.owner });
+  // TAS-516: the disputes, beside them (guard B3: +1 read, depth 2).
+  const disputes = useQuery({ ...companyDisputesOptions(companyId), enabled: reader.owner });
+  // A read refused OWNER_REQUIRED: who owns the company is the re-read company's to say (guard §3, §4.39's G6).
+  const queryClient = useQueryClient();
+  const accountClient = useAccountQueryClient();
+  const ownerRefused = [subscription, disputes, invoices, refunds].some((query) => query.isError && refusalCode(query.error) === "OWNER_REQUIRED");
+  useEffect(() => {
+    if (!ownerRefused) return;
+    void queryClient.invalidateQueries({ queryKey: companyTenantKey(companyId) });
+    void accountClient?.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
+  }, [ownerRefused, queryClient, accountClient, companyId]);
   const [said, setSaid] = useState<{ text: string; seq: number } | null>(null);
   const say = useCallback((text: string) => setSaid((current) => ({ text, seq: (current?.seq ?? 0) + 1 })), []);
   const attempts = useCheckoutAttempts(reader.meId, companyId);
@@ -130,7 +157,7 @@ function CompanyBilling({ companyId }: { companyId: string }) {
   // the group never pushes the list down once it has drawn (B8).
   const settled = (query: { isSuccess: boolean; isError: boolean }) => query.isSuccess || query.isError;
   const [opened, setOpened] = useState(false);
-  if (!opened && settled(invoices) && settled(subscription) && settled(refunds)) setOpened(true);
+  if (!opened && settled(invoices) && settled(subscription) && settled(refunds) && settled(disputes)) setOpened(true);
 
   if (!reader.known) return <BillingLoading />;
   if (!reader.owner) {
@@ -149,15 +176,18 @@ function CompanyBilling({ companyId }: { companyId: string }) {
   const failureOf = (name: BillingRead, query: { isError: boolean; data: unknown; error: unknown; errorUpdatedAt: number }): Failure | null =>
     retrying !== null ? (retrying[name] ?? null) : query.isError && query.data === undefined ? { error: query.error, at: query.errorUpdatedAt } : null;
   const subscriptionFailure = failureOf("subscription", subscription);
+  const disputesFailure = failureOf("disputes", disputes);
   const failure = failureOf("invoices", invoices);
   const refundsFailure = failureOf("refunds", refunds);
+  // The page's one «Try again», under the first note in DOM order (B4).
   const firstFailure: BillingRead | null =
-    subscriptionFailure !== null ? "subscription" : failure !== null ? "invoices" : refundsFailure !== null ? "refunds" : null;
+    subscriptionFailure !== null ? "subscription" : disputesFailure !== null ? "disputes" : failure !== null ? "invoices" : refundsFailure !== null ? "refunds" : null;
   const retry = () => {
     if (retrying !== null) return;
     const failed = (
       [
         ["subscription", subscription, subscriptionFailure],
+        ["disputes", disputes, disputesFailure],
         ["invoices", invoices, failure],
         ["refunds", refunds, refundsFailure],
       ] as const
@@ -201,6 +231,16 @@ function CompanyBilling({ companyId }: { companyId: string }) {
         ) : showGroup && sub !== null && reader.meId !== null ? (
           <AutopayGroup companyId={companyId} company={reader.company} meId={reader.meId} say={say} subscription={sub} />
         ) : null}
+        {disputesFailure !== null ? (
+          <div className="company-plan-failure company-billing-failure">
+            <ErrorNote key={disputesFailure.at} requestId={apiErrorFacts(disputesFailure.error).requestId}>
+              {DISPUTES_READ_FAILED}
+            </ErrorNote>
+            {firstFailure === "disputes" ? tryAgain : null}
+          </div>
+        ) : (
+          <DisputesGroup company={reader.company} disputes={listedDisputes(disputes.data ?? [])} restrictions={reader.tenant?.restrictions ?? []} />
+        )}
         {failure !== null ? (
           <div className="company-plan-failure company-billing-failure">
             {/* Found on arrival, not announced (§5.6); a failure that stays remounts its box. */}
@@ -212,7 +252,7 @@ function CompanyBilling({ companyId }: { companyId: string }) {
         ) : (
           <section aria-labelledby="company-invoices-title" className="company-group company-billing-group">
             <h2 className="company-group-title" id="company-invoices-title">
-              Invoices<span className="company-group-count">{listed.length}</span>
+              Invoices <span className="company-group-count">{listed.length}</span>
             </h2>
             {listed.length === 0 ? (
               <p className="company-billing-empty">{INVOICES_EMPTY_TEXT}</p>

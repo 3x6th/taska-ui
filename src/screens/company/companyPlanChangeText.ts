@@ -52,7 +52,7 @@ export function cancelRenewalQuestion(company: string | null, plan: PlanVersion 
   const when = scheduled ? "When its last paid period ends, it becomes read-only" : "After that it becomes read-only";
   const head =
     `${companyStart(company)} stays on ${nameOf(plan)} until ${formatPaidUntil(paidThrough)}. ${when}: ` +
-    "everything can still be read, but nothing can be changed until it’s paid for again. It doesn’t move to the free plan on its own.";
+    "everything can still be read, but nothing can be changed until it’s paid for again or its plan is changed. It doesn’t move to the free plan on its own.";
   return autopayOn ? `${head} To keep renewing and pay by hand instead, turn off automatic payments in Billing.` : head;
 }
 
@@ -254,7 +254,7 @@ export function autopayLineText(state: string, company: string | null): string |
     case "CONSENTED":
       return `Taska takes ${ownInside(company)} payments automatically. You can still pay any invoice here yourself.`;
     case "DISABLED":
-      return `You pay ${ownInside(company)} invoices here yourself. This version of Taska can’t turn automatic payments on.`;
+      return `You pay ${ownInside(company)} invoices here yourself. Automatic payments stay off until you set them up, which this version of Taska can’t do yet.`;
     case "SUSPENDED":
       return `Taska isn’t taking automatic payments for ${companyInside(company)} right now. You can pay its invoices here yourself.`;
     default:

@@ -13,8 +13,12 @@ import {
   toInvoiceDetail,
   toInvoicePage,
   toPlanChange,
+  toDispute,
+  toDisputePage,
   toRefund,
   toRefundPage,
+  readAllDisputes,
+  UnreadableAnswerError,
 } from "./billing";
 
 /*
@@ -261,7 +265,7 @@ const refundWire = {
 };
 
 describe("a refund (TAS-514, decision 6)", () => {
-  it("keeps sendDueAt and decidedAt, and drops the payment, the version and every other operator field", () => {
+  it("keeps sendDueAt, decidedAt and (TAS-516) submittedAt, and drops the payment, the version and every other operator field", () => {
     expect(toRefund(refundWire)).toEqual({
       id: "rf-1",
       tenantId: "t-1",
@@ -275,9 +279,26 @@ describe("a refund (TAS-514, decision 6)", () => {
       feeBearer: "TASKA",
       sendDueAt: "2026-11-17T09:00:00Z",
       decidedAt: "2026-11-11T09:00:00Z",
+      submittedAt: "2026-11-12T09:00:00Z",
     });
     const serialised = JSON.stringify(toRefund(refundWire));
-    for (const dropped of ["pay-1", "WIRE_RETURN_ES_V1", "businessDays", "2026-11-12T09:00:00Z"]) expect(serialised).not.toContain(dropped);
+    for (const dropped of ["pay-1", "WIRE_RETURN_ES_V1", "businessDays", "evidenceCompletedAt", "decisionDueAt"]) expect(serialised).not.toContain(dropped);
+  });
+
+  it("TAS-516 (T3): submittedAt from its own field only — no other field filters it, on a bank transfer or online", () => {
+    const { evidenceCompletedAt: _evidence, ...noEvidence } = refundWire;
+    expect(toRefund(noEvidence)?.submittedAt).toBe("2026-11-12T09:00:00Z");
+    expect(toRefund({ ...noEvidence, sourceMethod: "PSP" })?.submittedAt).toBe("2026-11-12T09:00:00Z");
+    expect(toRefund({ ...refundWire, submittedAt: "not a date" })?.submittedAt).toBeNull();
+    const { submittedAt: _submitted, ...unsent } = refundWire;
+    expect(toRefund(unsent)?.submittedAt).toBeNull();
+  });
+
+  it("TAS-516 (guard F1): a 2xx that is not a page is no answer — never an empty list", () => {
+    for (const body of [null, "x", [], {}, { items: null }, { items: "none" }, { nextCursor: "n" }]) {
+      expect(() => toRefundPage(body), JSON.stringify(body)).toThrow(UnreadableAnswerError);
+    }
+    expect(toRefundPage({ items: [] })).toEqual({ items: [], nextCursor: null });
   });
 
   it("reads states and reasons as open strings, and a page in the server's order", async () => {
@@ -318,5 +339,62 @@ describe("the document (TAS-514 §3, decision 5)", () => {
     for (const header of [null, "inline", 'attachment; filename="invoice.exe"', 'attachment; filename=".pdf"', `attachment; filename="${"a".repeat(130)}.pdf"`]) {
       expect(documentFileName(header), String(header)).toBeNull();
     }
+  });
+});
+
+describe("a dispute (TAS-516, guard §3)", () => {
+  const wire = {
+    id: "dp-1",
+    tenantId: "t-1",
+    paymentId: "pay-1",
+    state: "LOST",
+    openedAt: "2026-11-01T09:00:00Z",
+    resolvedAt: "2026-11-08T09:00:00Z",
+    version: "4",
+    finalOutcome: "LOST_PARTIAL_COVERAGE_REVOKED",
+    confirmedMoneyFactId: "fact-1",
+  };
+
+  it("keeps its state, outcome and dates — and drops the payment, the money fact and the version", () => {
+    expect(toDispute(wire)).toEqual({
+      id: "dp-1",
+      tenantId: "t-1",
+      state: "LOST",
+      finalOutcome: "LOST_PARTIAL_COVERAGE_REVOKED",
+      openedAt: "2026-11-01T09:00:00Z",
+      resolvedAt: "2026-11-08T09:00:00Z",
+    });
+    const serialised = JSON.stringify(toDispute(wire));
+    for (const dropped of ["pay-1", "fact-1", "version"]) expect(serialised).not.toContain(dropped);
+    expect(toDispute({ ...wire, id: "" })).toBeNull();
+    expect(toDispute("dp-1")).toBeNull();
+  });
+
+  it("an outcome only with the terminal state it belongs to (the pair rule) — otherwise the state alone; both open strings", () => {
+    const pair = (state: string, finalOutcome: string) => toDispute({ ...wire, state, finalOutcome })?.finalOutcome ?? null;
+    expect(pair("WON", "WON")).toBe("WON");
+    expect(pair("WITHDRAWN", "WITHDRAWN_CONFIRMED")).toBe("WITHDRAWN_CONFIRMED");
+    expect(pair("LOST", "LOST_FULL_REFUND")).toBe("LOST_FULL_REFUND");
+    expect(pair("LOST", "LOST_SOMETHING_NEW")).toBe("LOST_SOMETHING_NEW");
+    for (const [state, outcome] of [
+      ["WON", "WITHDRAWN_CONFIRMED"],
+      ["WITHDRAWN", "WON"],
+      ["LOST", "WON"],
+      ["WON", "LOST_FULL_REFUND"],
+      ["OPEN", "WON"],
+      ["NEEDS_REVIEW", "LOST_FULL_REFUND"],
+      ["ARBITRATION", "WON"],
+    ]) {
+      expect(pair(state, outcome), `${state} + ${outcome}`).toBeNull();
+    }
+    expect(toDispute({ ...wire, state: "ARBITRATION" })?.state).toBe("ARBITRATION");
+  });
+
+  it("a page in the server's order; a body with no items array is no answer (F1); all pages are read", async () => {
+    expect(toDisputePage({ items: [wire, { id: "" }, null], nextCursor: "n" })).toEqual({ items: [toDispute(wire)], nextCursor: "n" });
+    for (const body of [null, [], {}, { items: {} }, "items"]) expect(() => toDisputePage(body), JSON.stringify(body)).toThrow(UnreadableAnswerError);
+    const list = vi.fn().mockResolvedValueOnce({ items: [toDispute(wire)], nextCursor: "p2" }).mockResolvedValueOnce({ items: [], nextCursor: null });
+    expect(await readAllDisputes(list)).toHaveLength(1);
+    expect(list).toHaveBeenNthCalledWith(2, { cursor: "p2", limit: 100 });
   });
 });

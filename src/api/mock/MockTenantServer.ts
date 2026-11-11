@@ -34,10 +34,12 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * since TAS-513 each company's invoices and their checkouts, and since TAS-515
  * each subscription's plan change, renewal calendar and mandate, and the
  * subscription commands' durable receipts, and since TAS-514 each invoice's
- * snapshots as issued, the bank receipts an admin records and the refunds —
+ * snapshots as issued, the bank receipts an admin records and the refunds, and
+ * since TAS-516 each settled invoice's payment fact, the paid periods they
+ * granted and the company's disputes —
  * read and written on every operation, so a second tab — or a duplicated one
  * — meets the same server. (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's, v4
- * TAS-504's, v5 TAS-512's, v6 TAS-513's, v7 TAS-515's; each bump re-seeds,
+ * TAS-504's, v5 TAS-512's, v6 TAS-513's, v7 TAS-515's, v8 TAS-514's; each bump re-seeds,
  * signing every mock account out once.)
  * Each company's projects and issues are this page's own, in memory, as
  * today's mock's are: they reset with a reload — the lifetime counters do not.
@@ -47,7 +49,7 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * untouched and enforces nothing.
  */
 
-export const MOCK_SERVER_KEY = "taska.mockServer.v8";
+export const MOCK_SERVER_KEY = "taska.mockServer.v9";
 
 /**
  * `localStorage` key for the server's test hooks, as JSON — the seam
@@ -141,7 +143,8 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v8";
  *   to `n`, once per value; past a finite `TASK_LIFETIME` the company is
  *   `OVER_QUOTA`;
  * - `paymentDispute`: `{[tenantId]: boolean}` — sets or lifts
- *   `PAYMENT_DISPUTE`; since TAS-515 a dispute switches automatic payments off
+ *   `PAYMENT_DISPUTE`, the restriction only (TAS-516: no dispute row comes with
+ *   it); since TAS-515 a dispute switches automatic payments off
  *   (DISABLED), and lifting it never turns them back on (F7).
  *
  * The company's invoices and their hosted checkout (TAS-513,
@@ -220,10 +223,10 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v8";
  *   Taska, its reason from what happened (EXCESS, LATE_FIRST_PAYMENT,
  *   CLOSED_CREATION, INCOMPLETE_BANK_PAYMENT, DUPLICATE_PAYMENT); never
  *   automatic, never coverage. Money matched on time is marked
- *   return-required on its receipt when the invoice expires (G2, L06.4–5): from
- *   then on it goes back whatever the invoice becomes — a later payment, even
- *   one that settles the invoice, never takes it — and before then nothing of
- *   it goes back;
+ *   return-required on its receipt when the invoice expires (G2, L06.4–5):
+ *   from then on nothing but a timely payment reaching the total takes it —
+ *   a late one that settles the invoice never does — and a return, once
+ *   started, is never undone; before it expires none of it goes back;
  * - `refundProgress`: `{[receiptId]: state}` — the receipt's refund moves to
  *   that state (APPROVED and REJECTED decided now, SUBMITTING submitted now);
  *   CONFIRMED gives the money back — the receipt holds nothing and the
@@ -242,7 +245,45 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v8";
  * - `refuseNext`, `delayMs` and `loseAnswer` take `getInvoiceDocument`,
  *   `listRefunds` and `getTenantCapabilities`;
  * - `clockOffsetMs` also expires a PARTIALLY_PAID invoice at its `dueAt`; its
- *   `matchedUnallocated` stays until its return is CONFIRMED.
+ *   `matchedUnallocated` stays until its return is CONFIRMED or a later
+ *   settlement pays the invoice and zeroes it.
+ *
+ * A company's refunds of a whole subscription payment and its disputes
+ * (TAS-516, api-contract-guard's pre-build ruling §4 with its addendum) — the
+ * admin's side again, as hooks; the owner reads only `listRefunds` and
+ * `listDisputes`. Every hook is applied once per id and evaluated on every read:
+ *
+ * - `refuseNext`, `delayMs` and `loseAnswer` take `listDisputes`;
+ * - `subscriptionRefund`: `{[refundId]: {tenantId, invoiceId, reasonCode}}` —
+ *   Taska requests a full refund of a PAID invoice's payment for its owner
+ *   (invented, A83: nothing on the wire says who does): BILLING_ERROR,
+ *   SERVICE_FAILURE or MANDATORY, the amount the allocation, the method the
+ *   payment's; refused without a payment fact (the seeded invoices other than
+ *   Cyberdyne's and Soylent's, and any invoice opened by `firstPaymentConfirmed`
+ *   have none), under an open dispute, or with an active or confirmed refund;
+ * - `refundEvidence`: `[refundId]` — a WIRE refund's evidence complete: the SLA
+ *   set, frozen once (`refundProgress`' receipts keep `evidenceComplete`);
+ * - `refundState`: `{[refundId]: state}` — a SUBSCRIPTION_FULL refund moved
+ *   along L07's chain only (REQUESTED → APPROVED | REJECTED; APPROVED →
+ *   SUBMITTING; SUBMITTING → CONFIRMED | UNKNOWN | FAILED; UNKNOWN → CONFIRMED
+ *   | FAILED); a WIRE one reaches APPROVED, SUBMITTING, UNKNOWN or CONFIRMED
+ *   only after its evidence; `decidedAt` and `submittedAt` are set once and
+ *   never cleared; CONFIRMED revokes the payment's period, as a lost dispute does;
+ * - `disputeOpen`: `{[disputeId]: {tenantId, invoiceId, state?}}` — a PSP
+ *   chargeback on a PAID invoice's payment (a WIRE payment is ignored, assumed
+ *   PSP-only: A91), `OPEN` or `NEEDS_REVIEW`; automatic payments go DISABLED;
+ *   `PAYMENT_DISPUTE` is set only while the payment backs the current GRANTED
+ *   period — and lifted once no open dispute does (L07), on every read;
+ * - `disputeReview`: `[disputeId]` — an OPEN one becomes NEEDS_REVIEW;
+ * - `disputeOutcome`: `{[disputeId]: outcome}` — terminal and immutable,
+ *   `resolvedAt` now. WON and WITHDRAWN_CONFIRMED lift `PAYMENT_DISPUTE`
+ *   (unless another open dispute is on current coverage), and neither moves
+ *   `paidThrough`, restores an ended period nor turns automatic payments back
+ *   on. LOST_FULL_REFUND and LOST_PARTIAL_COVERAGE_REVOKED revoke the payment's
+ *   whole period: `paidThrough` falls back to the latest GRANTED period's end
+ *   that has started — past it, or with none left, `PAYMENT_EXPIRED` — automatic
+ *   payments DISABLED, renewal cancelled (develop's, A93), the invoice stays
+ *   PAID and no refund is made.
  *
  * The stand-in payment page (`/mock-checkout/{token}`, the mock build only)
  * reads its checkout by an opaque token only this server maps back
@@ -301,6 +342,12 @@ export interface MockTenantHooks {
   documentOff?: boolean;
   documentType?: string;
   reconciliationTargetSeconds?: number | null;
+  subscriptionRefund?: Record<string, { tenantId: string; invoiceId: string; reasonCode: string }>;
+  refundEvidence?: string[];
+  refundState?: Record<string, string>;
+  disputeOpen?: Record<string, { tenantId: string; invoiceId: string; state?: string }>;
+  disputeReview?: string[];
+  disputeOutcome?: Record<string, string>;
 }
 
 /** A bank statement line as the admin records it (TAS-514): the server's own id for it, chosen by whoever sets the hook. */
@@ -330,6 +377,8 @@ export const MOCK_TENANT_IDS = {
   vandelay: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b0a",
   /** TAS-514: Tom's company that pays by bank transfer — every wire fixture is its own. */
   cyberdyne: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b0b",
+  /** TAS-516: Tom's company under a payment dispute — Team v2, paid online. */
+  soylent: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b0c",
 } as const;
 
 /**
@@ -485,6 +534,15 @@ export const MOCK_INVOICE_IDS = {
   cyberdyneInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0a",
   cyberdynePlanChange: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0b",
   cyberdyneRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0c",
+  /** TAS-516, Soylent Corp: the previous month's RENEWAL and the current one's — both PAID, online. */
+  soylentPrevious: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0d",
+  soylentCurrent: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0e",
+} as const;
+
+/** TAS-516, Soylent Corp's disputes (fixed ids): the WON one on the previous payment and the open one on the current. */
+export const MOCK_DISPUTE_IDS = {
+  soylentPrevious: "6c9f3b2d-7e4a-4f6b-8d1c-2b3c4d5e6f01",
+  soylentCurrent: "6c9f3b2d-7e4a-4f6b-8d1c-2b3c4d5e6f02",
 } as const;
 
 /**
@@ -509,6 +567,7 @@ export const MOCK_TENANT_PROJECT_IDS = {
   hooliSearch: "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c05",
   longNameProject: "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c07",
   cyberdyneSkynet: "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c08",
+  soylentFood: "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c09",
 } as const;
 
 /** A company name at the blueprint's maximum, 120 characters, for the layout review. */
@@ -806,19 +865,60 @@ interface StoredWireReceipt {
   confirmedAt?: string;
   /**
    * `RETURN_REQUIRED` (G2, L06.4–5): money matched on time to an invoice that
-   * then expired — it goes back, whatever happens to the invoice afterwards;
-   * no later payment is ever added to it or settled with it.
+   * then expired — it goes back unless, before its return has started, a
+   * timely payment reaches the total (it then joins the settlement, `confirmReceipt`).
    */
   outcome?: "MATCHED" | "RETURN_REQUIRED" | "ALLOCATED" | "LATE_FIRST_PAYMENT" | "CLOSED_CREATION" | "LATE_PARTIAL" | "DUPLICATE_PAYMENT";
   unallocated: StoredMoney;
   refundId?: string;
 }
 
-/** A refund (TAS-514): an UNALLOCATED_RETURN of one receipt's money, moved by the admin's hooks only. */
+/**
+ * A settled invoice's payment fact (TAS-516) — **internal, never on an owner's
+ * route**: `Refund.paymentId` and `Dispute.paymentId` are the wire's only trace
+ * of it. One per invoice, the whole allocation (A89).
+ */
+interface StoredPaymentFact {
+  paymentId: string;
+  tenantId: string;
+  invoiceId: string;
+  method: string;
+  amount: StoredMoney;
+}
+
+/** A paid period a payment granted (TAS-516) — internal, never on an owner's route; a revocation ends the whole of it. */
+interface StoredPeriod {
+  id: string;
+  tenantId: string;
+  invoiceId: string;
+  paymentId: string;
+  startsAt: string;
+  endsAt: string;
+  state: "GRANTED" | "REVOKED";
+}
+
+/** A dispute (TAS-516) — written by the admin's hooks only; `finalOutcome` and `resolvedAt` once, then immutable. */
+interface StoredDispute {
+  id: string;
+  tenantId: string;
+  paymentId: string;
+  state: string;
+  openedAt: string;
+  version: number;
+  resolvedAt?: string;
+  finalOutcome?: string;
+  confirmedMoneyFactId?: string;
+}
+
+/**
+ * A refund (TAS-514): an UNALLOCATED_RETURN of one receipt's money, moved by the
+ * admin's hooks only — or since TAS-516 a SUBSCRIPTION_FULL of a payment's whole
+ * allocation, with no receipt.
+ */
 interface StoredRefund {
   id: string;
   tenantId: string;
-  receiptId: string;
+  receiptId?: string;
   paymentId: string;
   kind: string;
   state: string;
@@ -866,7 +966,7 @@ interface StoredCheckout {
 }
 
 interface ServerState {
-  v: 8;
+  v: 9;
   tenants: StoredTenant[];
   memberships: StoredMembership[];
   sessions: StoredSession[];
@@ -911,6 +1011,10 @@ interface ServerState {
   /** TAS-514: the bank receipts an admin recorded, and the refunds of their money. */
   wireReceipts: StoredWireReceipt[];
   refunds: StoredRefund[];
+  /** TAS-516: each settled invoice's payment fact, the periods they granted, and the disputes — none but the disputes on an owner's route. */
+  paymentFacts: StoredPaymentFact[];
+  periods: StoredPeriod[];
+  disputes: StoredDispute[];
   /**
    * `createCheckout`'s receipts — durable, `{actor}:{tenant}:{key}`: the same
    * key with the same body answers the checkout it made, as it is now; with
@@ -1020,6 +1124,27 @@ const DEFAULT_RECONCILIATION_TARGET_S = 86_400;
 const PAYABLE_BY_WIRE: ReadonlySet<string> = new Set(["OPEN", "PARTIALLY_PAID"]);
 /** The states the `refundProgress` hook may move a refund to. */
 const REFUND_PROGRESS: ReadonlySet<string> = new Set(["APPROVED", "SUBMITTING", "UNKNOWN", "CONFIRMED", "FAILED", "REJECTED"]);
+/** L07's chain, the only moves `refundState` makes (TAS-516, guard Q3). */
+const REFUND_STATE_MOVES: Readonly<Record<string, readonly string[]>> = {
+  REQUESTED: ["APPROVED", "REJECTED"],
+  APPROVED: ["SUBMITTING"],
+  SUBMITTING: ["CONFIRMED", "UNKNOWN", "FAILED"],
+  UNKNOWN: ["CONFIRMED", "FAILED"],
+};
+/** The states a WIRE refund reaches only after its evidence is complete (guard §4, F4). */
+const WIRE_AFTER_EVIDENCE: ReadonlySet<string> = new Set(["APPROVED", "SUBMITTING", "UNKNOWN", "CONFIRMED"]);
+/** The reasons a SUBSCRIPTION_FULL carries (`RefundRequest`, guard §1); «changed my mind» is not one. */
+const SUBSCRIPTION_REFUND_REASONS: ReadonlySet<string> = new Set(["BILLING_ERROR", "SERVICE_FAILURE", "MANDATORY"]);
+/** The refund states that stop another full refund of the same payment: active ones, and one already done. */
+const FULL_REFUND_BLOCKERS: ReadonlySet<string> = new Set(["REQUESTED", "APPROVED", "SUBMITTING", "UNKNOWN", "CONFIRMED"]);
+const OPEN_DISPUTE_STATES: ReadonlySet<string> = new Set(["OPEN", "NEEDS_REVIEW"]);
+/** `DisputeOutcome` and the terminal state each one makes. */
+const DISPUTE_OUTCOME_STATE: Readonly<Record<string, string>> = {
+  WON: "WON",
+  WITHDRAWN_CONFIRMED: "WITHDRAWN",
+  LOST_FULL_REFUND: "LOST",
+  LOST_PARTIAL_COVERAGE_REVOKED: "LOST",
+};
 
 const money = (amountMinor: string, currency = "EUR", exponent = 2): StoredMoney => ({ amountMinor, currency, exponent });
 const zeroOf = (total: StoredMoney): StoredMoney => ({ ...total, amountMinor: "0" });
@@ -1105,10 +1230,33 @@ function markPaid(invoice: StoredInvoice): void {
   invoice.version += 1;
 }
 
+/** A settled invoice's payment fact (TAS-516): one per invoice, the whole allocation — however many receipts made it up (A89). */
+function recordPayment(state: ServerState, invoice: StoredInvoice): void {
+  if (state.paymentFacts.some((fact) => fact.invoiceId === invoice.id)) return;
+  state.paymentFacts.push({ paymentId: uuid(), tenantId: invoice.tenantId, invoiceId: invoice.id, method: invoice.paymentMethod, amount: { ...invoice.total } });
+}
+
+/** The period a payment granted (TAS-516): the last `PAID_PERIOD_MS` up to the paid-through it set, as every period this mock starts. */
+function grantPeriod(state: ServerState, tenant: StoredTenant, invoiceId: string): void {
+  const end = tenant.subscription.paidThrough;
+  const fact = state.paymentFacts.find((item) => item.invoiceId === invoiceId);
+  if (end === undefined || fact === undefined) return;
+  state.periods.push({
+    id: uuid(),
+    tenantId: tenant.id,
+    invoiceId,
+    paymentId: fact.paymentId,
+    startsAt: new Date(Date.parse(end) - PAID_PERIOD_MS).toISOString(),
+    endsAt: end,
+    state: "GRANTED",
+  });
+}
+
 /**
  * An invoice has expired (G2, L06.4–5): the money matched to it on time is set
- * to go back, on its receipts — so a return follows the receipt, and a later
- * payment never adds to it or settles with it.
+ * to go back, on its receipts — so a return follows the receipt, and only a
+ * timely payment reaching the total can still settle with it, while no return
+ * has started.
  */
 function markReturnRequired(state: ServerState, invoiceId: string): void {
   for (const receipt of state.wireReceipts) {
@@ -1341,7 +1489,10 @@ export type MockRouteKind = "tenant-read" | "tenant-write" | "tenant-self" | "ac
  */
 function seedTenants(
   seedAt: number,
-): Pick<ServerState, "tenants" | "memberships" | "freeLedger" | "invitations" | "taskLifetime" | "invoices" | "invoiceSeq" | "wireReceipts" | "refunds"> {
+): Pick<
+  ServerState,
+  "tenants" | "memberships" | "freeLedger" | "invitations" | "taskLifetime" | "invoices" | "invoiceSeq" | "wireReceipts" | "refunds" | "paymentFacts" | "periods" | "disputes"
+> {
   const at = (day: number) => `2026-05-${String(day).padStart(2, "0")}T09:00:00Z`;
   const iso = (ms: number) => new Date(ms).toISOString();
   const tenant = (
@@ -1386,6 +1537,15 @@ function seedTenants(
   const free = seatLimitOf(MOCK_PLAN_IDS.free);
   const freePlan = unpaid(MOCK_PLAN_IDS.free);
   const ids = MOCK_TENANT_IDS;
+  // TAS-516: Soylent Corp pays online, Team v2 both months: the previous period has ended, the current one ends in twelve days,
+  // a payment dispute is open on it. A dispute on the previous payment was won, and a refund of it declined.
+  const soylentPaid = paid(12, "DISABLED");
+  const soylentCurrentStart = seedAt + 12 * DAY - PAID_PERIOD_MS;
+  const soylentPreviousStart = soylentCurrentStart - PAID_PERIOD_MS;
+  const soylentCreated = soylentPreviousStart - DAY;
+  const soylentPaymentPrevious = "1a2b3c4d-5e6f-4a7b-8c9d-000000000951";
+  const soylentPaymentCurrent = "1a2b3c4d-5e6f-4a7b-8c9d-000000000952";
+  const soylent = named(ids.soylent, "Soylent Corp");
   const joined = new Map<string, string>([
     [ids.northwind, at(1)],
     [ids.globex, at(2)],
@@ -1398,6 +1558,7 @@ function seedTenants(
     [ids.wayne, iso(seedAt - 5 * DAY)],
     [ids.vandelay, at(10)],
     [ids.cyberdyne, iso(seedAt - 40 * DAY)],
+    [ids.soylent, iso(soylentCreated)],
   ]);
   // TAS-514: Cyberdyne Systems pays by bank transfer. Its first invoice's money arrived two days after its
   // due date while the creation was still open: refunded, and a replacement issued — paid in time, which
@@ -1466,6 +1627,10 @@ function seedTenants(
         createdAt: iso(cyberdyneCreated),
         invoiceMethod: "WIRE",
       },
+      {
+        ...tenant(ids.soylent, "Soylent Corp", tom, 12, "ACTIVE", ["PAYMENT_DISPUTE"], seatLimitOf(MOCK_PLAN_IDS.team), soylentPaid),
+        createdAt: iso(soylentCreated),
+      },
     ],
     memberships: [
       member(ids.northwind, anna, "TENANT_ADMIN"),
@@ -1491,6 +1656,9 @@ function seedTenants(
       member(ids.cyberdyne, tom, "TENANT_ADMIN"),
       // An admin who is not the owner: no Billing, no document, no refund (TAS-514 B10).
       member(ids.cyberdyne, priya, "TENANT_ADMIN"),
+      member(ids.soylent, tom, "TENANT_ADMIN"),
+      // An admin who is not the owner: no disputes read at all (TAS-516 B10).
+      member(ids.soylent, priya, "TENANT_ADMIN"),
     ],
     freeLedger: { [anna]: ids.northwind, [priya]: ids.globex, [sofia]: ids.vandelay },
     invitations: [
@@ -1614,6 +1782,9 @@ function seedTenants(
       seedInvoice(904, MOCK_INVOICE_IDS.cyberdyneRenewal, cyberdyne, "RENEWAL", "OPEN", MOCK_PLAN_IDS.team, iso(Date.parse(cyberdyneThrough) - RENEWAL_LEAD_MS), RENEWAL_LEAD_MS, {
         method: "WIRE",
       }),
+      // TAS-516: Soylent Corp's, numbered in a series of their own too (`invoiceSeq` does not move).
+      seedInvoice(951, MOCK_INVOICE_IDS.soylentPrevious, soylent, "RENEWAL", "PAID", MOCK_PLAN_IDS.team, iso(soylentPreviousStart - RENEWAL_LEAD_MS), RENEWAL_LEAD_MS),
+      seedInvoice(952, MOCK_INVOICE_IDS.soylentCurrent, soylent, "RENEWAL", "PAID", MOCK_PLAN_IDS.team, iso(soylentCurrentStart - RENEWAL_LEAD_MS), RENEWAL_LEAD_MS),
     ],
     // TAS-514: what the admin recorded for Cyberdyne's first payment — the late money returned, the replacement's allocated.
     wireReceipts: [
@@ -1663,6 +1834,82 @@ function seedTenants(
         ...wireSla(seedAt - 30 * DAY),
         decidedAt: iso(seedAt - 29 * DAY),
         submittedAt: iso(seedAt - 25 * DAY),
+      },
+      // TAS-516: a full refund of Soylent's previous payment, asked for and declined.
+      {
+        id: "9a3c2e77-6f4d-4e3a-9b5c-000000000951",
+        tenantId: ids.soylent,
+        paymentId: soylentPaymentPrevious,
+        kind: "SUBSCRIPTION_FULL",
+        state: "REJECTED",
+        amount: money("2000"),
+        requestedAt: iso(soylentCurrentStart - 2 * DAY),
+        version: 2,
+        reasonCode: "BILLING_ERROR",
+        sourceMethod: "PSP",
+        decidedAt: iso(soylentCurrentStart - DAY),
+      },
+    ],
+    // TAS-516: internal, never on an owner's route. Cyberdyne's first payment, by bank transfer; Soylent's two, online.
+    paymentFacts: [
+      {
+        paymentId: "8f2b1d66-5e3c-4d2f-8a4b-000000000902",
+        tenantId: ids.cyberdyne,
+        invoiceId: MOCK_INVOICE_IDS.cyberdyneInitial,
+        method: "WIRE",
+        amount: money("2000"),
+      },
+      { paymentId: soylentPaymentPrevious, tenantId: ids.soylent, invoiceId: MOCK_INVOICE_IDS.soylentPrevious, method: "PSP", amount: money("2000") },
+      { paymentId: soylentPaymentCurrent, tenantId: ids.soylent, invoiceId: MOCK_INVOICE_IDS.soylentCurrent, method: "PSP", amount: money("2000") },
+    ],
+    periods: [
+      {
+        id: "3d4e5f60-7a8b-4c9d-8e1f-000000000902",
+        tenantId: ids.cyberdyne,
+        invoiceId: MOCK_INVOICE_IDS.cyberdyneInitial,
+        paymentId: "8f2b1d66-5e3c-4d2f-8a4b-000000000902",
+        startsAt: iso(cyberdyneOpened),
+        endsAt: cyberdyneThrough,
+        state: "GRANTED",
+      },
+      {
+        id: "3d4e5f60-7a8b-4c9d-8e1f-000000000951",
+        tenantId: ids.soylent,
+        invoiceId: MOCK_INVOICE_IDS.soylentPrevious,
+        paymentId: soylentPaymentPrevious,
+        startsAt: iso(soylentPreviousStart),
+        endsAt: iso(soylentCurrentStart),
+        state: "GRANTED",
+      },
+      {
+        id: "3d4e5f60-7a8b-4c9d-8e1f-000000000952",
+        tenantId: ids.soylent,
+        invoiceId: MOCK_INVOICE_IDS.soylentCurrent,
+        paymentId: soylentPaymentCurrent,
+        startsAt: iso(soylentCurrentStart),
+        endsAt: soylentPaid.paidThrough ?? iso(seedAt + 12 * DAY),
+        state: "GRANTED",
+      },
+    ],
+    // TAS-516: seeded OPEN; NEEDS_REVIEW comes by the `disputeReview` hook (art-director's fixtures).
+    disputes: [
+      {
+        id: MOCK_DISPUTE_IDS.soylentPrevious,
+        tenantId: ids.soylent,
+        paymentId: soylentPaymentPrevious,
+        state: "WON",
+        openedAt: iso(soylentPreviousStart + 5 * DAY),
+        resolvedAt: iso(soylentPreviousStart + 12 * DAY),
+        finalOutcome: "WON",
+        version: 2,
+      },
+      {
+        id: MOCK_DISPUTE_IDS.soylentCurrent,
+        tenantId: ids.soylent,
+        paymentId: soylentPaymentCurrent,
+        state: "OPEN",
+        openedAt: iso(seedAt - 2 * DAY),
+        version: 1,
       },
     ],
     invoiceSeq: 1009,
@@ -1909,6 +2156,29 @@ const TENANT_SEEDS: Readonly<Record<string, MockTenantSeed>> = {
       },
     ],
   },
+  // TAS-516: Soylent Corp's one project, so the company opens on something; its state is all on Billing.
+  [MOCK_TENANT_IDS.soylent]: {
+    keep: [],
+    add: [
+      {
+        id: MOCK_TENANT_PROJECT_IDS.soylentFood,
+        key: "FOOD",
+        name: "Food supply",
+        createdAt: "2026-09-24T09:00:00Z",
+        members: [[tom, "ADMIN"], [priya, "MEMBER"]],
+        issues: [
+          {
+            summary: "Plan the quarterly menu",
+            issueType: "TASK",
+            status: "TODO",
+            priority: "MEDIUM",
+            assigneeId: tom,
+            reporterId: tom,
+          },
+        ],
+      },
+    ],
+  },
 };
 
 const EMPTY_SEED: MockTenantSeed = { keep: [], add: [] };
@@ -1997,6 +2267,7 @@ export class MockTenantServer {
       getCheckout: (bearer, tenantId, checkoutId) => this.getCheckout(bearer, tenantId, checkoutId),
       getInvoiceDocument: (bearer, tenantId, invoiceId) => this.getInvoiceDocument(bearer, tenantId, invoiceId),
       listRefunds: (bearer, tenantId, params) => this.listRefunds(bearer, tenantId, params),
+      listDisputes: (bearer, tenantId, params) => this.listDisputes(bearer, tenantId, params),
       getTenantCapabilities: (bearer, tenantId) => this.getTenantCapabilities(bearer, tenantId),
       changeSubscriptionPlan: (bearer, tenantId, input, version, key) => this.changeSubscriptionPlan(bearer, tenantId, input, version, key),
       cancelSubscriptionRenewal: (bearer, tenantId, version, key) => this.setRenewalCancelled(bearer, tenantId, true, version, key),
@@ -3154,6 +3425,36 @@ export class MockTenantServer {
   }
 
   /**
+   * `GET /tenants/{t}/billing/disputes` (TAS-516, guard §4): the owner only,
+   * this company's, never refused by a restriction — 409 while provisioning;
+   * keyset by `(openedAt, id)` ascending (invented, A87); `limit` 1–100, the
+   * cursor bound to the reader and the company.
+   */
+  private async listDisputes(bearer: string | null, tenantId: string, params: ListCompanyPageParams): Promise<unknown> {
+    await this.delay("listDisputes");
+    const answer = this.read((state) => {
+      const { session } = this.authorizeBilling(state, bearer, tenantId, "listDisputes");
+      const limit = this.pageLimit(params);
+      const bound = `${session.userId}:disputes:${tenantId}`;
+      const offset = params.cursor === undefined ? 0 : this.readCursor(params.cursor, bound);
+      const listed = state.disputes
+        .filter((dispute) => dispute.tenantId === tenantId)
+        .sort((a, b) => (a.openedAt < b.openedAt ? -1 : a.openedAt > b.openedAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const items = listed.slice(offset, offset + limit).map((dispute) => this.wireDispute(dispute));
+      const next = offset + limit;
+      return next < listed.length ? { items, nextCursor: this.writeCursor(next, bound) } : { items };
+    });
+    if (this.takeLostAnswer("listDisputes")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /** `Dispute` as the blueprint has it: `resolvedAt`, `finalOutcome` and a lost one's `confirmedMoneyFactId` only once terminal. */
+  private wireDispute(dispute: StoredDispute): unknown {
+    const { version, ...rest } = dispute;
+    return { ...rest, version: String(version) };
+  }
+
+  /**
    * `GET /tenants/{t}/capabilities` (§7.8): any ACTIVE member of the company,
    * with its session; `durationsSeconds` the two public durations —
    * `WIRE_RECONCILIATION_TARGET_SECONDS` 86 400 unless the
@@ -4269,13 +4570,13 @@ export class MockTenantServer {
       const raw = this.storage.getItem(MOCK_SERVER_KEY);
       if (raw !== null) {
         const parsed = JSON.parse(raw) as ServerState;
-        if (parsed && parsed.v === 8 && Array.isArray(parsed.tenants)) return parsed;
+        if (parsed && parsed.v === 9 && Array.isArray(parsed.tenants)) return parsed;
       }
     } catch {
       if (this.memory) return this.memory;
     }
     return {
-      v: 8,
+      v: 9,
       ...seedTenants(this.now()),
       checkouts: [],
       checkoutReceipts: {},
@@ -4377,6 +4678,8 @@ export class MockTenantServer {
     }
     // TAS-513: the provider's observations, their settlement, and what expires.
     if (this.evaluatePayments(state, now, open)) changed = true;
+    // TAS-516: full refunds of a subscription payment, and disputes.
+    if (this.evaluateDisputes(state, now)) changed = true;
     for (const tenant of state.tenants) {
       if (tenant.lifecycle === "AWAITING_PAYMENT" && confirmed.has(tenant.id)) {
         // The hook stands in for this path's settlement: the first invoice is paid with it.
@@ -4462,6 +4765,7 @@ export class MockTenantServer {
       this.switchPlan(state, tenant, change.planVersionId);
       setRestriction(tenant, "PAYMENT_EXPIRED", false);
       this.reconcileBreaches(state, tenant);
+      grantPeriod(state, tenant, change.invoiceId);
       return true;
     }
     const { activeChange: _change, scheduledEffectiveAt: _at, ...kept } = sub;
@@ -4531,8 +4835,8 @@ export class MockTenantServer {
         if (invoice && invoice.state === "OPEN") this.settle(state, invoice, Date.parse(checkout.settleAt), open);
       }
     }
-    // TAS-514: a PARTIALLY_PAID one expires too, its matched money kept until its return is confirmed —
-    // unless `holdExpiry` keeps it past its due date, as develop does.
+    // TAS-514: a PARTIALLY_PAID one expires too, its matched money kept until its return is confirmed or a
+    // later settlement pays the invoice — unless `holdExpiry` keeps it past its due date, as develop does.
     const held = new Set(Array.isArray(hooks.holdExpiry) ? hooks.holdExpiry : []);
     for (const invoice of state.invoices) {
       if (!PAYABLE_BY_WIRE.has(invoice.state) || Date.parse(invoice.dueAt) > now || held.has(invoice.id)) continue;
@@ -4693,16 +4997,16 @@ export class MockTenantServer {
       return true;
     };
     if (invoice.state === "PAID") return done("DUPLICATE_PAYMENT", receipt.amount);
-    // What this money may join (G2): receipts matched to it and still waiting — never money already set to go back.
-    const waiting = state.wireReceipts
-      .filter((item) => item.invoiceId === invoice.id && item.outcome === "MATCHED")
-      .reduce((sum, item) => addMoney(sum, item.amount), zeroOf(invoice.total));
+    // What this money may join (G2, TAS-516's guard): receipts matched to it and still waiting, and money set to go back
+    // whose return has not started — on time and reaching the total, it pays the invoice even if confirmed after expiry.
+    const joinable = (item: StoredWireReceipt) => item.invoiceId === invoice.id && (item.outcome === "MATCHED" || (item.outcome === "RETURN_REQUIRED" && item.refundId === undefined));
+    const waiting = state.wireReceipts.filter(joinable).reduce((sum, item) => addMoney(sum, item.amount), zeroOf(invoice.total));
     const matched = addMoney(waiting, receipt.amount);
     const enough = BigInt(matched.amountMinor) >= BigInt(invoice.total.amountMinor);
-    /** One allocation of the whole total: every receipt matched to it allocated, the excess left on this one. */
+    /** One allocation of the whole total: every receipt joined to it allocated, the excess left on this one. */
     const allocate = () => {
       for (const other of state.wireReceipts) {
-        if (other.invoiceId === invoice.id && other.outcome === "MATCHED") {
+        if (joinable(other)) {
           other.outcome = "ALLOCATED";
           other.unallocated = zeroOf(other.amount);
         }
@@ -4718,7 +5022,9 @@ export class MockTenantServer {
         if (!enough || occurred > Math.min(due, deadline)) return done("CLOSED_CREATION", receipt.amount);
         const excess = allocate();
         markPaid(invoice);
+        recordPayment(state, invoice);
         open(tenant, now);
+        grantPeriod(state, tenant, invoice.id);
         return done("ALLOCATED", excess);
       }
       if (tenant.lifecycle === "AWAITING_PAYMENT" && !arrivedBy) {
@@ -4743,6 +5049,8 @@ export class MockTenantServer {
       // D247: a late renewal of a live company is paid by this money alone, with a new month from now.
       if (BigInt(receipt.amount.amountMinor) < BigInt(invoice.total.amountMinor)) return done("LATE_PARTIAL", receipt.amount);
       const excess = subtractMoney(receipt.amount, invoice.total);
+      // Money matched to it and still waiting (under `holdExpiry`) is not taken by this payment: it goes back.
+      markReturnRequired(state, invoice.id);
       this.settle(state, invoice, now, open);
       return done("ALLOCATED", excess);
     }
@@ -4761,11 +5069,178 @@ export class MockTenantServer {
     return done("ALLOCATED", excess);
   }
 
-  /** A settled invoice's effects (see `evaluatePayments`). */
+  /**
+   * TAS-516, the admin's side of a full refund and a dispute (the hooks' block
+   * comment), each once per id: a SUBSCRIPTION_FULL requested, its evidence
+   * completed and moved along L07's chain, disputes opened, under review and
+   * ended — and `PAYMENT_DISPUTE` set exactly while an open dispute's payment
+   * backs the current GRANTED period (L07). Answers whether anything changed.
+   */
+  private evaluateDisputes(state: ServerState, now: number): boolean {
+    const hooks = this.hooks();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    let changed = false;
+    const openOn = (paymentId: string) => state.disputes.some((dispute) => dispute.paymentId === paymentId && OPEN_DISPUTE_STATES.has(dispute.state));
+
+    const fullRefunds = typeof hooks.subscriptionRefund === "object" && hooks.subscriptionRefund !== null ? hooks.subscriptionRefund : {};
+    for (const [refundId, entry] of Object.entries(fullRefunds)) {
+      if (typeof entry !== "object" || entry === null || typeof entry.tenantId !== "string" || typeof entry.invoiceId !== "string") continue;
+      if (state.refunds.some((refund) => refund.id === refundId) || !SUBSCRIPTION_REFUND_REASONS.has(entry.reasonCode)) continue;
+      const invoice = state.invoices.find((item) => item.id === entry.invoiceId && item.tenantId === entry.tenantId);
+      const fact = state.paymentFacts.find((item) => item.invoiceId === entry.invoiceId && item.tenantId === entry.tenantId);
+      if (!invoice || invoice.state !== "PAID" || !fact || openOn(fact.paymentId)) continue;
+      if (state.refunds.some((refund) => refund.paymentId === fact.paymentId && FULL_REFUND_BLOCKERS.has(refund.state))) continue;
+      state.refunds.push({
+        id: refundId,
+        tenantId: entry.tenantId,
+        paymentId: fact.paymentId,
+        kind: "SUBSCRIPTION_FULL",
+        state: "REQUESTED",
+        amount: { ...fact.amount },
+        requestedAt: iso(now),
+        version: 1,
+        reasonCode: entry.reasonCode,
+        sourceMethod: fact.method,
+        ...(fact.method === "WIRE" ? { feeBearer: "TASKA" } : {}),
+      });
+      changed = true;
+    }
+    for (const refundId of Array.isArray(hooks.refundEvidence) ? hooks.refundEvidence : []) {
+      const refund = state.refunds.find((item) => item.id === refundId);
+      if (!refund || refund.sourceMethod !== "WIRE" || refund.evidenceCompletedAt !== undefined) continue;
+      Object.assign(refund, wireSla(now));
+      refund.version += 1;
+      changed = true;
+    }
+    const moves = typeof hooks.refundState === "object" && hooks.refundState !== null ? hooks.refundState : {};
+    for (const [refundId, wanted] of Object.entries(moves)) {
+      const refund = state.refunds.find((item) => item.id === refundId);
+      if (!refund || refund.kind !== "SUBSCRIPTION_FULL" || !REFUND_STATE_MOVES[refund.state]?.includes(wanted)) continue;
+      if (refund.sourceMethod === "WIRE" && refund.evidenceCompletedAt === undefined && WIRE_AFTER_EVIDENCE.has(wanted)) continue;
+      refund.state = wanted;
+      refund.version += 1;
+      // Set once, never cleared: they stay on the row when the state moves on (guard Q3).
+      if ((wanted === "APPROVED" || wanted === "REJECTED") && refund.decidedAt === undefined) refund.decidedAt = iso(now);
+      if (wanted === "SUBMITTING" && refund.submittedAt === undefined) refund.submittedAt = iso(now);
+      if (wanted === "CONFIRMED") {
+        refund.confirmedAt = iso(now);
+        const tenant = state.tenants.find((item) => item.id === refund.tenantId);
+        if (tenant) this.revokeCoverage(state, tenant, refund.paymentId, now);
+      }
+      changed = true;
+    }
+
+    const opened = typeof hooks.disputeOpen === "object" && hooks.disputeOpen !== null ? hooks.disputeOpen : {};
+    for (const [disputeId, entry] of Object.entries(opened)) {
+      if (typeof entry !== "object" || entry === null || typeof entry.tenantId !== "string" || typeof entry.invoiceId !== "string") continue;
+      if (state.disputes.some((dispute) => dispute.id === disputeId)) continue;
+      const invoice = state.invoices.find((item) => item.id === entry.invoiceId && item.tenantId === entry.tenantId);
+      const fact = state.paymentFacts.find((item) => item.invoiceId === entry.invoiceId && item.tenantId === entry.tenantId);
+      // Assumed PSP-only (guard Q2, A91): a chargeback has no meaning on a bank transfer.
+      if (!invoice || invoice.state !== "PAID" || !fact || fact.method === "WIRE") continue;
+      state.disputes.push({
+        id: disputeId,
+        tenantId: entry.tenantId,
+        paymentId: fact.paymentId,
+        state: entry.state === "NEEDS_REVIEW" ? "NEEDS_REVIEW" : "OPEN",
+        openedAt: iso(now),
+        version: 1,
+      });
+      const tenant = state.tenants.find((item) => item.id === entry.tenantId);
+      if (tenant && tenant.subscription.autopayState !== "DISABLED") {
+        tenant.subscription = { ...tenant.subscription, autopayState: "DISABLED", version: nextVersion(tenant.subscription.version) };
+      }
+      changed = true;
+    }
+    for (const disputeId of Array.isArray(hooks.disputeReview) ? hooks.disputeReview : []) {
+      const dispute = state.disputes.find((item) => item.id === disputeId);
+      if (!dispute || dispute.state !== "OPEN") continue;
+      dispute.state = "NEEDS_REVIEW";
+      dispute.version += 1;
+      changed = true;
+    }
+    const outcomes = typeof hooks.disputeOutcome === "object" && hooks.disputeOutcome !== null ? hooks.disputeOutcome : {};
+    for (const [disputeId, outcome] of Object.entries(outcomes)) {
+      const dispute = state.disputes.find((item) => item.id === disputeId);
+      const terminal = typeof outcome === "string" ? DISPUTE_OUTCOME_STATE[outcome] : undefined;
+      if (!dispute || !OPEN_DISPUTE_STATES.has(dispute.state) || terminal === undefined) continue;
+      dispute.state = terminal;
+      dispute.finalOutcome = outcome;
+      dispute.resolvedAt = iso(now);
+      dispute.version += 1;
+      if (terminal === "LOST") {
+        dispute.confirmedMoneyFactId = uuid();
+        const tenant = state.tenants.find((item) => item.id === dispute.tenantId);
+        if (tenant) this.revokeCoverage(state, tenant, dispute.paymentId, now);
+      }
+      changed = true;
+    }
+
+    // The legacy `paymentDispute` hook stays restriction-only: a company it names is left to it (TAS-516, guard §4).
+    const legacy = typeof hooks.paymentDispute === "object" && hooks.paymentDispute !== null ? hooks.paymentDispute : {};
+    for (const tenant of state.tenants) {
+      if (typeof legacy[tenant.id] === "boolean" || !state.disputes.some((dispute) => dispute.tenantId === tenant.id)) continue;
+      const concerned = state.disputes.some(
+        (dispute) =>
+          dispute.tenantId === tenant.id &&
+          OPEN_DISPUTE_STATES.has(dispute.state) &&
+          state.periods.some(
+            (period) => period.paymentId === dispute.paymentId && period.state === "GRANTED" && Date.parse(period.startsAt) <= now && Date.parse(period.endsAt) > now,
+          ),
+      );
+      if (setRestriction(tenant, "PAYMENT_DISPUTE", concerned)) {
+        tenant.entitlementVersion += 1;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * A payment's coverage revoked (TAS-516): a lost dispute, or a confirmed full
+   * refund — the whole period it granted, no part kept (D232, D251).
+   * `paidThrough` falls back to the latest GRANTED period's end that has started
+   * — in the past, whenever one exists (`SubscriptionStore.java:623-627`, guard
+   * Q4) — and is dropped when none does; past it, or with none left, a paid plan
+   * is `PAYMENT_EXPIRED`. Automatic payments DISABLED, renewal cancelled
+   * (develop's, A93); the invoice stays PAID.
+   */
+  private revokeCoverage(state: ServerState, tenant: StoredTenant, paymentId: string, now: number): void {
+    for (const period of state.periods) {
+      if (period.paymentId === paymentId && period.tenantId === tenant.id) period.state = "REVOKED";
+    }
+    const sub = tenant.subscription;
+    if (isFreePlan(sub.planVersionId)) return;
+    const latest = state.periods
+      .filter((period) => period.tenantId === tenant.id && period.state === "GRANTED" && Date.parse(period.startsAt) <= now)
+      .reduce<StoredPeriod | null>((found, period) => (found === null || Date.parse(period.endsAt) > Date.parse(found.endsAt) ? period : found), null);
+    const { paidThrough: _paid, anchorDay: _anchor, ...rest } = sub;
+    tenant.subscription = {
+      ...rest,
+      version: nextVersion(sub.version),
+      autopayState: "DISABLED",
+      renewalCancelled: true,
+      ...(latest === null ? {} : { paidThrough: latest.endsAt, anchorDay: new Date(latest.endsAt).getUTCDate() }),
+    };
+    tenant.entitlementVersion += 1;
+    if (latest === null || Date.parse(latest.endsAt) <= now) setRestriction(tenant, "PAYMENT_EXPIRED", true);
+  }
+
+  /**
+   * A settled invoice's effects (see `evaluatePayments`) — and, since TAS-516,
+   * its payment fact and the period it granted, whenever the paid-through moved.
+   */
   private settle(state: ServerState, invoice: StoredInvoice, at: number, open: (tenant: StoredTenant, paidAt?: number) => void): void {
     markPaid(invoice);
+    recordPayment(state, invoice);
     const tenant = state.tenants.find((item) => item.id === invoice.tenantId);
     if (!tenant) return;
+    const before = tenant.subscription.paidThrough;
+    this.applySettlement(state, tenant, invoice, at, open);
+    if (tenant.subscription.paidThrough !== before) grantPeriod(state, tenant, invoice.id);
+  }
+
+  private applySettlement(state: ServerState, tenant: StoredTenant, invoice: StoredInvoice, at: number, open: (tenant: StoredTenant, paidAt?: number) => void): void {
     if (invoice.purpose === "INITIAL") {
       // A timely first payment opens it; one confirmed after an automatic close
       // reopens only a company whose deadline it met (D216) — never a cancelled one.

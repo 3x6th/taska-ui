@@ -191,7 +191,7 @@ test("the board carries the company's state: «paused» for Initech, «read-only
   const dialog = page.getByRole("dialog", { name: "New issue" });
   await dialog.getByLabel("Summary").fill("Disputed");
   await dialog.getByRole("button", { name: "Create issue" }).click();
-  await expect(dialog.getByRole("alert")).toHaveText("A payment for Northwind is disputed, so nothing in it can be changed until it’s settled.");
+  await expect(dialog.getByRole("alert")).toHaveText("A payment for Northwind is disputed, so nothing in it can be changed.");
 });
 
 test("Plan › «Try again» in flight keeps the page — no skeleton, every failed read's box, the button aria-disabled with focus — then focus on what is left, and on the heading once whole", async ({
@@ -323,7 +323,7 @@ test("a refused write re-reads the company without a reload: the marker says «r
   await dialog.getByRole("textbox", { name: "Key", exact: true }).fill("OPS");
   await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("Operations");
   await dialog.getByRole("button", { name: "Create project" }).click();
-  await expect(dialog.locator(".error-note")).toContainText("A payment for Northwind is disputed, so nothing in it can be changed until it’s settled.");
+  await expect(dialog.locator(".error-note")).toContainText("A payment for Northwind is disputed, so nothing in it can be changed.");
   await dialog.getByRole("button", { name: "Cancel" }).click();
 
   // The refusal's reasons were not the list row's: the list was read again, and the marker is there.

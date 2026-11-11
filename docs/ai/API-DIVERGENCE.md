@@ -2338,6 +2338,72 @@ Everything below is the entry as it stood, in the past tense.
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
 - **Removal:** delete with the flag, after the probe.
 
+### TAS-516: disputes and the refund history ship ahead of the gateway, read-only, on the B2B blueprint
+
+- **Endpoints** (blueprint at develop `43d6c89d`, none in `openapi.yml`): `GET …/billing/disputes` (listDisputes, new,
+  owner only, all pages); `GET …/billing/refunds` now also read for `submittedAt`. Not called:
+  `requestFullSubscriptionRefund`, `getRefund`, `listSubscriptionPeriods`, every admin dispute and refund route.
+  Backend: TAS-358 and TAS-490 are docs only; develop has no refund or dispute table, proto or RPC; nothing writes
+  `PAYMENT_DISPUTE` (it is only preserved, `EntitlementStore.java:221-245`); revocation exists
+  (`SubscriptionStore.java:513-570`).
+- **Observed (2026-11-11 ~06:32Z, no token, `not-a-uuid`):** 404 «No static resource» — GET refunds
+  `623c3ab3-e190-47eb-9a00-1cbdd210733a`, GET refunds/{id} `2bcad1a8-1057-4702-9df3-eb434f1d2442`, POST refunds
+  `13a0af7a-1170-4c2e-92f0-292d3a4aad8d`, GET disputes `e473b4a3-1c92-4d43-8546-35ee6d1b98ea`, GET periods
+  `15ee5115-b8ed-4dfb-ba7d-78f4d6ca6f8c`; control `GET /projects` 401 `fea0edcd-8dc7-4f21-ad47-9af0166365d5`.
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`.
+- **Not delivered, because the owner has no honest input:** the owner's refund request (the story's How 1, acceptance
+  «creates» and «no duplicate»). `requestFullSubscriptionRefund` needs a `paymentId` no owner-readable schema carries,
+  and «by payment» is ill-defined for an invoice paid by several facts (refunding one would refund part of the fee,
+  D228). No form, control or sentence is drawn. Removal: A83 + A89 + A90 (TAS-358).
+- **What the UI assumes where the blueprint is silent — each removable:**
+  - Disputes are PSP-only (every outcome rule names a PSP confirmation; `Dispute` has no method) — A91.
+  - Outcome wording without an invoice or an amount: «Disputed payment» (A91).
+  - «A paid plan for {Company} now needs a new full payment» from `PAYMENT_EXPIRED` after a LOST_PARTIAL_COVERAGE_REVOKED —
+    the wire cannot tell a revoked period from an ended one (A92); payment is never said to be the only way back (Free,
+    D209–D211).
+  - No requester and no reason text in the history (A94); bank crediting said once, with no number (A95).
+  - A refund's `decidedAt` and `submittedAt` persist into later states, each read from its own field only (A87, A96).
+  - Disputes drawn newest first; the blueprint's §7 says ascending (A87). +1 read on Billing (A75).
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v9` — every mock session is
+  signed out once; no displayed mock string reaches the REST bundle, checked by hand on both REST builds; the only hits
+  are keys of the `MOCK_*_IDS` id maps):
+  - **Fixtures:** one new seeded company, Soylent Corp (Tom owner, Priya TENANT_ADMIN, Team v2, PSP, project FOOD «Food
+    supply»), created 49 days before the seed; invoices 00951 (previous period, ended) and 00952 (current, ends in ~12
+    days) without moving `invoiceSeq`; a WON dispute on 00951's payment, an OPEN one on 00952's (sets
+    `PAYMENT_DISPUTE`), autopay DISABLED; one SUBSCRIPTION_FULL PSP refund REJECTED BILLING_ERROR with `decidedAt`.
+    Umbrella, Stark, Cyberdyne and Northwind are not reseeded.
+  - **Payment facts and periods**, never on the wire: one fact per settled invoice for its whole allocation, however
+    many receipts made it up (seeded only for Cyberdyne 00902 and Soylent 00951/00952; other seeded PAID invoices have
+    none, so the new hooks ignore them); each grants a 30-day period ending at the `paidThrough` its settlement set; a
+    NEXT_PERIOD change grants its period at the boundary.
+  - **Hooks:** `disputeOpen` (optional starting state; PSP only — a WIRE payment is ignored), `disputeReview`,
+    `disputeOutcome`, `subscriptionRefund`, `refundEvidence`, `refundState` (L07's chain only: REQUESTED → APPROVED |
+    REJECTED; APPROVED → SUBMITTING; SUBMITTING → CONFIRMED | UNKNOWN | FAILED; UNKNOWN → CONFIRMED | FAILED; acts on
+    SUBSCRIPTION_FULL refunds; unallocated returns still move through `refundProgress`).
+  - **Taska requests SUBSCRIPTION_FULL on the owner's behalf** (the only way one exists on the mock): BILLING_ERROR,
+    SERVICE_FAILURE or MANDATORY only; refused under an open dispute on that payment or with an active or confirmed
+    refund of it; allowed again after REJECTED or FAILED. WIRE: `feeBearer` TASKA, SLA only after `refundEvidence`; PSP:
+    no fee bearer, no SLA.
+  - **Disputes:** `confirmedMoneyFactId` a random uuid on LOST_*. `disputeOpen` turns autopay off even when the payment
+    is not the current coverage; `PAYMENT_DISPUTE` is set only while an open dispute's payment backs the current granted
+    period, re-evaluated on every read (so it lifts when that period ends with the dispute still open); the legacy
+    `paymentDispute` hook stays restriction-only.
+  - **Revocation** (a lost dispute, or a confirmed full refund): `paidThrough` becomes the latest end among started
+    granted periods — kept in the past as on develop (`SubscriptionStore.java:623-627`), dropped with none —, and a past
+    or absent end sets `PAYMENT_EXPIRED`; autopay DISABLED and `renewalCancelled` true (A93); versions move; the invoice
+    stays PAID; no refund is made. Simplification: an already-paid future period (early renewal) is ignored by the
+    fallback and never starts later on the mock.
+  - `listDisputes`: owner only (403 `OWNER_REQUIRED` for TENANT_ADMIN and MEMBER), never refused by a restriction, 409
+    while PROVISIONING, `limit` 1–100 (default 50), cursor bound to reader and company, order `(openedAt, id)`
+    ascending; `refuseNext`, `delayMs` and `loseAnswer` accept it.
+  - **TAS-514 leftovers fixed here:** on-time money that reaches the total pays an invoice even when confirmed after
+    expiry; under `holdExpiry` matched money is sent back before a late full payment settles (A97).
+- **Turning the flag on** additionally needs TAS-358 and TAS-490 behind gateway routes, A83 and A89–A91 answered, and
+  the gateway contract re-vendored.
+- **Removal:** with the flag, after a stand probe — a NEEDS_REVIEW dispute keeps the company read-only; a
+  LOST_PARTIAL_COVERAGE_REVOKED leaves no coverage and says a new payment is needed; a WON keeps the remainder with
+  autopay off; a non-owner's `listDisputes` is 403.
+
 ### TAS-514: wire invoices, documents and refunds ship ahead of the gateway, on the B2B blueprint
 
 - **Endpoints** (blueprint at develop `43d6c89d`, none in `openapi.yml`): `GET …/billing/invoices/{invoiceId}` now read
@@ -2400,10 +2466,10 @@ Everything below is the entry as it stood, in the past tense.
     invoice, a non-WIRE, VOID or DRAFT invoice, a currency mismatch, a company DELETED or DELETING at any time, an
     unknown invoice. Money matched to an invoice that then expires is marked return-required on the receipt at expiry
     and never combines with money that arrived after the due date (D246, L06.4–5; fix round 1 — it used to vanish when a
-    late full payment settled the expired invoice; A97). **Known simplification, fixed in TAS-516's mock work:** money that
-    arrived by the due date and reaches the total should still pay the invoice when confirmed after expiry (B09,
-    `ai-business-spec.md:202`, `:247`); the mock currently returns it. And under `holdExpiry`, matched money plus a late
-    full payment settles without its return. A late partial renewal returns INCOMPLETE_BANK_PAYMENT; money for a PAID invoice, or for the first invoice
+    late full payment settled the expired invoice; A97). **A simplification at TAS-514, fixed in TAS-516 (`f58b228`):** money that
+    arrived by the due date and reaches the total pays the invoice even when confirmed after expiry (B09,
+    `ai-business-spec.md:202`, `:247`), unless its return has started; under `holdExpiry`, matched money is sent back
+    before a late full payment settles. A late partial renewal returns INCOMPLETE_BANK_PAYMENT; money for a PAID invoice, or for the first invoice
     of a company that has since opened, is DUPLICATE_PAYMENT; D216 applies only when the money arrived no later than the
     earlier of due and deadline. PARTIALLY_PAID invoices also expire at `dueAt`; `holdExpiry` stops that (develop's real
     behaviour, A85).

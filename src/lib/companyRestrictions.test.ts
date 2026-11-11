@@ -27,10 +27,10 @@ const refusal = (status: number, code: string, reasons: string[] = [], viaDetail
   });
 
 describe("§4.35's reason phrase", () => {
-  it("one per known reason, the first in §4.39's order — the dispute's «until it’s settled»", () => {
+  it("one per known reason, the first in §4.39's order — TAS-516: the dispute's no longer promises «until it’s settled»", () => {
     expect(restrictionPhrase("PLATFORM_BLOCK", "Hooli")).toBe("Taska has blocked Hooli, so nothing in it can be changed.");
     expect(restrictionPhrase("OWNER_PAUSE", "Initech")).toBe("Initech is paused, so nothing in it can be changed.");
-    expect(restrictionPhrase("PAYMENT_DISPUTE", "Northwind")).toBe("A payment for Northwind is disputed, so nothing in it can be changed until it’s settled.");
+    expect(restrictionPhrase("PAYMENT_DISPUTE", "Northwind")).toBe("A payment for Northwind is disputed, so nothing in it can be changed.");
     expect(restrictionPhrase("PAYMENT_EXPIRED", "Umbrella")).toBe("Umbrella’s paid period has ended, so nothing in it can be changed.");
     expect(restrictionPhrase("OVER_QUOTA", null)).toBe("This company is over its plan’s limits, so nothing in it can be changed.");
     expect(restrictionPhrase("PLATFORM_BLOCK", null)).toBe("Taska has blocked this company, so nothing in it can be changed.");

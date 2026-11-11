@@ -18,7 +18,8 @@ import { CompanyPlanSection } from "./company/CompanyPlanSection";
  *
  * The guard's table: the list `getTenant ∥ me → listInvoices ∥ getSubscription`
  * (TAS-515: the «Automatic payments» group, +1 read at the same depth; TAS-514:
- * `listRefunds`, +1 at it too); the invoice `getTenant ∥ me → getInvoice`, with
+ * `listRefunds`, +1 at it too; TAS-516: `listDisputes`, +1 at it, and none for a
+ * reader who is not the owner); the invoice `getTenant ∥ me → getInvoice`, with
  * `listInvoices` only for an EXPIRED or VOID one (F3) and — TAS-514 —
  * `getTenantCapabilities` only for an open wire one; the card
  * `getTenant → listInvoices ∥ listRefunds` (F4, F7; TAS-514 decision 7) — no
@@ -48,7 +49,7 @@ vi.mock("../api/client", async () => {
 });
 
 const EUR = (amountMinor: string) => ({ amountMinor, currency: "EUR", exponent: 2 });
-const server = { invoiceState: "OPEN", tenantId: NORTHWIND, lifecycle: "ACTIVE", purpose: null as string | null, method: "PSP" };
+const server = { invoiceState: "OPEN", tenantId: NORTHWIND, lifecycle: "ACTIVE", purpose: null as string | null, method: "PSP", ownerId: ANNA };
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const session = (sessionId: string, tag: string, tenantId?: string) => ({
@@ -83,7 +84,7 @@ const invoice = () => ({
 const tenant = () => ({
   id: server.tenantId,
   name: server.tenantId === STARK ? "Stark Industries" : "Northwind",
-  ownerId: ANNA,
+  ownerId: server.ownerId,
   lifecycle: server.lifecycle,
   restrictions: server.lifecycle === "AWAITING_PAYMENT" ? ["PENDING_FIRST_PAYMENT"] : [],
   createdAt: "2026-05-01T09:00:00Z",
@@ -117,6 +118,7 @@ function stubGateway() {
         if (path.startsWith(`/tenants/${server.tenantId}/billing/invoices?`)) return json(200, { items: [invoice()] });
         if (path === `/tenants/${server.tenantId}/billing/invoices/${INVOICE}`) return json(200, invoice());
         if (path.startsWith(`/tenants/${server.tenantId}/billing/refunds?`)) return json(200, { items: [] });
+        if (path.startsWith(`/tenants/${server.tenantId}/billing/disputes?`)) return json(200, { items: [] });
         if (path === `/tenants/${server.tenantId}/capabilities`) {
           return json(200, { tenantId: server.tenantId, durationsSeconds: { WIRE_RECONCILIATION_TARGET_SECONDS: 86400 } });
         }
@@ -171,10 +173,11 @@ const invoiceRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/inv
 const subscriptionRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/subscription`;
 const entitlementRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/entitlement`;
 const refundsRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/refunds?limit=100`;
+const disputesRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/disputes?limit=100`;
 const capabilitiesRoute = (tenantId: string) => `GET /tenants/${tenantId}/capabilities`;
 
 describe("the request budget of Billing and the never-opened card (F9)", () => {
-  it("the list: getTenant ∥ me, then listInvoices ∥ getSubscription ∥ listRefunds — and nothing else of the company's", async () => {
+  it("the list: getTenant ∥ me, then listInvoices ∥ getSubscription ∥ listRefunds ∥ listDisputes — and nothing else of the company's", async () => {
     const from = await enter(NORTHWIND, "ACTIVE");
     const { wrapper } = companiesHarness({ companyId: NORTHWIND, path: "/company/billing" });
     const view = render(<CompanyBillingSection />, { wrapper });
@@ -182,11 +185,12 @@ describe("the request budget of Billing and the never-opened card (F9)", () => {
     await screen.findByRole("heading", { name: "Automatic payments" });
     const routes = sent(from);
     expect(routes.map((entry) => entry.route).sort()).toEqual(
-      ["GET /users/me", invoicesRoute(NORTHWIND), refundsRoute(NORTHWIND), subscriptionRoute(NORTHWIND), tenantRoute(NORTHWIND)].sort(),
+      ["GET /users/me", disputesRoute(NORTHWIND), invoicesRoute(NORTHWIND), refundsRoute(NORTHWIND), subscriptionRoute(NORTHWIND), tenantRoute(NORTHWIND)].sort(),
     );
-    // TAS-514: beside the list, at its depth — never after it.
+    // TAS-514, TAS-516: beside the list, at its depth — never after it.
     expect(one(routes, refundsRoute(NORTHWIND)).started).toBeLessThan(one(routes, invoicesRoute(NORTHWIND)).answered);
-    for (const route of [invoicesRoute(NORTHWIND), subscriptionRoute(NORTHWIND), refundsRoute(NORTHWIND)]) {
+    expect(one(routes, disputesRoute(NORTHWIND)).started).toBeLessThan(one(routes, invoicesRoute(NORTHWIND)).answered);
+    for (const route of [invoicesRoute(NORTHWIND), subscriptionRoute(NORTHWIND), refundsRoute(NORTHWIND), disputesRoute(NORTHWIND)]) {
       const read = one(routes, route);
       expect(read.started).toBeGreaterThan(one(routes, tenantRoute(NORTHWIND)).answered);
       expect(read.started).toBeGreaterThan(one(routes, "GET /users/me").answered);
@@ -194,6 +198,21 @@ describe("the request budget of Billing and the never-opened card (F9)", () => {
     // Side by side, one depth: neither waits for the other.
     expect(one(routes, subscriptionRoute(NORTHWIND)).started).toBeLessThan(one(routes, invoicesRoute(NORTHWIND)).answered);
     view.unmount();
+  });
+
+  it("TAS-516 (guard B10): a reader who is not the owner — getTenant ∥ me, and not one billing read, disputes included", async () => {
+    server.ownerId = "someone-else";
+    try {
+      const from = await enter(NORTHWIND, "ACTIVE");
+      const { wrapper } = companiesHarness({ companyId: NORTHWIND, path: "/company/billing" });
+      const view = render(<CompanyBillingSection />, { wrapper });
+      await screen.findByText("Invoices and payments for Northwind are shown only to its owner.");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(sent(from).map((entry) => entry.route).sort()).toEqual(["GET /users/me", tenantRoute(NORTHWIND)].sort());
+      view.unmount();
+    } finally {
+      server.ownerId = ANNA;
+    }
   });
 
   it("the invoice: getTenant ∥ me, then getInvoice and the public catalogue — no list for an open one", async () => {

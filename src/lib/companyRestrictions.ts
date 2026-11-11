@@ -48,10 +48,7 @@ export function restrictionClause(reason: KnownRestriction, company: string | nu
 
 /** §4.35's phrase for a write refused by `reason`: the clause and «nothing in it can be changed». */
 export function restrictionPhrase(reason: KnownRestriction, company: string | null): string {
-  const clause = restrictionClause(reason, company);
-  return reason === "PAYMENT_DISPUTE"
-    ? `${clause}, so nothing in it can be changed until it’s settled.`
-    : `${clause}, so nothing in it can be changed.`;
+  return `${restrictionClause(reason, company)}, so nothing in it can be changed.`;
 }
 
 /**

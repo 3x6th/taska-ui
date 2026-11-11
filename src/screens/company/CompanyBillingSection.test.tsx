@@ -33,6 +33,8 @@ const { fakeApi, state } = vi.hoisted(() => {
     refunds: [] as Array<Record<string, unknown>>,
     targetSeconds: 86400 as number | null,
     document: null as null | (() => Promise<unknown>),
+    /** TAS-516: the owner's disputes, read beside the list; none by default. */
+    disputes: [] as Array<Record<string, unknown>>,
   };
   const workspace = { tenantId: "n", tenantName: "Northwind", tenantSessionId: "s-n" };
   const tenant = () => ({ id: "n", name: "Northwind", ownerId: "tom", lifecycle: "ACTIVE", restrictions: state.restrictions, createdAt: "2026-05-01T09:00:00Z", version: "1" });
@@ -77,6 +79,10 @@ const { fakeApi, state } = vi.hoisted(() => {
     listRefunds: async () => {
       state.calls.push("listRefunds");
       return { items: state.refunds, nextCursor: null };
+    },
+    listDisputes: async () => {
+      state.calls.push("listDisputes");
+      return { items: state.disputes, nextCursor: null };
     },
     getTenantCapabilities: async () => {
       state.calls.push("getTenantCapabilities");
@@ -168,6 +174,7 @@ beforeEach(() => {
   state.refunds = [];
   state.targetSeconds = 86400;
   state.document = null;
+  state.disputes = [];
 });
 
 afterEach(() => {
@@ -181,7 +188,7 @@ describe("the rail and who sees Billing (B1, §7)", () => {
     await waitFor(() => expect(within(rail()).getAllByRole("link").map((link) => link.textContent)).toEqual(["General", "Members", "Plan", "Billing", "Back to projects"]));
     expect(within(rail()).getByRole("link", { name: "Billing" })).toHaveAttribute("aria-current", "page");
     // The lead and «Invoices» stand above the skeleton already (NB3); the count comes with the list.
-    await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Invoices2"));
+    await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Invoices 2"));
     expect(screen.getByText("Invoices for Northwind and how they were paid.")).toBeInTheDocument();
     const rows = screen.getAllByRole("listitem").filter((item) => item.classList.contains("company-invoice-row"));
     expect(rows.map((row) => within(row).getByRole("link").textContent)).toEqual(["TSK-2026-01008", "TSK-2026-01002"]);
@@ -240,7 +247,7 @@ describe("«Automatic payments» (TAS-515, art-director B8, decision 1)", () => 
     state.subscription = paid("CONSENTED");
     renderAt("/company/billing");
     expect(await screen.findByRole("heading", { level: 2, name: "Automatic payments" })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual(["Automatic payments", "Invoices2"]);
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual(["Automatic payments", "Invoices 2"]);
     expect(screen.getByText("Automatic payments and invoices for Northwind.")).toBeInTheDocument();
     expect(group()).toHaveTextContent("OnTaska takes Northwind’s payments automatically. You can still pay any invoice here yourself.");
     expect(within(group()).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Turn off automatic payments"]);
@@ -250,7 +257,10 @@ describe("«Automatic payments» (TAS-515, art-director B8, decision 1)", () => 
   it("Off says Taska can’t turn them on, with no button; Suspended offers «Turn off»; a state it does not know is drawn as it came", async () => {
     state.subscription = paid("DISABLED");
     const off = renderAt("/company/billing");
-    expect(await screen.findByText("You pay Northwind’s invoices here yourself. This version of Taska can’t turn automatic payments on.")).toBeInTheDocument();
+    // TAS-516 (T7): off until a new consent, which this build cannot take (A67).
+    expect(
+      await screen.findByText("You pay Northwind’s invoices here yourself. Automatic payments stay off until you set them up, which this version of Taska can’t do yet."),
+    ).toBeInTheDocument();
     expect(within(group()).queryByRole("button")).not.toBeInTheDocument();
     off.unmount();
     state.subscription = paid("SUSPENDED", null);
@@ -564,6 +574,35 @@ describe("«See Billing» (B2c)", () => {
     );
     expect(screen.queryByRole("link", { name: "See Billing" })).not.toBeInTheDocument();
   });
+
+  it("TAS-516 (B13): ends the owner's dispute line too — once per block, on the first line that earns it; never anybody else's", () => {
+    const both = render(
+      <MemoryRouter>
+        <CompanyStateBlock owner restrictions={["PAYMENT_EXPIRED", "PAYMENT_DISPUTE"]} />
+      </MemoryRouter>,
+    );
+    const lines = [...document.querySelectorAll(".company-general-state")].map((line) => line.textContent);
+    expect(lines[0]).toBe("A payment is disputed. Nothing in it can be changed, and no automatic payments are taken. See Billing");
+    expect(lines[1]).toBe(
+      "Its paid period has ended. Nothing in it can be changed until it’s paid for again or its plan is changed. There’s no grace period, and it doesn’t move to a free plan on its own.",
+    );
+    expect(screen.getAllByRole("link", { name: "See Billing" })).toHaveLength(1);
+    both.unmount();
+    const dispute = render(
+      <MemoryRouter>
+        <CompanyStateBlock owner restrictions={["PAYMENT_DISPUTE"]} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: "See Billing" })).toHaveAttribute("href", "/company/billing");
+    dispute.unmount();
+    render(
+      <MemoryRouter>
+        <CompanyStateBlock owner={false} restrictions={["PAYMENT_DISPUTE"]} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText(/A payment is disputed\./).closest("p")).toHaveTextContent("A payment is disputed. Nothing in it can be changed.");
+    expect(screen.queryByRole("link", { name: "See Billing" })).not.toBeInTheDocument();
+  });
 });
 
 describe("TAS-514: refunds, the wire invoice and its document", () => {
@@ -582,6 +621,7 @@ describe("TAS-514: refunds, the wire invoice and its document", () => {
     feeBearer: "TASKA",
     sendDueAt: null,
     decidedAt: null,
+    submittedAt: null,
     ...overrides,
   });
 
@@ -593,12 +633,14 @@ describe("TAS-514: refunds, the wire invoice and its document", () => {
     state.refunds = [refund()];
     renderAt("/company/billing");
     const group = await screen.findByRole("region", { name: /^Refunds/ });
-    expect(within(group).getByRole("heading")).toHaveTextContent("Refunds1");
+    expect(within(group).getByRole("heading")).toHaveTextContent("Refunds 1");
     const row = group.querySelector(".company-refund-row") as HTMLElement;
     expect(row).toHaveTextContent("Overpayment");
-    expect(row).toHaveTextContent("Bank transfer · Taska is checking whether it went through");
+    expect(row).toHaveTextContent("Bank transfer · Requested Nov 10 · Taska is checking whether it went through");
     expect(within(row).getAllByText("checking").length).toBeGreaterThan(0);
     expect(row).not.toHaveTextContent(/TSK-|sent/i);
+    // The fee under it (T4) — never «sent back» on a refund still on the way (art-director B-1).
+    expect(row.querySelector(".company-refund-consequence")).toHaveTextContent("Taska pays the bank fee — it isn’t taken out of the refund.");
     expect(within(row).queryByRole("link")).not.toBeInTheDocument();
   });
 
@@ -664,6 +706,186 @@ describe("TAS-514: refunds, the wire invoice and its document", () => {
     expect(alert.closest(".error-note")).toHaveTextContent("rid-doc");
     expect(download).toHaveFocus();
     expect(state.calls.filter((call) => call === "getInvoiceDocument")).toHaveLength(1);
+  });
+});
+
+describe("TAS-516: disputes, refunds told step by step, and the dispute's line", () => {
+  const dispute = (overrides: Record<string, unknown> = {}) => ({
+    id: "dp-1",
+    tenantId: "n",
+    state: "OPEN",
+    finalOutcome: null,
+    openedAt: "2026-11-03T09:00:00Z",
+    resolvedAt: null,
+    ...overrides,
+  });
+  const lostInPart = (id: string, openedAt: string) =>
+    dispute({ id, state: "LOST", finalOutcome: "LOST_PARTIAL_COVERAGE_REVOKED", openedAt, resolvedAt: "2026-11-08T09:00:00Z" });
+  const disputes = () => screen.getByRole("region", { name: /^Disputes/ });
+  const fullRefund = (overrides: Record<string, unknown> = {}) => ({
+    id: "rf-full",
+    tenantId: "n",
+    kind: "SUBSCRIPTION_FULL",
+    state: "REQUESTED",
+    amount: state.EUR("2000"),
+    reasonCode: "BILLING_ERROR",
+    sourceMethod: "WIRE",
+    requestedAt: "2026-11-10T09:00:00Z",
+    confirmedAt: null,
+    feeBearer: "TASKA",
+    sendDueAt: null,
+    decidedAt: null,
+    submittedAt: null,
+    ...overrides,
+  });
+
+  it("«Disputes» after Automatic payments and before Invoices, only with a row; each row its own state and nothing more", async () => {
+    state.subscription = { tenantId: "n", planVersionId: "team", version: "12", paidThrough: "2026-12-26T03:36:00Z", renewalCancelled: false, autopayState: "DISABLED", scheduledPlanVersionId: null, scheduledEffectiveAt: null };
+    const none = renderAt("/company/billing");
+    await screen.findByRole("link", { name: "TSK-2026-01008" });
+    expect(state.calls).toContain("listDisputes");
+    expect(screen.queryByRole("region", { name: /^Disputes/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/disput/i)).not.toBeInTheDocument();
+    none.unmount();
+    state.disputes = [dispute({ id: "dp-won", state: "WON", finalOutcome: "WON", openedAt: "2026-10-01T09:00:00Z", resolvedAt: "2026-10-09T09:00:00Z" }), dispute()];
+    state.refunds = [fullRefund()];
+    renderAt("/company/billing");
+    await screen.findByRole("region", { name: /^Disputes/ });
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual(["Automatic payments", "Disputes 2", "Invoices 2", "Refunds 1"]);
+    const rows = [...disputes().querySelectorAll(".company-dispute-row")] as HTMLElement[];
+    // Newest opened first.
+    expect(rows[0]).toHaveTextContent("Disputed paymentOpened Nov 3");
+    expect(rows[0]).toHaveTextContent("If the payment is reversed, even in part, the whole period it paid for is withdrawn.");
+    expect(within(rows[0]).getAllByText("open").length).toBeGreaterThan(0);
+    expect(rows[1]).toHaveTextContent("Opened Oct 1 · Closed Oct 9");
+    expect(rows[1]).toHaveTextContent("What’s left of the period it paid for still counts. It isn’t extended for the time the dispute took.");
+    expect(within(rows[1]).getAllByText("upheld").length).toBeGreaterThan(0);
+    // No invoice, no amount, no link, no read-only, and nothing about a refund.
+    expect(disputes()).not.toHaveTextContent(/TSK-|€|read-only|refund/i);
+    expect(within(disputes()).queryByRole("link")).not.toBeInTheDocument();
+    expect(within(disputes()).queryByRole("button")).not.toBeInTheDocument();
+    // Dates in `<time>`, a row with a line 3 aligned to its first line (B6).
+    expect(rows[0].querySelector("time")).toHaveAttribute("dateTime", "2026-11-03T09:00:00Z");
+    expect(rows[0]).toHaveClass("has-line3");
+  });
+
+  it("a lost-in-part dispute under PAYMENT_EXPIRED: the new full payment and «See Plan» — once, on the first such row", async () => {
+    state.restrictions = ["PAYMENT_EXPIRED"];
+    state.disputes = [lostInPart("older", "2026-10-01T09:00:00Z"), lostInPart("newer", "2026-11-03T09:00:00Z")];
+    renderAt("/company/billing");
+    await screen.findByRole("region", { name: /^Disputes/ });
+    const rows = [...disputes().querySelectorAll(".company-dispute-row")] as HTMLElement[];
+    expect(rows[0]).toHaveTextContent(
+      "The whole period it paid for was withdrawn — no part of it is kept. Nothing more is refunded for it. A paid plan for Northwind now needs a new full payment. See Plan",
+    );
+    expect(rows[1]).toHaveTextContent("The whole period it paid for was withdrawn — no part of it is kept. Nothing more is refunded for it.");
+    expect(rows[1]).not.toHaveTextContent(/new full payment/);
+    const links = within(disputes()).getAllByRole("link");
+    expect(links.map((link) => link.textContent)).toEqual(["See Plan"]);
+    expect(links[0]).toHaveAttribute("href", "/company/plan");
+    expect(within(rows[0]).getAllByText("part reversed").length).toBeGreaterThan(0);
+  });
+
+  it("without PAYMENT_EXPIRED the lost-in-part row says no more than the loss — no sentence, no link", async () => {
+    state.disputes = [lostInPart("dp", "2026-11-03T09:00:00Z")];
+    renderAt("/company/billing");
+    await screen.findByRole("region", { name: /^Disputes/ });
+    expect(disputes()).toHaveTextContent("Nothing more is refunded for it.");
+    expect(disputes()).not.toHaveTextContent(/new full payment/);
+    expect(within(disputes()).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("the disputes that failed to load: their note in their place, the one Try again under it — the first note in the page's order", async () => {
+    const original = { listDisputes: fakeApi.listDisputes, listInvoices: fakeApi.listInvoices };
+    let refusing = true;
+    const api = fakeApi as unknown as Record<string, unknown>;
+    api.listDisputes = async () => {
+      if (refusing) throw Object.assign(new Error("down"), { status: 503, code: "DEPENDENCY_UNAVAILABLE", requestId: "rid-disputes" });
+      return { items: [dispute()], nextCursor: null };
+    };
+    api.listInvoices = async () => {
+      if (refusing) throw Object.assign(new Error("down"), { status: 503, code: "DEPENDENCY_UNAVAILABLE", requestId: "rid-invoices" });
+      return { items: state.invoices, nextCursor: null };
+    };
+    try {
+      renderAt("/company/billing");
+      const note = (await screen.findByText("Disputes could not be loaded.", undefined, { timeout: 4000 })).closest(".company-billing-failure") as HTMLElement;
+      expect(note).toHaveTextContent("rid-disputes");
+      expect(screen.getByText("Invoices could not be loaded.")).toBeInTheDocument();
+      // One Try again, under the disputes' note — above the invoices' in the DOM.
+      const again = screen.getAllByRole("button", { name: "Try again" });
+      expect(again).toHaveLength(1);
+      expect(note).toContainElement(again[0]);
+      expect(note.compareDocumentPosition(screen.getByText("Invoices could not be loaded.")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      refusing = false;
+      fireEvent.click(again[0]);
+      expect(await screen.findByRole("region", { name: /^Disputes/ })).toHaveTextContent("Opened Nov 3");
+      expect(await screen.findByRole("link", { name: "TSK-2026-01008" })).toBeInTheDocument();
+    } finally {
+      Object.assign(api, original);
+    }
+  });
+
+  it("a full refund told step by step: line 3 with what it does and the fee, the lead tied to the group, nothing arrived", async () => {
+    state.refunds = [
+      fullRefund({ id: "rf-done", state: "CONFIRMED", requestedAt: "2026-10-12T09:00:00Z", decidedAt: "2026-10-13T09:00:00Z", submittedAt: "2026-10-14T09:00:00Z", confirmedAt: "2026-10-18T09:00:00Z" }),
+      fullRefund(),
+    ];
+    renderAt("/company/billing");
+    const group = await screen.findByRole("region", { name: /^Refunds/ });
+    const lead = group.querySelector(".company-refunds-lead") as HTMLElement;
+    expect(group).toHaveAttribute("aria-describedby", lead.id);
+    expect(lead).toHaveTextContent("Refunds go back to the account the money came from. The dates below are Taska’s — when the money shows in that account depends on the banks.");
+    const rows = [...group.querySelectorAll(".company-refund-row")] as HTMLElement[];
+    expect(rows[0]).toHaveTextContent("Bank transfer · Requested Nov 10");
+    expect(rows[0]).toHaveTextContent(
+      "If the refund goes through, the period this payment paid for ends and automatic payments turn off. Taska pays the bank fee — it isn’t taken out of the refund.",
+    );
+    expect(rows[1]).toHaveTextContent("Bank transfer · Requested Oct 12 · Approved Oct 13 · Sent Oct 14 · Refunded Oct 18");
+    expect(rows[1]).toHaveTextContent("The period this payment paid for no longer counts.");
+    expect(rows[1]).not.toHaveTextContent(/fee/);
+    // A dated segment is kept whole (N1); the method wraps as text; the dot stays on the line it closes.
+    expect([...rows[1].querySelectorAll(".company-step")].map((step) => [step.textContent, step.classList.contains("is-dated")])).toEqual([
+      ["Bank transfer ·", false],
+      ["Requested Oct 12 ·", true],
+      ["Approved Oct 13 ·", true],
+      ["Sent Oct 14 ·", true],
+      ["Refunded Oct 18", true],
+    ]);
+    for (const row of rows) {
+      expect(row).toHaveClass("has-line3");
+      expect(row).not.toHaveTextContent(/arriv|receiv|credit/i);
+    }
+  });
+
+  it("a dispute read refused OWNER_REQUIRED: its note with the id — and the company is read again, to say who owns it", async () => {
+    const api = fakeApi as unknown as Record<string, unknown>;
+    const original = { listDisputes: api.listDisputes, getTenant: api.getTenant };
+    let tenantReads = 0;
+    api.getTenant = async () => {
+      tenantReads += 1;
+      return (original.getTenant as () => Promise<unknown>)();
+    };
+    api.listDisputes = async () => {
+      throw Object.assign(new Error("not the owner"), { status: 403, code: "OWNER_REQUIRED", requestId: "rid-owner" });
+    };
+    try {
+      renderAt("/company/billing");
+      const note = (await screen.findByText("Disputes could not be loaded.")).closest(".company-billing-failure") as HTMLElement;
+      expect(note).toHaveTextContent("rid-owner");
+      await waitFor(() => expect(tenantReads).toBeGreaterThanOrEqual(2));
+    } finally {
+      Object.assign(api, original);
+    }
+  });
+
+  it("a member who is not the owner sends no listDisputes", async () => {
+    state.me = "anna";
+    state.disputes = [dispute()];
+    renderAt("/company/billing");
+    expect(await screen.findByText("Invoices and payments for Northwind are shown only to its owner.")).toBeInTheDocument();
+    expect(state.calls).not.toContain("listDisputes");
+    expect(screen.queryByText(/disput/i)).not.toBeInTheDocument();
   });
 });
 

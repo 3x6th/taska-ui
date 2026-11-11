@@ -20,6 +20,9 @@ import {
   purposeSentence,
   reconciliationSentences,
   referenceNote,
+  REFUNDS_LEAD,
+  refundChain,
+  refundConsequenceText,
   refundMarker,
   refundMetaText,
   refundReasonText,
@@ -260,6 +263,7 @@ describe("refunds (B11, decision 6)", () => {
     feeBearer: "TASKA",
     sendDueAt: null,
     decidedAt: null,
+    submittedAt: null,
     ...overrides,
   });
 
@@ -290,21 +294,78 @@ describe("refunds (B11, decision 6)", () => {
       "declined",
       "PARKED",
     ]);
+    // TAS-516 (T3): the chain — requested, then the tail — where TAS-514 said the tail alone.
     expect(refundMetaText(refund(), BEFORE)).toBe("Bank transfer · Requested Nov 10");
-    expect(refundMetaText(refund({ state: "APPROVED", sendDueAt: "2026-11-17T09:00:00Z" }), BEFORE)).toBe("Bank transfer · Taska aims to send it by Nov 17");
+    expect(refundMetaText(refund({ state: "APPROVED", sendDueAt: "2026-11-17T09:00:00Z" }), BEFORE)).toBe("Bank transfer · Requested Nov 10 · Taska aims to send it by Nov 17");
     // Online, or past APPROVED, the operator's date is never said.
     expect(refundMetaText(refund({ sourceMethod: "PSP", sendDueAt: "2026-11-17T09:00:00Z" }), BEFORE)).toBe("Online payment · Requested Nov 10");
-    expect(refundMetaText(refund({ state: "SUBMITTING", sendDueAt: "2026-11-17T09:00:00Z" }), BEFORE)).toBe("Bank transfer · Being sent");
-    expect(refundMetaText(refund({ state: "UNKNOWN" }), BEFORE)).toBe("Bank transfer · Taska is checking whether it went through");
-    expect(refundMetaText(refund({ state: "CONFIRMED", confirmedAt: "2026-11-18T09:00:00Z" }), BEFORE)).toBe("Bank transfer · Refunded Nov 18");
-    expect(refundMetaText(refund({ state: "FAILED" }), BEFORE)).toBe("Bank transfer · It didn’t go through");
-    expect(refundMetaText(refund({ state: "REJECTED", decidedAt: "2026-11-12T09:00:00Z" }), BEFORE)).toBe("Bank transfer · Declined Nov 12");
-    expect(refundMetaText(refund({ state: "REJECTED" }), BEFORE)).toBe("Bank transfer · Declined");
+    expect(refundMetaText(refund({ state: "SUBMITTING", sendDueAt: "2026-11-17T09:00:00Z" }), BEFORE)).toBe("Bank transfer · Requested Nov 10 · Being sent");
+    expect(refundMetaText(refund({ state: "UNKNOWN" }), BEFORE)).toBe("Bank transfer · Requested Nov 10 · Taska is checking whether it went through");
+    expect(refundMetaText(refund({ state: "CONFIRMED", confirmedAt: "2026-11-18T09:00:00Z" }), BEFORE)).toBe("Bank transfer · Requested Nov 10 · Refunded Nov 18");
+    expect(refundMetaText(refund({ state: "FAILED" }), BEFORE)).toBe("Bank transfer · Requested Nov 10 · It didn’t go through");
+    expect(refundMetaText(refund({ state: "REJECTED", decidedAt: "2026-11-12T09:00:00Z" }), BEFORE)).toBe("Bank transfer · Requested Nov 10 · Declined Nov 12");
+    expect(refundMetaText(refund({ state: "REJECTED", requestedAt: null }), BEFORE)).toBe("Bank transfer · Declined");
     // UNKNOWN is never «Sent» (decision 6), and no tail ever carries the reconciliation target.
     expect(refundMetaText(refund({ state: "UNKNOWN" }), BEFORE)).not.toMatch(/\bsent\b/i);
     for (const state of ["REQUESTED", "APPROVED", "SUBMITTING", "UNKNOWN", "CONFIRMED", "FAILED", "REJECTED"]) {
       expect(refundMetaText(refund({ state }), BEFORE)).not.toMatch(/hour|retry|try again/i);
     }
+  });
+
+  it("TAS-516 (T3): each step only from its own field — approval and sending are never money received, «Sent» never while it is being sent or checked", () => {
+    const decided = "2026-10-13T09:00:00Z";
+    const submitted = "2026-10-14T09:00:00Z";
+    const full = (state: string, extra: Partial<Refund> = {}) =>
+      refundMetaText(refund({ state, requestedAt: "2026-10-12T09:00:00Z", decidedAt: decided, submittedAt: submitted, confirmedAt: "2026-10-18T09:00:00Z", ...extra }), BEFORE);
+    // The longest chain, and the decline.
+    expect(full("CONFIRMED")).toBe("Bank transfer · Requested Oct 12 · Approved Oct 13 · Sent Oct 14 · Refunded Oct 18");
+    expect(full("REJECTED", { sourceMethod: "PSP", requestedAt: "2026-11-02T09:00:00Z", decidedAt: "2026-11-04T09:00:00Z" })).toBe("Online payment · Requested Nov 2 · Declined Nov 4");
+    expect(full("APPROVED")).toBe("Bank transfer · Requested Oct 12 · Approved Oct 13");
+    expect(full("SUBMITTING")).toBe("Bank transfer · Requested Oct 12 · Approved Oct 13 · Being sent");
+    expect(full("UNKNOWN")).toBe("Bank transfer · Requested Oct 12 · Approved Oct 13 · Taska is checking whether it went through");
+    expect(full("FAILED")).toBe("Bank transfer · Requested Oct 12 · Approved Oct 13 · Sent Oct 14 · It didn’t go through");
+    // «Approved» never on a declined one, «Sent» never before CONFIRMED or FAILED, a refund never «Refunded» before CONFIRMED.
+    expect(full("REJECTED")).not.toMatch(/Approved|Sent|Refunded/);
+    for (const state of ["REQUESTED", "APPROVED", "SUBMITTING", "UNKNOWN"]) expect(full(state), state).not.toMatch(/\bSent\b|Refunded/);
+    expect(full("REQUESTED")).toBe("Bank transfer · Requested Oct 12");
+    // A skipped step is simply omitted; nothing is inferred from a later state.
+    expect(full("CONFIRMED", { decidedAt: null, submittedAt: null })).toBe("Bank transfer · Requested Oct 12 · Refunded Oct 18");
+    expect(full("CONFIRMED", { confirmedAt: null })).toBe("Bank transfer · Requested Oct 12 · Approved Oct 13 · Sent Oct 14 · Refunded");
+    // No word of a row says the money arrived.
+    for (const state of ["REQUESTED", "APPROVED", "SUBMITTING", "UNKNOWN", "CONFIRMED", "FAILED", "REJECTED"]) {
+      expect(full(state), state).not.toMatch(/arriv|receiv|credit/i);
+    }
+    // Each step keeps its own instant for its `<time>`.
+    expect(refundChain(refund({ state: "CONFIRMED", decidedAt: decided, submittedAt: submitted, confirmedAt: null }), BEFORE)).toEqual([
+      { word: "Bank transfer", day: null, iso: null },
+      { word: "Requested", day: "Nov 10", iso: "2026-11-10T09:00:00Z" },
+      { word: "Approved", day: "Oct 13", iso: decided },
+      { word: "Sent", day: "Oct 14", iso: submitted },
+      { word: "Refunded", day: null, iso: null },
+    ]);
+  });
+
+  it("TAS-516 (T4): what a full refund of coverage does, before and after; a return of unallocated money never speaks of access; the fee only while it is on the way", () => {
+    const ends = "If the refund goes through, the period this payment paid for ends and automatic payments turn off.";
+    const fee = "Taska pays the bank fee — it isn’t taken out of the refund.";
+    const full = (state: string, extra: Partial<Refund> = {}) => refundConsequenceText(refund({ kind: "SUBSCRIPTION_FULL", state, ...extra }));
+    for (const state of ["REQUESTED", "APPROVED", "SUBMITTING", "UNKNOWN"]) {
+      expect(full(state), state).toBe(`${ends} ${fee}`);
+      expect(full(state, { sourceMethod: "PSP", feeBearer: null }), state).toBe(ends);
+    }
+    expect(full("CONFIRMED")).toBe("The period this payment paid for no longer counts.");
+    for (const state of ["FAILED", "REJECTED", "PARKED", null]) expect(full(state as string), String(state)).toBeNull();
+    // UNALLOCATED_RETURN: only the fee, only on a bank transfer Taska bears it for, only while it is on the way.
+    expect(refundConsequenceText(refund())).toBe(fee);
+    expect(refundConsequenceText(refund({ feeBearer: null }))).toBeNull();
+    expect(refundConsequenceText(refund({ sourceMethod: "PSP" }))).toBeNull();
+    for (const state of ["CONFIRMED", "FAILED", "REJECTED"]) expect(refundConsequenceText(refund({ state })), state).toBeNull();
+    for (const state of ["REQUESTED", "CONFIRMED"]) expect(refundConsequenceText(refund({ state })) ?? "", state).not.toMatch(/period|access|automatic/i);
+  });
+
+  it("TAS-516 (T5): the lead says the dates are Taska’s and the crediting the banks’ — no number", () => {
+    expect(REFUNDS_LEAD).toBe("Refunds go back to the account the money came from. The dates below are Taska’s — when the money shows in that account depends on the banks.");
+    expect(REFUNDS_LEAD).not.toMatch(/\d/);
   });
 
   it("newest requested first", () => {
@@ -373,6 +434,7 @@ describe("fix round 1", () => {
       feeBearer: "TASKA",
       sendDueAt: null,
       decidedAt: null,
+      submittedAt: null,
     });
     // «…00.500Z» sorts before «…00Z» as a string, but is the later instant; «+01:00» is an hour earlier than it reads.
     const listed = listedRefunds([at("a", "2026-11-10T09:00:00Z"), at("b", "2026-11-10T09:00:00.500Z"), at("c", "2026-11-10T09:30:00+01:00"), at("d", null)]);

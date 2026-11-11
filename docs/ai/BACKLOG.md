@@ -4844,10 +4844,28 @@ Build reviews in `docs/ai/reviews/TAS-514-*-build.md`, `TAS-514-release-reviewer
   mostly covers it (api-contract-guard N3, accepted).
 - **The matched card's lead** — §4.37's fixed «If it isn’t paid by {deadline}, it closes automatically.» sits right above
   «Your bank transfer has been matched.» (shared with TAS-513's PSP card; art-director).
-- **Dead class** `company-bank-reference` (`WireParts.tsx`) has no CSS — drop when next touched.
+- ~~**Dead class** `company-bank-reference`~~ — removed in TAS-516 (`018f3f3`).
 - **The open wire state with `remaining` = 0** has never been drawn in a browser (the mock can't produce it; unit tests
   only) — one look on the stand if the backend serves it.
-- **The mock returns a timely full payment confirmed after expiry** — €12 matched on time and €8 arrived before `dueAt`,
-  confirmed after expiry, ends EXPIRED and «to be refunded» instead of PAID (a fix-round regression, mock only; A97).
-  Also under `holdExpiry`, matched money plus a late full payment settles with no return. To be fixed in TAS-516's mock
-  work; keep the €8-alone test and add the 12 + 8 case.
+- ~~**The mock returns a timely full payment confirmed after expiry**~~ — fixed in TAS-516 (`f58b228`), with the 12 + 8
+  case tested.
+
+### Left by TAS-516 pre-build (owner refund requests, disputes, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-516-*.md` (git-ignored); divergence in `API-DIVERGENCE.md` «TAS-516».
+
+- **The owner's refund request** — not delivered: no owner `paymentId` source; by-payment is ill-defined for a
+  multi-payment invoice (A83, A89, A90 on TAS-358). Re-run api-contract-guard when TAS-358 merges or A83 is answered;
+  the error table and key rules for the command are in the guard's ruling §3.
+- **Dispute rows name no invoice or amount** (A91); when `Dispute.invoiceId` / `amount` land, line 1 becomes «Invoice
+  {number}» as a link and the grid gains an amount column (art-director N4).
+- **A WIRE refund waiting for bank details** says nothing yet (no owner state, A87; art-director N2).
+- **The mock ignores an already-paid future period on revocation** — an early renewal's period never starts later on the
+  mock (simplification).
+- **The card's late-payment line** silently drops when its refunds read fails (unchanged since TAS-514).
+- **« · » after an undated segment** sits inside it («Bank transfer ·»), so in principle the dot could open a new line; it
+  can't today (the method opens the line and fits 233 px at 320). A no-break space before «·» would make it hold for any
+  text (art-director, optional).
+- **`MOCK_SERVER_KEY` is copied into `e2e/companiesFixtures.ts`** — a future v10 bump that misses the copy would make
+  helpers read `{}` and «0 checkouts» assertions pass for the wrong reason; pin the two with one assertion
+  (release-reviewer).

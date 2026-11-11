@@ -13,6 +13,9 @@ import { expect, type Page } from "@playwright/test";
 const PORT = Number(process.env.TASKA_E2E_PORT) || 5183;
 export const B2B = `http://localhost:${PORT + 2}`;
 
+/** The companies mock's shared record (`MOCK_SERVER_KEY`), copied like the ids: one literal to bump with its version. */
+export const MOCK_SERVER_KEY = "taska.mockServer.v9";
+
 /** TAS-513: the fixture invoices' ids (`MOCK_INVOICE_IDS`). */
 export const INVOICE = {
   umbrellaRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e08",
@@ -23,6 +26,15 @@ export const INVOICE = {
   cyberdyneInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0a",
   cyberdynePlanChange: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0b",
   cyberdyneRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0c",
+  // TAS-516: Soylent Corp's two paid renewals, online — the previous month's and the current one's.
+  soylentPrevious: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0d",
+  soylentCurrent: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0e",
+} as const;
+
+/** TAS-516: Soylent Corp's disputes (`MOCK_DISPUTE_IDS`) — the WON one on the previous payment, the open one on the current. */
+export const DISPUTE = {
+  soylentPrevious: "6c9f3b2d-7e4a-4f6b-8d1c-2b3c4d5e6f01",
+  soylentCurrent: "6c9f3b2d-7e4a-4f6b-8d1c-2b3c4d5e6f02",
 } as const;
 
 export const COMPANY = {
@@ -38,6 +50,8 @@ export const COMPANY = {
   wayne: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b09",
   // TAS-514: Tom's company that pays by bank transfer; Priya is its admin, not its owner.
   cyberdyne: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b0b",
+  // TAS-516: Tom's company under a payment dispute; Priya is its admin, not its owner.
+  soylent: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b0c",
 } as const;
 
 export const LONG_NAME =

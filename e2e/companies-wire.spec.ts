@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
-import { B2B, COMPANY, INVOICE, companyPath, inCompany, openCompanyZone, setHooks, signIn } from "./companiesFixtures";
+import { B2B, COMPANY, INVOICE, MOCK_SERVER_KEY, companyPath, inCompany, openCompanyZone, setHooks, signIn } from "./companiesFixtures";
 
 /*
  * Bank-transfer invoices, their document and refunds in the companies build
- * (TAS-514) against the third e2e server's mock (`taska.mockServer.v8`). Every
+ * (TAS-514) against the third e2e server's mock (`MOCK_SERVER_KEY`). Every
  * fixture is Cyberdyne Systems' — Tom's company that pays by bank transfer —
  * and the bank's side is the mock's admin hooks: a statement line recorded,
  * confirmed against an invoice, its unallocated money returned. The owner
@@ -73,7 +73,7 @@ test("a wire invoice: its bank details verbatim, Copy copies the server's exact 
   await expect(bankValue(page, "Bank")).toHaveText("Mock Bank");
   await expect(bankValue(page, "Amount")).toHaveText("€20.00");
   // The reference exactly as the server sent it — not the number — and the rule beside it.
-  await expect(bankValue(page, "Reference").locator(".company-bank-reference")).toHaveText("TASKA-TSK-2026-00904");
+  await expect(bankValue(page, "Reference").locator(".company-bank-value")).toHaveText("TASKA-TSK-2026-00904");
   await expect(bankValue(page, "Reference")).toContainText("Use this, not the invoice number.");
   // The target from the company's capabilities (86 400 s), never a countdown, a start or an end.
   await expect(bank(page).locator(".company-bank-note")).toContainText(
@@ -142,8 +142,10 @@ test("12 of 20: Received and what is left, the rule; past the due date it is to 
   // The admin returns it: a refund row on Billing, of its own — no invoice named.
   await setHooks(page, { ...expired, returnUnallocated: ["r-partial"] });
   await page.goto(companyPath(CY, "/company/billing"));
-  await expect(page.getByRole("heading", { name: /^Refunds/ })).toHaveText("Refunds2");
-  await expect(page.getByText("Refunds go back to the account the money came from. When they arrive depends on the banks.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Refunds/ })).toHaveText("Refunds 2");
+  await expect(
+    page.getByText("Refunds go back to the account the money came from. The dates below are Taska’s — when the money shows in that account depends on the banks."),
+  ).toBeVisible();
   const row = refundRow(page, "Bank transfer not completed in time");
   await expect(row).toContainText("€12.00");
   await expect(row).toContainText(/Bank transfer · Requested [A-Z][a-z]{2} \d{1,2}/);
@@ -153,10 +155,15 @@ test("12 of 20: Received and what is left, the rule; past the due date it is to 
   // Its evidence complete: «Taska aims to send it by» — a send date, never an arrival; then confirmed.
   await setHooks(page, { ...expired, returnUnallocated: ["r-partial"], evidenceComplete: ["r-partial"], refundProgress: { "r-partial": "APPROVED" } });
   await page.reload();
-  await expect(refundRow(page, "Bank transfer not completed in time")).toContainText(/Bank transfer · Taska aims to send it by [A-Z][a-z]{2} \d{1,2}/);
+  // TAS-516 (T3): the history, each step from its own field — requested, approved, then the server's send date.
+  await expect(refundRow(page, "Bank transfer not completed in time")).toContainText(
+    /Bank transfer · Requested [A-Z][a-z]{2} \d{1,2} · Approved [A-Z][a-z]{2} \d{1,2} · Taska aims to send it by [A-Z][a-z]{2} \d{1,2}/,
+  );
   await setHooks(page, { ...expired, returnUnallocated: ["r-partial"], evidenceComplete: ["r-partial"], refundProgress: { "r-partial": "CONFIRMED" } });
   await page.reload();
-  await expect(refundRow(page, "Bank transfer not completed in time")).toContainText(/Bank transfer · Refunded [A-Z][a-z]{2} \d{1,2}/);
+  await expect(refundRow(page, "Bank transfer not completed in time")).toContainText(
+    /Bank transfer · Requested [A-Z][a-z]{2} \d{1,2} · Approved [A-Z][a-z]{2} \d{1,2} · Refunded [A-Z][a-z]{2} \d{1,2}/,
+  );
   await expect(refundRow(page, "Bank transfer not completed in time").locator(".company-refund-status .company-marker")).toHaveText("refunded");
   await page.goto(renewalPath);
   await expect(page.locator(".company-invoice-closed")).toHaveText("This invoice can no longer be paid.");
@@ -228,7 +235,7 @@ test("a late first payment: the old invoice can no longer be paid and names its 
   await page.goto(companyPath(CY, "/company/billing"));
   const row = refundRow(page, "First payment arrived late");
   await expect(row).toContainText("€20.00");
-  await expect(row).toContainText(/Bank transfer · Refunded [A-Z][a-z]{2} \d{1,2}/);
+  await expect(row).toContainText(/Bank transfer · Requested [A-Z][a-z]{2} \d{1,2} · Approved [A-Z][a-z]{2} \d{1,2} · Sent [A-Z][a-z]{2} \d{1,2} · Refunded [A-Z][a-z]{2} \d{1,2}/);
 });
 
 test("Items and the billing details as issued — a rename leaves an old invoice's buyer as it was", async ({ page }) => {
@@ -329,7 +336,7 @@ test("the never-opened card with a wire first invoice: its bank details, no Pay 
   await expect(page.getByText(/^Invoice TSK-2026-01009 · €20\.00 · Bank transfer$/)).toBeVisible();
   await expect(stateBlock(page)).toContainText("Waiting for the bank transfer.");
   await expect(page.getByRole("button", { name: /^Pay/ })).toHaveCount(0);
-  await expect(bankValue(page, "Reference").locator(".company-bank-reference")).toHaveText("TASKA-TSK-2026-01009");
+  await expect(bankValue(page, "Reference").locator(".company-bank-value")).toHaveText("TASKA-TSK-2026-01009");
   await expect(bank(page).locator(".company-bank-note")).toContainText(
     /If it arrives after [A-Z][a-z]{2} \d{1,2}, \d\d:\d\d, it’s refunded and Taska issues a new invoice\. Acme Wire still closes if it isn’t paid by [A-Z][a-z]{2} \d{1,2}, \d\d:\d\d\./,
   );
@@ -337,11 +344,11 @@ test("the never-opened card with a wire first invoice: its bank details, no Pay 
 
   // The money arrives a day after its due date while the creation is still open (D238).
   const invoiceId = await page.evaluate(
-    (id) =>
-      (JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { invoices: Array<{ id: string; tenantId: string }> }).invoices.find(
+    ({ id, key }) =>
+      (JSON.parse(window.localStorage.getItem(key) ?? "{}") as { invoices: Array<{ id: string; tenantId: string }> }).invoices.find(
         (invoice) => invoice.tenantId === id,
       )?.id,
-    tenantId,
+    { id: tenantId, key: MOCK_SERVER_KEY },
   );
   await setHooks(page, {
     issueMethod: { "*": "WIRE" },
@@ -356,7 +363,7 @@ test("the never-opened card with a wire first invoice: its bank details, no Pay 
   await expect(page.locator(".company-setup-refund")).toHaveText(
     "The €20.00 that arrived after an earlier invoice was due is to be refunded to the account it came from.",
   );
-  await expect(bankValue(page, "Reference").locator(".company-bank-reference")).toHaveText("TASKA-TSK-2026-01010");
+  await expect(bankValue(page, "Reference").locator(".company-bank-value")).toHaveText("TASKA-TSK-2026-01010");
 });
 
 test("a first transfer matched while the company's own read lags: «matched», Taska is opening it — no slot line, amount, PDF or bank details", async ({ page }) => {
@@ -371,11 +378,11 @@ test("a first transfer matched while the company's own read lags: «matched», T
   await expect(page.getByText(/^Invoice TSK-2026-01009 · €20\.00 · Bank transfer$/)).toBeVisible();
   const tenantId = new URL(page.url()).pathname.split("/")[2];
   const invoiceId = await page.evaluate(
-    (id) =>
-      (JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { invoices: Array<{ id: string; tenantId: string }> }).invoices.find(
+    ({ id, key }) =>
+      (JSON.parse(window.localStorage.getItem(key) ?? "{}") as { invoices: Array<{ id: string; tenantId: string }> }).invoices.find(
         (invoice) => invoice.tenantId === id,
       )?.id,
-    tenantId,
+    { id: tenantId, key: MOCK_SERVER_KEY },
   );
   // The admin confirms a full, timely transfer; the company's own read is slow to say it opened.
   await setHooks(page, {
