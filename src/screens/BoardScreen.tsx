@@ -3012,9 +3012,13 @@ function IssuePanel({
   // account's row (TAS-529, art-director B7), nor a row this read marks
   // deleted — either is nobody to assign; the current assignee is then the
   // held chip below, drawn from the issue read.
+  // `userById` carries every mark a board read of this screen has made since
+  // the member list was read (art-director B-R2): a person marked there is no
+  // chip either, even on an issue whose own read never mentions them.
   const assigneeChips = members.filter(
     (member) =>
       !member.deleted &&
+      !userById.get(member.userId)?.deleted &&
       !markedDeleted.has(member.userId) &&
       (canBeAssigned(member) || member.userId === issue.assigneeId),
   );
@@ -4033,8 +4037,13 @@ function IssueWatchersSection({
   const subscribed = useMemo(() => new Set(watchers.map((watcher) => watcher.userId)), [watchers]);
   // Never a deleted account's row (TAS-529, art-director B7), nor a row the
   // issue read marks deleted (release-reviewer L1): nobody to subscribe.
+  // Nor anybody a board read of this screen has marked (`userById`, art-director B-R2).
   const addable = members.filter(
-    (member) => !member.deleted && !markedDeleted.has(member.userId) && !subscribed.has(member.userId),
+    (member) =>
+      !member.deleted &&
+      !userById.get(member.userId)?.deleted &&
+      !markedDeleted.has(member.userId) &&
+      !subscribed.has(member.userId),
   );
 
   /**

@@ -8894,6 +8894,23 @@ describe("a deleted account", () => {
     // filtered read's mark still wins on her card.
     expectNeutral(within(screen.getByRole("button", { name: /TAS-103/ })).getByLabelText("Deleted user"));
     expect(document.body).not.toHaveTextContent("Sofia");
+
+    // An issue whose own read never mentions her (art-director B-R2): the
+    // board's mark still holds — she is no assignee chip and no watcher to add.
+    fireEvent.click(screen.getByRole("button", { name: /TAS-102/ }));
+    const panel = await openPanel();
+    await waitFor(() => expect(chipLabels()).toEqual(["None", "Anna"]));
+    const picker = await waitFor(() => {
+      const found = document.querySelector(".watcher-form select") as HTMLSelectElement | null;
+      expect(found).not.toBeNull();
+      return found as HTMLSelectElement;
+    });
+    expect([...picker.options].map((option) => option.value)).not.toContain(SOFIA);
+    expect([...picker.options].map((option) => option.textContent)).toEqual(["Select a member", "Anna Ivanova"]);
+    const dialog = screen.getByRole("dialog", { name: "TAS-102 issue" });
+    expect(dialog).not.toHaveTextContent("Sofia");
+    expect(dialog.querySelector(".meta-grid .chip-row img")).toBeNull();
+    expect(panel.queryByRole("button", { name: "Deleted user" })).toBeNull();
   });
 
   it("leaves a person merely called «Deleted user» their own circle (art-director F4)", async () => {
