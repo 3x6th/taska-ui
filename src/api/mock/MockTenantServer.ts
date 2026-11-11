@@ -218,8 +218,12 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v8";
  * - `returnUnallocated`: `[receiptId]` — the admin returns the receipt's whole
  *   unallocated money: one Refund per receipt, REQUESTED, WIRE, fee borne by
  *   Taska, its reason from what happened (EXCESS, LATE_FIRST_PAYMENT,
- *   CLOSED_CREATION, INCOMPLETE_BANK_PAYMENT — only once the invoice has
- *   expired —, DUPLICATE_PAYMENT); never automatic, never coverage;
+ *   CLOSED_CREATION, INCOMPLETE_BANK_PAYMENT, DUPLICATE_PAYMENT); never
+ *   automatic, never coverage. Money matched on time is marked
+ *   return-required on its receipt when the invoice expires (G2, L06.4–5): from
+ *   then on it goes back whatever the invoice becomes — a later payment, even
+ *   one that settles the invoice, never takes it — and before then nothing of
+ *   it goes back;
  * - `refundProgress`: `{[receiptId]: state}` — the receipt's refund moves to
  *   that state (APPROVED and REJECTED decided now, SUBMITTING submitted now);
  *   CONFIRMED gives the money back — the receipt holds nothing and the
@@ -800,7 +804,12 @@ interface StoredWireReceipt {
   observedAt: string;
   invoiceId?: string;
   confirmedAt?: string;
-  outcome?: "MATCHED" | "ALLOCATED" | "LATE_FIRST_PAYMENT" | "CLOSED_CREATION" | "LATE_PARTIAL" | "DUPLICATE_PAYMENT";
+  /**
+   * `RETURN_REQUIRED` (G2, L06.4–5): money matched on time to an invoice that
+   * then expired — it goes back, whatever happens to the invoice afterwards;
+   * no later payment is ever added to it or settled with it.
+   */
+  outcome?: "MATCHED" | "RETURN_REQUIRED" | "ALLOCATED" | "LATE_FIRST_PAYMENT" | "CLOSED_CREATION" | "LATE_PARTIAL" | "DUPLICATE_PAYMENT";
   unallocated: StoredMoney;
   refundId?: string;
 }
@@ -1094,6 +1103,17 @@ function markPaid(invoice: StoredInvoice): void {
   invoice.remaining = zeroOf(invoice.total);
   invoice.matchedUnallocated = zeroOf(invoice.total);
   invoice.version += 1;
+}
+
+/**
+ * An invoice has expired (G2, L06.4–5): the money matched to it on time is set
+ * to go back, on its receipts — so a return follows the receipt, and a later
+ * payment never adds to it or settles with it.
+ */
+function markReturnRequired(state: ServerState, invoiceId: string): void {
+  for (const receipt of state.wireReceipts) {
+    if (receipt.invoiceId === invoiceId && receipt.outcome === "MATCHED") receipt.outcome = "RETURN_REQUIRED";
+  }
 }
 
 /* --------------------------------------- an invoice's snapshots (TAS-514, F1) */
@@ -4518,6 +4538,7 @@ export class MockTenantServer {
       if (!PAYABLE_BY_WIRE.has(invoice.state) || Date.parse(invoice.dueAt) > now || held.has(invoice.id)) continue;
       invoice.state = "EXPIRED";
       invoice.version += 1;
+      markReturnRequired(state, invoice.id);
       for (const checkout of state.checkouts) {
         if (checkout.invoiceId === invoice.id && OPEN_CHECKOUT_STATES.has(checkout.state)) checkout.state = "EXPIRED";
       }
@@ -4572,7 +4593,7 @@ export class MockTenantServer {
     for (const receiptId of Array.isArray(hooks.returnUnallocated) ? hooks.returnUnallocated : []) {
       const receipt = state.wireReceipts.find((item) => item.id === receiptId);
       if (!receipt || receipt.refundId !== undefined || receipt.outcome === undefined || !isPositive(receipt.unallocated)) continue;
-      const invoice = state.invoices.find((item) => item.id === receipt.invoiceId);
+      // The receipt's own outcome decides, never its invoice's state now (G2).
       const reason = (() => {
         switch (receipt.outcome) {
           case "ALLOCATED":
@@ -4582,10 +4603,11 @@ export class MockTenantServer {
           case "DUPLICATE_PAYMENT":
             return receipt.outcome;
           case "LATE_PARTIAL":
+          case "RETURN_REQUIRED":
             return "INCOMPLETE_BANK_PAYMENT";
           default:
-            // Matched to an invoice still waiting for the rest: nothing goes back before it has expired (D246).
-            return invoice?.state === "EXPIRED" ? "INCOMPLETE_BANK_PAYMENT" : null;
+            // MATCHED: its invoice is still waiting for the rest — nothing goes back before it has expired (D246).
+            return null;
         }
       })();
       if (reason === null) continue;
@@ -4621,7 +4643,7 @@ export class MockTenantServer {
         refund.confirmedAt = iso(now);
         receipt.unallocated = zeroOf(receipt.amount);
         const invoice = state.invoices.find((item) => item.id === receipt.invoiceId);
-        if (invoice && receipt.outcome === "MATCHED" && isPositive(invoice.matchedUnallocated)) {
+        if (invoice && (receipt.outcome === "MATCHED" || receipt.outcome === "RETURN_REQUIRED") && isPositive(invoice.matchedUnallocated)) {
           invoice.matchedUnallocated = subtractMoney(invoice.matchedUnallocated, refund.amount);
           invoice.remaining = invoice.state === "PAID" ? zeroOf(invoice.total) : subtractMoney(invoice.total, invoice.matchedUnallocated);
           invoice.version += 1;
@@ -4671,7 +4693,11 @@ export class MockTenantServer {
       return true;
     };
     if (invoice.state === "PAID") return done("DUPLICATE_PAYMENT", receipt.amount);
-    const matched = addMoney(invoice.matchedUnallocated, receipt.amount);
+    // What this money may join (G2): receipts matched to it and still waiting — never money already set to go back.
+    const waiting = state.wireReceipts
+      .filter((item) => item.invoiceId === invoice.id && item.outcome === "MATCHED")
+      .reduce((sum, item) => addMoney(sum, item.amount), zeroOf(invoice.total));
+    const matched = addMoney(waiting, receipt.amount);
     const enough = BigInt(matched.amountMinor) >= BigInt(invoice.total.amountMinor);
     /** One allocation of the whole total: every receipt matched to it allocated, the excess left on this one. */
     const allocate = () => {
@@ -4701,6 +4727,7 @@ export class MockTenantServer {
         if (PAYABLE_BY_WIRE.has(invoice.state)) {
           invoice.state = "EXPIRED";
           invoice.version += 1;
+          markReturnRequired(state, invoice.id);
         }
         const another = state.invoices.some((item) => item.tenantId === tenant.id && item.purpose === "INITIAL" && PAYABLE_BY_WIRE.has(item.state));
         if (!another) {
@@ -4720,12 +4747,14 @@ export class MockTenantServer {
       return done("ALLOCATED", excess);
     }
     if (!enough) {
-      // On time and short of the rest (D246): matched, not allocated; nothing is covered.
-      invoice.matchedUnallocated = matched;
-      invoice.remaining = subtractMoney(invoice.total, matched);
-      if (PAYABLE_BY_WIRE.has(invoice.state)) invoice.state = "PARTIALLY_PAID";
+      // On time and short of the rest (D246): matched, not allocated; nothing is covered. Confirmed only
+      // once the invoice has expired, it is set to go back at once (G2).
+      invoice.matchedUnallocated = addMoney(invoice.matchedUnallocated, receipt.amount);
+      invoice.remaining = subtractMoney(invoice.total, invoice.matchedUnallocated);
+      const stillOpen = PAYABLE_BY_WIRE.has(invoice.state);
+      if (stillOpen) invoice.state = "PARTIALLY_PAID";
       invoice.version += 1;
-      return done("MATCHED", receipt.amount);
+      return done(stillOpen ? "MATCHED" : "RETURN_REQUIRED", receipt.amount);
     }
     const excess = allocate();
     this.settle(state, invoice, now, open);

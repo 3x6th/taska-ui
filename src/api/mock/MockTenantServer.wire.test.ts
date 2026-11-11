@@ -195,6 +195,46 @@ describe("the admin's hooks (§7.3–7.5)", () => {
     expect((await api.listRefunds(CY)).items[0]).toMatchObject({ state: "CONFIRMED", confirmedAt: expect.any(String) });
   });
 
+  it("G2: 12 matched on time, then expired — a late full 20 pays the renewal and the 12 still goes back, never swallowed", async () => {
+    const { api, setHooks, state } = await inCyberdyne();
+    setHooks(confirm("r-12", "1200"));
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "PARTIALLY_PAID", matchedUnallocated: money("1200") });
+    setHooks({ clockOffsetMs: 6 * DAY });
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "EXPIRED", matchedUnallocated: money("1200") });
+    // Set to go back on the receipt itself, at expiry (L06.4–5).
+    expect(state().wireReceipts.find((item) => item.id === "r-12")).toMatchObject({ outcome: "RETURN_REQUIRED", unallocated: money("1200") });
+    setHooks({
+      wireReceipts: [
+        { id: "r-12", tenantId: CY, amountMinor: "1200" },
+        { id: "r-20", tenantId: CY, amountMinor: "2000" },
+      ],
+      confirmWire: { "r-12": RENEWAL, "r-20": RENEWAL },
+    });
+    // D247: the late 20 alone pays it — not the 12 with 8 of it.
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "PAID", allocated: money("2000") });
+    expect(state().wireReceipts.find((item) => item.id === "r-20")).toMatchObject({ outcome: "ALLOCATED", unallocated: money("0") });
+    expect(state().wireReceipts.find((item) => item.id === "r-12")).toMatchObject({ outcome: "RETURN_REQUIRED", unallocated: money("1200") });
+    setHooks({ returnUnallocated: ["r-12", "r-20"] });
+    const refunds = (await api.listRefunds(CY)).items;
+    expect(refunds.filter((refund) => refund.reasonCode !== "LATE_FIRST_PAYMENT").map((refund) => [refund.reasonCode, refund.amount, refund.state])).toEqual([
+      ["INCOMPLETE_BANK_PAYMENT", money("1200"), "REQUESTED"],
+    ]);
+    // Its confirmed return leaves the paid invoice as it is.
+    setHooks({ refundProgress: { "r-12": "CONFIRMED" } });
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "PAID", allocated: money("2000"), matchedUnallocated: money("0") });
+    expect(state().wireReceipts.find((item) => item.id === "r-12")).toMatchObject({ unallocated: money("0") });
+  });
+
+  it("G2: money arrived on time but confirmed only after the expiry is set to go back at once — it joins nothing", async () => {
+    const { api, setHooks, state } = await inCyberdyne("tom@example.com", { clockOffsetMs: 6 * DAY });
+    const due = (await api.getInvoice(CY, RENEWAL)).dueAt ?? "";
+    const before = new Date(Date.parse(due) - DAY).toISOString();
+    setHooks({ ...confirm("r-on-time", "800", RENEWAL, { occurredAt: before }), returnUnallocated: ["r-on-time"] });
+    expect(await api.getInvoice(CY, RENEWAL)).toMatchObject({ state: "EXPIRED", matchedUnallocated: money("800") });
+    expect(state().wireReceipts.find((item) => item.id === "r-on-time")).toMatchObject({ outcome: "RETURN_REQUIRED" });
+    expect((await api.listRefunds(CY)).items[0]).toMatchObject({ reasonCode: "INCOMPLETE_BANK_PAYMENT", amount: money("800") });
+  });
+
   it("25 against 20: PAID at 20, 5 left on the receipt and returned as EXCESS; the subscription runs on", async () => {
     const { api, setHooks } = await inCyberdyne();
     const before = (await api.getSubscription(CY)).paidThrough;
