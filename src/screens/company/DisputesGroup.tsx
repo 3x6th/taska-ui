@@ -33,7 +33,7 @@ export function DisputesGroup({
   return (
     <section aria-labelledby={titleId} className="company-group company-disputes">
       <h2 className="company-group-title" id={titleId}>
-        {DISPUTES_TITLE}
+        {DISPUTES_TITLE}{" "}
         <span className="company-group-count">{disputes.length}</span>
       </h2>
       <ul className="company-dispute-list">

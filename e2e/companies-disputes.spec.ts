@@ -46,7 +46,7 @@ test("the owner's Billing: Automatic payments → Disputes → Invoices → Refu
   await page.locator(".company-general-states").getByRole("link", { name: "See Billing" }).click();
   await expect(page).toHaveURL(companyPath(SOY, "/company/billing"));
   await expect(disputes(page)).toBeVisible();
-  await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Automatic payments", "Disputes2", "Invoices2", "Refunds1"]);
+  await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Automatic payments", "Disputes 2", "Invoices 2", "Refunds 1"]);
   // Off until a new consent, which this version cannot take — and no «Turn on».
   await expect(page.getByRole("region", { name: "Automatic payments" })).toContainText(
     "You pay Soylent Corp’s invoices here yourself. Automatic payments stay off until you set them up, which this version of Taska can’t do yet.",
@@ -112,7 +112,7 @@ test("lost in part, nothing else paid: read-only until a new full payment — «
   );
   await expect(disputes(page).getByRole("link")).toHaveCount(1);
   // No refund came with it: the declined one is still the only row.
-  await expect(page.getByRole("heading", { name: /^Refunds/ })).toHaveText("Refunds1");
+  await expect(page.getByRole("heading", { name: /^Refunds/ })).toHaveText("Refunds 1");
   // The keyboard: from the page's heading, «See Plan» first — there is no «Turn off» with automatic payments off — then the invoices.
   await page.getByRole("heading", { level: 1 }).focus();
   await page.keyboard.press("Tab");
@@ -138,7 +138,7 @@ test("lost in full: the whole period withdrawn, nothing more refunded — and no
   await expect(row.locator(".company-marker").first()).toHaveText("reversed");
   await expect(row.locator(".company-refund-consequence")).toHaveText("The whole period it paid for was withdrawn — no part of it is kept. Nothing more is refunded for it.");
   await expect(disputes(page).getByRole("link")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: /^Refunds/ })).toHaveText("Refunds1");
+  await expect(page.getByRole("heading", { name: /^Refunds/ })).toHaveText("Refunds 1");
 });
 
 test("a full refund of a bank-transfer payment, step by step: approval and sending are never money received; confirmed, its period no longer counts", async ({

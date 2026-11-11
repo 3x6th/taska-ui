@@ -5019,8 +5019,8 @@ h1 {
   line-height: 1.45;
 }
 
-/* One segment of a dated line (B9): whole, so the chain breaks only at « · ». */
-.company-step {
+/* A dated segment of a row's line 2 (B9, N1): whole, so «Requested Oct 12» never splits; an undated tail wraps as text. */
+.company-step.is-dated {
   white-space: nowrap;
 }
 

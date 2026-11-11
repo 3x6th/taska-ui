@@ -31,8 +31,10 @@ export function PaymentStateBlock({ state, factId, after }: { state: PaymentStat
 }
 
 /**
- * A row's dated line (TAS-516, art-director B9): each segment kept whole, so a
- * line only ever breaks at « · » — the dot stays on the line it closes.
+ * A row's dated line (TAS-516, art-director B9, N1): a segment with a date is
+ * kept whole, so it never breaks inside «Requested Oct 12»; a segment without
+ * one — the method, «Taska is checking whether it went through» — wraps as text.
+ * The « · » ends the segment before it, so a line never starts with it.
  */
 export function StepChain({ steps }: { steps: readonly ChainStep[] }) {
   return (
@@ -40,7 +42,7 @@ export function StepChain({ steps }: { steps: readonly ChainStep[] }) {
       {steps.map((step, index) => (
         <Fragment key={index}>
           {index > 0 ? " " : null}
-          <span className="company-step">
+          <span className={step.day !== null ? "company-step is-dated" : "company-step"}>
             {step.word}
             {step.day !== null && step.iso !== null ? (
               <>

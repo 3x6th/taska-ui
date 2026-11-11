@@ -188,7 +188,7 @@ describe("the rail and who sees Billing (B1, §7)", () => {
     await waitFor(() => expect(within(rail()).getAllByRole("link").map((link) => link.textContent)).toEqual(["General", "Members", "Plan", "Billing", "Back to projects"]));
     expect(within(rail()).getByRole("link", { name: "Billing" })).toHaveAttribute("aria-current", "page");
     // The lead and «Invoices» stand above the skeleton already (NB3); the count comes with the list.
-    await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Invoices2"));
+    await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Invoices 2"));
     expect(screen.getByText("Invoices for Northwind and how they were paid.")).toBeInTheDocument();
     const rows = screen.getAllByRole("listitem").filter((item) => item.classList.contains("company-invoice-row"));
     expect(rows.map((row) => within(row).getByRole("link").textContent)).toEqual(["TSK-2026-01008", "TSK-2026-01002"]);
@@ -247,7 +247,7 @@ describe("«Automatic payments» (TAS-515, art-director B8, decision 1)", () => 
     state.subscription = paid("CONSENTED");
     renderAt("/company/billing");
     expect(await screen.findByRole("heading", { level: 2, name: "Automatic payments" })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual(["Automatic payments", "Invoices2"]);
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual(["Automatic payments", "Invoices 2"]);
     expect(screen.getByText("Automatic payments and invoices for Northwind.")).toBeInTheDocument();
     expect(group()).toHaveTextContent("OnTaska takes Northwind’s payments automatically. You can still pay any invoice here yourself.");
     expect(within(group()).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Turn off automatic payments"]);
@@ -633,7 +633,7 @@ describe("TAS-514: refunds, the wire invoice and its document", () => {
     state.refunds = [refund()];
     renderAt("/company/billing");
     const group = await screen.findByRole("region", { name: /^Refunds/ });
-    expect(within(group).getByRole("heading")).toHaveTextContent("Refunds1");
+    expect(within(group).getByRole("heading")).toHaveTextContent("Refunds 1");
     const row = group.querySelector(".company-refund-row") as HTMLElement;
     expect(row).toHaveTextContent("Overpayment");
     expect(row).toHaveTextContent("Bank transfer · Requested Nov 10 · Taska is checking whether it went through");
@@ -751,7 +751,7 @@ describe("TAS-516: disputes, refunds told step by step, and the dispute's line",
     state.refunds = [fullRefund()];
     renderAt("/company/billing");
     await screen.findByRole("region", { name: /^Disputes/ });
-    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual(["Automatic payments", "Disputes2", "Invoices2", "Refunds1"]);
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual(["Automatic payments", "Disputes 2", "Invoices 2", "Refunds 1"]);
     const rows = [...disputes().querySelectorAll(".company-dispute-row")] as HTMLElement[];
     // Newest opened first.
     expect(rows[0]).toHaveTextContent("Disputed paymentOpened Nov 3");
@@ -844,13 +844,13 @@ describe("TAS-516: disputes, refunds told step by step, and the dispute's line",
     expect(rows[1]).toHaveTextContent("Bank transfer · Requested Oct 12 · Approved Oct 13 · Sent Oct 14 · Refunded Oct 18");
     expect(rows[1]).toHaveTextContent("The period this payment paid for no longer counts.");
     expect(rows[1]).not.toHaveTextContent(/fee/);
-    // Each segment is whole; the dot stays on the line it closes.
-    expect([...rows[1].querySelectorAll(".company-step")].map((step) => step.textContent)).toEqual([
-      "Bank transfer ·",
-      "Requested Oct 12 ·",
-      "Approved Oct 13 ·",
-      "Sent Oct 14 ·",
-      "Refunded Oct 18",
+    // A dated segment is kept whole (N1); the method wraps as text; the dot stays on the line it closes.
+    expect([...rows[1].querySelectorAll(".company-step")].map((step) => [step.textContent, step.classList.contains("is-dated")])).toEqual([
+      ["Bank transfer ·", false],
+      ["Requested Oct 12 ·", true],
+      ["Approved Oct 13 ·", true],
+      ["Sent Oct 14 ·", true],
+      ["Refunded Oct 18", true],
     ]);
     for (const row of rows) {
       expect(row).toHaveClass("has-line3");

@@ -339,7 +339,7 @@ export function RefundsGroup({ refunds }: { refunds: readonly Refund[] }) {
   return (
     <section aria-describedby={leadId} aria-labelledby={titleId} className="company-group company-refunds">
       <h2 className="company-group-title" id={titleId}>
-        {REFUNDS_TITLE}
+        {REFUNDS_TITLE}{" "}
         <span className="company-group-count">{refunds.length}</span>
       </h2>
       <p className="company-refunds-lead" id={leadId}>

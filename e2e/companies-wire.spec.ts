@@ -142,7 +142,7 @@ test("12 of 20: Received and what is left, the rule; past the due date it is to 
   // The admin returns it: a refund row on Billing, of its own — no invoice named.
   await setHooks(page, { ...expired, returnUnallocated: ["r-partial"] });
   await page.goto(companyPath(CY, "/company/billing"));
-  await expect(page.getByRole("heading", { name: /^Refunds/ })).toHaveText("Refunds2");
+  await expect(page.getByRole("heading", { name: /^Refunds/ })).toHaveText("Refunds 2");
   await expect(
     page.getByText("Refunds go back to the account the money came from. The dates below are Taska’s — when the money shows in that account depends on the banks."),
   ).toBeVisible();

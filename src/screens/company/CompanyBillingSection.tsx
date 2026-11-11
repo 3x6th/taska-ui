@@ -252,7 +252,7 @@ function CompanyBilling({ companyId }: { companyId: string }) {
         ) : (
           <section aria-labelledby="company-invoices-title" className="company-group company-billing-group">
             <h2 className="company-group-title" id="company-invoices-title">
-              Invoices<span className="company-group-count">{listed.length}</span>
+              Invoices <span className="company-group-count">{listed.length}</span>
             </h2>
             {listed.length === 0 ? (
               <p className="company-billing-empty">{INVOICES_EMPTY_TEXT}</p>
