@@ -857,6 +857,27 @@ describe("TAS-516: disputes, refunds told step by step, and the dispute's line",
     }
   });
 
+  it("a dispute read refused OWNER_REQUIRED: its note with the id — and the company is read again, to say who owns it", async () => {
+    const api = fakeApi as unknown as Record<string, unknown>;
+    const original = { listDisputes: api.listDisputes, getTenant: api.getTenant };
+    let tenantReads = 0;
+    api.getTenant = async () => {
+      tenantReads += 1;
+      return (original.getTenant as () => Promise<unknown>)();
+    };
+    api.listDisputes = async () => {
+      throw Object.assign(new Error("not the owner"), { status: 403, code: "OWNER_REQUIRED", requestId: "rid-owner" });
+    };
+    try {
+      renderAt("/company/billing");
+      const note = (await screen.findByText("Disputes could not be loaded.")).closest(".company-billing-failure") as HTMLElement;
+      expect(note).toHaveTextContent("rid-owner");
+      await waitFor(() => expect(tenantReads).toBeGreaterThanOrEqual(2));
+    } finally {
+      Object.assign(api, original);
+    }
+  });
+
   it("a member who is not the owner sends no listDisputes", async () => {
     state.me = "anna";
     state.disputes = [dispute()];

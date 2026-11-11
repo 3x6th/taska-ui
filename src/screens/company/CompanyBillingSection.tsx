@@ -106,6 +106,15 @@ function CompanyBilling({ companyId }: { companyId: string }) {
   const refunds = useQuery({ ...companyRefundsOptions(companyId), enabled: reader.owner });
   // TAS-516: the disputes, beside them (guard B3: +1 read, depth 2).
   const disputes = useQuery({ ...companyDisputesOptions(companyId), enabled: reader.owner });
+  // A read refused OWNER_REQUIRED: who owns the company is the re-read company's to say (guard §3, §4.39's G6).
+  const queryClient = useQueryClient();
+  const accountClient = useAccountQueryClient();
+  const ownerRefused = [subscription, disputes, invoices, refunds].some((query) => query.isError && refusalCode(query.error) === "OWNER_REQUIRED");
+  useEffect(() => {
+    if (!ownerRefused) return;
+    void queryClient.invalidateQueries({ queryKey: companyTenantKey(companyId) });
+    void accountClient?.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
+  }, [ownerRefused, queryClient, accountClient, companyId]);
   const [said, setSaid] = useState<{ text: string; seq: number } | null>(null);
   const say = useCallback((text: string) => setSaid((current) => ({ text, seq: (current?.seq ?? 0) + 1 })), []);
   const attempts = useCheckoutAttempts(reader.meId, companyId);
