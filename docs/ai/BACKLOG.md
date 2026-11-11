@@ -4704,3 +4704,4 @@ Rulings in `docs/ai/reviews/TAS-528-*.md` (git-ignored); divergence in `API-DIVE
   optionally re-read once in place after an indefinite failure (release-reviewer 4; the guard made it optional).
 - **The mock checks restrictions before a create's key receipt** — develop replays a succeeded key first, so a same-key
   retry after a lost answer under a newly READ_ONLY company answers 201 on develop and 403 on the mock (guard N3, TAS-528).
+- **`TaskQuotaAnswerError` and `ForeignCompanyAnswerError` lose the request id** — see TAS-512's N6 line (guard N4, TAS-528).
