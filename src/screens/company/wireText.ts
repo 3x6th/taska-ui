@@ -454,7 +454,8 @@ export function refundConsequenceText(refund: Refund): string | null {
     else if (state === "CONFIRMED") sentences.push("The period this payment paid for no longer counts.");
   }
   if (refund.sourceMethod === "WIRE" && refund.feeBearer === "TASKA" && LIVE_STATES.has(state)) {
-    sentences.push("Taska pays the bank fee, so the full amount is sent back.");
+    // Never «sent back»: on a row still on the way it would read as approved, or as already sent (art-director B-1).
+    sentences.push("Taska pays the bank fee — it isn’t taken out of the refund.");
   }
   return sentences.length > 0 ? sentences.join(" ") : null;
 }

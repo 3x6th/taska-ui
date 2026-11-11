@@ -52,7 +52,7 @@ export function cancelRenewalQuestion(company: string | null, plan: PlanVersion 
   const when = scheduled ? "When its last paid period ends, it becomes read-only" : "After that it becomes read-only";
   const head =
     `${companyStart(company)} stays on ${nameOf(plan)} until ${formatPaidUntil(paidThrough)}. ${when}: ` +
-    "everything can still be read, but nothing can be changed until it’s paid for again. It doesn’t move to the free plan on its own.";
+    "everything can still be read, but nothing can be changed until it’s paid for again or its plan is changed. It doesn’t move to the free plan on its own.";
   return autopayOn ? `${head} To keep renewing and pay by hand instead, turn off automatic payments in Billing.` : head;
 }
 

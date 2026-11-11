@@ -40,7 +40,7 @@ describe("the page's words", () => {
       {
         code: "PAYMENT_EXPIRED",
         fact: "Its paid period has ended.",
-        explanation: "Nothing in it can be changed until it’s paid for again. There’s no grace period, and it doesn’t move to a free plan on its own.",
+        explanation: "Nothing in it can be changed until it’s paid for again or its plan is changed. There’s no grace period, and it doesn’t move to a free plan on its own.",
       },
       { code: "OVER_QUOTA", fact: "It’s over its plan’s limits.", explanation: "Nothing in it can be changed until it’s back within them." },
       { code: "MYSTERY", fact: "MYSTERY", explanation: null },
@@ -57,7 +57,7 @@ describe("the page's words", () => {
     const others = Object.fromEntries(stateLines(["PAYMENT_DISPUTE", "PAYMENT_EXPIRED", "OVER_QUOTA"], false).map((line) => [line.code, line.explanation]));
     expect(others).toEqual({
       PAYMENT_DISPUTE: "Nothing in it can be changed.",
-      PAYMENT_EXPIRED: "Nothing in it can be changed until its owner pays for it again.",
+      PAYMENT_EXPIRED: "Nothing in it can be changed until its owner pays for it again or changes its plan.",
       OVER_QUOTA: "Nothing in it can be changed until it’s back within them.",
     });
     expect(stillWorksText(["OVER_QUOTA"], true)).toBe(

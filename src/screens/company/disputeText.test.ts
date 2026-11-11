@@ -135,8 +135,10 @@ describe("«a new full payment» (B8)", () => {
   });
 
   it("names the company, or «this company»", () => {
-    expect(newPaymentText("Soylent Corp")).toBe("A new full payment is needed before anything in Soylent Corp can be changed again.");
-    expect(newPaymentText(null)).toBe("A new full payment is needed before anything in this company can be changed again.");
+    expect(newPaymentText("Soylent Corp")).toBe("A paid plan for Soylent Corp now needs a new full payment.");
+    expect(newPaymentText(null)).toBe("A paid plan for this company now needs a new full payment.");
+    // Never payment as the only way back: Free stays open to an owner with their allowance (guard B-1).
+    expect(newPaymentText("Soylent Corp")).not.toMatch(/before anything|can be changed/);
   });
 });
 

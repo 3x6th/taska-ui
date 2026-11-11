@@ -347,7 +347,7 @@ describe("refunds (B11, decision 6)", () => {
 
   it("TAS-516 (T4): what a full refund of coverage does, before and after; a return of unallocated money never speaks of access; the fee only while it is on the way", () => {
     const ends = "If the refund goes through, the period this payment paid for ends and automatic payments turn off.";
-    const fee = "Taska pays the bank fee, so the full amount is sent back.";
+    const fee = "Taska pays the bank fee — it isn’t taken out of the refund.";
     const full = (state: string, extra: Partial<Refund> = {}) => refundConsequenceText(refund({ kind: "SUBSCRIPTION_FULL", state, ...extra }));
     for (const state of ["REQUESTED", "APPROVED", "SUBMITTING", "UNKNOWN"]) {
       expect(full(state), state).toBe(`${ends} ${fee}`);

@@ -11,7 +11,7 @@ import { COMPANY, DISPUTE, INVOICE, companyPath, inCompany, openCompanyZone, set
  * can be delivered: another company's member gets nothing; approval and sending
  * are never money received; a full refund of the coverage ends it; a won or
  * withdrawn dispute keeps only what was left, automatic payments stay off; a
- * final partial loss with nothing else paid asks for a new full payment; the
+ * final partial loss with nothing else paid asks a paid plan for a new full payment; the
  * server's send date, Taska's fee and the banks' crediting are said apart. The
  * owner's own refund request is not delivered (A83, A89, A90): nothing on the
  * page offers one.
@@ -108,7 +108,7 @@ test("lost in part, nothing else paid: read-only until a new full payment — «
   const row = disputeRows(page).nth(0);
   await expect(row.locator(".company-marker").first()).toHaveText("part reversed");
   await expect(row.locator(".company-refund-consequence")).toHaveText(
-    "The whole period it paid for was withdrawn — no part of it is kept. Nothing more is refunded for it. A new full payment is needed before anything in Soylent Corp can be changed again. See Plan",
+    "The whole period it paid for was withdrawn — no part of it is kept. Nothing more is refunded for it. A paid plan for Soylent Corp now needs a new full payment. See Plan",
   );
   await expect(disputes(page).getByRole("link")).toHaveCount(1);
   // No refund came with it: the declined one is still the only row.
@@ -124,7 +124,7 @@ test("lost in part, nothing else paid: read-only until a new full payment — «
   await expect(page).toHaveURL(companyPath(SOY, "/company/plan"));
   await expect(page.getByRole("heading", { level: 1, name: /Plan/ })).toBeFocused();
   await expect(stateLines(page).first()).toHaveText(
-    "Its paid period has ended. Nothing in it can be changed until it’s paid for again. There’s no grace period, and it doesn’t move to a free plan on its own. See Billing",
+    "Its paid period has ended. Nothing in it can be changed until it’s paid for again or its plan is changed. There’s no grace period, and it doesn’t move to a free plan on its own. See Billing",
   );
   // The previous month's end, in the past — never a remainder of the revoked one.
   expect(Date.parse((await paidUntil(page).getAttribute("datetime")) ?? "")).toBeLessThan(Date.now());
@@ -147,7 +147,7 @@ test("a full refund of a bank-transfer payment, step by step: approval and sendi
   const id = "9a3c2e77-6f4d-4e3a-9b5c-0000000009e1";
   const refund = { subscriptionRefund: { [id]: { tenantId: CY, invoiceId: INVOICE.cyberdyneInitial, reasonCode: "SERVICE_FAILURE" } } };
   const ends = "If the refund goes through, the period this payment paid for ends and automatic payments turn off.";
-  const fee = "Taska pays the bank fee, so the full amount is sent back.";
+  const fee = "Taska pays the bank fee — it isn’t taken out of the refund.";
   await inCompany(page, "Cyberdyne Systems", CY, "tom@example.com");
   await setHooks(page, refund);
   await page.goto(companyPath(CY, "/company/billing"));

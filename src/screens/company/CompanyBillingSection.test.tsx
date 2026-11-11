@@ -583,7 +583,9 @@ describe("«See Billing» (B2c)", () => {
     );
     const lines = [...document.querySelectorAll(".company-general-state")].map((line) => line.textContent);
     expect(lines[0]).toBe("A payment is disputed. Nothing in it can be changed, and no automatic payments are taken. See Billing");
-    expect(lines[1]).toBe("Its paid period has ended. Nothing in it can be changed until it’s paid for again. There’s no grace period, and it doesn’t move to a free plan on its own.");
+    expect(lines[1]).toBe(
+      "Its paid period has ended. Nothing in it can be changed until it’s paid for again or its plan is changed. There’s no grace period, and it doesn’t move to a free plan on its own.",
+    );
     expect(screen.getAllByRole("link", { name: "See Billing" })).toHaveLength(1);
     both.unmount();
     const dispute = render(
@@ -636,10 +638,9 @@ describe("TAS-514: refunds, the wire invoice and its document", () => {
     expect(row).toHaveTextContent("Overpayment");
     expect(row).toHaveTextContent("Bank transfer · Requested Nov 10 · Taska is checking whether it went through");
     expect(within(row).getAllByText("checking").length).toBeGreaterThan(0);
-    expect(row).not.toHaveTextContent(/TSK-/);
-    // Its history never says «sent» while Taska is checking; the fee's rule under it says how a refund goes back (T4).
-    expect(row.querySelector(".company-refund-meta")).not.toHaveTextContent(/sent/i);
-    expect(row.querySelector(".company-refund-consequence")).toHaveTextContent("Taska pays the bank fee, so the full amount is sent back.");
+    expect(row).not.toHaveTextContent(/TSK-|sent/i);
+    // The fee under it (T4) — never «sent back» on a refund still on the way (art-director B-1).
+    expect(row.querySelector(".company-refund-consequence")).toHaveTextContent("Taska pays the bank fee — it isn’t taken out of the refund.");
     expect(within(row).queryByRole("link")).not.toBeInTheDocument();
   });
 
@@ -775,7 +776,7 @@ describe("TAS-516: disputes, refunds told step by step, and the dispute's line",
     await screen.findByRole("region", { name: /^Disputes/ });
     const rows = [...disputes().querySelectorAll(".company-dispute-row")] as HTMLElement[];
     expect(rows[0]).toHaveTextContent(
-      "The whole period it paid for was withdrawn — no part of it is kept. Nothing more is refunded for it. A new full payment is needed before anything in Northwind can be changed again. See Plan",
+      "The whole period it paid for was withdrawn — no part of it is kept. Nothing more is refunded for it. A paid plan for Northwind now needs a new full payment. See Plan",
     );
     expect(rows[1]).toHaveTextContent("The whole period it paid for was withdrawn — no part of it is kept. Nothing more is refunded for it.");
     expect(rows[1]).not.toHaveTextContent(/new full payment/);
@@ -838,7 +839,7 @@ describe("TAS-516: disputes, refunds told step by step, and the dispute's line",
     const rows = [...group.querySelectorAll(".company-refund-row")] as HTMLElement[];
     expect(rows[0]).toHaveTextContent("Bank transfer · Requested Nov 10");
     expect(rows[0]).toHaveTextContent(
-      "If the refund goes through, the period this payment paid for ends and automatic payments turn off. Taska pays the bank fee, so the full amount is sent back.",
+      "If the refund goes through, the period this payment paid for ends and automatic payments turn off. Taska pays the bank fee — it isn’t taken out of the refund.",
     );
     expect(rows[1]).toHaveTextContent("Bank transfer · Requested Oct 12 · Approved Oct 13 · Sent Oct 14 · Refunded Oct 18");
     expect(rows[1]).toHaveTextContent("The period this payment paid for no longer counts.");

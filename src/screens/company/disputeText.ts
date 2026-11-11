@@ -69,7 +69,8 @@ export function disputeConsequenceText(dispute: Pick<Dispute, "state" | "finalOu
  * The «new full payment» row (B8): the first LOST_PARTIAL_COVERAGE_REVOKED in
  * list order, only while `Tenant.restrictions` has `PAYMENT_EXPIRED` — said once
  * per group, however many there are. The restriction names the coverage gone
- * (A92); the row only tells the owner what ends it.
+ * (A92); the row says what a paid plan needs now — never that payment is the
+ * only way back: an owner may also move the company to Free (D209–D211, guard B-1).
  */
 export function newPaymentRowId(listed: readonly Dispute[], restrictions: readonly string[]): string | null {
   if (!restrictions.includes("PAYMENT_EXPIRED")) return null;
@@ -77,7 +78,7 @@ export function newPaymentRowId(listed: readonly Dispute[], restrictions: readon
 }
 
 /** The sentence that row adds (T1), with «See Plan» after it. */
-export const newPaymentText = (company: string | null) => `A new full payment is needed before anything in ${companyInside(company)} can be changed again.`;
+export const newPaymentText = (company: string | null) => `A paid plan for ${companyInside(company)} now needs a new full payment.`;
 
 const openedMs = (dispute: Dispute) => {
   const at = dispute.openedAt !== null ? Date.parse(dispute.openedAt) : Number.NaN;

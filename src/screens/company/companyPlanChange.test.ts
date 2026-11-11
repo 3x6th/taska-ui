@@ -306,6 +306,12 @@ describe("renewal and automatic payments (B7, decision 1)", () => {
   it("the cancel question names the turn-off only while automatic payments are on", () => {
     expect(cancelRenewalQuestion("Umbrella", TEAM, THROUGH, true)).toMatch(/turn off automatic payments in Billing\.$/);
     expect(cancelRenewalQuestion("Umbrella", TEAM, THROUGH, false)).toMatch(/It doesn’t move to the free plan on its own\.$/);
+    // TAS-516 (guard N3): paying again is not the only way back — a plan change is one too; both variants say so.
+    for (const scheduled of [false, true]) {
+      expect(cancelRenewalQuestion("Umbrella", TEAM, THROUGH, false, scheduled)).toContain(
+        "everything can still be read, but nothing can be changed until it’s paid for again or its plan is changed. It doesn’t move to the free plan on its own.",
+      );
+    }
   });
 
   it("the group's line by state, «Turn off» for On and Suspended only — and the question without a date when none was sent", () => {
