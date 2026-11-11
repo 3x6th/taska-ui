@@ -4840,3 +4840,10 @@ Build reviews in `docs/ai/reviews/TAS-514-*-build.md`, `TAS-514-release-reviewer
   amount column sits ~6 px off the Invoices column at 1440 (separate lists).
 - **No automated guard for mock strings in the REST bundle** — checked by hand per story; a `npm run check` step that
   builds REST and greps the fixtures would make it permanent (api-contract-guard G5).
+- **INITIAL's «Taska issues a new invoice»** doesn't carry «only until {Company} closes»; the next sentence about closing
+  mostly covers it (api-contract-guard N3, accepted).
+- **The matched card's lead** — §4.37's fixed «If it isn’t paid by {deadline}, it closes automatically.» sits right above
+  «Your bank transfer has been matched.» (shared with TAS-513's PSP card; art-director).
+- **Dead class** `company-bank-reference` (`WireParts.tsx`) has no CSS — drop when next touched.
+- **The open wire state with `remaining` = 0** has never been drawn in a browser (the mock can't produce it; unit tests
+  only) — one look on the stand if the backend serves it.

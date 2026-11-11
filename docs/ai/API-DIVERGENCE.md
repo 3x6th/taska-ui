@@ -2377,8 +2377,8 @@ Everything below is the entry as it stood, in the past tense.
     being refused (A2 extended); late PLAN_CHANGE money has no sentence (A88).
 - **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v8` — every mock session is
   signed out once; no displayed mock string reaches the REST bundle — checked by hand, by string search of REST builds,
-  at 21cb447 and e3b91de (the only hit is the object key `cyberdyneSkynet` in the existing `MOCK_TENANT_PROJECT_IDS` id
-  map); nothing in `npm run check` guards it):
+  at 21cb447, e3b91de and 3cd2159 (the only hits are the keys of the existing `MOCK_*_IDS` id maps); nothing in `npm run
+  check` guards it):
   - **Fixtures:** one new seeded company, Cyberdyne Systems (Tom owner, Priya TENANT_ADMIN, project SKY, Team v2,
     autopay DISABLED, paid through +4 days), whose stored invoice method is WIRE (`invoiceMethod`, never on the wire).
     Umbrella and Stark are not reseeded. Its invoices TSK-2026-00901…00904 are their own series (TAS-515's e2e expects
@@ -2399,8 +2399,11 @@ Everything below is the entry as it stood, in the past tense.
     plan change, a late renewal of a blocked or inactive company, DAY precision on the due day, another company's
     invoice, a non-WIRE, VOID or DRAFT invoice, a currency mismatch, a company DELETED or DELETING at any time, an
     unknown invoice. Money matched to an invoice that then expires is marked return-required on the receipt at expiry
-    and never combines with a later settlement (D246, L06.4–5; fix round 1 — it used to vanish when a late full payment
-    settled the expired invoice; A97). A late partial renewal returns INCOMPLETE_BANK_PAYMENT; money for a PAID invoice, or for the first invoice
+    and never combines with money that arrived after the due date (D246, L06.4–5; fix round 1 — it used to vanish when a
+    late full payment settled the expired invoice; A97). **Known simplification, fixed in TAS-516's mock work:** money that
+    arrived by the due date and reaches the total should still pay the invoice when confirmed after expiry (B09,
+    `ai-business-spec.md:202`, `:247`); the mock currently returns it. And under `holdExpiry`, matched money plus a late
+    full payment settles without its return. A late partial renewal returns INCOMPLETE_BANK_PAYMENT; money for a PAID invoice, or for the first invoice
     of a company that has since opened, is DUPLICATE_PAYMENT; D216 applies only when the money arrived no later than the
     earlier of due and deadline. PARTIALLY_PAID invoices also expire at `dueAt`; `holdExpiry` stops that (develop's real
     behaviour, A85).
@@ -2416,8 +2419,10 @@ Everything below is the entry as it stood, in the past tense.
     404; a `documentOff` hook gives 503 POLICY_NOT_CONFIGURED, `documentType` swaps the content type.
 - **Turning the flag on** additionally needs TAS-357, 358 and 482 behind a gateway REST route, asks A78, A79 and A80
   answered, and the vendored gateway contract re-vendored (capabilities); «edit billing details» needs A77. A97 (money
-  matched to an invoice that expires: RETURN_REQUIRED at expiry, never combined with later money; D247 needs a fresh
-  full payment; the late remainder returned as INCOMPLETE_BANK_PAYMENT) is a doc ask on TAS-357. A79 also covers
+  matched to an invoice that expires: RETURN_REQUIRED at expiry, never combined with money that arrived after the due
+  date; money that arrived by the due date and reaches the total pays the invoice even if confirmed after expiry, unless
+  its return has started — that case is open; D247 needs a fresh full payment; the late remainder returned as
+  INCOMPLETE_BANK_PAYMENT) is a doc ask on TAS-357. A79 also covers
   `Cache-Control: private, no-store` on the document (the client now sends `cache: "no-store"` too) and `X-Request-Id`
   / `Content-Disposition` exposed to CORS.
 - **Removal:** with the flag, after a stand probe — a partial transfer → expiry → a return; 25 against 20 → 20 covered and
