@@ -4701,6 +4701,10 @@ Rulings in `docs/ai/reviews/TAS-529-*.md` (git-ignored); divergence in `API-DIVE
 - **The vendored `openapi.yml` lags develop** (`RestErrorResponse` gains `requestId`, `reasons`, `status`, `title`; capabilities;
   board DONE ordering, `doneSince`) — the «`requestId` lives only in a response header» divergence entry's Contract line is
   stale (guard N6; a refresh task under the scope freeze).
+- **The mock's `deletedAccounts` header** should say that removing an entry unmarks the account only as a test
+  convenience the contract lacks, seen after the board remounts (guard re-verdict 2, note 3).
+- **Marks are remembered from board reads only** — a card drawn before any read marks the person stays named until the
+  board is read again (builder, fix round 2).
 - **Three sources of `deletedIdsInIssue` untested** — watchers, uploaders, history actors/participants
   (`BoardScreen.tsx` ~7948-7953); one unit test: a stale named member who is a marked watcher isn't offered as a chip
   (release-reviewer re-verdict note 1).

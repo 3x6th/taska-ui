@@ -2358,7 +2358,7 @@ Everything below is the entry as it stood, in the past tense.
   (DESIGN §4.4) — no name, email, avatar or colour from the wire or any cache, `personFor` skips the member list; a blank or
   absent name stays «Unknown» and is never read as deleted; no string comparison, no polling, no per-id read, no directory
   filter; deleted rows offer no controls (a presentation choice: the contract defines no refusal; develop's project-member and
-  watcher routes would accept such writes). **Not behind a flag:** the REST mappers read the mark in both builds, and no
+  watcher routes would accept such writes). **The board remembers a mark:** an id a board read marks stays «Deleted user» for the screen's life, across project switches, and wins over any older cached read that still names the person — this rests on deletion being final and an id never being reused (`target-data-model.md:36`, contracts §10 / README:19), so A120 must state that the mark never returns to `false`; the mock's hook unmarks on removal only as a test convenience, seen after a remount. **Not behind a flag:** the REST mappers read the mark in both builds, and no
   gateway sends it yet — the day A120 ships, today's build shows «Deleted user» too; only the mock marks anyone, and only in
   the companies build. Three changes ship in today's build already: the panel's current assignee outside the member list is
   one active, disabled chip after «None» (with the mark «Deleted user»; unmarked, the name the server's summary gives, or
