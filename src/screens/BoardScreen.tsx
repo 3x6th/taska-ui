@@ -636,11 +636,16 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // nobody sent, and this is what says so.
   const workflowUnknown = workflowUnread.unanswered;
 
-  const userById = useMemo(() => toUserMap(members), [members]);
-  // Who the board read itself marks deleted (TAS-529): the context's member
-  // list is read once and kept (TAS-202), so a person deleted since may still
-  // be a named row there — the filter must not draw them from it.
-  const deletedOnBoard = useMemo(() => deletedIdsOnBoard(board), [board]);
+  // Who a board read of this screen has marked deleted (TAS-529) — kept for
+  // the screen's life, because a deletion is final and the reads are not all
+  // fresh: the context's member list is read once and kept (TAS-202), and a
+  // board read under another filter may be the cached one from before. Once
+  // any read has said so, neither may draw the person again — the filter, a
+  // card, the panel's fallback (art-director's fix round 2). Ids only.
+  const [deletedOnBoard, setDeletedOnBoard] = useState<ReadonlySet<string>>(() => new Set());
+  const markedNow = deletedIdsOnBoard(board);
+  if ([...markedNow].some((id) => !deletedOnBoard.has(id))) setDeletedOnBoard(new Set([...deletedOnBoard, ...markedNow]));
+  const userById = useMemo(() => toUserMap(members, deletedOnBoard), [members, deletedOnBoard]);
   // The columns on screen: the board's own, as sent (§4.9) — or, until it has
   // answered and after it failed, the ones predicted from the context, never
   // used to place a card.
@@ -1269,34 +1274,44 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           All
         </button>
         <div className="assignee-row">
-          {/* A deleted account's row is not drawn (TAS-529, art-director B7):
-              nobody can be picked out by a circle that names nobody. */}
-          {members.filter((member) => !member.deleted && !deletedOnBoard.has(member.userId)).map((member) => (
-            <button
-              className={`avatar-filter ${assigneeFilter === member.userId ? "is-active" : ""}`}
-              key={member.userId}
-              onClick={() => setAssigneeFilter(member.userId)}
-              type="button"
-            >
-              <Avatar
-                user={
-                  member.user
-                    ? {
-                        id: member.userId,
-                        displayName: member.user.displayName,
-                        color: member.user.color,
-                        // Already on the row this filter is built from, so
-                        // carrying it costs nothing and *not* carrying it would
-                        // give one person a face on a card and initials in the
-                        // filter beside it.
-                        avatarUrl: member.user.avatarUrl,
-                      }
-                    : null
-                }
-                size="sm"
-              />
-            </button>
-          ))}
+          {/* A deleted account's row is not offered (TAS-529, art-director
+              B7): nobody can be picked out by a circle that names nobody. The
+              one exception is the filter already on — a row deleted, or marked
+              by the board read, after it was pressed (art-director, guard N1):
+              that chip stays where it was, active, as §4.4's neutral circle and
+              never the row's face, so the filter in force stays visible (§5.4)
+              and the button that may hold focus is not unmounted (§7). «All» or
+              «Clear» ends it, and the chip is gone on the next render. */}
+          {members
+            .filter((member) => (!member.deleted && !deletedOnBoard.has(member.userId)) || member.userId === assigneeFilter)
+            .map((member) => (
+              <button
+                className={`avatar-filter ${assigneeFilter === member.userId ? "is-active" : ""}`}
+                key={member.userId}
+                onClick={() => setAssigneeFilter(member.userId)}
+                type="button"
+              >
+                <Avatar
+                  user={
+                    member.deleted || deletedOnBoard.has(member.userId)
+                      ? deletedPerson(member.userId)
+                      : member.user
+                      ? {
+                          id: member.userId,
+                          displayName: member.user.displayName,
+                          color: member.user.color,
+                          // Already on the row this filter is built from, so
+                          // carrying it costs nothing and *not* carrying it would
+                          // give one person a face on a card and initials in the
+                          // filter beside it.
+                          avatarUrl: member.user.avatarUrl,
+                        }
+                      : null
+                  }
+                  size="sm"
+                />
+              </button>
+            ))}
         </div>
         {/* Right after the people it lists in full (TAS-158), for every reader:
             who is on a project is not an admin's secret, and only the controls
@@ -7963,13 +7978,14 @@ function deletedIdsOnBoard(board: Board | undefined): ReadonlySet<string> {
   return ids;
 }
 
-function toUserMap(members: ProjectMember[]): Map<string, Person> {
+function toUserMap(members: ProjectMember[], markedDeleted: ReadonlySet<string> = new Set()): Map<string, Person> {
   const people = new Map<string, Person>();
   for (const member of members) {
     // A deleted account's row (TAS-529) is in the map as the mark alone, so
     // `personFor` answers «Deleted user» for that id before it could fall back
-    // to anything older.
-    if (member.deleted) people.set(member.userId, deletedPerson(member.userId));
+    // to anything older — and so is a row a board read has marked since the
+    // list was read.
+    if (member.deleted || markedDeleted.has(member.userId)) people.set(member.userId, deletedPerson(member.userId));
     else if (member.user) {
       people.set(member.userId, {
         // The membership row carries the id, the nested summary does not —

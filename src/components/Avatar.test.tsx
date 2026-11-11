@@ -148,6 +148,17 @@ describe("Avatar of a deleted account", () => {
     expect(circle).toHaveAttribute("aria-hidden", "true");
   });
 
+  it("turns into a new element when the person is marked in place, keeping nothing of their circle", () => {
+    const { rerender } = render(<Avatar size="sm" user={{ ...anna, avatarUrl: "https://store.example/face.png?sig=1" }} />);
+    rerender(<Avatar size="sm" user={deleted} />);
+
+    const circle = screen.getByLabelText("Deleted user");
+    // Not even an emptied `style` attribute is carried over from the named circle.
+    expect(circle.getAttribute("style")).toBeNull();
+    expect(circle).not.toHaveClass("avatar-with-image");
+    expect(circle.querySelector("img")).toBeNull();
+  });
+
   it("is still the skeleton while loading", () => {
     render(<Avatar loading user={deleted} />);
 

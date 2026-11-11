@@ -78,8 +78,12 @@ export function Avatar({
     // nothing here is inline. The id's palette colour is the one thing that
     // would still tell who this was (an account's id is kept), and it is the
     // thing never computed for this circle.
+    // Its own key: a circle that turns deleted in place (a re-read marking
+    // somebody already drawn) is a new element, so nothing of the person's
+    // circle — not even an emptied `style` attribute — is carried over.
     return (
       <span
+        key="deleted"
         aria-hidden={decorative || undefined}
         aria-label={DELETED_USER}
         className={`avatar ${sizeClass[size]} avatar-deleted ${className}`}

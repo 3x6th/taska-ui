@@ -8851,6 +8851,51 @@ describe("a deleted account", () => {
     expect(document.querySelector('.filterbar [aria-label="Sofia Reyes"]')).toBeNull();
   });
 
+  /**
+   * art-director (guard N1), fix round 2: the filter already on stays visible
+   * (§5.4) and its button is not unmounted under focus (§7) when the filtered
+   * board read marks its person deleted — the same active chip, as §4.4's
+   * neutral circle, until «All» ends it.
+   */
+  it("keeps the active filter chip, as the neutral circle with focus on it, when the filtered read marks its person deleted — until «All»", async () => {
+    seedMembers([
+      anna,
+      { userId: SOFIA, role: "MEMBER", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", user: { displayName: "Sofia Reyes", email: "sofia@example.com" } },
+    ]);
+    seedExtraIssues([{ id: "issue-2", issueKey: "TAS-103", summary: "Hers", assigneeId: SOFIA }]);
+    renderBoard();
+
+    const face = await waitFor(() => {
+      const found = document.querySelector('.filterbar .avatar-filter [aria-label="Sofia Reyes"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    const chip = face.closest("button") as HTMLButtonElement;
+    // Deleted from here on: the filtered read is the first to say so.
+    seedDeletedPeople([SOFIA]);
+    chip.focus();
+    fireEvent.click(chip);
+
+    await waitFor(() => expect(chip.querySelector(".avatar")).toHaveClass("avatar-deleted"));
+    expect(chip).toBeInTheDocument();
+    expect(chip).toHaveClass("is-active");
+    expect(chip).toHaveAccessibleName("Deleted user");
+    expect(chip).not.toHaveAttribute("aria-pressed");
+    expectNeutral(chip.querySelector(".avatar"));
+    expect(document.activeElement).toBe(chip);
+    expect(document.querySelectorAll(".filterbar .avatar-filter")).toHaveLength(2);
+    expect(document.querySelector(".filterbar")).not.toHaveTextContent("Sofia");
+    expect(document.querySelector('.filterbar [aria-label="Sofia Reyes"]')).toBeNull();
+
+    fireEvent.click(document.querySelector(".filterbar .assignee-all") as HTMLButtonElement);
+    await waitFor(() => expect(document.querySelectorAll(".filterbar .avatar-filter")).toHaveLength(1));
+    expect(chip).not.toBeInTheDocument();
+    // The whole board's read is the cached one from before, naming her; the
+    // filtered read's mark still wins on her card.
+    expectNeutral(within(screen.getByRole("button", { name: /TAS-103/ })).getByLabelText("Deleted user"));
+    expect(document.body).not.toHaveTextContent("Sofia");
+  });
+
   it("leaves a person merely called «Deleted user» their own circle (art-director F4)", async () => {
     seedMembers([anna]);
     seedSummaries({ "user-dee": "Deleted user" });
