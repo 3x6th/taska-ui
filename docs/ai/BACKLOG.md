@@ -4698,3 +4698,7 @@ Rulings in `docs/ai/reviews/TAS-528-*.md` (git-ignored); divergence in `API-DIVE
 - **The counter on the project's own reads** (A115 / A45) would remove the +1 read per dialog open.
 - **Modal padding drift** — the code's modal padding 16 and header 12 14 vs «18» and «15 18» in §2.4 / §4.11; `.modal-actions`
   sits inside the body without §4.11's `--surface-2` footer (art-director N5, pre-existing).
+- **Unit tests for two e2e-only regressions** — the counter rendering in today's build and a stale cached number after the
+  reader's own create are caught only by Playwright; a BoardScreen unit test for each (release-reviewer 1).
+- **A lost create answer, then Cancel** leaves the cached counter; reopening within 20 s shows the pre-create number —
+  optionally re-read once in place after an indefinite failure (release-reviewer 4; the guard made it optional).
