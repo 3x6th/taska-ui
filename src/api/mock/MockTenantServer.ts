@@ -1126,14 +1126,18 @@ function planLines(planVersionId: string, total: StoredMoney): StoredLine[] {
   return [{ description: `${plan?.name ?? "Plan"} plan`, quantity: 1, net: { ...total }, taxes: [], total: { ...total } }];
 }
 
-const LONG_BENEFICIARY = `${MOCK_WIRE_BENEFICIARY} — consolidated settlement account for invoices issued to companies on the mock server, kept long on purpose so that the bank details wrap`;
-
-/** A wire invoice's bank details (invalid by construction); `long` for the layout review's 200 and 140 characters. */
+/**
+ * A wire invoice's bank details (invalid by construction); `long` for the layout
+ * review's 200 and 140 characters. Built here, not at module level: a top-level
+ * template literal survives tree-shaking and would carry a mock string into the
+ * REST bundle (art-director B17).
+ */
 function wireDetails(number: string, variant: string | undefined): StoredWire {
   if (variant === "long") {
     const reference = `${mockWireReference(number)}-`;
+    const beneficiary = `${MOCK_WIRE_BENEFICIARY} — consolidated settlement account for invoices issued to companies on the mock server, kept long on purpose so that the bank details wrap`;
     return {
-      beneficiaryName: LONG_BENEFICIARY.padEnd(200, ".").slice(0, 200),
+      beneficiaryName: beneficiary.padEnd(200, ".").slice(0, 200),
       iban: MOCK_WIRE_IBAN,
       bic: MOCK_WIRE_BIC,
       bankName: MOCK_WIRE_BANK,
