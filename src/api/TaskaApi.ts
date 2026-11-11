@@ -1,4 +1,5 @@
 import type { AccessTokenScopes } from "./accessTokens";
+import type { DeliveryAcknowledgement, EmailChangeChallenge } from "./accountCredentials";
 import type {
   CreateTenantInput,
   CreateTenantResult,
@@ -1620,6 +1621,65 @@ export interface TaskaApi {
    * request (`TenancyUnavailableError`).
    */
   getEntitlement(tenantId: string): Promise<Entitlement>;
+
+  /*
+   * The account's own credentials (TAS-527), on the B2B blueprint's routes —
+   * none of them on the stand (docs/ai/API-DIVERGENCE.md «TAS-527»). Each
+   * carries the caller's `Idempotency-Key`: one per press, and the same key
+   * with the same body on a retry of a press whose answer never came (the
+   * orchestrator's decision 7). **None is optimistic.** Today's build refuses
+   * all five without a request (`TenancyUnavailableError`), and
+   * `onAccountChanged` never fires there.
+   *
+   * Refusals are the blueprint's `Problem`, read through `src/api/errors.ts`;
+   * the blueprint names no code for a wrong current password or an address in
+   * use (asks A98, A100), so a screen prints the server's `violations` or its
+   * own generic sentence and never keys on either.
+   */
+
+  /**
+   * `POST /auth/password-recovery` `{email}` — public, sent with no credential.
+   * **202 for every address**, known or not (no account enumeration): the
+   * answer is narrowed to its wait and nothing else, so the screen that shows
+   * it cannot branch on anything else either. 400 `VALIDATION_FAILED` with a
+   * violation on `email`; 429 with `Retry-After`; 503.
+   */
+  requestPasswordRecovery(email: string, idempotencyKey: string): Promise<DeliveryAcknowledgement>;
+  /**
+   * `POST /auth/password-recovery/complete` `{token, newPassword}` — public,
+   * the emailed token in the body. 204, and the server ends every session and
+   * grant of the account (contracts.md, the recovery token's row); signing
+   * this browser out is the caller's, once the 204 is in hand. The blueprint
+   * leaves a dead token's answer unstated (A101).
+   */
+  completePasswordRecovery(token: string, newPassword: string, idempotencyKey: string): Promise<void>;
+  /**
+   * `PUT /account/password` `{currentPassword, newPassword}` with the
+   * **account session** (WEB_GLOBAL), from inside a company too. 204; then every
+   * tab of the account is told (`onAccountChanged`). A 401 that a renewal does
+   * not cure is answered as it came, never as the account dying (F3).
+   */
+  changeAccountPassword(currentPassword: string, newPassword: string, idempotencyKey: string): Promise<void>;
+  /**
+   * `POST /account/email-changes` `{newEmail, currentPassword?}` with the
+   * account session — 201 `ConfirmationChallenge`: an 8-digit code goes to
+   * `maskedDestination`, to be typed in. An answer whose `purpose` is not
+   * `CHANGE_EMAIL` rejects as malformed. The blueprint has no resend: a new
+   * start, with a new key, is the way to a new code (A104).
+   */
+  requestAccountEmailChange(newEmail: string, currentPassword: string | null, idempotencyKey: string): Promise<EmailChangeChallenge>;
+  /**
+   * `POST /account/email-changes/confirm` `{challengeId, code}` with the
+   * account session — 204, then every tab of the account is told and re-reads
+   * `GET /users/me`. 422 `CONFIRMATION_EXPIRED` for a code past its time.
+   */
+  confirmAccountEmailChange(challengeId: string, code: string, idempotencyKey: string): Promise<void>;
+  /**
+   * Fires when the account's password or email changed — in this tab after
+   * the command's 204, or in another tab of the same account. A data-free
+   * signal: what changed is read again from the server. Returns an unsubscribe.
+   */
+  onAccountChanged(listener: () => void): () => void;
 
   /**
    * `GET /meta` — the enum dictionaries (backend TAS-217), read once per

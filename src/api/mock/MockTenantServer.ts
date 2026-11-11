@@ -138,10 +138,53 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v5";
  * - `clockOffsetMs` also applies a scheduled plan change once its
  *   `scheduledEffectiveAt` has passed.
  *
+ * The account's own credentials (TAS-527, api-contract-guard §8):
+ *
+ * - `refuseNext`, `delayMs` and `loseAnswer` take `requestPasswordRecovery`,
+ *   `completePasswordRecovery`, `changeAccountPassword`,
+ *   `requestAccountEmailChange` and `confirmAccountEmailChange` — a lost
+ *   command is applied and then answered like a dropped connection, once;
+ * - `clockOffsetMs` also expires recovery links (15 minutes) and email-change
+ *   codes (10 minutes).
+ *
  * Everything time- or hook-driven is evaluated on every read of the server's
  * state: there are no timers.
  */
 export const MOCK_TENANT_HOOKS_KEY = "taska.mockTenantHooks";
+
+/**
+ * TAS-527: the credentials' own record, **beside** `taska.mockServer` and never
+ * inside it (api-contract-guard F6 — the open branches bump that key's version
+ * with shapes of their own). Shared by every tab: the passwords set through
+ * TAS-527 and the confirmed addresses, both by account; the recovery links and
+ * the email-change challenges; and the five routes' receipts. **Digests only**
+ * for every secret — a password, a link's token, a code and a body that held
+ * one are kept as a one-way digest, as a server keeps them, so nothing typed or
+ * sent can be read back out of the browser's storage.
+ */
+export const MOCK_ACCOUNTS_KEY = "taska.mockAccounts.v1";
+
+/**
+ * TAS-527: the stand-in inbox — what a mail would have carried, newest last,
+ * the last 50. The one place a link's token and a code are kept in the clear,
+ * because that is what an inbox is. **Read by the e2e suite and by a person in
+ * the console only** (`page.evaluate`, `localStorage`); nothing outside this
+ * mock imports it, and `TaskaApi` has no reader for it (api-contract-guard §8).
+ * An entry is made only for an existing `ACTIVE` account: the 202 is the same
+ * either way.
+ */
+export const MOCK_MAILBOX_KEY = "taska.mockMailbox.v1";
+
+export interface MockMailboxEntry {
+  to: string;
+  kind: "PASSWORD_RECOVERY" | "EMAIL_CHANGE_CODE";
+  /** `PASSWORD_RECOVERY`: `{origin}{base}reset-password?token={token}` — the A99 shape. */
+  link?: string;
+  /** `EMAIL_CHANGE_CODE`: the eight digits, and the challenge they confirm. */
+  code?: string;
+  challengeId?: string;
+  at: string;
+}
 
 export interface MockRefusalHook {
   status: number;
@@ -480,6 +523,76 @@ interface ServerState {
   /** The `taskLifetime` hook's values already applied, by project — one value is applied once. */
   lifetimeApplied: Record<string, number>;
 }
+
+/** TAS-527's record (`MOCK_ACCOUNTS_KEY`). Every secret in it is a `digest`. */
+interface AccountsState {
+  v: 1;
+  /** Account → the digest of the password TAS-527 set. Without one, sign-in takes any password, as it always has here. */
+  passwords: Record<string, string>;
+  /** Account → its confirmed new address. */
+  emails: Record<string, string>;
+  /** A recovery link, by the digest of its token: single use, 15 minutes on the lifecycle clock. */
+  recoveries: Record<string, { userId: string; expiresAt: number; usedAt?: number }>;
+  /** An email-change challenge by its id: the code's digest, 10 minutes, five attempts. */
+  challenges: Record<
+    string,
+    { userId: string; newEmail: string; code: string; expiresAt: number; attempts: number; closedAt?: number; exhausted?: boolean }
+  >;
+  /** The five routes' receipts, `{operation}:{actor}:{key}`: the body's digest and the answer a replay gets. */
+  receipts: Record<string, { hash: string; answer: unknown; at: number }>;
+}
+
+/** A recovery link's lifetime (contracts.md: 15 minutes, configurable 5–30). */
+const RECOVERY_TTL_MS = 15 * 60_000;
+/** An email-change code's lifetime and attempts (contracts.md: 10 minutes, 5 attempts). */
+const CHALLENGE_TTL_MS = 10 * 60_000;
+const CHALLENGE_ATTEMPTS = 5;
+/** What the 202 says every time, for every address (no account enumeration). */
+const RECOVERY_RETRY_AFTER_S = 60;
+const MAILBOX_LIMIT = 50;
+
+/**
+ * A one-way digest, for the secrets this mock keeps (`MOCK_ACCOUNTS_KEY`):
+ * two passes of cyrb53 with different seeds. Not cryptography — a mock's
+ * stand-in for a server's hash, so the browser's storage never holds what was
+ * typed.
+ */
+function digest(value: string): string {
+  const pass = (seed: number) => {
+    let h1 = 0xdeadbeef ^ seed;
+    let h2 = 0x41c6ce57 ^ seed;
+    for (let index = 0; index < value.length; index += 1) {
+      const char = value.charCodeAt(index);
+      h1 = Math.imul(h1 ^ char, 2654435761);
+      h2 = Math.imul(h2 ^ char, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
+  };
+  return `${pass(1)}${pass(2)}`;
+}
+
+/** 32 random bytes, base64url without padding — the blueprint's recovery token. */
+function recoveryToken(): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/** Eight random digits. */
+function confirmationCode(): string {
+  const [value] = globalThis.crypto.getRandomValues(new Uint32Array(1));
+  return String(value % 100_000_000).padStart(8, "0");
+}
+
+/** An address as MFA's challenge masks one (`startWebSession`): the first character, then the domain. */
+const maskEmail = (email: string) => email.replace(/^(.).*(@.*)$/, "$1•••$2");
+
+/** The length the blueprint's `minLength` / `maxLength` count: code points. */
+const codePoints = (value: string) => [...value].length;
 
 /**
  * A refusal as the blueprint's gateway answers one: an HTTP status and a
@@ -1095,6 +1208,11 @@ export class MockTenantServer {
         this.transferTenantOwnership(bearer, tenantId, newOwnerUserId, version, key),
       getSubscription: (bearer, tenantId) => this.getSubscription(bearer, tenantId),
       getEntitlement: (bearer, tenantId) => this.getEntitlement(bearer, tenantId),
+      requestPasswordRecovery: (body, key) => this.requestPasswordRecovery(body, key),
+      completePasswordRecovery: (body, key) => this.completePasswordRecovery(body, key),
+      changeAccountPassword: (bearer, body, key) => this.changeAccountPassword(bearer, body, key),
+      requestAccountEmailChange: (bearer, body, key) => this.requestAccountEmailChange(bearer, body, key),
+      confirmAccountEmailChange: (bearer, body, key) => this.confirmAccountEmailChange(bearer, body, key),
     };
   }
 
@@ -1202,7 +1320,9 @@ export class MockTenantServer {
   /**
    * `POST /auth/web-sessions`. The password is checked as today's mock checks
    * it (any password for an `ACTIVE` account; a locked account's refusal as
-   * it is). A GLOBAL_ADMIN gets the blueprint's `MfaChallenge` and no session
+   * it is) — unless TAS-527 has set one for the account, which is then the
+   * only one, and an address changed through TAS-527 signs in instead of the
+   * old one. A GLOBAL_ADMIN gets the blueprint's `MfaChallenge` and no session
    * — backend PR #288 answers 403 `MFA_REQUIRED` instead, which the session
    * layer reads as the same dead end (unit-tested against `RestTaskaApi`).
    */
@@ -1218,6 +1338,11 @@ export class MockTenantServer {
         throw error;
       }
       const user = this.accountStore.currentUser();
+      // TAS-527: once a password has been set here, it is the one that signs in.
+      const password = this.readAccounts().passwords[user.id];
+      if (password !== undefined && password !== digest(input.password)) {
+        throw problem(401, "AUTHENTICATION_REQUIRED", "Invalid credentials");
+      }
       let answer: unknown;
       if (user.globalRole === "GLOBAL_ADMIN") {
         answer = {
@@ -2302,6 +2427,364 @@ export class MockTenantServer {
     return { ...rest, projectGrants: projectGrants.map((grant) => ({ ...grant })), version: String(version) };
   }
 
+  /* ----------------------------------- the account's own credentials (TAS-527) */
+
+  /*
+   * api-contract-guard's pre-build ruling §8. The blueprint's bounds are
+   * enforced as 400 `VALIDATION_FAILED` with `violations` (`newPassword`
+   * 12–128, `currentPassword` 1–128, the addresses, `code` `^[0-9]{8}$`,
+   * `token` 32–512); a key is required and replays its answer — another body
+   * under it is 409 `IDEMPOTENCY_CONFLICT`, and a refusal is never kept as an
+   * answer. Where the blueprint names no answer, this mock's (each a line of
+   * docs/ai/API-DIVERGENCE.md «TAS-527»): a wrong current password is a 400
+   * violation on `currentPassword`; an address in use (or the account's own)
+   * is 409 `INVALID_STATE`; a dead link — unknown, used, expired — is 401
+   * `AUTHENTICATION_REQUIRED`; a wrong code is a 400 violation on `code`; the
+   * fifth wrong code and an expired one are 422 `CONFIRMATION_EXPIRED`; an
+   * unknown, used or superseded challenge is 404 `RESOURCE_NOT_FOUND`. A
+   * password change keeps the family that sent it (the account session and
+   * its company sessions) and revokes every other; a recovery revokes every
+   * session of the account; an email change revokes none.
+   */
+
+  /**
+   * `POST /auth/password-recovery` — public. **The same 202 for every address**
+   * — unknown, blocked, locked or active — `{accepted: true,
+   * retryAfterSeconds: 60}`; only an existing `ACTIVE` account gets a mail.
+   */
+  private async requestPasswordRecovery(body: { email: string }, key: string): Promise<unknown> {
+    const operation = "requestPasswordRecovery";
+    await this.delay(operation);
+    const refusal = this.takeRefusal(operation);
+    if (refusal) throw refusal;
+    this.requireKey(key);
+    this.syncAccounts();
+    const answer = this.accountsWrite((accounts) => {
+      const receipt = this.accountReceipt(accounts, operation, "public", key, body);
+      if (receipt.replay !== undefined) return receipt.replay;
+      if (typeof body.email !== "string" || invitationEmailProblem(body.email) !== null || body.email !== body.email.trim()) {
+        throw invalid("Invalid request", [{ field: "email", code: "INVALID", message: "The email address is not valid." }]);
+      }
+      const account = this.accountStore.accountByEmail(body.email);
+      if (account !== null && account.status === "ACTIVE") {
+        const token = recoveryToken();
+        accounts.recoveries[digest(token)] = { userId: account.userId, expiresAt: this.lifecycleNow() + RECOVERY_TTL_MS };
+        this.deliver({ to: account.email, kind: "PASSWORD_RECOVERY", link: `${this.appRoot()}reset-password?token=${token}` });
+      }
+      return receipt.keep({ accepted: true, retryAfterSeconds: RECOVERY_RETRY_AFTER_S });
+    });
+    if (this.takeLostAnswer(operation)) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /**
+   * `POST /auth/password-recovery/complete` — public, the token in the body.
+   * The bounds first (a weak password does not spend the link), then the
+   * link; on success the new password is the account's, the link and every
+   * other open one are spent, and every session of the account is revoked.
+   */
+  private async completePasswordRecovery(body: { token: string; newPassword: string }, key: string): Promise<void> {
+    const operation = "completePasswordRecovery";
+    await this.delay(operation);
+    const refusal = this.takeRefusal(operation);
+    if (refusal) throw refusal;
+    this.requireKey(key);
+    this.write((state) =>
+      this.accountsWrite((accounts) => {
+        const receipt = this.accountReceipt(accounts, operation, "public", key, body);
+        if (receipt.replay !== undefined) return;
+        const violations: FieldViolation[] = [];
+        const tokenLength = typeof body.token === "string" ? codePoints(body.token) : 0;
+        if (tokenLength < 32 || tokenLength > 512) violations.push({ field: "token", code: "INVALID", message: "The reset token is not valid." });
+        this.checkNewPassword(body.newPassword, violations);
+        if (violations.length > 0) throw invalid("Invalid request", violations);
+        const link = accounts.recoveries[digest(body.token)];
+        if (!link || link.usedAt !== undefined || link.expiresAt <= this.lifecycleNow()) {
+          throw problem(401, "AUTHENTICATION_REQUIRED", "Invalid or expired token");
+        }
+        const now = this.now();
+        for (const item of Object.values(accounts.recoveries)) if (item.userId === link.userId) item.usedAt ??= now;
+        accounts.passwords[link.userId] = digest(body.newPassword);
+        for (const session of state.sessions) if (session.userId === link.userId) session.revokedAt ??= now;
+        receipt.keep(null);
+      }),
+    );
+    if (this.takeLostAnswer(operation)) throw new TypeError("Failed to fetch");
+  }
+
+  /** `PUT /account/password` — either web session. The family that sent it stays signed in; every other is revoked. */
+  private async changeAccountPassword(bearer: string, body: { currentPassword: string; newPassword: string }, key: string): Promise<void> {
+    const operation = "changeAccountPassword";
+    await this.delay(operation);
+    this.write((state) => {
+      const session = this.accountSession(state, bearer, operation);
+      this.requireKey(key);
+      this.accountsWrite((accounts) => {
+        const receipt = this.accountReceipt(accounts, operation, session.userId, key, body);
+        if (receipt.replay !== undefined) return;
+        const violations: FieldViolation[] = [];
+        this.checkCurrentPassword(accounts, session.userId, body.currentPassword, violations, true);
+        this.checkNewPassword(body.newPassword, violations);
+        if (violations.length > 0) throw invalid("Invalid request", violations);
+        const now = this.now();
+        accounts.passwords[session.userId] = digest(body.newPassword);
+        for (const item of Object.values(accounts.recoveries)) if (item.userId === session.userId) item.usedAt ??= now;
+        const family = session.parentId ?? session.id;
+        for (const other of state.sessions) {
+          if (other.userId === session.userId && (other.parentId ?? other.id) !== family) other.revokedAt ??= now;
+        }
+        receipt.keep(null);
+      });
+    });
+    if (this.takeLostAnswer(operation)) throw new TypeError("Failed to fetch");
+  }
+
+  /**
+   * `POST /account/email-changes` — either web session. The new address is
+   * checked, then the current password (`currentPassword` is optional in the
+   * blueprint; this mock requires it only of an account that has one set);
+   * then the address must be free. 201 `ConfirmationChallenge`, the code
+   * mailed to the new address; a new start supersedes the account's open ones.
+   */
+  private async requestAccountEmailChange(bearer: string, body: { newEmail: string; currentPassword?: string }, key: string): Promise<unknown> {
+    const operation = "requestAccountEmailChange";
+    await this.delay(operation);
+    const answer = this.read((state) => {
+      const session = this.accountSession(state, bearer, operation);
+      this.requireKey(key);
+      return this.accountsWrite((accounts) => {
+        const receipt = this.accountReceipt(accounts, operation, session.userId, key, body);
+        if (receipt.replay !== undefined) return receipt.replay;
+        const violations: FieldViolation[] = [];
+        if (typeof body.newEmail !== "string" || invitationEmailProblem(body.newEmail) !== null || body.newEmail !== body.newEmail.trim()) {
+          violations.push({ field: "newEmail", code: "INVALID", message: "The new email address is not valid." });
+        }
+        this.checkCurrentPassword(accounts, session.userId, body.currentPassword, violations, false);
+        if (violations.length > 0) throw invalid("Invalid request", violations);
+        const holder = this.accountStore.accountByEmail(body.newEmail);
+        if (holder !== null) {
+          throw problem(409, "INVALID_STATE", holder.userId === session.userId ? "This is already the account's email" : "This email is already in use");
+        }
+        const now = this.now();
+        for (const challenge of Object.values(accounts.challenges)) {
+          if (challenge.userId === session.userId) challenge.closedAt ??= now;
+        }
+        const challengeId = uuid();
+        const code = confirmationCode();
+        const expiresAt = this.lifecycleNow() + CHALLENGE_TTL_MS;
+        accounts.challenges[challengeId] = { userId: session.userId, newEmail: body.newEmail, code: digest(code), expiresAt, attempts: 0 };
+        this.deliver({ to: body.newEmail, kind: "EMAIL_CHANGE_CODE", code, challengeId });
+        return receipt.keep({
+          challengeId,
+          purpose: "CHANGE_EMAIL",
+          expiresAt: new Date(expiresAt).toISOString(),
+          delivery: "EMAIL",
+          maskedDestination: maskEmail(body.newEmail),
+        });
+      });
+    });
+    if (this.takeLostAnswer(operation)) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /**
+   * `POST /account/email-changes/confirm` — either web session. The bounds,
+   * then the challenge (another account's is unknown), its time and its
+   * attempts, then the code; the address is checked free once more. On
+   * success it is the account's, in every tab and every store, from the next
+   * read on; the old one signs in to nothing.
+   */
+  private async confirmAccountEmailChange(bearer: string, body: { challengeId: string; code: string }, key: string): Promise<void> {
+    const operation = "confirmAccountEmailChange";
+    await this.delay(operation);
+    this.read((state) => {
+      const session = this.accountSession(state, bearer, operation);
+      this.requireKey(key);
+      this.accountsWrite((accounts) => {
+        const receipt = this.accountReceipt(accounts, operation, session.userId, key, body);
+        if (receipt.replay !== undefined) return;
+        const violations: FieldViolation[] = [];
+        if (typeof body.challengeId !== "string" || !UUID_PATTERN.test(body.challengeId)) {
+          violations.push({ field: "challengeId", code: "INVALID", message: "The challenge id must be a UUID." });
+        }
+        if (typeof body.code !== "string" || !/^[0-9]{8}$/.test(body.code)) {
+          violations.push({ field: "code", code: "INVALID", message: "The code must be 8 digits." });
+        }
+        if (violations.length > 0) throw invalid("Invalid request", violations);
+        const challenge = accounts.challenges[body.challengeId];
+        if (!challenge || challenge.userId !== session.userId || (challenge.closedAt !== undefined && !challenge.exhausted)) {
+          throw problem(404, "RESOURCE_NOT_FOUND", "Challenge not found");
+        }
+        if (challenge.exhausted || challenge.expiresAt <= this.lifecycleNow()) {
+          throw problem(422, "CONFIRMATION_EXPIRED", "The confirmation has expired");
+        }
+        if (challenge.code !== digest(body.code)) {
+          challenge.attempts += 1;
+          if (challenge.attempts >= CHALLENGE_ATTEMPTS) {
+            challenge.exhausted = true;
+            challenge.closedAt = this.now();
+            throw problem(422, "CONFIRMATION_EXPIRED", "The confirmation has expired");
+          }
+          throw invalid("Invalid request", [{ field: "code", code: "MISMATCH", message: "The code is not correct." }]);
+        }
+        const holder = this.accountStore.accountByEmail(challenge.newEmail);
+        if (holder !== null && holder.userId !== session.userId) throw problem(409, "INVALID_STATE", "This email is already in use");
+        challenge.closedAt = this.now();
+        accounts.emails[session.userId] = challenge.newEmail;
+        this.applyEmail(session.userId, challenge.newEmail);
+        receipt.keep(null);
+      });
+    });
+    if (this.takeLostAnswer(operation)) throw new TypeError("Failed to fetch");
+  }
+
+  /** The bearer of an account command: either web session, alive; then a `refuseNext` hook. */
+  private accountSession(state: ServerState, bearer: string, operation: string): StoredSession {
+    if (!bearer) throw problem(401, "AUTHENTICATION_REQUIRED", "Authentication required");
+    const session = this.sessionOf(state, bearer);
+    const refusal = this.takeRefusal(operation);
+    if (refusal) throw refusal;
+    return session;
+  }
+
+  /** `Idempotency-Key` is required on all five (the blueprint's parameter). */
+  private requireKey(key: string): void {
+    if (typeof key !== "string" || key.trim() === "") throw problem(400, "VALIDATION_FAILED", "Idempotency-Key is required");
+  }
+
+  private checkNewPassword(value: unknown, violations: FieldViolation[]): void {
+    const length = typeof value === "string" ? codePoints(value) : 0;
+    if (length < 12 || length > 128) {
+      violations.push({ field: "newPassword", code: "INVALID", message: "The new password must be 12 to 128 characters." });
+    }
+  }
+
+  /**
+   * The current password: its bounds, then — for an account TAS-527 has set
+   * one on — the password itself. An account without one takes any, as sign-in
+   * does here. `required`: absent is a violation (the password change always;
+   * the email change only for an account with a password set).
+   */
+  private checkCurrentPassword(
+    accounts: AccountsState,
+    userId: string,
+    value: unknown,
+    violations: FieldViolation[],
+    required: boolean,
+  ): void {
+    const stored = accounts.passwords[userId];
+    if (value === undefined && !required && stored === undefined) return;
+    const length = typeof value === "string" ? codePoints(value) : 0;
+    if (length < 1 || length > 128) {
+      violations.push({ field: "currentPassword", code: "INVALID", message: "The current password must be 1 to 128 characters." });
+      return;
+    }
+    if (stored !== undefined && stored !== digest(value as string)) {
+      violations.push({ field: "currentPassword", code: "MISMATCH", message: "The current password is not correct." });
+    }
+  }
+
+  /**
+   * A receipt of one of the five: the same key with the same body (its
+   * digest) is the answer it had, with another body 409. `keep` stores a
+   * success — a refusal is never kept.
+   */
+  private accountReceipt(
+    accounts: AccountsState,
+    operation: string,
+    actor: string,
+    key: string,
+    body: unknown,
+  ): { replay: unknown; keep: <T>(answer: T) => T } {
+    const id = `${operation}:${actor}:${key}`;
+    const hash = digest(JSON.stringify(body));
+    const kept = accounts.receipts[id];
+    if (kept !== undefined && kept.hash !== hash) throw problem(409, "IDEMPOTENCY_CONFLICT", "The key was used for another request");
+    return {
+      replay: kept === undefined ? undefined : (kept.answer ?? null),
+      keep: (answer) => {
+        accounts.receipts[id] = { hash, answer: answer ?? null, at: this.now() };
+        return answer;
+      },
+    };
+  }
+
+  /** Where the app is served from, for the recovery link: the page's origin and Vite's base. */
+  private appRoot(): string {
+    const origin = typeof window !== "undefined" && window.location?.origin ? window.location.origin : "http://localhost";
+    const base = import.meta.env.BASE_URL || "/";
+    return `${origin}${base.endsWith("/") ? base : `${base}/`}`;
+  }
+
+  /** One mail into the stand-in inbox (`MOCK_MAILBOX_KEY`). */
+  private deliver(entry: Omit<MockMailboxEntry, "at">): void {
+    let box: MockMailboxEntry[] = [];
+    try {
+      const parsed: unknown = JSON.parse(this.storage.getItem(MOCK_MAILBOX_KEY) ?? "[]");
+      if (Array.isArray(parsed)) box = parsed as MockMailboxEntry[];
+    } catch {
+      box = [];
+    }
+    box.push({ ...entry, at: new Date(this.now()).toISOString() });
+    try {
+      this.storage.setItem(MOCK_MAILBOX_KEY, JSON.stringify(box.slice(-MAILBOX_LIMIT)));
+    } catch {
+      // A storage that refuses: the mail is lost, as mail sometimes is.
+    }
+  }
+
+  private readAccounts(): AccountsState {
+    try {
+      const raw = this.storage.getItem(MOCK_ACCOUNTS_KEY);
+      const parsed: unknown = raw === null ? null : JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null && (parsed as AccountsState).v === 1) {
+        const state = parsed as AccountsState;
+        return {
+          v: 1,
+          passwords: state.passwords ?? {},
+          emails: state.emails ?? {},
+          recoveries: state.recoveries ?? {},
+          challenges: state.challenges ?? {},
+          receipts: state.receipts ?? {},
+        };
+      }
+    } catch {
+      // falls through to an empty record
+    }
+    return { v: 1, passwords: {}, emails: {}, recoveries: {}, challenges: {}, receipts: {} };
+  }
+
+  /** Read, change, write back — also when `run` throws, as `write` does: a wrong code still counts. */
+  private accountsWrite<T>(run: (accounts: AccountsState) => T): T {
+    const accounts = this.readAccounts();
+    try {
+      return run(accounts);
+    } finally {
+      const now = this.now();
+      for (const [id, receipt] of Object.entries(accounts.receipts)) if (receipt.at < now - DAY) delete accounts.receipts[id];
+      for (const [id, link] of Object.entries(accounts.recoveries)) if (link.expiresAt < this.lifecycleNow() - DAY) delete accounts.recoveries[id];
+      for (const [id, challenge] of Object.entries(accounts.challenges)) {
+        if (challenge.expiresAt < this.lifecycleNow() - DAY) delete accounts.challenges[id];
+      }
+      try {
+        this.storage.setItem(MOCK_ACCOUNTS_KEY, JSON.stringify(accounts));
+      } catch {
+        // A storage that refuses keeps nothing.
+      }
+    }
+  }
+
+  /** A confirmed address, into the account's store and every company store this page has built. */
+  private applyEmail(userId: string, email: string): void {
+    this.accountStore.overrideAccountEmail(userId, email);
+    for (const store of this.stores.values()) store.overrideAccountEmail(userId, email);
+  }
+
+  /** Every confirmed address, from the shared record — another tab's change is read here on this tab's next operation. */
+  private syncAccounts(): void {
+    for (const [userId, email] of Object.entries(this.readAccounts().emails)) this.applyEmail(userId, email);
+  }
+
   /* ---------------------------------------------------------- the checks */
 
   /** The company-session commands and the list: WEB_GLOBAL only (backend PR #288's scopes; the blueprint says any web session, ask A2). */
@@ -2620,6 +3103,7 @@ export class MockTenantServer {
       // create a company and work in it, so every store knows her as ACTIVE.
       store.overrideAccountStatus(MOCK_ACCOUNT_IDS.nina, "ACTIVE");
       store.applyTenantSeed(TENANT_SEEDS[tenantId] ?? EMPTY_SEED);
+      for (const [userId, email] of Object.entries(this.readAccounts().emails)) store.overrideAccountEmail(userId, email);
       this.stores.set(tenantId, store);
     }
     return store;
@@ -2643,6 +3127,8 @@ export class MockTenantServer {
     const state = this.stored();
     // Time and the hooks are read on every load (no timers): what changed is written back.
     if (this.evaluate(state)) this.save(state);
+    // TAS-527: an address another tab confirmed is this page's stores' too.
+    this.syncAccounts();
     return state;
   }
 

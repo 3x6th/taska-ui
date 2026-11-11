@@ -1,4 +1,22 @@
 import { clearLastCompany, readLastCompany, writeLastCompany } from "../lib/lastCompany";
+import {
+  ACCOUNT_REVISION_KEY,
+  emailChangeConfirmBody,
+  emailChangeStartBody,
+  passwordChangeBody,
+  recoveryCompleteBody,
+  recoveryRequestBody,
+  toAccountRevision,
+  toDeliveryAcknowledgement,
+  toEmailChangeChallenge,
+  type DeliveryAcknowledgement,
+  type EmailChangeChallenge,
+  type EmailChangeConfirmBody,
+  type EmailChangeStartBody,
+  type PasswordChangeBody,
+  type PasswordRecoveryCompleteBody,
+  type PasswordRecoveryRequestBody,
+} from "./accountCredentials";
 import { WorkspaceClosedError, apiErrorFacts, isWorkspaceClosed, refusalCode, refusalReasons } from "./errors";
 import { SessionExpiredSignal, WorkspaceClosedSignal } from "./session";
 import type {
@@ -198,6 +216,23 @@ export interface B2bTransport {
 
   /** `GET /tenants/{tenantId}/billing/entitlement` with that company's WEB_TENANT — 200 `Entitlement`, every member's read (TAS-512). */
   getEntitlement(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
+
+  /*
+   * The account's own credentials (TAS-527). Every one carries the caller's
+   * `Idempotency-Key` and no `If-Match`; each body is the blueprint's fields
+   * exactly, in its order (`src/api/accountCredentials.ts`).
+   */
+
+  /** `POST /auth/password-recovery` `{email}` — public (PUBLIC_AUTH), no credential; 202 `DeliveryAcknowledgement`. */
+  requestPasswordRecovery(body: PasswordRecoveryRequestBody, idempotencyKey: string): Promise<unknown>;
+  /** `POST /auth/password-recovery/complete` `{token, newPassword}` — no credential, the token is in the body; 204. */
+  completePasswordRecovery(body: PasswordRecoveryCompleteBody, idempotencyKey: string): Promise<void>;
+  /** `PUT /account/password` `{currentPassword, newPassword}` with WEB_GLOBAL; 204. */
+  changeAccountPassword(bearer: string, body: PasswordChangeBody, idempotencyKey: string): Promise<void>;
+  /** `POST /account/email-changes` `{newEmail, currentPassword?}` with WEB_GLOBAL; 201 `ConfirmationChallenge`. */
+  requestAccountEmailChange(bearer: string, body: EmailChangeStartBody, idempotencyKey: string): Promise<unknown>;
+  /** `POST /account/email-changes/confirm` `{challengeId, code}` with WEB_GLOBAL; 204. */
+  confirmAccountEmailChange(bearer: string, body: EmailChangeConfirmBody, idempotencyKey: string): Promise<void>;
 }
 
 /** `AccessSession` as this layer reads it: the four strings it needs, `tenantId` only on a company session. */
@@ -510,6 +545,8 @@ export class WebSessionClient {
   private leaveRefusedBySelection: string | null = null;
   private readonly expired = new SessionExpiredSignal();
   private readonly changeListeners = new Set<() => void>();
+  /** `onAccountChanged` (TAS-527). */
+  private readonly accountListeners = new Set<() => void>();
   private readonly closed = new WorkspaceClosedSignal<WorkspaceClosedEvent>();
   private readonly pending = new WorkspaceClosedSignal<WorkspacePendingEvent>();
   private readonly left = new WorkspaceClosedSignal<WorkspaceLeftEvent>();
@@ -1118,6 +1155,117 @@ export class WebSessionClient {
     );
   }
 
+  /* ------------------------------------------ the account's credentials (TAS-527) */
+
+  /*
+   * api-contract-guard's pre-build ruling §3, §6, §7 and F3, with the
+   * orchestrator's decisions 6–8. The two recovery routes go with **no
+   * credential** (`call("none")`): a 401 there is the link's, and never touches
+   * a renewal or reads as a session dying. The three account commands go with
+   * **the account session**, WEB_GLOBAL, from inside a company too — a company
+   * session is a refresh family of its own, and the server may keep only the
+   * family that presented itself (A103) — and with `proof` (`withAccount`): a
+   * 401 that survives a successful rotation is the command's own refusal,
+   * answered as it came, never the account expiring in every tab. The key is
+   * the caller's: a retry of a press whose answer never came sends the same
+   * key and the same body; any new press, a new key (decision 7).
+   */
+
+  /** `POST /auth/password-recovery`, public. The 202 is the acknowledgement whatever it holds; only its wait is read. */
+  async requestPasswordRecovery(email: string, idempotencyKey: string): Promise<DeliveryAcknowledgement> {
+    const body = recoveryRequestBody(email);
+    return toDeliveryAcknowledgement(
+      await this.call("none", () => this.transport.requestPasswordRecovery(body, idempotencyKey)),
+    );
+  }
+
+  /** `POST /auth/password-recovery/complete`, public. Signs nothing out here: the screen does, once the 204 is in hand. */
+  async completePasswordRecovery(token: string, newPassword: string, idempotencyKey: string): Promise<void> {
+    const body = recoveryCompleteBody(token, newPassword);
+    await this.call("none", () => this.transport.completePasswordRecovery(body, idempotencyKey));
+  }
+
+  /** `PUT /account/password` with the account session. On the 204 every tab of the account is told (`onAccountChanged`). */
+  async changeAccountPassword(currentPassword: string, newPassword: string, idempotencyKey: string): Promise<void> {
+    const body = passwordChangeBody(currentPassword, newPassword);
+    await this.accountCommand((bearer) => this.transport.changeAccountPassword(bearer, body, idempotencyKey));
+    this.announceAccountChange();
+  }
+
+  /** `POST /account/email-changes` with the account session — the challenge the code step is drawn from. */
+  async requestAccountEmailChange(
+    newEmail: string,
+    currentPassword: string | null,
+    idempotencyKey: string,
+  ): Promise<EmailChangeChallenge> {
+    const body = emailChangeStartBody(newEmail, currentPassword);
+    const challenge = toEmailChangeChallenge(
+      await this.accountCommand((bearer) => this.transport.requestAccountEmailChange(bearer, body, idempotencyKey)),
+    );
+    if (challenge === null) throw new Error("The answer held no email-change challenge.");
+    return challenge;
+  }
+
+  /**
+   * `POST /account/email-changes/confirm` with the account session. On the
+   * 204 every tab of the account is told, this one included, and each re-reads
+   * `GET /users/me`: the new address comes from that answer and from nowhere
+   * else (art-director B11, B16).
+   */
+  async confirmAccountEmailChange(challengeId: string, code: string, idempotencyKey: string): Promise<void> {
+    const body = emailChangeConfirmBody(challengeId, code);
+    await this.accountCommand((bearer) => this.transport.confirmAccountEmailChange(bearer, body, idempotencyKey));
+    this.announceAccountChange();
+  }
+
+  /**
+   * Fires when this account's password or email changed — here, after the
+   * command's 204, or in another tab of the same account (`storage` on
+   * `taska.accountRevision`). Returns an unsubscribe.
+   */
+  onAccountChanged(listener: () => void): () => void {
+    this.accountListeners.add(listener);
+    return () => {
+      this.accountListeners.delete(listener);
+    };
+  }
+
+  /**
+   * One account command: WEB_GLOBAL with `proof`, guarded by the account
+   * epoch as `createTenant` is — a sign-out or another account meanwhile is
+   * `WorkspaceClosedError`, and an account family that could not be renewed
+   * signs every tab out.
+   */
+  private async accountCommand<T>(send: (bearer: string) => Promise<T>): Promise<T> {
+    const epoch = this.accountEpoch;
+    await this.settled();
+    if (epoch !== this.accountEpoch) throw new WorkspaceClosedError();
+    let answer: T;
+    try {
+      answer = await this.withAccount(send, { proof: true });
+    } catch (error) {
+      if (epoch !== this.accountEpoch) throw new WorkspaceClosedError();
+      if (error instanceof AccountGone) {
+        if (error.refused) this.expireAccount();
+        throw new WorkspaceClosedError();
+      }
+      throw error;
+    }
+    if (epoch !== this.accountEpoch) throw new WorkspaceClosedError();
+    return answer;
+  }
+
+  /** The data-free signal, and this tab's own listeners — `storage` never fires in the tab that wrote it. */
+  private announceAccountChange(): void {
+    const userId = this.accountUserId ?? this.readAccount()?.userId ?? null;
+    if (userId !== null) this.writeJson(this.local, ACCOUNT_REVISION_KEY, { nonce: this.newKey(), userId });
+    this.notifyAccountChanged();
+  }
+
+  private notifyAccountChanged(): void {
+    for (const listener of [...this.accountListeners]) listener();
+  }
+
   private tenantAnswer(answer: unknown): Tenant {
     const tenant = toTenant(answer);
     if (tenant === null) throw new Error("The answer held no company.");
@@ -1560,8 +1708,18 @@ export class WebSessionClient {
 
   /* ------------------------------------------------------- the account family */
 
-  /** `send` with WEB_GLOBAL, rotating the account family once on a 401. */
-  private async withAccount<T>(send: (bearer: string) => Promise<T>): Promise<T> {
+  /**
+   * `send` with WEB_GLOBAL, rotating the account family once on a 401.
+   *
+   * `proof` (TAS-527, api-contract-guard F3) is for a command that carries a
+   * credential of its own — the current password: a 401 on the retry **after
+   * a rotation that succeeded** proves the account session is alive, so that
+   * 401 is the command's own refusal, and the first one is answered as it
+   * came. Without it the same 401 reads as the account dying, and one typed
+   * password would sign every tab out. A refused rotation is still the
+   * account dying, with `proof` or without.
+   */
+  private async withAccount<T>(send: (bearer: string) => Promise<T>, options: { proof?: boolean } = {}): Promise<T> {
     const account = this.readAccount();
     if (account === null) throw new AccountGone(false);
     try {
@@ -1576,7 +1734,10 @@ export class WebSessionClient {
       try {
         return await send(renewed.accessToken);
       } catch (retryError) {
-        if (apiErrorFacts(retryError).status === 401) throw new AccountGone(true);
+        if (apiErrorFacts(retryError).status === 401) {
+          if (options.proof === true) throw error;
+          throw new AccountGone(true);
+        }
         throw retryError;
       }
     }
@@ -1669,7 +1830,14 @@ export class WebSessionClient {
    * this tab's company is that account's no longer.
    */
   private readonly onStorage = (event: Event) => {
-    const { key } = event as StorageEvent;
+    const { key, newValue } = event as StorageEvent;
+    // Another tab's password or email change (TAS-527): this tab's account is
+    // told, and re-reads what it shows. Nothing of the signal is shown.
+    if (key === ACCOUNT_REVISION_KEY) {
+      const revision = toAccountRevision(newValue);
+      if (revision !== null && revision.userId === this.accountUserId) this.notifyAccountChanged();
+      return;
+    }
     if (key !== null && key !== WEB_SESSION_KEY) return;
     const account = this.readAccount();
     if (account !== null && account.userId === this.accountUserId) return;
