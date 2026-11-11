@@ -243,7 +243,7 @@ describe("the session check in front of every data call (B7)", () => {
         description: "",
         issueType: "TASK",
         priority: "LOW",
-      }),
+      }, crypto.randomUUID()),
     );
     expect(apiErrorFacts(refused)).toMatchObject({ status: 403, code: "READ_ONLY", requestId: expect.any(String) });
     expect(refusalReasons(refused)).toEqual(["OWNER_PAUSE"]);

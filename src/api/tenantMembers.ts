@@ -102,6 +102,39 @@ export interface QuotaUsage {
   unlimited: boolean;
 }
 
+/**
+ * One project's lifetime issue counter — the blueprint's `QuotaUsage` of kind
+ * `TASK_LIFETIME` from `GET /tenants/{t}/projects/{p}/task-quota`
+ * (`getProjectTaskQuota`, TAS-460; TAS-528). `used` is every issue the project
+ * ever created, deleted ones included, as the server counts them; never
+ * incremented here. `kind` is checked and dropped; `reserved` (always "0")
+ * and `version` (tenant-wide on develop, ask A116) are never kept.
+ */
+export interface ProjectTaskQuota {
+  /** The requested project — an answer that names another is a failed read. */
+  projectId: string;
+  /** Decimal string ≥ 0. */
+  used: string;
+  /** Decimal string; `null` exactly when `unlimited`. */
+  limit: string | null;
+  unlimited: boolean;
+}
+
+/**
+ * An answer to `getProjectTaskQuota` that is not one project's issue counter:
+ * another project named in it, another kind, or no counts (TAS-528,
+ * api-contract-guard §4). A failed read, and a definite one — it is an answer,
+ * so it is neither retried nor taken for a lost one. Like
+ * `ForeignCompanyAnswerError` it carries no message: nothing in it is the
+ * server's words.
+ */
+export class TaskQuotaAnswerError extends Error {
+  constructor(readonly reason: "another-project" | "unreadable") {
+    super("");
+    this.name = "TaskQuotaAnswerError";
+  }
+}
+
 /** `QuotaSnapshot` — the company's seats (and, later, other quotas) at `asOf`. */
 export interface QuotaSnapshot {
   tenantId: string | null;
@@ -223,6 +256,21 @@ function toQuotaUsage(wire: unknown): QuotaUsage | null {
   if (row.unlimited === true) return { kind, used, reserved, limit: null, unlimited: true };
   const limit = decimalText(row.limit);
   return limit === null ? null : { kind, used, reserved, limit, unlimited: false };
+}
+
+/**
+ * `getProjectTaskQuota`'s answer for `projectId` (TAS-528), read by
+ * `toQuotaUsage`'s rules: a `TASK_LIFETIME` row with decimal counts and a
+ * limit unless unlimited. An absent `projectId` is the requested project's —
+ * the path named it; a present one that differs, another kind, or a row
+ * `toQuotaUsage` cannot read is `TaskQuotaAnswerError`.
+ */
+export function toProjectTaskQuota(wire: unknown, projectId: string): ProjectTaskQuota {
+  const row = toQuotaUsage(wire);
+  if (row === null || row.kind !== "TASK_LIFETIME") throw new TaskQuotaAnswerError("unreadable");
+  const named = text((wire as Record<string, unknown>).projectId);
+  if (named !== null && named !== projectId) throw new TaskQuotaAnswerError("another-project");
+  return { projectId, used: row.used, limit: row.limit, unlimited: row.unlimited };
 }
 
 export function toQuotaSnapshot(wire: unknown): QuotaSnapshot {

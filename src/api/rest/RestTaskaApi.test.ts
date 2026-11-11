@@ -3904,7 +3904,7 @@ describe("RestTaskaApi issue planning fields", () => {
       startDate: "2026-09-01",
       // Explicitly nothing, and on a create that is the same as not saying it.
       dueDate: null,
-    });
+    }, crypto.randomUUID());
 
     expect(JSON.parse(fetchStub.mock.calls[0][1]?.body ?? "{}")).toEqual({
       issueType: "TASK",
@@ -3926,8 +3926,8 @@ describe("RestTaskaApi issue planning fields", () => {
       summary: "From the column",
       description: "",
       priority: "MEDIUM",
-    });
-    await new RestTaskaApi().createIssue("project-1", { issueType: "TASK", summary: "From New", description: "", priority: "LOW" });
+    }, crypto.randomUUID());
+    await new RestTaskaApi().createIssue("project-1", { issueType: "TASK", summary: "From New", description: "", priority: "LOW" }, crypto.randomUUID());
 
     expect(JSON.parse(fetchStub.mock.calls[0][1]?.body ?? "{}")).toEqual({
       issueType: "EPIC",
@@ -4005,7 +4005,7 @@ describe("RestTaskaApi issue planning fields", () => {
         priority: "LOW",
         startDate: "2026-09-30",
         dueDate: "2026-09-01",
-      }),
+      }, crypto.randomUUID()),
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", status: 400 });
 
     expect(fetchStub).not.toHaveBeenCalled();

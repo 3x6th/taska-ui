@@ -138,6 +138,17 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v5";
  * - `clockOffsetMs` also applies a scheduled plan change once its
  *   `scheduledEffectiveAt` has passed.
  *
+ * A project's issue counter and the create's key (TAS-528, api-contract-guard
+ * §6):
+ *
+ * - `refuseNext`, `delayMs` and `loseAnswer` take `getProjectTaskQuota` and
+ *   `createIssue` — a lost create is stored and counted, then answered like a
+ *   dropped connection, once; a retry with the same key and body answers the
+ *   same issue and counts nothing;
+ * - `count`: `[operation]` — every call of those operations from now on adds
+ *   one to `calls[operation]` in these hooks, refused or not — how the e2e
+ *   suite counts requests the mock answers without a network.
+ *
  * Everything time- or hook-driven is evaluated on every read of the server's
  * state: there are no timers.
  */
@@ -172,6 +183,8 @@ export interface MockTenantHooks {
   applyPlan?: Record<string, string>;
   taskLifetime?: Record<string, number>;
   paymentDispute?: Record<string, boolean>;
+  count?: string[];
+  calls?: Record<string, number>;
 }
 
 /** The fixture companies' ids (fixed, `createdAt` ascending in this order). */
@@ -526,6 +539,20 @@ const uuid = () =>
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** An `Idempotency-Key` develop accepts for a creation: a canonical, lowercase UUID (`TenantRegistryService.java:81`). */
 const CANONICAL_KEY = UUID_PATTERN;
+
+/**
+ * What a new issue's `Idempotency-Key` is bound to (TAS-528, H1): the project
+ * and every field the body carries — `null` and absent alike, as the REST leg
+ * omits both — in one order, whatever order the caller built them in.
+ */
+function issueCreateHash(projectId: string, input: unknown): string {
+  const body = typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {};
+  const sent = Object.keys(body)
+    .filter((name) => body[name] !== undefined && body[name] !== null)
+    .sort()
+    .map((name) => [name, body[name]]);
+  return JSON.stringify([projectId, sent]);
+}
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -1051,6 +1078,12 @@ export class MockTenantServer {
   private memory: ServerState | null = null;
   /** The `cleared` entries each of this page's company stores has applied, by `seq` (TAS-502). */
   private readonly appliedClears = new Map<string, Set<number>>();
+  /**
+   * A new issue's receipts, `{tenant}:{actor}:{key}` (TAS-528, H1): the body's
+   * hash and the issue it made. In this page's memory, as the stores' issues
+   * are — a reload forgets both.
+   */
+  private readonly issueReceipts = new Map<string, { hash: string; answer: unknown }>();
 
   constructor(options: MockTenantServerOptions) {
     this.storage = options.storage;
@@ -1095,6 +1128,7 @@ export class MockTenantServer {
         this.transferTenantOwnership(bearer, tenantId, newOwnerUserId, version, key),
       getSubscription: (bearer, tenantId) => this.getSubscription(bearer, tenantId),
       getEntitlement: (bearer, tenantId) => this.getEntitlement(bearer, tenantId),
+      getProjectTaskQuota: (bearer, tenantId, projectId) => this.getProjectTaskQuota(bearer, tenantId, projectId),
     };
   }
 
@@ -1105,9 +1139,7 @@ export class MockTenantServer {
    *
    * Since TAS-512 three company writes meet the plan's quotas here, after the
    * session's check (a restriction is `READ_ONLY` first) and before the store
-   * writes (api-contract-guard §5): `createIssue` — the project's own ACL,
-   * then its lifetime counter at or over a finite `TASK_LIFETIME` is 422
-   * `QUOTA_EXCEEDED` with no reasons, and a stored issue moves the counter up;
+   * writes (api-contract-guard §5): `createIssue` — see `createIssueOnce`;
    * `createProject` — 422 when `used + 1 > limit`; `createAttachmentUploadUrl`
    * — 422 when `used + reserved + size > limit`. `args` are the method's.
    */
@@ -1138,6 +1170,7 @@ export class MockTenantServer {
     if (!store.restoreSession(grant.userId)) throw problem(401, "AUTHENTICATION_REQUIRED", "Invalid session");
     if (store !== this.accountStore) store.scopeDirectory(members);
     if (grant.tenantId === null || store === this.accountStore) return run(store);
+    if (operation === "createIssue") return this.createIssueOnce(grant.tenantId, grant.userId, args, store, run);
     const counted = this.meetQuota(grant.tenantId, operation, args, store);
     const answer = await run(store);
     counted?.();
@@ -1145,28 +1178,68 @@ export class MockTenantServer {
   }
 
   /**
-   * The plan's quota in front of the three writes that use one (see `serve`),
-   * or `null` for any other operation. Answers what to record once the write
-   * has been stored.
+   * `POST /projects/{p}/issues` in the companies build (TAS-512, TAS-528,
+   * api-contract-guard §6 rules 7–8, M2), after the session's check: a
+   * `refuseNext` hook; the project's own checks — the store's 404, then the
+   * archive, **before** the counter, as develop checks the lifecycle before
+   * `allocate`; then the key's receipt — the same key with the same body
+   * answers the issue it made and counts nothing, with another body 409
+   * `IDEMPOTENCY_CONFLICT`; then the lifetime counter at or over a finite
+   * `TASK_LIFETIME` is 422 `QUOTA_EXCEEDED` with no reasons. A stored issue
+   * moves the counter up and keeps its receipt; a refusal keeps none, so a
+   * refused body may be sent again with the same key. Receipts live in this
+   * page's memory, as its stores' issues do. `loseAnswer` drops the answer
+   * once it is stored.
+   */
+  private async createIssueOnce<T>(
+    tenantId: string,
+    userId: string,
+    args: readonly unknown[],
+    store: MockTaskaStore,
+    run: (store: MockTaskaStore) => Promise<T>,
+  ): Promise<T> {
+    const refusal = this.takeRefusal("createIssue");
+    if (refusal) throw refusal;
+    const projectId = typeof args[0] === "string" ? args[0] : "";
+    store.refuseIssueCreateLifecycle(projectId);
+    const key = typeof args[2] === "string" && args[2] !== "" ? `${tenantId}:${userId}:${args[2]}` : null;
+    const hash = issueCreateHash(projectId, args[1]);
+    const receipt = key === null ? undefined : this.issueReceipts.get(key);
+    if (receipt !== undefined) {
+      if (receipt.hash !== hash) throw problem(409, "IDEMPOTENCY_CONFLICT", "The key was used for another request");
+      if (this.takeLostAnswer("createIssue")) throw new TypeError("Failed to fetch");
+      return receipt.answer as T;
+    }
+    this.read((state) => {
+      const planVersionId = state.tenants.find((item) => item.id === tenantId)?.subscription.planVersionId ?? "";
+      const limit = planLimitOf(planVersionId, "TASK_LIFETIME");
+      if (limit !== null && BigInt(this.lifetimeCount(state, tenantId, projectId)) >= BigInt(limit)) {
+        throw problem(422, "QUOTA_EXCEEDED", "The project has reached its plan's issue limit");
+      }
+    });
+    const answer = await run(store);
+    this.write((state) => {
+      state.taskLifetime[projectId] = { tenantId, count: this.lifetimeCount(state, tenantId, projectId) + 1 };
+    });
+    if (key !== null) this.issueReceipts.set(key, { hash, answer });
+    if (this.takeLostAnswer("createIssue")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /** A project's lifetime counter in this company — 0 for one that has created none (TAS-512). Never down. */
+  private lifetimeCount(state: ServerState, tenantId: string, projectId: string): number {
+    const entry = state.taskLifetime[projectId];
+    return entry !== undefined && entry.tenantId === tenantId ? entry.count : 0;
+  }
+
+  /**
+   * The plan's quota in front of two of the writes that use one (see `serve`;
+   * a new issue's is `createIssueOnce`), or `null` for any other operation.
+   * Answers what to record once the write has been stored.
    */
   private meetQuota(tenantId: string, operation: string, args: readonly unknown[], store: MockTaskaStore): (() => void) | null {
     const exceeded = (title: string) => problem(422, "QUOTA_EXCEEDED", title);
     const planOf = (state: ServerState) => state.tenants.find((item) => item.id === tenantId)?.subscription.planVersionId ?? "";
-    if (operation === "createIssue") {
-      const projectId = typeof args[0] === "string" ? args[0] : "";
-      // The project's own checks first: one that is not there stays the store's 404.
-      store.getProject(projectId);
-      this.read((state) => {
-        const limit = planLimitOf(planOf(state), "TASK_LIFETIME");
-        const count = state.taskLifetime[projectId]?.count ?? 0;
-        if (limit !== null && BigInt(count) >= BigInt(limit)) throw exceeded("The project has reached its plan's issue limit");
-      });
-      return () =>
-        this.write((state) => {
-          const entry = state.taskLifetime[projectId];
-          state.taskLifetime[projectId] = { tenantId, count: (entry?.count ?? 0) + 1 };
-        });
-    }
     if (operation === "createProject") {
       this.read((state) => {
         const limit = planLimitOf(planOf(state), "PROJECT");
@@ -1901,6 +1974,71 @@ export class MockTenantServer {
     await this.delay("getEntitlement");
     const answer = this.read((state) => this.wireEntitlement(this.authorizeMembers(state, bearer, tenantId, "getEntitlement", "SEATS").tenant));
     if (this.takeLostAnswer("getEntitlement")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /* ------------------------------------- a project's issue counter (TAS-528) */
+
+  /**
+   * `GET /tenants/{t}/projects/{p}/task-quota` (api-contract-guard §6 rules
+   * 1–7): the member routes' order of checks up to the caller ACTIVE, then a
+   * content read's lifecycle gates — awaiting the first payment 409
+   * `PAYMENT_PENDING` [`PENDING_FIRST_PAYMENT`], any other state but ACTIVE
+   * 409 `INVALID_STATE`, a pause or a block with the read flag off 403
+   * `CAPABILITY_DISABLED` with every restriction; never refused for
+   * `OVER_QUOTA`, `PAYMENT_EXPIRED` or a dispute (the read answers under
+   * financial READ_ONLY). Then the project's ACL: a project of this company
+   * the reader is a member of — any role — or any of its projects for a
+   * company admin or the owner (implicit project ADMIN); anything else,
+   * another company's project included, is the concealed 404
+   * `RESOURCE_NOT_FOUND`. Archived projects answer.
+   *
+   * The answer is the blueprint's `QuotaUsage` exactly: `used` the counter a
+   * new issue is checked against (0 for a project that has created none),
+   * `reserved` "0", the plan's `TASK_LIFETIME` as `limit` or `unlimited`, and
+   * `version` — the mock's own — the counter plus one.
+   */
+  private async getProjectTaskQuota(bearer: string | null, tenantId: string, projectId: string): Promise<unknown> {
+    await this.delay("getProjectTaskQuota");
+    const answer = this.read((state) => {
+      if (!bearer) throw problem(401, "AUTHENTICATION_REQUIRED", "Authentication required");
+      const session = this.sessionOf(state, bearer);
+      if (session.kind === "WEB_GLOBAL") throw problem(400, "TENANT_REQUIRED", "A company session is required");
+      const refusal = this.takeRefusal("getProjectTaskQuota");
+      if (refusal) throw refusal;
+      if (!UUID_PATTERN.test(tenantId)) throw problem(400, "VALIDATION_FAILED", "tenantId must be a UUID");
+      if (session.tenantId !== tenantId) throw problem(403, "TENANT_MISMATCH", "The session is for another tenant");
+      const tenant = state.tenants.find((item) => item.id === tenantId);
+      if (!tenant || tenant.lifecycle === "DELETED") throw problem(404, "TENANT_NOT_FOUND", "Tenant not found");
+      const actor = state.memberships.find((item) => item.tenantId === tenantId && item.userId === session.userId);
+      if (!actor || this.membershipState(state, tenantId, session.userId) !== "ACTIVE") {
+        throw problem(403, "MEMBERSHIP_INACTIVE", "Membership is not active");
+      }
+      if (tenant.lifecycle === "AWAITING_PAYMENT" || tenant.restrictions.includes("PENDING_FIRST_PAYMENT")) {
+        throw problem(409, "PAYMENT_PENDING", "The company awaits its first payment", ["PENDING_FIRST_PAYMENT"]);
+      }
+      if (tenant.lifecycle !== "ACTIVE") throw problem(409, "INVALID_STATE", "The tenant is not active");
+      if (closesContent(tenant.restrictions) && !this.contentReadUnderRestriction()) {
+        throw problem(403, "CAPABILITY_DISABLED", "Project content is not available", orderedRestrictions(tenant.restrictions));
+      }
+      if (!UUID_PATTERN.test(projectId)) throw problem(400, "VALIDATION_FAILED", "projectId must be a UUID");
+      const store = this.tenantStore(tenantId);
+      this.applyClears(tenantId, state.cleared.filter((item) => item.tenantId === tenantId));
+      if (!store.restoreSession(session.userId)) throw problem(401, "AUTHENTICATION_REQUIRED", "Invalid session");
+      const companyAdmin = actor.role === "TENANT_ADMIN" || tenant.ownerId === session.userId;
+      if (!store.canReadProject(projectId, companyAdmin)) throw problem(404, "RESOURCE_NOT_FOUND", "Project not found");
+      const count = this.lifetimeCount(state, tenantId, projectId);
+      const limit = planLimitOf(tenant.subscription.planVersionId, "TASK_LIFETIME");
+      return {
+        kind: "TASK_LIFETIME",
+        projectId,
+        used: String(count),
+        reserved: "0",
+        ...(limit === null ? { unlimited: true } : { limit, unlimited: false }),
+        version: String(count + 1),
+      };
+    });
+    if (this.takeLostAnswer("getProjectTaskQuota")) throw new TypeError("Failed to fetch");
     return answer;
   }
 
@@ -2866,6 +3004,15 @@ export class MockTenantServer {
     return true;
   }
 
+  /** The `count` hook (TAS-528): one more in `calls[operation]` when the hook names it. */
+  private countCall(operation: string): void {
+    const hooks = this.hooks();
+    if (!Array.isArray(hooks.count) || !hooks.count.includes(operation)) return;
+    const calls = typeof hooks.calls === "object" && hooks.calls !== null ? hooks.calls : {};
+    hooks.calls = { ...calls, [operation]: (typeof calls[operation] === "number" ? calls[operation] : 0) + 1 };
+    this.writeHooks(hooks);
+  }
+
   private writeHooks(hooks: MockTenantHooks): void {
     try {
       this.storage.setItem(MOCK_TENANT_HOOKS_KEY, JSON.stringify(hooks));
@@ -2885,6 +3032,7 @@ export class MockTenantServer {
   }
 
   private async delay(operation: string, base = this.latencyMs): Promise<void> {
+    this.countCall(operation);
     const extra = this.hooks().delayMs?.[operation];
     const ms = base + (typeof extra === "number" && extra > 0 ? extra : 0);
     if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));

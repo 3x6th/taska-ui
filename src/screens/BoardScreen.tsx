@@ -17,6 +17,8 @@ import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress"
 import { companyWriteRefusalText, quotaRefusalText, writeRefusalText } from "../lib/companyRestrictions";
 import { CompanyMarkerWord } from "../components/CompanyMarkerWord";
 import { refreshAfterRefusal } from "./settings/companyPlan";
+import { isIndefinite, keyFor, type SentIntent } from "./settings/companyMembers";
+import { createIssueSignature } from "../lib/issueCreateIntent";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Shapes, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
 import {
   useEffect,
@@ -31,7 +33,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import type { CreateIssueLinkInput, CreateProjectLabelInput, IssueWriteAnswer, UpdateIssueInput } from "../api/TaskaApi";
+import type { CreateIssueInput, CreateIssueLinkInput, CreateProjectLabelInput, IssueWriteAnswer, UpdateIssueInput } from "../api/TaskaApi";
 import {
   ATTACHMENT_ACCEPTED_SUMMARY,
   ATTACHMENT_ACCEPT_ATTRIBUTE,
@@ -7217,26 +7219,43 @@ function CreateIssueModal({
    * L-1): set by the submit itself, before `mutate`, and cleared when the create
    * settles. `isPending` alone is not enough — react-query tells React on a
    * timeout, so a second press inside the same task, or before that timeout,
-   * still reads the first as not sent, and there is no idempotency key on a
-   * create to make the second one harmless.
+   * still reads the first as not sent. The draft's key (below) would make that
+   * second send a replay rather than a second issue, but a press in flight asks
+   * nothing more (§4.1), so it is not sent at all.
    */
   const createOut = useRef(false);
+  /**
+   * The draft's `Idempotency-Key` (TAS-528, api-contract-guard H1) — the
+   * precedent `keyFor` / `SentIntent` of Members (TAS-502). Every press sends
+   * the draft's signature (`createIssueSignature`: the project and every sent
+   * field); the key is reused only when the same signature is sent again after
+   * an answer that never came or said nothing about it — no status, 408, 429,
+   * 5xx (`isIndefinite`) — so a retry after a lost answer is the server's
+   * replay of the issue it made, not a second issue and a second unit of the
+   * plan's limit. Any other answer, any change to a sent field, and a success
+   * mint a new one. In flight the key counts as open: its answer is not in.
+   */
+  const sentCreate = useRef<SentIntent | null>(null);
   /** Where a refusal brings the modal body's view (§4.40 «Отказы квоты»). */
   const submitRef = useRef<HTMLButtonElement>(null);
   const createIssue = useMutation({
-    // From a column's "+", in that column's status (backend TAS-428); from
-    // "New", no status — the server's `TODO`. A refusal (the type's workflow
-    // lacks the status, which the form switches off but the server decides) is
-    // the form's slot below: the server's words and the request id (§5.5).
-    mutationFn: ({ type }: { type: IssueTypeCode; label: string }) =>
-      taskaApi.createIssue(projectId, {
-        issueType: type,
-        ...(inStatus ? { statusKey: inStatus.statusKey } : {}),
-        priority,
-        summary,
-        description,
-        ...planningInput(planning),
-      }),
+    // The body the submit built, under the draft's key. A refusal (the type's
+    // workflow lacks the status, which the form switches off but the server
+    // decides) is the form's slot below: the server's words and the request id
+    // (§5.5).
+    mutationFn: async ({ input }: { type: IssueTypeCode; label: string; input: CreateIssueInput }) => {
+      const signature = createIssueSignature(projectId, input);
+      const key = keyFor(sentCreate.current, signature);
+      sentCreate.current = { signature, key, open: true };
+      try {
+        const issue = await taskaApi.createIssue(projectId, input, key);
+        sentCreate.current = null;
+        return issue;
+      } catch (error) {
+        sentCreate.current = { signature, key, open: isIndefinite(error) };
+        throw error;
+      }
+    },
     // The panel's rule, on this form's one write: the slot holds a single line,
     // so a date refusal must not caption the answer to a create, and a create
     // that is refused must not be silent behind one (TAS-231, art-director).
@@ -7539,7 +7558,18 @@ function CreateIssueModal({
           if (createIssue.isPending || createOut.current) return;
           if (summary.trim() && issueType && !noTypeHasStatus) {
             createOut.current = true;
-            createIssue.mutate({ type: issueType, label: issueTypeLabel(issueType, issueTypes) });
+            // From a column's "+", in that column's status (backend TAS-428);
+            // from "New", no status — the server's `TODO`. Built here, once, so
+            // what is sent is what the draft's key is bound to.
+            const input: CreateIssueInput = {
+              issueType,
+              ...(inStatus ? { statusKey: inStatus.statusKey } : {}),
+              priority,
+              summary,
+              description,
+              ...planningInput(planning),
+            };
+            createIssue.mutate({ type: issueType, label: issueTypeLabel(issueType, issueTypes), input });
           }
         }}
       >

@@ -123,6 +123,7 @@ import type {
   ListCompanyPageParams,
   Membership,
   MembershipPage,
+  ProjectTaskQuota,
   QuotaSnapshot,
 } from "../tenantMembers";
 import { WebSessionClient, type B2bTransport, type LockManagerLike } from "../webSession";
@@ -1600,6 +1601,10 @@ export class RestTaskaApi implements TaskaApi {
     return this.companies("getEntitlement").getEntitlement(tenantId);
   }
 
+  async getProjectTaskQuota(tenantId: string, projectId: string): Promise<ProjectTaskQuota> {
+    return this.companies("getProjectTaskQuota").getProjectTaskQuota(tenantId, projectId);
+  }
+
   /** The session layer, or the refusal today's build gives a company operation — without a request. */
   private companies(operation: string): WebSessionClient {
     if (this.web === null) throw new TenancyUnavailableError(operation);
@@ -1752,6 +1757,9 @@ export class RestTaskaApi implements TaskaApi {
       getSubscription: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/subscription`, {}, bearer, signal),
       // TAS-512.
       getEntitlement: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/entitlement`, {}, bearer, signal),
+      // TAS-528: a bare GET — no key, no `If-Match`, nothing cached by hand.
+      getProjectTaskQuota: (bearer, tenantId, projectId, signal) =>
+        send(`${tenantPath(tenantId)}/projects/${this.segment(projectId)}/task-quota`, {}, bearer, signal),
     };
   }
 
@@ -2296,8 +2304,14 @@ export class RestTaskaApi implements TaskaApi {
    * create has nothing to resolve them against, so `null` and `undefined`
    * collapse to the same omission here. `statusKey` goes only when stated
    * (backend TAS-428): without it the server creates in `TODO`.
+   *
+   * `Idempotency-Key` is the caller's (TAS-528, api-contract-guard H1): one
+   * per draft, sent again only with the same body after an answer that never
+   * came, so a retry after a lost answer is the gateway's replay of the issue
+   * it made rather than a second issue. The body is built in one key order, so
+   * a retry is the same bytes.
    */
-  async createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
+  async createIssue(projectId: string, input: CreateIssueInput, idempotencyKey: string): Promise<Issue> {
     refusePlanningFields(input);
     const response = await this.request<RestIssue>(`/projects/${this.segment(projectId)}/issues`, {
       method: "POST",
@@ -2310,7 +2324,7 @@ export class RestTaskaApi implements TaskaApi {
         ...planningFieldsBody(resolvePlanningFields(input, emptyPlanningFields())),
       },
       headers: {
-        "Idempotency-Key": this.createIdempotencyKey(),
+        "Idempotency-Key": idempotencyKey,
       },
     });
     return this.toIssue(response);
@@ -3573,10 +3587,6 @@ export class RestTaskaApi implements TaskaApi {
 
   private attachmentsPath(projectId: string, issueId: string) {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/attachments`;
-  }
-
-  private createIdempotencyKey() {
-    return globalThis.crypto?.randomUUID?.() ?? `taska-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
   /**
