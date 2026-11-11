@@ -2354,14 +2354,14 @@ Everything below is the entry as it stood, in the past tense.
 - **What the UI assumes where the blueprint is silent — each removable:**
   - The counter never gates creation; the refusal is the create's own (contracts §8).
   - `used` is shown as sent, never incremented; after the reader's own successful create the cached counter is removed (the
-    next open reads again); after a QUOTA_EXCEEDED / READ_ONLY refusal it is re-read once in place; never polled. Removal:
+    next open reads again); after a QUOTA_EXCEEDED, READ_ONLY or CAPABILITY_DISABLED refusal it is re-read once in place; never polled. Removal:
     A115 / A45 (the counter on the project's reads and in the create answer).
   - A failed re-read keeps the shown value only for an indefinite failure (no status, 408, 429, 5xx); a definite 4xx or an
     answer naming another project drops it. 429 is not retried automatically.
   - `version` and `reserved` are not read (A116).
-- **Found on develop, recorded, not compensated:** the create refusals reach the gateway as 409 `INVALID_STATE` with the code
-  only in `message` (A110) — the UI shows the server's words and does not parse them; a paid company past its period gets 503
-  on the read and on create (A111); `GetTenantQuotas` sends a TASK_LIFETIME row (the highest counter) that the blueprint's
+- **Found on develop, recorded, not compensated:** the create refusals reach the gateway as 409 `INVALID_STATE` (trusted mode; legacy mode 400
+  `FAILED_PRECONDITION`) with the code only in `message` (A110) — the UI shows the server's words and does not parse them; a paid company past its period gets 503
+  on the read and on create (A111; read from code, not run); `GetTenantQuotas` sends a TASK_LIFETIME row (the highest counter) that the blueprint's
   `QuotaSnapshot` forbids, and Plan skips it silently (`companyPlanText.ts`, A114); the read locks the company's quota row and
   may write (A116); `projects.version` isn't on the wire (A113). Asks A110, A111, A114, A115, A116 on TAS-460 (comment 14532).
 - **Create idempotency (both builds, a client fix, not a divergence):** the New issue form keeps one `Idempotency-Key` per
@@ -2375,7 +2375,8 @@ Everything below is the entry as it stood, in the past tense.
   for OVER_QUOTA, PAYMENT_EXPIRED or a dispute; Problem titles «Project not found», «The company awaits its first payment»,
   «The key was used for another request»; createIssue checks archived before the counter, replays a key in memory (same body →
   same issue, counter unmoved; other body → 409 `IDEMPOTENCY_CONFLICT`; refusals store no receipt) and honours `refuseNext` /
-  `loseAnswer`; hooks `refuseNext`, `delayMs`, `loseAnswer` take getProjectTaskQuota; a test-only `count: [op]` hook tallies
+  `loseAnswer`, and checks the company's restrictions before the key receipt (develop replays a succeeded key first — a
+  same-key retry after a lost answer under a new READ_ONLY answers 403 on the mock, 201 on develop); hooks `refuseNext`, `delayMs`, `loseAnswer` take getProjectTaskQuota; a test-only `count: [op]` hook tallies
   calls per operation in the hooks key.
 - **Turning the flag on** additionally needs TAS-460's gateway route, TAS-343, A110 and A111.
 - **Removal:** delete with the flag, after the probe (47/50 shown; a create moves it; 50/50 refused with 422; a paid company

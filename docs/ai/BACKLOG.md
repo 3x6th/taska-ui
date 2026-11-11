@@ -4664,7 +4664,7 @@ into the fix round.
   on the stand (`openapi.yml` has no `QUOTA_EXCEEDED`, `READ_ONLY` or `CAPABILITY_DISABLED`), but a legacy task limit
   (TAS-460) would speak of «its plan's limit» (guard N4, art-director 8).
 - **`ForeignCompanyAnswerError` leaves no trace for a developer** — a `console.warn` with the requested and answered ids
-  (guard N6).
+  (guard N6). TAS-528's `TaskQuotaAnswerError` has the same gap, and a malformed 200 also loses its `X-Request-Id`.
 - **A failed `/users/me` on Plan** (and General) shows the owner the non-owner page and lead with no ErrorNote (guard N7,
   release-reviewer L-6; TAS-504's pattern).
 - ~~**The mock's TASK_LIFETIME breach counts archived projects' counters**~~ — answered by develop (archived projects are
@@ -4702,3 +4702,5 @@ Rulings in `docs/ai/reviews/TAS-528-*.md` (git-ignored); divergence in `API-DIVE
   reader's own create are caught only by Playwright; a BoardScreen unit test for each (release-reviewer 1).
 - **A lost create answer, then Cancel** leaves the cached counter; reopening within 20 s shows the pre-create number —
   optionally re-read once in place after an indefinite failure (release-reviewer 4; the guard made it optional).
+- **The mock checks restrictions before a create's key receipt** — develop replays a succeeded key first, so a same-key
+  retry after a lost answer under a newly READ_ONLY company answers 201 on develop and 403 on the mock (guard N3, TAS-528).
