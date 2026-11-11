@@ -5,6 +5,7 @@ import {
   type Invitation,
   type Membership,
 } from "../../api/tenantMembers";
+import { DELETED_USER, DELETED_USER_IN_SENTENCE } from "../../lib/deletedUser";
 import { shortKey } from "../admin/columns";
 
 /*
@@ -50,15 +51,21 @@ export interface MemberSubject {
   self: boolean;
   /** Whether the server named the person at all. */
   named: boolean;
+  /** A deleted account (TAS-529): «Deleted user» on both lines, and never the address. */
+  deleted: boolean;
 }
 
 export function memberSubject(member: Membership, meId: string | null): MemberSubject {
   const self = meId !== null && member.userId === meId;
-  if (member.displayName !== null) return { title: member.displayName, name: member.displayName, self, named: true };
+  // From the mark alone (TAS-529, api-contract-guard N1): the mapper has
+  // already dropped the name and the address, and this never reaches for
+  // either — no sentence falls back to an email the account used to carry.
+  if (member.deleted) return { title: DELETED_USER, name: DELETED_USER, self: false, named: false, deleted: true };
+  if (member.displayName !== null) return { title: member.displayName, name: member.displayName, self, named: true, deleted: false };
   // §4.22's unnamed person: the row cannot be named by its account (develop
   // sends no profile until TAS-321, ask A19).
   const name = member.email ?? `The member with ID ${shortKey(member.userId)}`;
-  return { title: self ? "You" : "Unknown", name, self, named: false };
+  return { title: self ? "You" : "Unknown", name, self, named: false, deleted: false };
 }
 
 /** What a sorted row is called — the name, then the address, then the id. */
@@ -77,15 +84,19 @@ const byTime = (a: string | null, b: string | null) => timeOf(b) - timeOf(a);
  * does not know, printed as it came — by name (`sensitivity: 'base'`, then
  * `userId`), the reader's own row not lifted; expired invitations, freshest
  * first. REMOVED, ACCEPTED, REVOKED and an invitation state this build does
- * not know are not drawn (N2).
+ * not know are not drawn (N2). A deleted account's row (TAS-529,
+ * art-director §5) comes after every other member, by `userId`: it has no
+ * name to be sorted by, and its address is not one to use.
  */
 export function groupRows(members: readonly Membership[], invitations: readonly Invitation[] | undefined): MemberGroups {
+  const byUserId = (a: Membership, b: Membership) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0);
   const listed = members
     .filter((member) => member.state !== "REMOVED")
     .sort(
       (a, b) =>
-        sortName(a).localeCompare(sortName(b), undefined, { sensitivity: "base" }) ||
-        (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0),
+        Number(a.deleted) - Number(b.deleted) ||
+        (a.deleted ? 0 : sortName(a).localeCompare(sortName(b), undefined, { sensitivity: "base" })) ||
+        byUserId(a, b),
     );
   const pending = (invitations ?? [])
     .filter((invitation) => invitation.state === "PENDING")
@@ -94,6 +105,20 @@ export function groupRows(members: readonly Membership[], invitations: readonly 
     .filter((invitation) => invitation.state === "EXPIRED")
     .sort((a, b) => byTime(a.expiresAt, b.expiresAt) || (a.email ?? "").localeCompare(b.email ?? ""));
   return { pending, members: listed, expired };
+}
+
+/**
+ * Who sent an invitation, as its second line says it (§4.38): «you» for the
+ * reader's own, the inviter's name off the members list, else the address —
+ * and «a deleted user» for a deleted account (TAS-529), whose address is never
+ * used. `null` when the list does not hold them: the line then says nobody.
+ */
+export function inviterName(members: readonly Membership[] | undefined, meId: string | null, userId: string | null): string | null {
+  if (userId === null) return null;
+  if (userId === meId) return "you";
+  const row = members?.find((member) => member.userId === userId);
+  if (!row) return null;
+  return row.deleted ? DELETED_USER_IN_SENTENCE : (row.displayName ?? row.email);
 }
 
 /** The person's pending invitations, counted from `createdBy` of the list read — the strips' phrase (§4.38 «Вопросы»). */
@@ -131,6 +156,8 @@ const NONE: MemberControls = { role: false, action: null, remove: false };
  */
 export function memberControls(member: Membership, access: ReaderAccess, meId: string | null): MemberControls {
   if (!access.admin || !access.known) return NONE;
+  // A deleted account's row offers nothing (TAS-529, art-director B6).
+  if (member.deleted) return NONE;
   if (member.isOwner || !isKnownMembershipRole(member.role) || !isKnownMembershipState(member.state)) return NONE;
   if (meId !== null && member.userId === meId) return { role: true, action: null, remove: false };
   if (member.state === "ACTIVE") return { role: true, action: "suspend", remove: true };

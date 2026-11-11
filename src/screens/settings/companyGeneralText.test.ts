@@ -226,6 +226,7 @@ describe("who may be the new owner, and the hand-over", () => {
     email: `${userId}@example.com`,
     avatarPath: null,
     version: "1",
+    deleted: false,
     ...overrides,
   });
 
@@ -243,6 +244,14 @@ describe("who may be the new owner, and the hand-over", () => {
     // No name: the address alone, not twice.
     expect(recipientLabel(transferCandidates(rows, "tom")[0])).toBe("bea@example.com");
     expect(transferCandidates(undefined, "tom")).toEqual([]);
+  });
+
+  it("never offers a deleted account, ACTIVE or not (TAS-529, api-contract-guard N1)", () => {
+    const rows = [
+      member("tom", "Tom Becker", { role: "TENANT_ADMIN", isOwner: true }),
+      member("sofia", null, { email: null, deleted: true }),
+    ];
+    expect(transferCandidates(rows, "tom")).toEqual([]);
   });
 
   it("reads back only the hand-over this page wrote", () => {

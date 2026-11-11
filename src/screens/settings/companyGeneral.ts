@@ -44,13 +44,13 @@ export interface Recipient {
 
 /**
  * Who may be the new owner (§4.39, api-contract-guard B4): ACTIVE members with
- * a role this build knows, never the reader, by name (§4.38's order). The
- * server still decides — a recipient who stopped being active since the list
- * was read is its 409.
+ * a role this build knows, never the reader, never a deleted account (TAS-529,
+ * api-contract-guard N1), by name (§4.38's order). The server still decides —
+ * a recipient who stopped being active since the list was read is its 409.
  */
 export function transferCandidates(members: readonly Membership[] | undefined, meId: string | null): Recipient[] {
   return (members ?? [])
-    .filter((member) => member.state === "ACTIVE" && isKnownMembershipRole(member.role) && member.userId !== meId)
+    .filter((member) => !member.deleted && member.state === "ACTIVE" && isKnownMembershipRole(member.role) && member.userId !== meId)
     .map((member) => ({ userId: member.userId, name: memberName(member) ?? member.userId, email: member.email, role: member.role }))
     .sort(
       (a, b) =>

@@ -178,7 +178,7 @@ describe("the work log in pages", () => {
   });
 
   it("keeps the row's author when a write's answer leaves it out", () => {
-    const named = entry({ id: "w", author: { id: "u", displayName: "Former member", avatarUrl: null } });
+    const named = entry({ id: "w", author: { id: "u", displayName: "Former member", avatarUrl: null, deleted: false } });
     const answer = entry({ id: "w", spentMinutes: 90 });
     expect(withWriteAnswer(named, answer)).toMatchObject({ spentMinutes: 90, author: { displayName: "Former member" } });
     expect(withWriteAnswer(named, { ...answer, author: null }).author).toBeNull();

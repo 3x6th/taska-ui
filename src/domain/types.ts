@@ -466,6 +466,16 @@ export interface UserSummary {
   displayName: string | null;
   /** A presigned link, or `null`. Not yet observed on the stand. */
   avatarUrl: string | null;
+  /**
+   * The server's mark for a deleted account (TAS-529) — the proposed
+   * `deleted: true` (ask A120), on no DTO of the deployed gateway yet
+   * (docs/ai/API-DIVERGENCE.md «TAS-529»). Only `true` is the mark; when it is
+   * set the mappers drop `displayName` and `avatarUrl` to `null`, whatever the
+   * server put in them, and every screen draws «Deleted user» from the mark
+   * alone (`personFor`). Never inferred from a blank name, a status or a
+   * string: an unnamed person without the mark stays «Unknown».
+   */
+  deleted: boolean;
 }
 
 export interface Project {
@@ -638,6 +648,14 @@ export interface ProjectMember {
    * picture, or one whose picture could not be signed.
    */
   user?: Pick<User, "displayName" | "email" | "color" | "avatarUrl">;
+  /**
+   * The row of a deleted account (TAS-529): `true`, and then never a `user` —
+   * the mapper drops the name, the address and the picture with the mark
+   * (ask A120 on `ProjectMemberDetailsDto`). `role` is kept: it is
+   * project-service's own row, and the server still counts a deleted ADMIN as
+   * an admin (api-contract-guard Addendum 4). Absent on every other row.
+   */
+  deleted?: true;
 }
 
 /**
@@ -1111,6 +1129,8 @@ export interface BoardAssignee {
   id: string;
   displayName: string | null;
   avatarUrl: string | null;
+  /** A deleted account (TAS-529) — read as `UserSummary.deleted` is, and the name and picture `null` with it. */
+  deleted: boolean;
 }
 
 /**
@@ -1633,6 +1653,8 @@ export interface IssueWatcher {
    */
   displayName: string | null;
   avatarUrl: string | null;
+  /** A deleted account (TAS-529) — read as `UserSummary.deleted` is, and the name and picture `null` with it. */
+  deleted: boolean;
 }
 
 /**

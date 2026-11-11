@@ -2338,6 +2338,48 @@ Everything below is the entry as it stood, in the past tense.
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
 - **Removal:** delete with the flag, after the probe.
 
+### TAS-529: a deleted author ships ahead of the gateway, on a proposed tombstone marker
+
+- **Endpoints:** `GET /api/v1/issues/{issueId}` (assignee, reporter, watchers, attachments' uploader, history actor and
+  participants), comments, worklogs, attachments, watchers, the board and its column page, the project context, members and
+  `GET /project-stats`; blueprint `GET /tenants/{tenantId}/members`. Company Activity (proposed on TAS-523) is TAS-524's.
+  Backend: TAS-496 (owner), TAS-461, TAS-477, TAS-487, TAS-494 — none started at develop `43d6c89d`.
+- **Observed (2026-11-11 10:23Z, no token):** `GET /account/deletion-prerequisites` 404 «No static resource»
+  `77792e61-4160-44a1-9c79-36564ca6df68`; `GET /admin/accounts/not-a-uuid` 404 `050aa888-26a4-40c9-ab13-828399683e49`; `GET
+  /tenants/not-a-uuid/members` 404 `4ac1cfcd-7a40-430a-a8f6-a0b51075b95e`; control `GET /projects` 401
+  `e4502ec0-bf8f-4902-a548-7bcba3d904b6`. The deployed `/v3/api-docs` has no `DELETED`; develop has no `DELETED` in proto
+  `UserStatus` and no `deleted_at` on `auth.users`.
+- **The contract is silent:** no person DTO carries a deletion marker; the backend's documents fix only the display
+  («Удалённый пользователь», contracts §10). A tombstone left out of `GetUserDetailsByIds` would arrive as today's «not named»
+  spellings (`""`, `null`, absent, `author: null`) — the auth-service-down case (see the «unnamed person» entry, #2, below;
+  this rule keeps it «Unknown»).
+- **What the UI does:** reads a proposed `deleted === true` on `UserSummaryDto`, `NullableUserSummaryDto`, `BoardUserDto`,
+  `IssueWatcherResponseDto`, `ProjectMemberDetailsDto` and `Membership`; such a person is «Deleted user» with a neutral avatar
+  (DESIGN §4.4) — no name, email, avatar or colour from the wire or any cache, `personFor` skips the member list; a blank or
+  absent name stays «Unknown» and is never read as deleted; no string comparison, no polling, no per-id read, no directory
+  filter; deleted rows offer no controls (a presentation choice: the contract defines no refusal; develop's project-member and
+  watcher routes would accept such writes). **The board remembers a mark:** an id a board read marks stays «Deleted user» for the screen's life, across project switches, and wins over any older cached read that still names the person — this rests on deletion being final and an id never being reused (`target-data-model.md:36`, contracts §10 / README:19), so A120 must state that the mark never returns to `false`; the mock's hook unmarks on removal only as a test convenience, seen after a remount. **Not behind a flag:** the REST mappers read the mark in both builds, and no
+  gateway sends it yet — the day A120 ships, today's build shows «Deleted user» too; only the mock marks anyone, and only in
+  the companies build. Three changes ship in today's build already: the panel's current assignee outside the member list is
+  one active, disabled chip after «None» (with the mark «Deleted user»; unmarked, the name the server's summary gives, or
+  «Unknown» when it names nobody); the reporter's unnamed avatar is labelled «Unknown»; assignee
+  chips are `aria-pressed` with a decorative avatar (no duplicated name).
+- **Compensation: none.** The mock's marks and fixtures are behind `VITE_TASKA_TENANTS`; the reading of the mark is not
+  (see above).
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts` / `MockTaskaApi.ts`, `taska.mockServer.v5`, no
+  `ServerState` change): the static tombstone `MOCK_DELETED_ACCOUNT_ID` (never in `users`, never named, its Initech membership
+  REMOVED) is the reporter, a comment and a work log author, an attachment's uploader, a history actor and an ASSIGNED
+  participant on Initech's HLP-3, beside an «Unknown»; the wire is `{id, deleted: true, displayName: "Deleted user",
+  avatarUrl: null}`, never an email (field name and string invented, A120, A121). The hook `deletedAccounts: [{userId,
+  cleanup}]` marks a seeded account at read time: `cleanup: true` (default) runs the existing removal once (after the
+  cleanup), `cleanup: false` runs nothing (the window: still assignee, watcher, project member and ACTIVE company member). The
+  directory never finds a deleted account. In the window, inviting a marked account's former email answers 409 «This email
+  belongs to a member of the tenant» (invented; the contract is silent, A122/A124). Under A122's preferred option the server would omit a deleted account's company
+  membership, so the window's company row may not exist on REST.
+- **Removed by:** A120 (field, TAS-496), A121 (English string), A122 (Membership), A123 (directory statement); A124 (cleanup of
+  assignments and watchers, refusals), A125 (audit snapshots), A126 (Activity proposal) on TAS-496 (comment 14540). If the
+  backend names the field differently, each mapper changes in one place.
+
 ### TAS-512: the company plan, usage and the explanation of restrictions ship ahead of the gateway, on the B2B blueprint
 
 - **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`; none in `openapi.yml`):
@@ -4349,6 +4391,9 @@ The entry as it stood:
   reads it from the backend side first.
 
 ### GET /issues/{issueId}: a failed part arrives as [] and an unnamed person as a blank or absent displayName
+
+- **TAS-529:** a person the server marks deleted (proposed `deleted === true`) is drawn «Deleted user» and never takes
+  the member-list fallback below; an unmarked blank name still does (see «TAS-529» above).
 
 **Measured 2026-10-07 20:03 UTC** (owner's session, GET only, 25 issues across 12 projects; first request id `4ce3d29e-776e-46d8-9d33-32d8da87ab5d`): every `GET /issues/{id}` answered 200 with `{issue, history}`; `reporter` and `assignee` are `{id, displayName, avatarUrl}` objects; `version` is a number and equals the list read's; `links[].target` is present; a watcher whose user has no profile (the Swagger example id `3fa85f64-…`) arrives with `displayName: null` — explicitly null, not absent and not `""`; no blank `displayName` was seen on reporter or assignee (auth-service was up); comments carry `author` with a non-empty name. A key in place of the UUID answers 400 INVALID_ARGUMENT "body.issueId must be a valid UUID"; a missing UUID answers 404 NOT_FOUND "Issue not found: …". No issue on the stand had attachments, so `uploadedByUser` and the `[]`-for-a-failed-part claim stay code-read.
 

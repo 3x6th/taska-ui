@@ -947,6 +947,32 @@ describe("RestTaskaApi project members", () => {
     expect(result.map((member) => member.userId)).toEqual(["user-anna", "user-ghost"]);
   });
 
+  it("reads a deleted account's row as its role and the mark — no name, address or picture, whatever came (TAS-529)", async () => {
+    const { result } = await call(
+      {
+        members: [
+          {
+            userId: "user-sofia",
+            role: "ADMIN",
+            displayName: "Deleted user",
+            email: "sofia@example.com",
+            avatar: { downloadUrl: "https://store.example/sofia.png" },
+            addedAt: "2026-06-01T09:00:00Z",
+            deleted: true,
+          },
+          // Only `true` is the mark: a row merely called so is a person.
+          { userId: "user-dee", role: "MEMBER", displayName: "Deleted user", email: "dee@example.com", deleted: "true" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result).toEqual([
+      { userId: "user-dee", role: "MEMBER", user: { displayName: "Deleted user", email: "dee@example.com", avatarUrl: null } },
+      { userId: "user-sofia", role: "ADMIN", addedAt: "2026-06-01T09:00:00Z", deleted: true },
+    ]);
+  });
+
   it("tiebreaks on userId, so two nameless rows and two same-named rows both land in one order", async () => {
     const { result } = await call(
       {
@@ -2824,7 +2850,7 @@ describe("RestTaskaApi board", () => {
       createdAt: "2026-10-20T09:00:00Z",
       updatedAt: "2026-10-21T09:00:00Z",
       version: 3,
-      assignee: { id: "275417fd-2b3c-4a1d-9f60-1c2d3e4f5a6b", displayName: "Anna Ivanova", avatarUrl: "https://store.example/a.png" },
+      assignee: { id: "275417fd-2b3c-4a1d-9f60-1c2d3e4f5a6b", displayName: "Anna Ivanova", avatarUrl: "https://store.example/a.png", deleted: false },
       labels: [{ id: "760798da-9e59-4c54-aaac-4c93de82e68a", name: "backend", color: "#0052cc" }],
     };
     expect(board).toEqual({
@@ -2844,10 +2870,10 @@ describe("RestTaskaApi board", () => {
           issueType: "BUG",
           statusKey: "BLOCKED_BY_QA",
           description: null,
-          assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: null, avatarUrl: null },
+          assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: null, avatarUrl: null, deleted: false },
           labels: [],
         },
-        { ...mapped, id: "issue-3", issueKey: "API-3", assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: null, avatarUrl: null } },
+        { ...mapped, id: "issue-3", issueKey: "API-3", assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: null, avatarUrl: null, deleted: false } },
         { ...mapped, id: "issue-4", issueKey: "API-4", assignee: null, labels: [] },
       ],
     });
@@ -2906,6 +2932,38 @@ describe("RestTaskaApi board", () => {
     expect(second.mock.calls[0][0]).toBe("/api/v1/projects/project-1/board/columns/A%20B/issues");
   });
 
+  it("reads a deleted assignee by the mark alone, and only `true` as the mark (TAS-529)", async () => {
+    const card = (id: string, assignee: unknown) => ({
+      id,
+      issueKey: id.toUpperCase(),
+      summary: "Card",
+      issueType: "TASK",
+      priority: "LOW",
+      statusKey: "TODO",
+      createdAt: "2026-10-20T09:00:00Z",
+      updatedAt: "2026-10-20T09:00:00Z",
+      version: 1,
+      assignee,
+      labels: [],
+    });
+    stubFetch({
+      statusKey: "TODO",
+      issues: [
+        card("api-1", { id: "u-1", displayName: "Deleted user", avatarUrl: "https://store.example/u1.png", deleted: true }),
+        card("api-2", { id: "u-2", displayName: "", deleted: "true" }),
+      ],
+      totalCount: 2,
+      hasMore: false,
+    });
+
+    const page = await new RestTaskaApi().getBoardColumnPage("project-1", "TODO", {});
+
+    expect(page.issues.map((issue) => issue.assignee)).toEqual([
+      { id: "u-1", displayName: null, avatarUrl: null, deleted: true },
+      { id: "u-2", displayName: null, avatarUrl: null, deleted: false },
+    ]);
+  });
+
   it("maps a column's page as the board maps a column: its cards, and its counts read defensively", async () => {
     const card = {
       id: "issue-201",
@@ -2936,7 +2994,7 @@ describe("RestTaskaApi board", () => {
           createdAt: "2026-10-20T09:00:00Z",
           updatedAt: "2026-10-21T09:00:00Z",
           version: 2,
-          assignee: { id: "u-1", displayName: null, avatarUrl: null },
+          assignee: { id: "u-1", displayName: null, avatarUrl: null, deleted: false },
           labels: [{ id: "l-1", name: "ops", color: "#123456" }],
         },
       ],
@@ -3333,6 +3391,7 @@ describe("RestTaskaApi watchers", () => {
         createdBy: "user-9",
         displayName: null,
         avatarUrl: null,
+        deleted: false,
       },
     ]);
   });
@@ -3373,6 +3432,7 @@ describe("RestTaskaApi watchers", () => {
       createdBy: "",
       displayName: null,
       avatarUrl: null,
+      deleted: false,
     });
   });
 
@@ -3987,8 +4047,8 @@ describe("RestTaskaApi issue planning fields", () => {
     const { history } = await new RestTaskaApi().getIssue("project-1", "issue-1");
 
     expect(history[0].participants).toEqual({
-      "user-vera": { id: "user-vera", displayName: "Vera Former", avatarUrl: null },
-      "user-blank": { id: "user-blank", displayName: null, avatarUrl: null },
+      "user-vera": { id: "user-vera", displayName: "Vera Former", avatarUrl: null, deleted: false },
+      "user-blank": { id: "user-blank", displayName: null, avatarUrl: null, deleted: false },
     });
     expect(history[1].participants).toEqual({});
     expect(history[2].participants).toEqual({});
@@ -5155,13 +5215,13 @@ describe("RestTaskaApi issue details and the key lookup", () => {
 
     expect(fetchStub).toHaveBeenCalledTimes(1);
     expect(fetchStub.mock.calls[0][0]).toBe(`/api/v1/issues/${ISSUE}`);
-    expect(issue.reporter).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: "https://store.example/anna.png" });
-    expect(issue.assignee).toEqual({ id: MARK, displayName: "Mark Lee", avatarUrl: null });
+    expect(issue.reporter).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: "https://store.example/anna.png", deleted: false });
+    expect(issue.assignee).toEqual({ id: MARK, displayName: "Mark Lee", avatarUrl: null, deleted: false });
     expect(issue.labels).toEqual([{ id: "label-1", name: "backend", color: "#0052cc" }]);
     // No count on this route, so none is stated: the list's length is not one
     // the server gave, and a part that failed arrives as `[]`.
     expect(issue.watchers).toEqual({
-      watchers: [expect.objectContaining({ userId: MARK, displayName: "Mark Lee", avatarUrl: null })],
+      watchers: [expect.objectContaining({ userId: MARK, displayName: "Mark Lee", avatarUrl: null, deleted: false })],
       totalCount: null,
     });
     expect(issue.isWatching).toBe(false);
@@ -5172,7 +5232,7 @@ describe("RestTaskaApi issue details and the key lookup", () => {
       projectId: "d6a4f5e7-0000-4000-8000-000000000001",
       statusKey: "IN_REVIEW",
     });
-    expect(issue.attachments?.[0].uploadedByUser).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: null });
+    expect(issue.attachments?.[0].uploadedByUser).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: null, deleted: false });
     expect(issue.commentCount).toBe(4);
     // The details DTO has no `deletedAt` and may omit `description`.
     expect(issue.deletedAt).toBeNull();
@@ -5199,12 +5259,99 @@ describe("RestTaskaApi issue details and the key lookup", () => {
     const { history } = await new RestTaskaApi().getIssue(PROJECT, ISSUE);
 
     expect(history.map((item) => [item.id, item.actor])).toEqual([
-      ["h-named", { id: ANNA, displayName: "Anna Ivanova", avatarUrl: "https://store.example/a.png" }],
+      ["h-named", { id: ANNA, displayName: "Anna Ivanova", avatarUrl: "https://store.example/a.png", deleted: false }],
       ["h-null", null],
       ["h-absent", null],
-      ["h-blank", { id: ANNA, displayName: null, avatarUrl: null }],
+      ["h-blank", { id: ANNA, displayName: null, avatarUrl: null, deleted: false }],
       ["h-garbage", null],
     ]);
+  });
+
+  /**
+   * TAS-529 (api-contract-guard §3, §5): the proposed mark of a deleted
+   * account, `deleted: true`, on every person this read names. Only `true`
+   * is the mark; with it the name and the picture are dropped, whatever the
+   * server put there — «Deleted user» on the wire is no name to print, the
+   * screen draws its own words from the mark. A blank name without it stays
+   * "not named".
+   */
+  it("reads a deleted account by its mark alone, on every person the details read names (TAS-529)", async () => {
+    const SOFIA = "16ad2404-96e3-4c51-b00d-55c5d1451d3c";
+    const tombstone = { id: SOFIA, displayName: "Deleted user", avatarUrl: "https://store.example/sofia.png", deleted: true };
+    const marked = { id: SOFIA, displayName: null, avatarUrl: null, deleted: true };
+    const body = details({
+      reporterId: SOFIA,
+      assigneeId: SOFIA,
+      reporter: tombstone,
+      assignee: tombstone,
+      watchers: [{ id: "watch-1", issueId: ISSUE, projectId: PROJECT, userId: SOFIA, createdAt: "2026-10-07T09:01:00Z", createdBy: ANNA, displayName: "Deleted user", avatarUrl: "x", deleted: true }],
+      attachments: [{ id: "att-1", issueId: ISSUE, fileName: "a.txt", contentType: "text/plain", sizeBytes: 1, uploadedBy: SOFIA, checksum: null, createdAt: "2026-10-07T09:03:00Z", uploadedByUser: tombstone }],
+    });
+    body.history = [
+      {
+        id: "h-1",
+        eventType: "ASSIGNED",
+        actorUserId: SOFIA,
+        occurredAt: "2026-10-07T09:00:00Z",
+        payload: { assigneeId: SOFIA },
+        actor: tombstone,
+        participants: { [SOFIA]: tombstone },
+      },
+    ] as unknown as typeof body.history;
+    stubFetch(body);
+
+    const { issue, history } = await new RestTaskaApi().getIssue(PROJECT, ISSUE);
+
+    expect(issue.reporter).toEqual(marked);
+    expect(issue.assignee).toEqual(marked);
+    expect(issue.attachments?.[0].uploadedByUser).toEqual(marked);
+    expect(issue.watchers?.watchers[0]).toMatchObject({ userId: SOFIA, displayName: null, avatarUrl: null, deleted: true });
+    expect(history[0].actor).toEqual(marked);
+    // Kept, mark and all: it is whom «assigned a deleted user» is about.
+    expect(history[0].participants).toEqual({ [SOFIA]: marked });
+  });
+
+  it.each([
+    ["false", false],
+    ["the string «true»", "true"],
+    ["1", 1],
+    ["absent", undefined],
+  ])("reads a mark that is %s as none — a name stays a name, a blank stays unnamed (TAS-529)", async (_case, mark) => {
+    stubFetch(
+      details({
+        reporter: { id: ANNA, displayName: "Deleted user", deleted: mark },
+        assignee: { id: MARK, displayName: "", deleted: mark },
+      }),
+    );
+
+    const { issue } = await new RestTaskaApi().getIssue(PROJECT, ISSUE);
+
+    // Somebody called «Deleted user» is a person: no string is ever compared.
+    expect(issue.reporter).toEqual({ id: ANNA, displayName: "Deleted user", avatarUrl: null, deleted: false });
+    expect(issue.assignee).toEqual({ id: MARK, displayName: null, avatarUrl: null, deleted: false });
+  });
+
+  it("reads a deleted comment author by the mark alone (TAS-529)", async () => {
+    stubFetch({
+      items: [
+        {
+          id: "comment-1",
+          issueId: ISSUE,
+          projectId: PROJECT,
+          authorUserId: ANNA,
+          author: { id: ANNA, displayName: "Deleted user", avatarUrl: "https://store.example/a.png", deleted: true },
+          body: "hi",
+          createdAt: "2026-10-07T09:00:00Z",
+          updatedAt: "2026-10-07T09:00:00Z",
+          version: 1,
+        },
+      ],
+      totalCount: 1,
+    });
+
+    const page = await new RestTaskaApi().listComments(PROJECT, ISSUE);
+
+    expect(page.items[0].author).toEqual({ id: ANNA, displayName: null, avatarUrl: null, deleted: true });
   });
 
   it("reads a blank name as nobody named, which is what auth-service being down looks like", async () => {
@@ -5221,7 +5368,7 @@ describe("RestTaskaApi issue details and the key lookup", () => {
 
     const { issue } = await new RestTaskaApi().getIssue(PROJECT, ISSUE);
 
-    expect(issue.reporter).toEqual({ id: ANNA, displayName: null, avatarUrl: null });
+    expect(issue.reporter).toEqual({ id: ANNA, displayName: null, avatarUrl: null, deleted: false });
     expect(issue.assignee?.displayName).toBeNull();
     expect(issue.watchers?.watchers[0].displayName).toBeNull();
     expect(issue.attachments?.[0].uploadedByUser?.displayName).toBeNull();
@@ -5289,7 +5436,7 @@ describe("RestTaskaApi issue details and the key lookup", () => {
 
     const page = await new RestTaskaApi().listComments(PROJECT, ISSUE);
 
-    expect(page.items[0].author).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: null });
+    expect(page.items[0].author).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: null, deleted: false });
     expect(page.items[1].author).toBeNull();
   });
 
@@ -5407,14 +5554,32 @@ describe("RestTaskaApi worklogs", () => {
 
     const { items } = await new RestTaskaApi().listIssueWorklogs(PROJECT, ISSUE, { page: 0, pageSize: 100 });
 
-    expect(items[0].author).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: null });
+    expect(items[0].author).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: null, deleted: false });
     expect(items[1].author).toBeNull();
-    expect(items[2].author).toEqual({ id: ANNA, displayName: null, avatarUrl: null });
+    expect(items[2].author).toEqual({ id: ANNA, displayName: null, avatarUrl: null, deleted: false });
     expect(Object.hasOwn(items[3], "author")).toBe(false);
 
     stubFetch(entry, 201);
     const added = await new RestTaskaApi().addIssueWorklog(PROJECT, ISSUE, { spentMinutes: 90, workDate: "2026-10-09" });
     expect(Object.hasOwn(added, "author")).toBe(false);
+  });
+
+  it("reads a deleted author by the mark alone, and only `true` as the mark (TAS-529)", async () => {
+    stubFetch({
+      items: [
+        { ...entry, id: "w-deleted", author: { id: ANNA, displayName: "Deleted user", avatarUrl: "https://store.example/a.png", deleted: true } },
+        { ...entry, id: "w-not", author: { id: ANNA, displayName: "", deleted: "yes" } },
+      ],
+      page: 0,
+      pageSize: 100,
+      totalCount: 2,
+      hasMore: false,
+    });
+
+    const { items } = await new RestTaskaApi().listIssueWorklogs(PROJECT, ISSUE, { page: 0, pageSize: 100 });
+
+    expect(items[0].author).toEqual({ id: ANNA, displayName: null, avatarUrl: null, deleted: true });
+    expect(items[1].author).toEqual({ id: ANNA, displayName: null, avatarUrl: null, deleted: false });
   });
 
   it("adds with the three fields, leaving out a comment it was not given", async () => {

@@ -1,6 +1,8 @@
+import { UserRound } from "lucide-react";
 import { useState } from "react";
-import type { User } from "../domain/types";
+import { DELETED_USER } from "../lib/deletedUser";
 import { avatarColor, initials, readableTextOn } from "../lib/format";
+import type { Person } from "../lib/people";
 
 interface AvatarProps {
   /**
@@ -13,8 +15,13 @@ interface AvatarProps {
    * does not fill yet, see `User.avatarUrl` — and `GET /users/me` carries it
    * for the reader themselves (TAS-223); absent or `null`, this draws exactly
    * what it drew before TAS-220.
+   *
+   * `deleted` (TAS-529, `deletedPerson`) wins over everything else here: the
+   * neutral circle of DESIGN.md §4.4, named «Deleted user», with no fill from
+   * the id, no colour, no picture and no initials — whatever `label`, `color`
+   * or `avatarUrl` a caller passes along with it.
    */
-  user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
+  user?: Person | null;
   label?: string;
   /** §2.7: 24 / 28 / 34, and 64 on Settings → My profile (TAS-380). */
   size?: "sm" | "md" | "lg" | "xl";
@@ -26,6 +33,12 @@ interface AvatarProps {
    * drawn — the label's own letters would read as a person's.
    */
   hideInitials?: boolean;
+  /**
+   * Out of the accessibility tree (`aria-hidden`), for a circle whose person is
+   * named in text right beside it — an assignee chip, whose label already says
+   * who (art-director's N2, TAS-529). `title` stays, for the pointer.
+   */
+  decorative?: boolean;
 }
 
 const sizeClass = {
@@ -35,7 +48,18 @@ const sizeClass = {
   xl: "avatar-xl",
 };
 
-export function Avatar({ user, label, size = "md", className = "", loading = false, hideInitials = false }: AvatarProps) {
+/** The glyph of the deleted circle by diameter (§2.7): 14 at 24, 16 at 28 — never drawn larger. */
+const deletedGlyph = { sm: 14, md: 16, lg: 16, xl: 16 } as const;
+
+export function Avatar({
+  user,
+  label,
+  size = "md",
+  className = "",
+  loading = false,
+  hideInitials = false,
+  decorative = false,
+}: AvatarProps) {
   /**
    * The one link this component has decided not to trust again.
    *
@@ -48,6 +72,27 @@ export function Avatar({ user, label, size = "md", className = "", loading = fal
    * uploaded.
    */
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  if (user?.deleted && !loading) {
+    // §4.4's deleted person (TAS-529, art-director §2): `--surface-3` under an
+    // inside hairline, `--fg-2` for a person glyph — all in the stylesheet, so
+    // nothing here is inline. The id's palette colour is the one thing that
+    // would still tell who this was (an account's id is kept), and it is the
+    // thing never computed for this circle.
+    // Its own key: a circle that turns deleted in place (a re-read marking
+    // somebody already drawn) is a new element, so nothing of the person's
+    // circle — not even an emptied `style` attribute — is carried over.
+    return (
+      <span
+        key="deleted"
+        aria-hidden={decorative || undefined}
+        aria-label={DELETED_USER}
+        className={`avatar ${sizeClass[size]} avatar-deleted ${className}`}
+        title={DELETED_USER}
+      >
+        <UserRound absoluteStrokeWidth aria-hidden="true" size={deletedGlyph[size]} strokeWidth={1.7} />
+      </span>
+    );
+  }
   const name = loading ? "Loading user" : (user?.displayName ?? label ?? "Unassigned");
   // Not while loading: a skeleton that has already been painted someone's
   // colour is claiming to know whose circle it is.
@@ -72,6 +117,7 @@ export function Avatar({ user, label, size = "md", className = "", loading = fal
       title={name}
       aria-label={name}
       aria-busy={loading || undefined}
+      aria-hidden={decorative || undefined}
     >
       {src ? (
         // `alt=""`, because the name is already on the wrapper as `aria-label`

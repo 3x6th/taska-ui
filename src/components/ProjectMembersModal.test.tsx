@@ -887,6 +887,62 @@ describe("ProjectMembersModal", () => {
     });
   });
 
+  /**
+   * A deleted account's row (TAS-529, art-director §5 and B6, B9): drawn as
+   * the server listed it — «Deleted user» on the neutral circle, one line, its
+   * role as a word — with no control for anybody, and no cover for the last
+   * admin with an account, as a row with no account is none.
+   */
+  describe("a deleted account's row", () => {
+    const deleted = (role: ProjectRole): ProjectMember => ({ userId: SOFIA, role, deleted: true });
+
+    it("is «Deleted user» with its role as a word and nothing to change, the remove slot kept empty", async () => {
+      state.members = [state.person(ANNA, "ADMIN"), state.person(MARK, "MEMBER"), deleted("MEMBER")];
+      renderPanel();
+
+      const row = (await within(dialog()).findByText("Deleted user")).closest("li") as HTMLElement;
+      expect(row.querySelector(".member-name")).toHaveClass("person-deleted");
+      expect(row.querySelector(".member-line")).toBeNull();
+      expect(row.querySelector(".member-id")).toBeNull();
+      expect(row).not.toHaveTextContent(SOFIA);
+      const circle = row.querySelector(".avatar");
+      expect(circle).toHaveClass("avatar-deleted");
+      expect(circle).toHaveAttribute("title", "Deleted user");
+      expect(within(row).getByText("Member")).toBeVisible();
+      expect(within(row).queryByRole("combobox")).toBeNull();
+      expect(within(row).queryAllByRole("button")).toEqual([]);
+      expect(row.querySelector(".member-remove-slot")).toHaveAttribute("aria-hidden", "true");
+      // Mark's row beside it is offered as before.
+      expect(within(rowOf("Mark Lee")).getByRole("combobox", { name: "Role of Mark Lee" })).toBeVisible();
+    });
+
+    it("does not cover the last admin with an account, and is named for what it is in the note (B9)", async () => {
+      state.members = [state.person(ANNA, "ADMIN"), deleted("ADMIN"), state.person(MARK, "MEMBER")];
+      renderPanel();
+
+      await within(dialog()).findByText("Anna Ivanova");
+      const anna = rowOf("Anna Ivanova");
+      expect(within(anna).queryByRole("combobox")).toBeNull();
+      expect(within(anna).queryByRole("button", { name: /Remove/ })).toBeNull();
+      expect(
+        within(anna).getByText(
+          "You are this project’s only admin with an account — the other admin is a deleted user — so your role cannot change and you cannot be removed until someone with an account is an admin.",
+        ),
+      ).toBeVisible();
+      // The deleted row itself carries no note and no control.
+      const row = within(dialog()).getByText("Deleted user").closest("li") as HTMLElement;
+      expect(row.querySelector(".member-row-note")).toBeNull();
+      expect(within(row).queryAllByRole("button")).toEqual([]);
+    });
+
+    it("says both when the other admins are a deleted account and an ID with no account", async () => {
+      state.members = [state.person(ANNA, "ADMIN"), deleted("ADMIN"), state.person(NOBODY, "ADMIN")];
+      renderPanel();
+
+      expect(await within(dialog()).findByText(/— the other admins are deleted users or IDs no account came back for —/)).toBeVisible();
+    });
+  });
+
   describe("an open question whose row stops offering it", () => {
     const twoRealAdmins = () =>
       state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" as const } : member));

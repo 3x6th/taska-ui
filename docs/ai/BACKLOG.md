@@ -4529,7 +4529,7 @@ A17–A25 went to Jira as comments on their owner stories.
   `VALIDATION_FAILED`, missing → 428 `VERSION_CONFLICT`.
 - **New B2B enums** (membership role and state, invitation state, quota kind) belong in `/meta` (the TAS-217 pattern).
 - **A cursor invalidated by a concurrent change** is the same 400 as a forged one.
-- **A deleted account's name is a Russian placeholder** (contracts §10); ask for a flag and draw English words.
+- **A deleted account's name is a Russian placeholder** (contracts §10); ask for a flag and draw English words. — **answered by TAS-529**: the UI reads a proposed marker; asks A120, A121 on TAS-496.
 - **Membership carries no `joinedAt` / `suspendedAt`** on the wire (the columns exist) — no «Member since» / «Suspended on».
 - **The mock's quota snapshot has only the SEAT row** (TAS-512 adds PROJECT and STORAGE) — answered in TAS-512.
 - **Members beyond 50 seats** need a filter; inviting several emails at once; the invitation row naming its projects;
@@ -4688,3 +4688,30 @@ into the fix round.
 - **Scroll-to-submit ignores where focus is**: Enter in Summary at a refusal scrolls the focused field out of the modal
   body (scrollTop 65 at 1440×810, 381 at 320×568) — §4.40 says only when focus stays on the submit; scroll only when
   the submit has focus (release-reviewer wave 2, low 2).
+
+### Left by TAS-529 (deleted author, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-529-*.md` (git-ignored); divergence in `API-DIVERGENCE.md` «TAS-529».
+
+- **Company Activity** — delivered by TAS-524 (PR #133) after rebasing onto the TAS-529 rule (Jira TAS-524 14541; A126).
+- **Reads made before a deletion** show the former name until re-read (20 s on remount; until leaving for
+  `refetchOnMount: false` reads; Transfer ownership until a re-read — its `staleTime: Infinity` lengthens the window, guard N7).
+- **«assigned someone»** — the unnamed-participant fallback contradicts §4.26's one-word rule (art-director N3).
+- **§2.7 avatar sizes** — the art-director measured the component at 24/28/34/64 against the documented row; check and correct.
+- **The vendored `openapi.yml` lags develop** (`RestErrorResponse` gains `requestId`, `reasons`, `status`, `title`; capabilities;
+  board DONE ordering, `doneSince`) — the «`requestId` lives only in a response header» divergence entry's Contract line is
+  stale (guard N6; a refresh task under the scope freeze).
+- **The mock's `deletedAccounts` header** should say that removing an entry unmarks the account only as a test
+  convenience the contract lacks, seen after the board remounts (guard re-verdict 2, note 3).
+- **Marks are remembered from board reads only** — a card drawn before any read marks the person stays named until the
+  board is read again (builder, fix round 2).
+- **Assignee filter chips** have no `aria-pressed`, and the kept «Deleted user» chip is named only by its avatar's label
+  (release-reviewer re-verdict 2, Low; predates TAS-529).
+- **An issue read's mark is not kept for the screen** — with context and board read before the deletion, opening an issue
+  that marks the person leaves their card face named, and a later panel whose read never mentions them still offers their
+  chip; fold `markedDeleted` into the board's screen-life set (an effect callback from `IssuePanel`, not a parent setState
+  during render) and make §4.4 say «любого чтения» again. Only in the window before cleanup (art-director re-verdict 4).
+- **Three sources of `deletedIdsInIssue` untested** — watchers, uploaders, history actors/participants
+  (`BoardScreen.tsx` ~7948-7953); one unit test: a stale named member who is a marked watcher isn't offered as a chip
+  (release-reviewer re-verdict note 1).
+- **The deleted company row renders an empty `<p class="company-member-line">`** (height 0) — return `null` (art-director, optional).

@@ -21,6 +21,7 @@ import { useUnanswered } from "../hooks/useUnanswered";
 import { PROJECT_STATS_KEY, projectStatsQueryOptions } from "../lib/boardQuery";
 import { companyWriteRefusalText } from "../lib/companyRestrictions";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
+import { deletedPerson } from "../lib/people";
 import { QUOTA_WRITE_META } from "./settings/companyPlan";
 import type { ScreenProps } from "./App";
 
@@ -366,7 +367,11 @@ function ProjectCard({
               <Avatar
                 key={member.userId}
                 user={
-                  member.user
+                  // A deleted account's row stays in its place in the stack
+                  // (TAS-529, art-director §5): the neutral circle, «Deleted user».
+                  member.deleted
+                    ? deletedPerson(member.userId)
+                    : member.user
                     ? {
                         id: member.userId,
                         displayName: member.user.displayName,

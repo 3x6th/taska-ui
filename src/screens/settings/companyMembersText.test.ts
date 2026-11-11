@@ -89,6 +89,13 @@ describe("the rows' second lines", () => {
     expect(expiredLine(invitation({ state: "EXPIRED", expiresAt: "2026-11-03T10:00:00Z" }), "you", NOW)).toBe("Expired Nov 3 · invited by you");
     expect(expiredLine(invitation({ state: "EXPIRED", expiresAt: "2025-11-03T10:00:00Z" }), null, NOW)).toBe("Expired Nov 3, 2025");
   });
+
+  it("an invitation a deleted account sent: «a deleted user» inside the sentence (TAS-529, art-director §1)", () => {
+    expect(pendingLine(invitation(), "a deleted user", false, NOW)).toMatch(/^Invited by a deleted user · Expires Nov 12, \d\d:30$/);
+    expect(expiredLine(invitation({ state: "EXPIRED", expiresAt: "2026-11-03T10:00:00Z" }), "a deleted user", NOW)).toBe(
+      "Expired Nov 3 · invited by a deleted user",
+    );
+  });
 });
 
 describe("the strips ask with only true sentences (art-director B6)", () => {

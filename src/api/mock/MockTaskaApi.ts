@@ -327,6 +327,18 @@ export const MOCK_ACCOUNT_IDS = {
   nina: NINA_ID,
 } as const;
 
+/**
+ * TAS-529: the companies build's deleted account — an id the server marks
+ * deleted on every summary that names it (the proposed `deleted: true`, ask
+ * A120), and which nobody here can name: it is in no store's `users`, has no
+ * avatar and no project row, and no read ever carries a name, an address or a
+ * picture for it. Its traces are Initech's HLP-3 (`TENANT_SEEDS` in
+ * MockTenantServer.ts), where its company membership is REMOVED — the state
+ * after the deletion's cleanup. `MockTenantServer` hands it to every store it
+ * serves; today's build never sees it.
+ */
+export const MOCK_DELETED_ACCOUNT_ID = "7a3d9e51-2c4b-4f68-b0e1-5d8c3f2a6b19";
+
 export const MOCK_PROJECT_IDS = {
   taska: TASKA_PROJECT_ID,
   web: WEB_PROJECT_ID,
@@ -358,9 +370,25 @@ export interface MockTenantSeed {
       priority: IssuePriorityCode;
       assigneeId: string | null;
       reporterId: string;
+      /** TAS-529: what happened on the issue after its creation, in order — see `MockSeedStep`. */
+      story?: ReadonlyArray<MockSeedStep>;
     }>;
   }>;
 }
+
+/**
+ * One thing that happened on a company issue after it was created (TAS-529),
+ * `minutesAfter` its creation: a history row, a comment, a work log entry or
+ * an attachment (whose `ATTACHMENT_UPLOADED` row the server writes with it, as
+ * the seed's own attachments do). Seeded as the issue stands afterwards — no
+ * version, estimate or lifetime counter moves.
+ */
+export type MockSeedStep = { minutesAfter: number } & (
+  | { kind: "history"; eventType: IssueHistoryEvent["eventType"]; actorId: string; payload: IssueHistoryEvent["payload"] }
+  | { kind: "comment"; authorId: string; body: string }
+  | { kind: "worklog"; authorId: string; minutes: number; workDate: string; comment: string | null }
+  | { kind: "attachment"; uploadedBy: string; fileName: string; contentType: string; sizeBytes: number; checksum: string }
+);
 
 /**
  * The raw invitation tokens this store seeds, by whose they are — what an
@@ -1801,7 +1829,7 @@ interface StoredIssueLink {
  * still answers without it. So the name is put on at read time, by the read
  * that carries one (`watcherView`).
  */
-type StoredIssueWatcher = Omit<IssueWatcher, "displayName" | "avatarUrl">;
+type StoredIssueWatcher = Omit<IssueWatcher, "displayName" | "avatarUrl" | "deleted">;
 
 /**
  * A worklog as stored: the entry plus the soft-delete stamp the server's row
@@ -1838,6 +1866,8 @@ type StoredIssueComment = Omit<IssueComment, "author">;
  * it either.
  */
 const FORMER_ACCOUNT_ID = "9e4c2a7d-0b1f-4c83-a6d5-7f2e8b9c1d04";
+/** `FORMER_ACCOUNT_ID`, for the companies build's fixtures: the unnamed person «Unknown» is drawn for (TAS-529's control). */
+export const MOCK_FORMER_ACCOUNT_ID = FORMER_ACCOUNT_ID;
 
 /** The transactional outbox table, in every service that has one. */
 const OUTBOX_TABLE = "outbox_events";
@@ -2304,6 +2334,14 @@ export class MockTaskaStore {
    * where the directory is everybody it lists, as the stand's is.
    */
   private directoryScope: ReadonlySet<string> | null = null;
+  /**
+   * The accounts the server marks deleted (TAS-529) — set per call by
+   * `MockTenantServer`, empty in today's build. Every summary this store
+   * builds of such an id is the mark alone (`tombstone`): no name, no address,
+   * no picture, whatever `users` and `avatars` still hold for it; the
+   * directory never lists one.
+   */
+  private deletedAccounts: ReadonlySet<string> = new Set();
   /**
    * Accounts with no password (TAS-424): made by the name step, or `INVITED`
    * ones a provider sign-in activated. `login` refuses them as the server does.
@@ -3603,6 +3641,9 @@ export class MockTaskaStore {
         (user) =>
           DIRECTORY_STATUSES.has(user.status) &&
           (scope === null || scope.has(user.id)) &&
+          // A deleted account is never found (TAS-529, ask A123) — in the
+          // window before its cleanup too, while its membership is still listed.
+          !this.isDeletedAccount(user.id) &&
           (user.displayName.toLowerCase().includes(needle) || user.email.toLowerCase().includes(needle)),
       )
       .sort(
@@ -4138,13 +4179,49 @@ export class MockTaskaStore {
             payload: {},
           },
         ];
+        for (const step of item.story ?? []) this.seedStep(issue, step, Date.parse(at));
       });
+    }
+  }
+
+  /** One `MockSeedStep` on a company issue created at `createdAt` (ms). */
+  private seedStep(issue: StoredIssue, step: MockSeedStep, createdAt: number): void {
+    const at = new Date(createdAt + step.minutesAfter * 60_000).toISOString();
+    if (step.kind === "history") this.pushHistory(issue.id, step.eventType, step.actorId, step.payload, at);
+    else if (step.kind === "comment") this.comment(issue, step.authorId, step.body, at);
+    else if (step.kind === "worklog") {
+      const worklog = this.worklog(issue, step.authorId, step.minutes, step.workDate, step.comment, at);
+      this.pushHistory(issue.id, "WORKLOG_ADDED", step.authorId, this.worklogPayload(worklog), at);
+    } else {
+      this.attachments.push({
+        id: makeId("attachment"),
+        issueId: issue.id,
+        uploadedBy: step.uploadedBy,
+        objectKey: makeId("object"),
+        fileName: step.fileName,
+        contentType: step.contentType,
+        sizeBytes: step.sizeBytes,
+        checksum: step.checksum,
+        createdAt: at,
+        deletedAt: null,
+      });
+      const { uploadedBy, fileName, contentType, sizeBytes } = step;
+      this.pushHistory(issue.id, "ATTACHMENT_UPLOADED", uploadedBy, { issueId: issue.id, uploadedBy, fileName, contentType, sizeBytes }, at);
     }
   }
 
   /** The companies build's directory scope (see `directoryScope`); never called in today's build. */
   scopeDirectory(userIds: ReadonlySet<string> | null): void {
     this.directoryScope = userIds;
+  }
+
+  /** The companies build's deleted accounts (see `deletedAccounts`); never called in today's build. */
+  markDeletedAccounts(userIds: ReadonlySet<string>): void {
+    this.deletedAccounts = userIds;
+  }
+
+  private isDeletedAccount(userId: string): boolean {
+    return this.deletedAccounts.has(userId);
   }
 
   /**
@@ -4532,10 +4609,15 @@ export class MockTaskaStore {
     // stored row: an avatar can change without the membership changing, and the
     // server's own row is a join that is evaluated when it is asked for. A row
     // that named nobody still names nobody.
-    return (this.membersByProject[projectId] ?? []).map((member) => ({
-      ...member,
-      user: member.user ? this.userSummary(member.userId) : undefined,
-    }));
+    return (this.membersByProject[projectId] ?? []).map((member) => {
+      // A deleted account's row (TAS-529): its role, and the mark instead of
+      // the person — the same join, answered by an account that is gone.
+      if (this.isDeletedAccount(member.userId)) {
+        const { user: _user, ...row } = member;
+        return { ...row, deleted: true as const };
+      }
+      return { ...member, user: member.user ? this.userSummary(member.userId) : undefined };
+    });
   }
 
   /**
@@ -5776,11 +5858,14 @@ export class MockTaskaStore {
       updatedAt: issue.updatedAt,
       version: issue.version,
       assignee: issue.assigneeId
-        ? {
-            id: issue.assigneeId,
-            displayName: user?.displayName ?? null,
-            avatarUrl: avatar && this.avatarObjects.has(avatar.objectKey) ? avatar.downloadUrl : null,
-          }
+        ? this.isDeletedAccount(issue.assigneeId)
+          ? this.tombstone(issue.assigneeId)
+          : {
+              id: issue.assigneeId,
+              displayName: user?.displayName ?? null,
+              avatarUrl: avatar && this.avatarObjects.has(avatar.objectKey) ? avatar.downloadUrl : null,
+              deleted: false,
+            }
         : null,
       // By name, then id — the board's order since backend TAS-431, the same
       // as the issue read's (`labelsForIssue`).
@@ -5935,7 +6020,8 @@ export class MockTaskaStore {
     const hasAccount = this.users.some((user) => user.id === event.actorUserId);
     return {
       ...event,
-      actor: hasAccount ? this.personSummary(event.actorUserId) : null,
+      // A deleted account is named by its mark (TAS-529), never left out.
+      actor: hasAccount || this.isDeletedAccount(event.actorUserId) ? this.personSummary(event.actorUserId) : null,
       participants: this.historyParticipants(event.payload),
     };
   }
@@ -5953,7 +6039,7 @@ export class MockTaskaStore {
     const named: Record<string, UserSummary> = {};
     for (const id of [...ids, ...watchers]) {
       if (typeof id !== "string" || !UUID_PATTERN.test(id) || Object.hasOwn(named, id)) continue;
-      if (this.users.some((user) => user.id === id)) named[id] = this.personSummary(id);
+      if (this.users.some((user) => user.id === id) || this.isDeletedAccount(id)) named[id] = this.personSummary(id);
     }
     return named;
   }
@@ -7534,7 +7620,10 @@ export class MockTaskaStore {
       );
     const items = all.slice(page * pageSize, page * pageSize + pageSize).map((item) => ({
       ...this.worklogView(item),
-      author: this.users.some((user) => user.id === item.authorUserId) ? this.personSummary(item.authorUserId) : null,
+      author:
+        this.users.some((user) => user.id === item.authorUserId) || this.isDeletedAccount(item.authorUserId)
+          ? this.personSummary(item.authorUserId)
+          : null,
     }));
     return {
       items,
@@ -9259,19 +9348,37 @@ export class MockTaskaStore {
    * — `null` here, the domain's spelling of the gateway's `""`.
    */
   private personSummary(userId: string): UserSummary {
+    if (this.isDeletedAccount(userId)) return this.tombstone(userId);
     const user = this.users.find((item) => item.id === userId);
     const avatar = this.avatars.get(userId);
     return {
       id: userId,
       displayName: user?.displayName || null,
       avatarUrl: user && avatar && this.avatarObjects.has(avatar.objectKey) ? avatar.downloadUrl : null,
+      deleted: false,
     };
+  }
+
+  /**
+   * A deleted account as every summary carries it (TAS-529): the id and the
+   * mark. The wire the UI is built for says `{"id": …, "deleted": true,
+   * "displayName": "Deleted user", "avatarUrl": null}` (asks A120, A121) and
+   * the mappers drop that name to `null` with the mark — which is the domain
+   * value this answers with. Never an address, never a picture.
+   */
+  private tombstone(userId: string): UserSummary {
+    return { id: userId, displayName: null, avatarUrl: null, deleted: true };
   }
 
   /** A watcher row as a read serves it; `named` for the details read, the only one that names the subscriber. */
   private watcherView(watcher: StoredIssueWatcher, named: boolean): IssueWatcher {
     const person = named ? this.personSummary(watcher.userId) : null;
-    return { ...watcher, displayName: person?.displayName ?? null, avatarUrl: person?.avatarUrl ?? null };
+    return {
+      ...watcher,
+      displayName: person?.displayName ?? null,
+      avatarUrl: person?.avatarUrl ?? null,
+      deleted: person?.deleted ?? false,
+    };
   }
 
   /**
@@ -9282,7 +9389,7 @@ export class MockTaskaStore {
    */
   private commentView(comment: StoredIssueComment, named: boolean): IssueComment {
     const person = named ? this.personSummary(comment.authorUserId) : null;
-    return { ...comment, author: person?.displayName ? person : null };
+    return { ...comment, author: person?.deleted || person?.displayName ? person : null };
   }
 
   // The gateway rejects edits and deletes from anyone but the comment author.

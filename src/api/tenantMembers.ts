@@ -60,6 +60,14 @@ export interface Membership {
   avatarPath: string | null;
   /** The entity version, a decimal string, sent back verbatim in `If-Match`. */
   version: string | null;
+  /**
+   * A deleted account's membership (TAS-529) — the proposed `deleted: true`
+   * (ask A122's second option; the blueprint's `Membership` cannot say it,
+   * `displayName` and `email` being required there). Only `true` is the mark,
+   * and with it `displayName`, `email` and `avatarPath` are `null` whatever was
+   * sent: the row is drawn as «Deleted user» and never by its address.
+   */
+  deleted: boolean;
 }
 
 /** `MembershipPage`, as sent: `nextCursor` absent at the end. */
@@ -153,6 +161,9 @@ export function toMembership(wire: unknown): Membership | null {
   const row = wire as Record<string, unknown>;
   const userId = text(row.userId);
   if (userId === null) return null;
+  // Only a `true` is the mark (TAS-529): a blank name is not one, and neither
+  // is a status. With it, nothing the account carried is kept.
+  const deleted = row.deleted === true;
   return {
     id: text(row.id),
     tenantId: text(row.tenantId),
@@ -160,10 +171,11 @@ export function toMembership(wire: unknown): Membership | null {
     role: text(row.role),
     state: text(row.state),
     isOwner: row.isOwner === true,
-    displayName: typeof row.displayName === "string" && row.displayName.trim() !== "" ? row.displayName : null,
-    email: text(row.email),
-    avatarPath: text(row.avatarPath),
+    displayName: !deleted && typeof row.displayName === "string" && row.displayName.trim() !== "" ? row.displayName : null,
+    email: deleted ? null : text(row.email),
+    avatarPath: deleted ? null : text(row.avatarPath),
     version: decimalText(row.version),
+    deleted,
   };
 }
 

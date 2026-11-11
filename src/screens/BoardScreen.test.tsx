@@ -112,6 +112,8 @@ const {
   sectionReads,
   seedSummaries,
   seedWatcherNames,
+  seedDeletedPeople,
+  seedReporter,
   seedLinks,
   seedIssueTypes,
   seedTypeNames,
@@ -324,7 +326,15 @@ const {
      * (TAS-219). `toUserMap` drops such a row, which is the state the watchers
      * section had two different words for.
      */
-    members: { userId: string; role: "ADMIN" | "MEMBER" | "VIEWER" | null; addedAt: string; addedBy: string; user?: { displayName: string; email: string } }[];
+    members: {
+      userId: string;
+      role: "ADMIN" | "MEMBER" | "VIEWER" | null;
+      addedAt: string;
+      addedBy: string;
+      user?: { displayName: string; email: string };
+      /** A deleted account's row (TAS-529): the mark, and no `user`. */
+      deleted?: true;
+    }[];
     /** Who the panel's issue is assigned to. */
     assigneeId: string | null;
     attachments: {
@@ -432,6 +442,14 @@ const {
     summaries: Record<string, string>;
     /** Who the issue's watcher rows name, the same way. */
     watcherNames: Record<string, string>;
+    /**
+     * Deleted accounts (TAS-529): every summary of these ids — the board's,
+     * the issue read's, a watcher row's — is the mark alone, the way the
+     * mappers hand it on: `deleted: true`, no name, no picture.
+     */
+    deletedPeople: string[];
+    /** The panel issue's reporter (TAS-529's tests move it off the reader). */
+    reporterId: string;
     /** The issue read's links, as the server resolved them — `target` included. */
     links: unknown[];
     /** The issue read's history, oldest first, as the server sends it. Empty unless a test is about the feed. */
@@ -513,6 +531,8 @@ const {
     sectionReads: { watchers: 0, labels: 0, links: 0, attachments: 0, comments: 0, issue: 0 },
     summaries: {},
     watcherNames: {},
+    deletedPeople: [],
+    reporterId: "user-anna",
     links: [],
     history: [],
     comments: [],
@@ -547,7 +567,7 @@ const {
     description: "",
     status: "TODO" as const,
     priority: "MEDIUM" as const,
-    reporterId: "user-anna",
+    reporterId: state.reporterId,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
@@ -639,7 +659,9 @@ const {
         updatedAt: issue.updatedAt,
         version: issue.version,
         assignee: assigneeId
-          ? { id: assigneeId, displayName: state.boardNames[assigneeId] ?? null, avatarUrl: null }
+          ? state.deletedPeople.includes(assigneeId)
+            ? { id: assigneeId, displayName: null, avatarUrl: null, deleted: true }
+            : { id: assigneeId, displayName: state.boardNames[assigneeId] ?? null, avatarUrl: null, deleted: false }
           : null,
         labels: issue.labels ?? [],
       };
@@ -930,13 +952,17 @@ const {
       if (state.issueFailure) throw state.issueFailure;
       if (state.sectionReads.issue > 1 && (state.watchersHeld || state.attachmentsHeld)) return new Promise(() => {});
       const summary = (id: string | null) =>
-        id && id in state.summaries ? { id, displayName: state.summaries[id] || null, avatarUrl: null } : null;
+        id && state.deletedPeople.includes(id)
+          ? { id, displayName: null, avatarUrl: null, deleted: true }
+          : id && id in state.summaries
+            ? { id, displayName: state.summaries[id] || null, avatarUrl: null, deleted: false }
+            : null;
       return {
         issue: {
           ...panelIssue(projectId, issueId),
           labels: state.labelsFailure ? null : state.issueLabels,
           assignee: summary(state.assigneeId),
-          reporter: summary("user-anna"),
+          reporter: summary(state.reporterId),
           // No count: the details DTO states none, so neither implementation
           // does (TAS-246). Only a watcher write says how many.
           watchers: state.watchersFailure
@@ -946,8 +972,9 @@ const {
                   ? []
                   : state.watchers.map((watcher) => ({
                       ...watcher,
-                      displayName: state.watcherNames[watcher.userId] || null,
+                      displayName: state.deletedPeople.includes(watcher.userId) ? null : state.watcherNames[watcher.userId] || null,
                       avatarUrl: null,
+                      deleted: state.deletedPeople.includes(watcher.userId),
                     })),
                 totalCount: null,
               },
@@ -1372,6 +1399,13 @@ const {
     seedWatcherNames: (names: Record<string, string>) => {
       state.watcherNames = names;
     },
+    /** Accounts the server marks deleted on every summary it sends (TAS-529). */
+    seedDeletedPeople: (ids: string[]) => {
+      state.deletedPeople = ids;
+    },
+    seedReporter: (id: string) => {
+      state.reporterId = id;
+    },
     seedLinks: (links: unknown[]) => {
       state.links = links;
     },
@@ -1518,6 +1552,8 @@ const {
       state.sectionReads = { watchers: 0, labels: 0, links: 0, attachments: 0, comments: 0, issue: 0 };
       state.summaries = {};
       state.watcherNames = {};
+      state.deletedPeople = [];
+      state.reporterId = "user-anna";
       state.links = [];
       state.history = [];
       state.comments = [];
@@ -5065,8 +5101,11 @@ describe("the assignee chips on an issue panel", () => {
     const panel = await openPanel();
 
     await waitFor(() => expect(chipLabels()).toEqual(["None", "Anna", "Tom"]));
-    const tom = panel.getByRole("button", { name: /^Tom Becker/ });
+    // Named by its label alone, the circle beside it hidden (art-director N2,
+    // TAS-529), and a toggle that says which one is pressed.
+    const tom = panel.getByRole("button", { name: "Tom" });
     expect(tom).toHaveClass("is-active");
+    expect(tom).toHaveAttribute("aria-pressed", "true");
     // Pressing an active chip sends the assignment again, and for a VIEWER that
     // is the request the server refuses.
     expect(tom).toBeDisabled();
@@ -5074,7 +5113,8 @@ describe("the assignee chips on an issue panel", () => {
     expect(assignCalls()).toEqual([]);
 
     // The chip beside it is still an offer.
-    fireEvent.click(panel.getByRole("button", { name: /^Anna Ivanova/ }));
+    expect(panel.getByRole("button", { name: "Anna" })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(panel.getByRole("button", { name: "Anna" }));
     await waitFor(() => expect(assignCalls()).toEqual(["user-anna"]));
   });
 });
@@ -5170,7 +5210,7 @@ describe("issue edits under optimistic locking", () => {
     const panel = await openPanel();
 
     const none = await panel.findByRole("button", { name: /None$/ });
-    await waitFor(() => expect(panel.getByRole("button", { name: /^Anna Ivanova/ })).toHaveClass("is-active"));
+    await waitFor(() => expect(panel.getByRole("button", { name: "Anna" })).toHaveClass("is-active"));
     expect(none).toBeEnabled();
     fireEvent.click(none);
 
@@ -7503,7 +7543,7 @@ describe("the activity feed's disclosure", () => {
     });
     seedHistory([
       assigned("history-1", "user-vera", "2026-08-01T09:00:00Z", {
-        "user-vera": { id: "user-vera", displayName: "Vera Former", avatarUrl: null },
+        "user-vera": { id: "user-vera", displayName: "Vera Former", avatarUrl: null, deleted: false },
       }),
       assigned("history-2", "user-tom", "2026-08-01T10:00:00Z"),
       assigned("history-3", "user-gone", "2026-08-01T11:00:00Z", {}),
@@ -8488,9 +8528,9 @@ describe("the author of an Activity event (TAS-398)", () => {
     ]);
     seedHistory([
       // Not on the project any more: only the event's own summary names her.
-      event({ id: "h-1", actorUserId: "user-priya", actor: { id: "user-priya", displayName: "Priya Nair", avatarUrl: null } }),
+      event({ id: "h-1", actorUserId: "user-priya", actor: { id: "user-priya", displayName: "Priya Nair", avatarUrl: null, deleted: false } }),
       // No summary (a blank name is none): the member list does.
-      event({ id: "h-2", occurredAt: "2026-08-01T10:00:00Z", actorUserId: "user-tom", actor: { id: "user-tom", displayName: null, avatarUrl: null } }),
+      event({ id: "h-2", occurredAt: "2026-08-01T10:00:00Z", actorUserId: "user-tom", actor: { id: "user-tom", displayName: null, avatarUrl: null, deleted: false } }),
       // Neither: Unknown.
       event({ id: "h-3", occurredAt: "2026-08-01T11:00:00Z", actorUserId: "user-gone", actor: null }),
     ]);
@@ -8527,5 +8567,374 @@ describe("the author of an Activity event (TAS-398)", () => {
     renderBoard(ISSUE_PATH);
     const row = (await screen.findByText("Left before the release.")).closest(".comment-item") as HTMLElement;
     expect(row.querySelector(".avatar")).toHaveAttribute("aria-label", "Unknown");
+  });
+});
+
+/**
+ * A deleted account on the board and in the panel (TAS-529; api-contract-guard
+ * §3–§5, art-director §1, §5 and B1–B10): one «Deleted user» on §4.4's neutral
+ * circle wherever the person is drawn, «a deleted user» inside a sentence, no
+ * control on a deleted row, nothing borrowed from a member row — and a person
+ * merely called «Deleted user», or one nobody named, drawn as before.
+ */
+describe("a deleted account", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const SOFIA = "user-sofia";
+  const tombstone = { id: SOFIA, displayName: null, avatarUrl: null, deleted: true };
+  const anna = {
+    userId: "user-anna",
+    role: "ADMIN" as const,
+    addedAt: "2026-08-01T09:00:00Z",
+    addedBy: "user-anna",
+    user: { displayName: "Anna Ivanova", email: "anna@example.com" },
+  };
+  // A deleted account's row as the mapper hands it on: its role, and the mark.
+  const sofiaRow = { userId: SOFIA, role: "MEMBER" as const, addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", deleted: true as const };
+  const openPanel = async () => within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+  const chipLabels = () => [...document.querySelectorAll(".meta-grid .assignee-chip span:last-child")].map((node) => node.textContent);
+  /** §4.4's neutral circle and nothing of the person (art-director §6's DOM assertions). */
+  const expectNeutral = (circle: Element | null) => {
+    expect(circle).toHaveClass("avatar-deleted");
+    expect(circle).toHaveAttribute("title", "Deleted user");
+    expect(circle).toHaveAttribute("aria-label", "Deleted user");
+    expect(circle?.getAttribute("style")).toBeNull();
+    expect(circle?.querySelector("img")).toBeNull();
+  };
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("is the neutral circle on a card — marked by the board read or by the member row — and is not a filter", async () => {
+    seedMembers([
+      anna,
+      sofiaRow,
+      // Named on this board read, but the context's row of the id is marked: the mark wins.
+      { userId: "user-vera", role: "MEMBER", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", deleted: true },
+    ]);
+    seedDeletedPeople([SOFIA]);
+    seedBoardNames({ "user-vera": "Vera Former" });
+    seedExtraIssues([
+      { id: "issue-2", issueKey: "TAS-103", summary: "Hers", assigneeId: SOFIA },
+      { id: "issue-3", issueKey: "TAS-104", summary: "Vera's", assigneeId: "user-vera" },
+    ]);
+    renderBoard();
+
+    const hers = await screen.findByRole("button", { name: /TAS-103/ });
+    expectNeutral(within(hers).getByLabelText("Deleted user"));
+    const veras = screen.getByRole("button", { name: /TAS-104/ });
+    expectNeutral(within(veras).getByLabelText("Deleted user"));
+    expect(document.body).not.toHaveTextContent("Vera Former");
+    // The filter draws people one can pick out: Anna alone.
+    expect(document.querySelectorAll(".filterbar .avatar-filter")).toHaveLength(1);
+  });
+
+  it("in the panel: the reporter, one active disabled chip after «None» that is never split, and a watcher row with no ✕", async () => {
+    seedMembers([anna, sofiaRow]);
+    seedDeletedPeople([SOFIA]);
+    seedReporter(SOFIA);
+    seedAssignee(SOFIA);
+    seedWatchers([watcher(SOFIA), watcher("user-anna")], null);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    // The assignee chips: the deleted account is the assignment, never an offer.
+    await waitFor(() => expect(chipLabels()).toEqual(["None", "Deleted user", "Anna"]));
+    const held = panel.getByRole("button", { name: "Deleted user" });
+    expect(held).toBeDisabled();
+    expect(held).toHaveClass("is-active");
+    expect(held).toHaveAttribute("aria-pressed", "true");
+    const heldCircle = held.querySelector(".avatar");
+    expectNeutral(heldCircle);
+    expect(heldCircle).toHaveAttribute("aria-hidden", "true");
+    // «None» clears it, from the keyboard too.
+    const none = panel.getByRole("button", { name: "None" });
+    expect(none).toBeEnabled();
+    expect(none).not.toHaveAttribute("aria-disabled");
+    expect(none).toHaveAttribute("aria-pressed", "false");
+
+    // The reporter.
+    const reporter = document.querySelector(".person-line") as HTMLElement;
+    expect(reporter.querySelector("strong")).toHaveTextContent(/^Deleted user$/);
+    expectNeutral(reporter.querySelector(".avatar"));
+
+    // The watcher row: the name slot in --fg-2, no "(you)", no ✕, its place kept.
+    const rows = await waitFor(() => {
+      const found = [...document.querySelectorAll(".watcher-row")];
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    const deleted = rows.find((row) => row.querySelector(".watcher-name")?.textContent === "Deleted user") as HTMLElement;
+    expect(deleted.querySelector(".watcher-name")).toHaveClass("person-deleted");
+    expectNeutral(deleted.querySelector(".avatar"));
+    expect(within(deleted).queryAllByRole("button")).toEqual([]);
+    expect(deleted.querySelector(".watcher-remove-slot")).toHaveAttribute("aria-hidden", "true");
+    expect(panel.queryByRole("button", { name: /Remove Deleted user/ })).toBeNull();
+    const annas = rows.find((row) => row !== deleted) as HTMLElement;
+    expect(within(annas).getAllByRole("button")).toHaveLength(1);
+  });
+
+  it("in comments, the activity feed and the attachments: the name slot, the sentence's own words, and the meta", async () => {
+    seedMembers([anna, sofiaRow]);
+    seedDeletedPeople([SOFIA]);
+    seedComments([
+      {
+        id: "comment-1",
+        issueId: "issue-1",
+        projectId: PROJECT_ID,
+        authorUserId: SOFIA,
+        author: tombstone,
+        body: "Both laptops connect.",
+        createdAt: "2026-08-01T09:30:00Z",
+        updatedAt: "2026-08-01T09:30:00Z",
+        version: 1,
+      },
+    ]);
+    seedHistory([
+      {
+        id: "history-1",
+        issueId: "issue-1",
+        eventType: "ASSIGNED",
+        actorUserId: "user-anna",
+        occurredAt: "2026-08-01T09:00:00Z",
+        payload: { previousAssigneeId: null, assigneeId: SOFIA },
+        participants: { [SOFIA]: tombstone },
+      },
+      {
+        id: "history-2",
+        issueId: "issue-1",
+        eventType: "COMMENT_CREATED",
+        actorUserId: SOFIA,
+        occurredAt: "2026-08-01T09:30:00Z",
+        payload: {},
+        actor: tombstone,
+      },
+      {
+        id: "history-3",
+        issueId: "issue-1",
+        eventType: "COMMENT_CREATED",
+        actorUserId: "user-ghost",
+        occurredAt: "2026-08-01T09:40:00Z",
+        payload: {},
+        actor: null,
+      },
+    ]);
+    seedAttachments([
+      {
+        id: "attachment-1",
+        issueId: "issue-1",
+        fileName: "vpn-client-profiles.txt",
+        contentType: "text/plain",
+        sizeBytes: 1824,
+        uploadedBy: SOFIA,
+        checksum: null,
+        createdAt: "2026-08-01T09:50:00Z",
+      },
+    ]);
+    renderBoard(ISSUE_PATH);
+    await openPanel();
+
+    const comment = (await screen.findByText("Both laptops connect.")).closest(".comment-item") as HTMLElement;
+    expect(comment.querySelector(".comment-head strong")).toHaveTextContent(/^Deleted user$/);
+    expect(comment.querySelector(".comment-head strong")).toHaveClass("person-deleted");
+    expectNeutral(comment.querySelector(".avatar"));
+
+    const sentences = [...document.querySelectorAll(".activity-item p")].map((node) => node.textContent);
+    expect(sentences).toEqual([
+      "Unknown commented on this issue",
+      "Deleted user commented on this issue",
+      "Anna Ivanova assigned a deleted user",
+    ]);
+    const items = [...document.querySelectorAll(".activity-item")];
+    expect(items[1].querySelector("strong")).toHaveClass("person-deleted");
+    expectNeutral(items[1].querySelector(".avatar"));
+    // «Unknown» is untouched: no mark, so not deleted (B10).
+    expect(items[0].querySelector("strong")).not.toHaveClass("person-deleted");
+    expect(items[0].querySelector(".avatar")).toHaveClass("avatar-empty");
+
+    const file = await screen.findByRole("button", { name: "Open vpn-client-profiles.txt in a new tab" });
+    expect(file.querySelector(".attachment-meta")).toHaveTextContent(/· Deleted user ·/);
+  });
+
+  it("an assignee no member chip stands for, without the mark: their name when the read names them, «Unknown» on the id's fill when it does not", async () => {
+    seedMembers([anna]);
+    seedSummaries({ "user-boris": "Boris Former" });
+    seedAssignee("user-boris");
+    renderBoard(ISSUE_PATH);
+    await openPanel();
+    await waitFor(() => expect(chipLabels()).toEqual(["None", "Boris", "Anna"]));
+    const named = screen.getByRole("button", { name: "Boris" });
+    expect(named).toBeDisabled();
+    expect(named.querySelector(".avatar")).toHaveTextContent("BF");
+    expect(named.querySelector(".avatar")).not.toHaveClass("avatar-deleted");
+    cleanup();
+
+    reset();
+    seedMembers([anna]);
+    seedAssignee("user-ghost");
+    renderBoard(ISSUE_PATH);
+    await openPanel();
+    await waitFor(() => expect(chipLabels()).toEqual(["None", "Unknown", "Anna"]));
+    const ghost = screen.getByRole("button", { name: "Unknown" }).querySelector(".avatar") as HTMLElement;
+    expect(ghost).not.toHaveClass("avatar-empty");
+    expect(ghost).not.toHaveClass("avatar-deleted");
+    expect(ghost).toHaveTextContent("");
+    expect(ghost.getAttribute("style")).toContain("background-color");
+  });
+
+  /**
+   * release-reviewer B1: the context's member list is read once and kept
+   * (TAS-202), so somebody deleted since is still a named row there — name,
+   * photo, colour. The issue read's mark wins: no chip is drawn from that row.
+   */
+  it("draws the held chip from the issue read when the member list still names the deleted assignee", async () => {
+    const staleSofia = {
+      userId: SOFIA,
+      role: "MEMBER" as const,
+      addedAt: "2026-08-01T09:00:00Z",
+      addedBy: "user-anna",
+      user: { displayName: "Sofia Reyes", email: "sofia@example.com" },
+    };
+    seedMembers([anna, staleSofia]);
+    seedDeletedPeople([SOFIA]);
+    seedAssignee(SOFIA);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    await waitFor(() => expect(chipLabels()).toEqual(["None", "Deleted user", "Anna"]));
+    const row = document.querySelector(".meta-grid .chip-row") as HTMLElement;
+    expect(row).not.toHaveTextContent("Sofia");
+    expect(row.querySelector("img")).toBeNull();
+    expect([...row.querySelectorAll(".avatar")].map((circle) => circle.getAttribute("title"))).not.toContain("Sofia Reyes");
+    const held = panel.getByRole("button", { name: "Deleted user" });
+    expect(held).toBeDisabled();
+    expectNeutral(held.querySelector(".avatar"));
+  });
+
+  it("never offers a deleted account to subscribe — a deleted row, or a named row the issue read marks (release-reviewer L1)", async () => {
+    const named = (userId: string, displayName: string) => ({
+      userId,
+      role: "MEMBER" as const,
+      addedAt: "2026-08-01T09:00:00Z",
+      addedBy: "user-anna",
+      user: { displayName, email: `${userId}@example.com` },
+    });
+    seedMembers([anna, sofiaRow, named("user-vera", "Vera Stale"), named("user-tom", "Tom Becker")]);
+    // Vera's row is stale: the issue read marks her, as its reporter.
+    seedDeletedPeople([SOFIA, "user-vera"]);
+    seedReporter("user-vera");
+    seedWatchers([watcher("user-anna")], null);
+    renderBoard(ISSUE_PATH);
+    await openPanel();
+
+    const picker = await waitFor(() => {
+      const found = document.querySelector(".watcher-form select") as HTMLSelectElement | null;
+      expect(found).not.toBeNull();
+      return found as HTMLSelectElement;
+    });
+    expect([...picker.options].map((option) => option.textContent)).toEqual(["Select a member", "Tom Becker"]);
+  });
+
+  it("leaves out of the filter a named member row the board read marks deleted", async () => {
+    seedMembers([
+      anna,
+      { userId: SOFIA, role: "MEMBER", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", user: { displayName: "Sofia Reyes", email: "sofia@example.com" } },
+    ]);
+    seedDeletedPeople([SOFIA]);
+    seedExtraIssues([{ id: "issue-2", issueKey: "TAS-103", summary: "Hers", assigneeId: SOFIA }]);
+    renderBoard();
+
+    expectNeutral(within(await screen.findByRole("button", { name: /TAS-103/ })).getByLabelText("Deleted user"));
+    await waitFor(() => expect(document.querySelectorAll(".filterbar .avatar-filter")).toHaveLength(1));
+    expect(document.querySelector(".filterbar")).not.toHaveTextContent("Sofia");
+    expect(document.querySelector('.filterbar [aria-label="Sofia Reyes"]')).toBeNull();
+  });
+
+  /**
+   * art-director (guard N1), fix round 2: the filter already on stays visible
+   * (§5.4) and its button is not unmounted under focus (§7) when the filtered
+   * board read marks its person deleted — the same active chip, as §4.4's
+   * neutral circle, until «All» ends it.
+   */
+  it("keeps the active filter chip, as the neutral circle with focus on it, when the filtered read marks its person deleted — until «All»", async () => {
+    seedMembers([
+      anna,
+      { userId: SOFIA, role: "MEMBER", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", user: { displayName: "Sofia Reyes", email: "sofia@example.com" } },
+    ]);
+    seedExtraIssues([{ id: "issue-2", issueKey: "TAS-103", summary: "Hers", assigneeId: SOFIA }]);
+    renderBoard();
+
+    const face = await waitFor(() => {
+      const found = document.querySelector('.filterbar .avatar-filter [aria-label="Sofia Reyes"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    const chip = face.closest("button") as HTMLButtonElement;
+    // Deleted from here on: the filtered read is the first to say so.
+    seedDeletedPeople([SOFIA]);
+    chip.focus();
+    fireEvent.click(chip);
+
+    await waitFor(() => expect(chip.querySelector(".avatar")).toHaveClass("avatar-deleted"));
+    expect(chip).toBeInTheDocument();
+    expect(chip).toHaveClass("is-active");
+    expect(chip).toHaveAccessibleName("Deleted user");
+    expect(chip).not.toHaveAttribute("aria-pressed");
+    expectNeutral(chip.querySelector(".avatar"));
+    expect(document.activeElement).toBe(chip);
+    expect(document.querySelectorAll(".filterbar .avatar-filter")).toHaveLength(2);
+    expect(document.querySelector(".filterbar")).not.toHaveTextContent("Sofia");
+    expect(document.querySelector('.filterbar [aria-label="Sofia Reyes"]')).toBeNull();
+
+    fireEvent.click(document.querySelector(".filterbar .assignee-all") as HTMLButtonElement);
+    await waitFor(() => expect(document.querySelectorAll(".filterbar .avatar-filter")).toHaveLength(1));
+    expect(chip).not.toBeInTheDocument();
+    // The whole board's read is the cached one from before, naming her; the
+    // filtered read's mark still wins on her card.
+    expectNeutral(within(screen.getByRole("button", { name: /TAS-103/ })).getByLabelText("Deleted user"));
+    expect(document.body).not.toHaveTextContent("Sofia");
+
+    // An issue whose own read never mentions her (art-director B-R2): the
+    // board's mark still holds — she is no assignee chip and no watcher to add.
+    fireEvent.click(screen.getByRole("button", { name: /TAS-102/ }));
+    const panel = await openPanel();
+    await waitFor(() => expect(chipLabels()).toEqual(["None", "Anna"]));
+    const picker = await waitFor(() => {
+      const found = document.querySelector(".watcher-form select") as HTMLSelectElement | null;
+      expect(found).not.toBeNull();
+      return found as HTMLSelectElement;
+    });
+    expect([...picker.options].map((option) => option.value)).not.toContain(SOFIA);
+    expect([...picker.options].map((option) => option.textContent)).toEqual(["Select a member", "Anna Ivanova"]);
+    const dialog = screen.getByRole("dialog", { name: "TAS-102 issue" });
+    expect(dialog).not.toHaveTextContent("Sofia");
+    expect(dialog.querySelector(".meta-grid .chip-row img")).toBeNull();
+    expect(panel.queryByRole("button", { name: "Deleted user" })).toBeNull();
+  });
+
+  it("leaves a person merely called «Deleted user» their own circle (art-director F4)", async () => {
+    seedMembers([anna]);
+    seedSummaries({ "user-dee": "Deleted user" });
+    seedReporter("user-dee");
+    renderBoard(ISSUE_PATH);
+    await openPanel();
+
+    const circle = await waitFor(() => {
+      const found = document.querySelector(".person-line .avatar") as HTMLElement;
+      expect(found).toHaveTextContent("DU");
+      return found;
+    });
+    expect(circle).not.toHaveClass("avatar-deleted");
+    expect(circle.getAttribute("style")).toContain("background-color");
+  });
+
+  const watcher = (userId: string) => ({
+    id: `watcher-${userId}`,
+    issueId: "issue-1",
+    projectId: PROJECT_ID,
+    userId,
+    createdAt: "2026-09-02T10:15:00Z",
+    createdBy: userId,
   });
 });

@@ -315,6 +315,8 @@ interface RestProjectMember {
   email?: string;
   avatar?: { downloadUrl?: string } | null;
   addedAt?: string | null;
+  /** Proposed (TAS-529, ask A120): a deleted account's row. Not in the contract yet. */
+  deleted?: unknown;
 }
 
 /**
@@ -600,6 +602,8 @@ interface RestUserSummary {
   id?: string;
   displayName?: string | null;
   avatarUrl?: string | null;
+  /** Proposed (TAS-529, ask A120): a deleted account. Not in the contract yet; only `true` is read as one. */
+  deleted?: unknown;
 }
 
 /**
@@ -710,6 +714,8 @@ interface RestBoardUser {
   id?: string;
   displayName?: string | null;
   avatarUrl?: string | null;
+  /** Proposed (TAS-529, ask A120), as on `RestUserSummary`. */
+  deleted?: unknown;
 }
 
 /**
@@ -839,6 +845,8 @@ interface RestIssueWatcher {
   /** Since backend TAS-214. Set by the gateway only when issue-service named the person. */
   displayName?: string | null;
   avatarUrl?: string | null;
+  /** Proposed (TAS-529, ask A120), as on `RestUserSummary`. */
+  deleted?: unknown;
 }
 
 /**
@@ -3759,11 +3767,15 @@ export class RestTaskaApi implements TaskaApi {
       version: issue.version,
       assignee:
         assignee && typeof assignee.id === "string" && assignee.id !== ""
-          ? {
-              id: assignee.id,
-              displayName: assignee.displayName?.trim() ? assignee.displayName : null,
-              avatarUrl: assignee.avatarUrl || null,
-            }
+          ? assignee.deleted === true
+            ? // A deleted account (TAS-529): the mark, and nothing it carried.
+              { id: assignee.id, displayName: null, avatarUrl: null, deleted: true }
+            : {
+                id: assignee.id,
+                displayName: assignee.displayName?.trim() ? assignee.displayName : null,
+                avatarUrl: assignee.avatarUrl || null,
+                deleted: false,
+              }
           : null,
       labels: (Array.isArray(issue.labels) ? issue.labels : [])
         .filter((label) => typeof label?.id === "string" && label.id !== "")
@@ -3906,8 +3918,10 @@ export class RestTaskaApi implements TaskaApi {
       userId: watcher.userId ?? "",
       createdAt: watcher.createdAt ?? "",
       createdBy: watcher.createdBy ?? "",
-      displayName: watcher.displayName?.trim() ? watcher.displayName : null,
-      avatarUrl: watcher.avatarUrl || null,
+      // A deleted subscriber (TAS-529) keeps the row and loses the name and the picture.
+      ...(watcher.deleted === true
+        ? { displayName: null, avatarUrl: null, deleted: true }
+        : { displayName: watcher.displayName?.trim() ? watcher.displayName : null, avatarUrl: watcher.avatarUrl || null, deleted: false }),
     };
   }
 
@@ -4428,6 +4442,16 @@ function toDirectoryPage(value: unknown): DirectoryPage {
  * neither (TAS-227).
  */
 function toProjectMember(member: RestProjectMember): ProjectMember {
+  // A deleted account's row (TAS-529, ask A120): the role is project-service's
+  // own and stays; the name, the address and the picture go with the mark.
+  if (member.deleted === true) {
+    return {
+      userId: member.userId ?? "",
+      role: toProjectRole(member.role),
+      ...(typeof member.addedAt === "string" && member.addedAt ? { addedAt: member.addedAt } : {}),
+      deleted: true,
+    };
+  }
   const displayName = typeof member.displayName === "string" ? member.displayName.trim() : "";
   const downloadUrl = member.avatar?.downloadUrl;
   return {
@@ -4567,12 +4591,20 @@ function toLabel(label: RestLabel): Label {
  *
  * A blank `displayName` becomes `null`: the gateway answers `""` when
  * auth-service is down, and that is "not named", not a name.
+ *
+ * `deleted` is the proposed mark of a deleted account (TAS-529, ask A120):
+ * only `true` is one, and with it the name and the picture are `null`
+ * whatever came — the screen draws «Deleted user» from the mark, never from
+ * a string, and a blank name without it stays "not named".
  */
 function toUserSummary(summary: RestUserSummary, fallbackId: string | null): UserSummary {
+  const id = summary.id || fallbackId || "";
+  if (summary.deleted === true) return { id, displayName: null, avatarUrl: null, deleted: true };
   return {
-    id: summary.id || fallbackId || "",
+    id,
     displayName: summary.displayName?.trim() ? summary.displayName : null,
     avatarUrl: summary.avatarUrl || null,
+    deleted: false,
   };
 }
 
@@ -4590,7 +4622,8 @@ function wholeMinutes(value: unknown): number | null {
  * `toNullableUserSummary` with its key as the id it falls back to, and an entry
  * that is not an object is dropped, as the server leaves out an id it found no
  * profile for. A blank name stays `null`, and `personFor` then asks the member
- * list.
+ * list. An entry marked deleted (TAS-529) is kept, mark and all: it is how an
+ * «assigned a deleted user» sentence knows whom it is about.
  */
 function toParticipants(value: unknown): Record<string, UserSummary> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
@@ -4745,15 +4778,19 @@ function toInvitationPreview(response: RestInvitationPreview): InvitationPreview
  * (`actorUserId`, `authorUserId`), a name that is not a non-blank string is `null` (the gateway
  * answers `""` when auth-service is down), and so is an avatar link that is
  * not a non-empty string. Nothing here consults the member list — that is
- * `personFor`'s second step, on screen.
+ * `personFor`'s second step, on screen. A summary marked deleted (TAS-529) is
+ * read as `toUserSummary` reads one: only `true`, and nothing it carried.
  */
 function toNullableUserSummary(actor: unknown, actorUserId: unknown): UserSummary | null {
   if (typeof actor !== "object" || actor === null || Array.isArray(actor)) return null;
-  const { id, displayName, avatarUrl } = actor as Record<string, unknown>;
+  const { id, displayName, avatarUrl, deleted } = actor as Record<string, unknown>;
+  const summaryId = typeof id === "string" && id ? id : typeof actorUserId === "string" ? actorUserId : "";
+  if (deleted === true) return { id: summaryId, displayName: null, avatarUrl: null, deleted: true };
   return {
-    id: typeof id === "string" && id ? id : typeof actorUserId === "string" ? actorUserId : "",
+    id: summaryId,
     displayName: typeof displayName === "string" && displayName.trim() ? displayName : null,
     avatarUrl: typeof avatarUrl === "string" && avatarUrl ? avatarUrl : null,
+    deleted: false,
   };
 }
 

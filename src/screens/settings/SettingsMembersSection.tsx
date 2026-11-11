@@ -22,11 +22,13 @@ import { useMutation } from "../../hooks/useMutation";
 import { COMPANIES_ROUTE, TENANTS_QUERY_KEY } from "../../lib/companies";
 import { useAccountQueryClient, useCompanyAddress } from "../../lib/companyAddress";
 import { ME_QUERY_KEY } from "../../lib/ownAvatarLink";
+import { deletedPerson } from "../../lib/people";
 import type { CompaniesRouteState } from "../CompaniesScreen";
 import { POLL_STEPS_MS, POLL_STEADY_MS } from "../companySetupText";
 import {
   earliestPendingExpiry,
   groupRows,
+  inviterName as inviterNameIn,
   invitationsSentBy,
   isIndefinite,
   keyFor,
@@ -296,15 +298,7 @@ function CompanyMembers({ companyId }: { companyId: string }) {
     lastPending.current = new Map(rows.filter((row) => row.state === "PENDING").map((row) => [row.id, row.email ?? ""]));
   }, [invitations.data, say]);
 
-  const inviterName = useCallback(
-    (userId: string | null) => {
-      if (userId === null) return null;
-      if (userId === meId) return "you";
-      const row = members.data?.find((member) => member.userId === userId);
-      return row ? (row.displayName ?? row.email) : null;
-    },
-    [members.data, meId],
-  );
+  const inviterName = useCallback((userId: string | null) => inviterNameIn(members.data, meId, userId), [members.data, meId]);
 
   // Leaving (§4.38 «Leave company»): the session layer releases the company
   // session on a 202 that is not FAILED, and the tab goes to the picker.
@@ -980,7 +974,11 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
     else if (asking === "remove") sendRemove();
   };
 
-  const secondLine = suspended ? (
+  // A deleted account's row (TAS-529, art-director §5): no second line while
+  // ACTIVE, «Suspended» alone when suspended — never an address.
+  const secondLine = subject.deleted ? (
+    suspended ? <strong>Suspended</strong> : null
+  ) : suspended ? (
     <>
       <strong>Suspended</strong>
       {member.email ? ` · ${member.email}` : null}
@@ -1012,15 +1010,17 @@ function MemberRow({ member, ctx }: { member: Membership; ctx: Section }) {
           hideInitials={!subject.named}
           label={subject.title}
           user={
-            subject.named
-              ? // One's own circle in the colour the rest of the app draws it in (X3); others by the id.
-                { id: member.userId, displayName: subject.title, color: subject.self ? ctx.meColor : undefined, avatarUrl: null }
-              : null
+            subject.deleted
+              ? deletedPerson(member.userId)
+              : subject.named
+                ? // One's own circle in the colour the rest of the app draws it in (X3); others by the id.
+                  { id: member.userId, displayName: subject.title, color: subject.self ? ctx.meColor : undefined, avatarUrl: null }
+                : null
           }
         />
       </span>
       <div className="company-member-text">
-        <p className="company-member-name" title={subject.title}>
+        <p className={`company-member-name${subject.deleted ? " person-deleted" : ""}`} title={subject.title}>
           {subject.title}
           {subject.self && subject.named ? <span className="company-member-you"> (you)</span> : null}
         </p>
