@@ -17,9 +17,15 @@ import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress"
 import { companyWriteRefusalText, quotaRefusalText, writeRefusalText } from "../lib/companyRestrictions";
 import { CompanyMarkerWord } from "../components/CompanyMarkerWord";
 import { refreshAfterRefusal } from "./settings/companyPlan";
-import { isIndefinite, keyFor, type SentIntent } from "../lib/intentKey";
+import { keyFor, type SentIntent } from "../lib/intentKey";
 import { NewIssueCount } from "../components/ProjectIssueCount";
-import { createIssueSignature } from "../lib/issueCreateIntent";
+import {
+  ISSUE_CREATE_UNCONFIRMED,
+  createIssueSignature,
+  createLeftOpen,
+  createUnconfirmed,
+  unconfirmedServerWords,
+} from "../lib/issueCreateIntent";
 import { projectTaskQuotaKey } from "../lib/projectTaskQuota";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Shapes, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
 import {
@@ -7235,7 +7241,7 @@ function CreateIssueModal({
    * the draft's signature (`createIssueSignature`: the project and every sent
    * field); the key is reused only when the same signature is sent again after
    * an answer that never came or said nothing about it — no status, 408, 429,
-   * 5xx (`isIndefinite`) — so a retry after a lost answer is the server's
+   * 5xx (`createLeftOpen`) — so a retry after a lost answer is the server's
    * replay of the issue it made, not a second issue and a second unit of the
    * plan's limit. Any other answer, any change to a sent field, and a success
    * mint a new one. In flight the key counts as open: its answer is not in.
@@ -7272,7 +7278,7 @@ function CreateIssueModal({
         sentCreate.current = null;
         return issue;
       } catch (error) {
-        sentCreate.current = { signature, key, open: isIndefinite(error) };
+        sentCreate.current = { signature, key, open: createLeftOpen(error) };
         throw error;
       }
     },
@@ -7493,11 +7499,20 @@ function CreateIssueModal({
   // The companies build (TAS-512): a quota refusal says §4.40's sentence, a
   // restriction §4.35's — the draft stays, the form stays editable, focus stays.
   const companyRefused = createIssue.isError ? companyWriteRefusalText(createIssue.error, "issue", { company: formCompany, projectKey }) : null;
+  // Both builds (TAS-528, art-director BLK-1): the answer never came or said
+  // nothing about the create — no status, 408, 5xx; a 429 keeps its words. The
+  // draft's key makes the same press safe, and the sentence says so; the
+  // browser's «Failed to fetch» alone said neither.
+  const unconfirmed = createIssue.isError && createUnconfirmed(createIssue.error);
   const formNotice =
     dateNotice && !archived
       ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE
       : createIssue.isError && reportable(createIssue.error)
-        ? (typeRefused ?? companyRefused ?? refusalWords(createIssue.error) ?? createIssue.error.message)
+        ? (typeRefused ??
+          companyRefused ??
+          (unconfirmed ? ISSUE_CREATE_UNCONFIRMED : null) ??
+          refusalWords(createIssue.error) ??
+          createIssue.error.message)
         : null;
   /**
    * The slot holds this form's `PROJECT_ARCHIVED` refusal, which says what the
@@ -7844,8 +7859,17 @@ function CreateIssueModal({
             // and has no id (§5.6, TAS-397). Outside the alert, under it.
             requestId={dateNotice && !archived ? null : apiErrorFacts(createIssue.error).requestId}
             // A type refusal's sentence is the form's own, so the server's words
-            // follow it on the detail line (§5.5, TAS-437).
-            serverWords={typeRefused && !(dateNotice && !archived) ? refusalWords(createIssue.error) : null}
+            // follow it on the detail line (§5.5, TAS-437); so does the
+            // unconfirmed create's, when there was an HTTP answer (TAS-528).
+            serverWords={
+              dateNotice && !archived
+                ? null
+                : typeRefused
+                  ? refusalWords(createIssue.error)
+                  : unconfirmed && companyRefused === null
+                    ? unconfirmedServerWords(createIssue.error)
+                    : null
+            }
           >
             {formNotice}
           </ErrorNote>

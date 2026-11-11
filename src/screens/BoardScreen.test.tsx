@@ -8330,7 +8330,11 @@ describe("Create issue in flight and refused", () => {
     failNextCreate(new TypeError("Failed to fetch"));
     const button = await filledForm();
     fireEvent.click(button);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to fetch");
+    // Said as what it is, and what to do (art-director BLK-1) — never the browser's «Failed to fetch» alone.
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/^Taska couldn’t confirm the issue was created. Press Create issue again without changing anything — it won’t create a second one.$/);
+    expect(alert.closest(".error-note")?.querySelector(".error-note-detail")).toBeNull();
+    expect(button).toHaveFocus();
     await pressAgain(button, 2);
     const [first, second] = sentKeys();
     expect(first).toEqual(expect.any(String));
@@ -8361,6 +8365,24 @@ describe("Create issue in flight and refused", () => {
     // The summary changed: a new request again.
     expect(k5).not.toBe(k4);
     expect(new Set([k1, k4, k5]).size).toBe(3);
+  });
+
+  it("a 503 says the create could not be confirmed, the server's words and the id under it, outside the alert; a 429 keeps its words (BLK-1)", async () => {
+    const button = await filledForm();
+    const dialog = within(screen.getByRole("dialog", { name: "New issue" }));
+    failNextCreate(Object.assign(new Error("issue-service is unavailable"), { status: 503, code: "UNAVAILABLE", requestId: "req-503" }));
+    fireEvent.click(button);
+    const alert = await dialog.findByRole("alert");
+    expect(alert).toHaveTextContent(/^Taska couldn’t confirm the issue was created. Press Create issue again without changing anything — it won’t create a second one.$/);
+    const detail = alert.closest(".error-note")?.querySelector(".error-note-detail") as HTMLElement;
+    expect(detail).toHaveTextContent("issue-service is unavailable");
+    expect(within(detail).getByRole("button", { name: "Copy request id req-503" })).toBeVisible();
+    expect(detail.closest("[role='alert']")).toBeNull();
+
+    failNextCreate(Object.assign(new Error("Too many requests"), { status: 429, code: "RATE_LIMITED", requestId: "req-429" }));
+    await waitFor(() => expect(button).not.toHaveAttribute("aria-disabled"));
+    fireEvent.click(button);
+    await waitFor(() => expect(dialog.getByRole("alert")).toHaveTextContent(/^Too many requests$/));
   });
 });
 

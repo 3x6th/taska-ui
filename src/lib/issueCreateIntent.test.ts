@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { CreateIssueInput } from "../api/TaskaApi";
 import { MockProblemError } from "../api/mock/MockTenantServer";
+import { WorkspaceClosedError } from "../api/errors";
 import { isIndefinite, keyFor, type SentIntent } from "./intentKey";
-import { createIssueSignature } from "./issueCreateIntent";
+import { ISSUE_CREATE_UNCONFIRMED, createIssueSignature, createLeftOpen, createUnconfirmed, unconfirmedServerWords } from "./issueCreateIntent";
 
 /*
  * One `Idempotency-Key` per New issue draft (TAS-528, api-contract-guard H1):
@@ -94,5 +95,43 @@ describe("the key", () => {
   it("is new after a success, for the same body too", () => {
     const first = send(null, "p", base, "ok");
     expect(send(first.next, "p", base, "ok").key).not.toBe(first.key);
+  });
+});
+
+describe("an answer that leaves the create unconfirmed (art-director BLK-1)", () => {
+  const mockRefusal = Object.assign(new Error("Project is archived"), { code: "FAILED_PRECONDITION", details: { reason: "PROJECT_ARCHIVED" } });
+
+  it("is the exact sentence", () => {
+    expect(ISSUE_CREATE_UNCONFIRMED).toBe(
+      "Taska couldn’t confirm the issue was created. Press Create issue again without changing anything — it won’t create a second one.",
+    );
+  });
+
+  it("no answer, a 408 and a 5xx — not a 429, a refusal, the mocks' code-only refusal, or a closed company", () => {
+    for (const error of [new TypeError("Failed to fetch"), new TypeError("Load failed"), new MockProblemError(408, "TIMEOUT", "x"), new MockProblemError(503, "DEPENDENCY_UNAVAILABLE", "x")]) {
+      expect(createUnconfirmed(error)).toBe(true);
+    }
+    for (const error of [
+      new MockProblemError(429, "RATE_LIMITED", "x"),
+      new MockProblemError(422, "QUOTA_EXCEEDED", "x"),
+      new MockProblemError(409, "IDEMPOTENCY_CONFLICT", "x"),
+      new MockProblemError(400, "VALIDATION_FAILED", "x"),
+      mockRefusal,
+      new WorkspaceClosedError(),
+    ]) {
+      expect(createUnconfirmed(error)).toBe(false);
+    }
+  });
+
+  it("the key stays open exactly where the sentence may be said, and after a 429 too", () => {
+    expect(createLeftOpen(new MockProblemError(429, "RATE_LIMITED", "x"))).toBe(true);
+    expect(createLeftOpen(new TypeError("Failed to fetch"))).toBe(true);
+    expect(createLeftOpen(mockRefusal)).toBe(false);
+    expect(createLeftOpen(new MockProblemError(422, "QUOTA_EXCEEDED", "x"))).toBe(false);
+  });
+
+  it("the server's words under it only when there was an HTTP answer", () => {
+    expect(unconfirmedServerWords(new MockProblemError(503, "DEPENDENCY_UNAVAILABLE", "issue-service is unavailable"))).toBe("issue-service is unavailable");
+    expect(unconfirmedServerWords(new TypeError("Failed to fetch"))).toBeNull();
   });
 });

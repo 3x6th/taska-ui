@@ -18,6 +18,8 @@ const MOB = "f315c5cf-3333-47d1-8d22-79f07c2ec99b";
 const LNG = "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c07";
 const RND = "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c04";
 const READ = "getProjectTaskQuota";
+/** A create whose answer never came (art-director BLK-1), exactly. */
+const UNCONFIRMED = "Taska couldn’t confirm the issue was created. Press Create issue again without changing anything — it won’t create a second one.";
 
 const boardPath = (companyId: string, projectId: string) => companyPath(companyId, `/projects/${projectId}/board`);
 const storedHooks = (page: Page) => page.evaluate(() => JSON.parse(window.localStorage.getItem("taska.mockTenantHooks") ?? "{}") as Record<string, unknown>);
@@ -339,8 +341,10 @@ test("H1: a create whose answer was lost is retried with the same key — one is
   await dialog.getByLabel("Summary").fill("Sent twice, made once");
   const create = dialog.getByRole("button", { name: "Create issue" });
   await create.click();
-  // The answer never came: the draft and the form stay, and the same press goes again.
-  await expect(dialog.getByRole("alert")).toBeVisible();
+  // The answer never came: the form says so and what to do (art-director BLK-1); the draft stays, and the same press goes again.
+  await expect(dialog.getByRole("alert")).toHaveText(UNCONFIRMED);
+  await expect(dialog.locator(".error-note-detail")).toHaveCount(0);
+  await expect(create).toBeFocused();
   await expect(dialog.getByLabel("Summary")).toHaveValue("Sent twice, made once");
   await create.click();
   await expect(page).toHaveURL(/\/issues\/[^/]+$/);
@@ -353,7 +357,7 @@ test("H1: a create whose answer was lost is retried with the same key — one is
   await setHooks(page, { loseAnswer: ["createIssue"] });
   await reopened.getByLabel("Summary").fill("First wording");
   await reopened.getByRole("button", { name: "Create issue" }).click();
-  await expect(reopened.getByRole("alert")).toBeVisible();
+  await expect(reopened.getByRole("alert")).toHaveText(UNCONFIRMED);
   await reopened.getByLabel("Summary").fill("Second wording");
   await reopened.getByRole("button", { name: "Create issue" }).click();
   await expect(page).toHaveURL(/\/issues\/[^/]+$/);
