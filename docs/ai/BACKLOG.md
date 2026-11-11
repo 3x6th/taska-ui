@@ -4866,3 +4866,6 @@ Rulings in `docs/ai/reviews/TAS-516-*.md` (git-ignored); divergence in `API-DIVE
 - **« · » after an undated segment** sits inside it («Bank transfer ·»), so in principle the dot could open a new line; it
   can't today (the method opens the line and fits 233 px at 320). A no-break space before «·» would make it hold for any
   text (art-director, optional).
+- **`MOCK_SERVER_KEY` is copied into `e2e/companiesFixtures.ts`** — a future v10 bump that misses the copy would make
+  helpers read `{}` and «0 checkouts» assertions pass for the wrong reason; pin the two with one assertion
+  (release-reviewer).
