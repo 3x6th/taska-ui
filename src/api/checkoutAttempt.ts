@@ -20,14 +20,20 @@ import { newIdempotencyKey } from "./tenantCreation";
  * The record names the checkout once the server has answered (`checkoutId`,
  * with its `expiresAt`), and the return from the payment page is routed by it
  * (`/billing/return`, `/billing/cancel`, A54) — the return address carries no
- * id at all. **The payment page's address is never stored.** `leftAt` is the
- * one thing the cancel address tells: the owner came back through it (A56).
+ * id at all. **The payment page's address is never stored.** `leftAt` is a
+ * wording hint only (A56): set when the owner came back through the cancel
+ * address or by Back from the provider (the orchestrator's N3), cleared when
+ * they came back through the return address.
  *
  * Closed — removed — when a checkout FAILED or EXPIRED (the next Pay is a new
- * key), when the invoice is PAID, EXPIRED or VOID, on the refusals the server
- * will repeat for this key (403 `OWNER_REQUIRED`, 409 `INVALID_STATE` /
- * `IDEMPOTENCY_CONFLICT`, 503 `POLICY_NOT_CONFIGURED`), and on sign-out. An
- * UNKNOWN checkout keeps it. Another account's records are dropped unread.
+ * key); when the invoice is read PAID, EXPIRED or VOID, on its page or in the
+ * list; when the company is no longer never-opened (its CREATION records);
+ * on the definitive refusals before anything was created (403
+ * `OWNER_REQUIRED`, `CAPABILITY_DISABLED`, `READ_ONLY`; 409 `INVALID_STATE`,
+ * `IDEMPOTENCY_CONFLICT`; 503 `POLICY_NOT_CONFIGURED`) — only while the record
+ * still holds the refused key; and on sign-out. A lost answer, a 5xx, a 408,
+ * a 429 and a 503 `DEPENDENCY_UNAVAILABLE` keep it, and so does an UNKNOWN
+ * checkout. Another account's records are dropped unread.
  */
 
 export const CHECKOUT_ATTEMPT_PREFIX = "taska.checkout.";
@@ -268,6 +274,14 @@ export async function withCheckoutAttempt<T extends { id: string; expiresAt: str
     return checkout;
   };
   return locks === null ? run() : locks.request(checkoutLockName(tenantId, invoiceId), run);
+}
+
+/** The return address was the way back: the record's `leftAt` goes (release-reviewer R1). */
+export function clearLeft(storage: Storage, record: CheckoutAttempt): CheckoutAttempt {
+  if (record.leftAt === undefined) return record;
+  const { leftAt: _left, ...kept } = record;
+  writeCheckoutAttempt(storage, kept);
+  return kept;
 }
 
 /** The cancel address was the way back: `leftAt` on the record (a hint for the wording only). */

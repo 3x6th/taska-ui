@@ -1187,7 +1187,9 @@ export class WebSessionClient {
       this.redirectPolicy,
     );
     if (checkout === null) throw new Error("The answer held no checkout.");
-    if (checkout.invoiceId !== null && checkout.invoiceId !== invoiceId) throw new ForeignCompanyAnswerError();
+    // It must name the invoice asked for (api-contract-guard F6): one that names another, or none, is
+    // no answer about this payment — a failure without a status, so the key is kept for Pay again.
+    if (checkout.invoiceId !== invoiceId) throw new ForeignCompanyAnswerError();
     return checkout;
   }
 

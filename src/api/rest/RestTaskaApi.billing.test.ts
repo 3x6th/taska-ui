@@ -185,6 +185,11 @@ describe("invoices and checkout on the wire (TAS-513)", () => {
     await expect(api.listInvoices(NORTHWIND, { limit: 50 })).rejects.toBeInstanceOf(ForeignCompanyAnswerError);
     answers[`POST /tenants/${NORTHWIND}/billing/invoices/${INVOICE}/checkout`] = () => json(201, { id: CHECKOUT, invoiceId: "another", state: "CREATED" });
     await expect(api.createCheckout(NORTHWIND, INVOICE, "BILLING", crypto.randomUUID())).rejects.toBeInstanceOf(ForeignCompanyAnswerError);
+    // One that names no invoice is no answer about this payment either (F6) — a failure without a status, so the key is kept.
+    answers[`POST /tenants/${NORTHWIND}/billing/invoices/${INVOICE}/checkout`] = () => json(201, { id: CHECKOUT, state: "CREATED", redirectUrl: SECRET });
+    const unbound = await api.createCheckout(NORTHWIND, INVOICE, "BILLING", crypto.randomUUID()).catch((caught: unknown) => caught);
+    expect(unbound).toBeInstanceOf(ForeignCompanyAnswerError);
+    expect(apiErrorFacts(unbound).status).toBeNull();
     answers[`GET /tenants/${NORTHWIND}/billing/checkout/${CHECKOUT}`] = () => json(200, { id: "another", invoiceId: INVOICE, state: "PENDING" });
     await expect(api.getCheckout(NORTHWIND, CHECKOUT)).rejects.toBeInstanceOf(ForeignCompanyAnswerError);
   });
