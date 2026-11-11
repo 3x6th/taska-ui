@@ -2374,12 +2374,39 @@ Everything below is the entry as it stood, in the past tense.
     replacement of an invoice is found by scanning the list (A86); a closed creation's refund is invisible, its session
     being refused (A2 extended); late PLAN_CHANGE money has no sentence (A88).
 - **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v8` — every mock session is
-  signed out once): invoice snapshots stored at issuance (a rename no longer rewrites old invoices); the WIRE fixtures on
-  one new seeded owner company; bank details invalid by construction (country `XX` IBAN failing mod-97, BIC
-  «MOCKESM0XXX», bank «Mock Bank», beneficiary «Taska Mock S.L. (test only)»), a reference different from the number;
-  receipts, matching, returns and refund progress as admin-side hooks only (matching at confirm time); the PDF a tiny
-  document marked «MOCK — not a tax document»; capabilities 86400 with an omit hook; a `holdExpiry` hook for an OPEN
-  invoice past `dueAt` (develop's real behaviour); 30-day periods. Details are completed from the builder's report.
+  signed out once; none of it reaches the REST bundle, checked by string on the build):
+  - **Fixtures:** one new seeded company, Cyberdyne Systems (Tom owner, Priya TENANT_ADMIN, project SKY, Team v2,
+    autopay DISABLED, paid through +4 days), whose stored invoice method is WIRE (`invoiceMethod`, never on the wire).
+    Umbrella and Stark are not reseeded. Its invoices TSK-2026-00901…00904 are their own series (TAS-515's e2e expects
+    the next issued number to be 01009): 00901 a late INITIAL, EXPIRED; 00902 its replacement, PAID, three lines; 00903 a
+    VOID PSP PLAN_CHANGE in USD with a VAT line and an FX quote («Mock FX desk», rate `1.0832`); 00904 an OPEN WIRE
+    RENEWAL. Seeded history: two receipts and one CONFIRMED LATE_FIRST_PAYMENT refund.
+  - **Snapshots** are stored at issuance and served as stored (a rename or a transfer no longer rewrites old invoices).
+    Buyer — the company name at issuance with a placeholder Madrid address and `billing@example.com` (Cyberdyne's own
+    `accounts@cyberdyne.example`, tax ID `XX-CYB-0001`); seller «Taska Mock S.L. (test only)», registration `MOCK-0000`,
+    tax ID `XX-MOCK-0000`; one line «{plan} plan» unless the fixture says otherwise.
+  - **Bank details** invalid by construction: IBAN `XX00MOCK0000000000000000` (country `XX`, check digits 00, fails
+    mod-97), BIC «MOCKESM0XXX», bank «Mock Bank», reference `TASKA-{number}` (≠ the number); a `wireDetailsVariant:
+    "long"` hook gives a 200-character beneficiary and a 140-character reference.
+  - **Issuing:** `changeSubscriptionPlan` issues with the request's `paymentMethod`; `issueMethod` takes a `"*"` key so a
+    new creation's INITIAL can be WIRE. A WIRE INITIAL is due at the earlier of issue + 7 days and the deadline, a
+    replacement at the earlier of now + 7 days and the deadline.
+  - **Matching** happens at confirm time, not at record time. Invisible outcomes (the receipt stays unconfirmed): a late
+    plan change, a late renewal of a blocked or inactive company, DAY precision on the due day, another company's
+    invoice. A late partial renewal returns INCOMPLETE_BANK_PAYMENT; money for a PAID invoice, or for the first invoice
+    of a company that has since opened, is DUPLICATE_PAYMENT; D216 applies only when the money arrived no later than the
+    earlier of due and deadline. PARTIALLY_PAID invoices also expire at `dueAt`; `holdExpiry` stops that (develop's real
+    behaviour, A85).
+  - **Refunds:** one per receipt, REQUESTED, WIRE, fee borne by TASKA, the reason following the outcome; no INCOMPLETE
+    return while the invoice is still open. `decidedAt` set on APPROVED / REJECTED, `submittedAt` on SUBMITTING only after
+    evidence; CONFIRMED and REJECTED are terminal; CONFIRMED lowers `matchedUnallocated` and recomputes `remaining`. SLA:
+    5 business dates Mon–Fri in UTC, no holidays, calendar `MOCK-ES-BANKING` / `mock-2026-1`, digest all zeros.
+    `listRefunds` orders by `requestedAt` desc, then id desc.
+  - **Capabilities:** any ACTIVE member; `WIRE_RECONCILIATION_TARGET_SECONDS` 86400 and `UNPAID_CREATION_WINDOW_SECONDS`
+    2592000; `expiresAt` now + 30 s; `items` empty; invented `policyVersion` / `flagVersion`. A
+    `reconciliationTargetSeconds` hook changes the target, `null` omits it.
+  - **Document:** `application/pdf`, no `Content-Disposition`, a one-page PDF marked «MOCK — not a tax document»; DRAFT
+    404; a `documentOff` hook gives 503 POLICY_NOT_CONFIGURED, `documentType` swaps the content type.
 - **Turning the flag on** additionally needs TAS-357, 358 and 482 behind a gateway REST route, asks A78, A79 and A80
   answered, and the vendored gateway contract re-vendored (capabilities); «edit billing details» needs A77.
 - **Removal:** with the flag, after a stand probe — a partial transfer → expiry → a return; 25 against 20 → 20 covered and
