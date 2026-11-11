@@ -113,7 +113,13 @@ test.describe("the reset by an emailed link (AC: recovery never says whether an 
     await page.goto(link ?? "");
     await expect(page).toHaveURL(`${B2B}/reset-password`);
     await expect(page.getByRole("heading", { level: 1, name: "Choose a new password" })).toBeVisible();
-    await expect(page.getByText(/on every device, this browser included, and disconnects your access tokens and connected apps/)).toBeVisible();
+    await expect(
+      page.getByText(
+        "Setting a new password signs you out of Taska on every device, this browser included. It also revokes your access tokens and disconnects your connected apps.",
+      ),
+    ).toBeVisible();
+    // Signed in here, `/login` goes on into the app, and the ghost says so (N3).
+    await expect(page.getByRole("link", { name: "Back to Taska" })).toHaveAttribute("href", "/login");
     await expect(page.getByLabel("New password")).toBeFocused();
     // The invitation's capture never saw it: no invite form, no preview.
     await expect(page.getByRole("tab")).toHaveCount(0);
@@ -126,9 +132,18 @@ test.describe("the reset by an emailed link (AC: recovery never says whether an 
     await expect(page.getByRole("alert")).toHaveText("The new password must be 12 to 128 characters.");
     await expect(page.getByLabel("New password")).toHaveAttribute("aria-invalid", "true");
 
+    // Nothing but the form in flight between the press and `/login`, through the 204 and the sign-out (B1).
+    await page.evaluate(() => {
+      const seen: string[] = [];
+      (window as unknown as { seenTexts: string[] }).seenTexts = seen;
+      new MutationObserver(() => seen.push(document.body.innerText)).observe(document.body, { childList: true, subtree: true, characterData: true });
+    });
     await page.getByLabel("New password").fill(PASSWORD);
     await page.getByRole("button", { name: "Set new password" }).click();
     await expect(page).toHaveURL(`${B2B}/login`);
+    const texts = await page.evaluate(() => (window as unknown as { seenTexts: string[] }).seenTexts);
+    expect(texts.some((text) => text.includes("Open the link from your email again"))).toBe(false);
+    expect(texts.some((text) => text.includes("Setting password"))).toBe(true);
     const notice = page.getByText("Password reset. Sign in with your email and new password.");
     await expect(notice).toBeVisible();
     await expect(page.getByLabel("Email")).toBeFocused();

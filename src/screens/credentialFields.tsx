@@ -84,6 +84,8 @@ export function PasswordField({
  * - a 429: `Too many attempts. Try again in {wait}.`;
  * - no HTTP status: `lost` — the press may or may not have landed — with no
  *   words, there were none; or `failed` when the form has no such sentence;
+ *   an answer this build could not read (`MalformedAnswerError`) counts as
+ *   answered, and its empty message adds no words;
  * - anything else: `failed`, with the server's words beside it.
  */
 export function CredentialRefusal({
@@ -103,13 +105,21 @@ export function CredentialRefusal({
   const { message, requestId } = apiErrorFacts(error);
   const lines = violationLines(error, fields);
   if (lines.length > 0) {
+    // The id on the first line that names a field, and only there: two
+    // violations of one field would otherwise be two elements with one id, and
+    // `aria-describedby` reaches the first anyway (art-director N5, §5.6).
+    const named = new Set<string>();
     return (
       <ErrorNote live="alert" requestId={requestId}>
-        {lines.map((line, index) => (
-          <span className="error-note-line" id={line.field === null ? undefined : lineId(line.field)} key={index}>
-            {line.text}
-          </span>
-        ))}
+        {lines.map((line, index) => {
+          const first = line.field !== null && !named.has(line.field);
+          if (line.field !== null) named.add(line.field);
+          return (
+            <span className="error-note-line" id={first && line.field !== null ? lineId(line.field) : undefined} key={index}>
+              {line.text}
+            </span>
+          );
+        })}
       </ErrorNote>
     );
   }

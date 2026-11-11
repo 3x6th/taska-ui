@@ -254,8 +254,14 @@ function EmailChangeForm({
   const start = useMutation({
     mutationFn: (input: { newEmail: string; currentPassword: string; key: string }) =>
       taskaApi.requestAccountEmailChange(input.newEmail, input.currentPassword, input.key),
+    // The current password is in the mutation's `variables`: gone from the
+    // cache once nothing observes it, and dropped from this one below.
+    gcTime: 0,
     onSuccess: (answer) => {
       startKeys.answered();
+      // The challenge is in hand: nothing of the press — the password — stays
+      // in the mutation's state through the code step (release-reviewer 5).
+      start.reset();
       // The password is gone from memory with the 201: the code step never holds it (B9).
       setPassword("");
       setShown(false);
@@ -271,6 +277,7 @@ function EmailChangeForm({
   const confirm = useMutation({
     mutationFn: (input: { challengeId: string; code: string; key: string }) =>
       taskaApi.confirmAccountEmailChange(input.challengeId, input.code, input.key),
+    gcTime: 0,
     onSuccess: () => {
       confirmKeys.answered();
       setCode("");
@@ -557,6 +564,9 @@ function PasswordChangeForm({
   const change = useMutation({
     mutationFn: (input: { currentPassword: string; newPassword: string; key: string }) =>
       taskaApi.changeAccountPassword(input.currentPassword, input.newPassword, input.key),
+    // Both passwords are in `variables`: the form closes on the 204, and the
+    // mutation goes from the cache with it (release-reviewer 5).
+    gcTime: 0,
     onSuccess: () => {
       keys.answered();
       setCurrent("");

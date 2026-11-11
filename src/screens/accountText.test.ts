@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { MalformedAnswerError } from "../api/accountCredentials";
 import {
+  answered,
+  backLabel,
   codeSentText,
   isDeadCode,
   isDeadLink,
@@ -108,12 +111,24 @@ describe("the reset's words", () => {
     expect(recoverySentText("x@example.com", true)).toContain("we’ve sent another link there");
   });
 
-  it("the lead says this browser is one of them when it holds a session (decision 4)", () => {
+  it("the lead says this browser is one of them when it holds a session, in Settings' verbs (decision 4, build review B2)", () => {
     expect(recoveryLead(false)).toBe(
-      "Setting a new password signs you out of Taska on every device and disconnects your access tokens and connected apps.",
+      "Setting a new password signs you out of Taska on every device. It also revokes your access tokens and disconnects your connected apps.",
     );
     expect(recoveryLead(true)).toBe(
-      "Setting a new password signs you out of Taska on every device, this browser included, and disconnects your access tokens and connected apps.",
+      "Setting a new password signs you out of Taska on every device, this browser included. It also revokes your access tokens and disconnects your connected apps.",
     );
+  });
+
+  it("the ghost says where `/login` goes: into the app with a session, to sign in without (N3)", () => {
+    expect(backLabel(true)).toBe("Back to Taska");
+    expect(backLabel(false)).toBe("Back to sign in");
+  });
+
+  it("an answer this build could not read is answered; nothing answered, or a client-made refusal, is not", () => {
+    expect(answered(new MalformedAnswerError())).toBe(true);
+    expect(answered(problem(400, "VALIDATION_FAILED"))).toBe(true);
+    expect(answered(new TypeError("Failed to fetch"))).toBe(false);
+    expect(answered(new Error("The answer held nothing"))).toBe(false);
   });
 });

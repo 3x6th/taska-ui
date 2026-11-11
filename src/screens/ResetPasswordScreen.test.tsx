@@ -20,11 +20,14 @@ const { fakeApi, state } = vi.hoisted(() => {
     calls: [] as Array<{ token: string; password: string; key: string }>,
     answers: [] as Array<() => Promise<unknown>>,
     loggedOut: 0,
+    /** Holds the sign-out's answer, as a round trip on the wire would. */
+    logoutGate: null as Promise<void> | null,
   };
   const api = {
     hasSession: () => state.session,
     logout: async () => {
       state.loggedOut += 1;
+      if (state.logoutGate) await state.logoutGate;
       state.session = false;
     },
     completePasswordRecovery: (token: string, password: string, key: string) => {
@@ -75,6 +78,7 @@ beforeEach(() => {
   state.calls = [];
   state.answers = [];
   state.loggedOut = 0;
+  state.logoutGate = null;
 });
 afterEach(() => forgetRecoveryToken());
 
@@ -84,8 +88,9 @@ describe("with a link", () => {
     open();
     expect(screen.getByRole("heading", { level: 1, name: "Choose a new password" })).toBeInTheDocument();
     expect(
-      screen.getByText("Setting a new password signs you out of Taska on every device and disconnects your access tokens and connected apps."),
+      screen.getByText("Setting a new password signs you out of Taska on every device. It also revokes your access tokens and disconnects your connected apps."),
     ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to sign in" })).toHaveAttribute("href", "/login");
     const field = screen.getByLabelText("New password");
     expect(field).toHaveFocus();
     expect(field).toHaveAttribute("autocomplete", "new-password");
@@ -94,11 +99,43 @@ describe("with a link", () => {
     expect(state.calls).toEqual([]);
   });
 
-  it("says this browser is included when it holds a session", () => {
+  it("says this browser is included when it holds a session, and the ghost says where `/login` then goes", () => {
     holdRecoveryToken(TOKEN);
     state.session = true;
     open();
-    expect(screen.getByText(/on every device, this browser included, and disconnects/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Setting a new password signs you out of Taska on every device, this browser included. It also revokes your access tokens and disconnects your connected apps.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to Taska" })).toHaveAttribute("href", "/login");
+  });
+
+  it("after the 204, in flight to /login through the sign-out's round trip: the no-link view is never drawn (B1)", async () => {
+    holdRecoveryToken(TOKEN);
+    state.session = true;
+    let signedOut!: () => void;
+    state.logoutGate = new Promise<void>((resolve) => {
+      signedOut = resolve;
+    });
+    const seen: string[] = [];
+    const observer = new MutationObserver(() => seen.push(document.body.textContent ?? ""));
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    try {
+      open();
+      await setPassword("a long new password");
+      await waitFor(() => expect(state.loggedOut).toBe(1));
+      // The sign-out is out: the form is as it was sent, in flight.
+      const button = screen.getByRole("button", { name: "Setting password" });
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      expect(heldRecoveryToken()).toBe(TOKEN);
+      signedOut();
+      await waitFor(() => expect(screen.getByTestId("login")).toHaveTextContent('{"recovered":true}'));
+      expect(heldRecoveryToken()).toBeNull();
+      expect(seen.some((text) => text.includes("Open the link from your email again"))).toBe(false);
+    } finally {
+      observer.disconnect();
+    }
   });
 
   it("an empty password sends nothing; the reason stands in the hint", () => {
@@ -144,6 +181,9 @@ describe("with a link", () => {
         "This reset link no longer works: it expired or was already used. If you asked for more than one link, open the newest, or request a new one.",
       );
       expect(sentence.closest(".auth-refusal-block")).toHaveFocus();
+      // The field, the button and the lead go; the title stays (N1).
+      expect(screen.getByRole("heading", { level: 1, name: "Choose a new password" })).toBeInTheDocument();
+      expect(screen.queryByText(/Setting a new password signs you out/)).not.toBeInTheDocument();
       // Not live: focus brings it.
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       expect(screen.getByText("rid-1")).toBeInTheDocument();

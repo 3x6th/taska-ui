@@ -14,6 +14,7 @@ import {
   DEAD_LINK_TEXT,
   NEW_PASSWORD_HINT,
   NO_LINK_TEXT,
+  backLabel,
   isDeadLink,
   recoveryLead,
   violationLines,
@@ -52,6 +53,12 @@ export function ResetPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "t
   const [shown, setShown] = useState(false);
   const [missing, setMissing] = useState(false);
   const [dead, setDead] = useState<{ requestId: string | null } | null>(null);
+  /**
+   * The 204 is in hand and the page is on its way to `/login` (art-director's
+   * build review B1): the form stays in flight — «Setting password» — through
+   * the sign-out's round trip, and no other view of this page is drawn.
+   */
+  const [leaving, setLeaving] = useState(false);
   const passwordRef = useRef<HTMLInputElement>(null);
   const deadRef = useRef<HTMLDivElement>(null);
   const passwordId = useId();
@@ -63,16 +70,23 @@ export function ResetPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "t
     mutationFn: ({ link, newPassword, key }: { link: string; newPassword: string; key: string }) =>
       taskaApi.completePasswordRecovery(link, newPassword, key),
     retry: false,
+    // Nothing of the token or the password outlives this page in the
+    // mutation cache (release-reviewer 5).
+    gcTime: 0,
     onSuccess: async () => {
+      setLeaving(true);
       keys.answered();
-      forgetRecoveryToken();
-      setPassword("");
       // The server has ended every session of the account; this browser's
       // goes too, and what it read with it.
       if (taskaApi.hasSession()) await taskaApi.logout();
       queryClient.removeQueries();
       forgetFreeUsed();
       navigate("/login", { replace: true, state: { recovered: true } satisfies LoginRedirectState });
+      // Only once the page is leaving: forgotten earlier, the token's absence
+      // would draw «Open the link from your email again» for the sign-out's
+      // whole round trip (B1).
+      forgetRecoveryToken();
+      setPassword("");
     },
     onError: (error) => {
       keys.answered(error);
@@ -95,8 +109,12 @@ export function ResetPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "t
     if (dead !== null) deadRef.current?.focus();
   }, [dead]);
 
+  const pending = complete.isPending || leaving;
+  // Read during render, like the guard: the way back says where it goes.
+  const back = backLabel(taskaApi.hasSession());
+
   const submit = () => {
-    if (complete.isPending || token === null) return;
+    if (pending || token === null) return;
     if (password === "") {
       setMissing(true);
       passwordRef.current?.focus();
@@ -109,8 +127,8 @@ export function ResetPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "t
     return (
       <AuthShell entrance="app" theme={theme} toggleTheme={toggleTheme}>
         <div className="form-stack">
+          {/* The field, the button and the lead go; the title stays (N1). */}
           <h1 className="auth-title">Choose a new password</h1>
-          <p className="auth-lead">{recoveryLead(signedInHere)}</p>
           {/* A state the press led to, which takes focus: not live (B12). */}
           <div className="auth-refusal-block" ref={deadRef} tabIndex={-1}>
             <ErrorNote requestId={dead.requestId}>{DEAD_LINK_TEXT}</ErrorNote>
@@ -119,14 +137,14 @@ export function ResetPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "t
             Request a new link
           </Link>
           <Link className="auth-ghost" to="/login">
-            Back to sign in
+            {back}
           </Link>
         </div>
       </AuthShell>
     );
   }
 
-  if (token === null) {
+  if (token === null && !leaving) {
     return (
       <AuthShell entrance="app" theme={theme} toggleTheme={toggleTheme}>
         <div className="form-stack">
@@ -137,7 +155,7 @@ export function ResetPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "t
             Request a new link
           </Link>
           <Link className="auth-ghost" to="/login">
-            Back to sign in
+            {back}
           </Link>
         </div>
       </AuthShell>
@@ -180,8 +198,8 @@ export function ResetPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "t
           shown={shown}
           value={password}
         />
-        <button aria-disabled={complete.isPending || undefined} className="primary-button auth-submit" type="submit">
-          {complete.isPending ? "Setting password" : "Set new password"}
+        <button aria-disabled={pending || undefined} className="primary-button auth-submit" type="submit">
+          {pending ? "Setting password" : "Set new password"}
         </button>
         {refusal !== null ? (
           <CredentialRefusal
@@ -194,7 +212,7 @@ export function ResetPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "t
           />
         ) : null}
         <Link className="auth-ghost" to="/login">
-          Back to sign in
+          {back}
         </Link>
       </form>
     </AuthShell>

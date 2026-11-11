@@ -13,11 +13,12 @@ import { ForgotPasswordScreen } from "./ForgotPasswordScreen";
 
 const { fakeApi, state } = vi.hoisted(() => {
   const state = {
+    session: false,
     calls: [] as Array<{ email: string; key: string }>,
     answers: [] as Array<() => Promise<unknown>>,
   };
   const api = {
-    hasSession: () => false,
+    hasSession: () => state.session,
     requestPasswordRecovery: (email: string, key: string) => {
       state.calls.push({ email, key });
       const next = state.answers.shift();
@@ -64,6 +65,7 @@ function open(state: unknown = null) {
 }
 
 beforeEach(() => {
+  state.session = false;
   state.calls = [];
   state.answers = [];
 });
@@ -130,7 +132,10 @@ describe("the reset request", () => {
     state.answers.push(() => Promise.reject(new TypeError("Failed to fetch")));
     open();
     await send("anna@example.com");
-    expect(await screen.findByText("The reset link could not be sent.")).toBeInTheDocument();
+    // Nothing answered: the link may or may not have gone (build review N2).
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The server could not be reached, so the link may or may not have been sent. Try again to make sure.",
+    );
     state.answers.push(() => Promise.reject(refusal(503, "DEPENDENCY_UNAVAILABLE")));
     fireEvent.click(screen.getByRole("button", { name: "Send reset link" }));
     await waitFor(() => expect(state.calls).toHaveLength(2));
@@ -165,7 +170,41 @@ describe("the reset request", () => {
   });
 });
 
+describe("the way back", () => {
+  it("says «Back to Taska» with a session held — `/login` goes on into the app — and «Back to sign in» without (N3)", async () => {
+    state.session = true;
+    const first = open();
+    expect(screen.getByRole("link", { name: "Back to Taska" })).toHaveAttribute("href", "/login");
+    await send("anna@example.com");
+    await screen.findByRole("heading", { name: "Check your email" });
+    expect(screen.getByRole("link", { name: "Back to Taska" })).toHaveAttribute("href", "/login");
+    first.unmount();
+    state.session = false;
+    open();
+    expect(screen.getByRole("link", { name: "Back to sign in" })).toHaveAttribute("href", "/login");
+  });
+});
+
 describe("«Check your email»", () => {
+  it("a Resend nothing answered says another link may or may not have gone; one refused, §4.31's sentence with the server's words", async () => {
+    state.answers.push(() => Promise.resolve({ retryAfterSeconds: 0 }));
+    state.answers.push(() => Promise.reject(new TypeError("Failed to fetch")));
+    state.answers.push(() => Promise.reject(refusal(503, "DEPENDENCY_UNAVAILABLE")));
+    open();
+    await send("anna@example.com");
+    await screen.findByRole("heading", { name: "Check your email" });
+    fireEvent.click(screen.getByRole("button", { name: "Resend link" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The server could not be reached, so another link may or may not have been sent. Try again to make sure.",
+    );
+    expect(screen.queryByText("Failed to fetch")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Resend link" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Resending did not go through."));
+    expect(screen.getByText("the server's words")).toBeInTheDocument();
+    // The lost resend was retried with its own key.
+    expect(state.calls[2].key).toBe(state.calls[1].key);
+  });
+
   it("Resend sends the same address with a new key, says so in the hidden status, and counts again", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

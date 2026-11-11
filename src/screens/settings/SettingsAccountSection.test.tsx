@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MalformedAnswerError } from "../../api/accountCredentials";
 import type { TaskaApi } from "../../api/TaskaApi";
 import { companiesHarness } from "../../test/companiesHarness";
 import { SettingsAccountSection } from "./SettingsAccountSection";
@@ -158,6 +159,30 @@ describe("the email change", () => {
     expect(document.body.innerHTML).not.toContain("hunter2");
   });
 
+  it("the 201 leaves nothing of the password in the mutation cache (release-reviewer 5)", async () => {
+    const { client } = open();
+    await toCodeStep();
+    await waitFor(() =>
+      expect(JSON.stringify(client.getMutationCache().getAll().map((mutation) => mutation.state.variables))).not.toContain("hunter2"),
+    );
+  });
+
+  it("a malformed 201 is answered: the form's own sentence, no «could not be reached», and the next press a new key (guard 4)", async () => {
+    state.answers.push(() => Promise.reject(new MalformedAnswerError()));
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: "Change email" }));
+    fireEvent.change(screen.getByLabelText("New email"), { target: { value: "anna.new@example.com" } });
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: "hunter2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Your email was not changed.");
+    expect(alert).not.toHaveTextContent(/could not be reached/);
+    expect(alert.closest(".error-note")?.querySelector(".error-note-detail")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+    await screen.findByLabelText("Code");
+    expect(state.starts[1].key).not.toBe(state.starts[0].key);
+  });
+
   it("the 204: the code sent stripped, the form closed, the line said, focus on Change email with the ring", async () => {
     open();
     const code = await toCodeStep();
@@ -288,6 +313,31 @@ describe("the password change", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("Current password: The current password is not correct.New password: Too short.");
     expect(screen.getByLabelText("Current password")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("New password")).toHaveAccessibleDescription("At least 12 characters. New password: Too short.");
+  });
+
+  it("two violations of one field: two lines, one id — on the first that names it (N5)", async () => {
+    state.answers.push(() =>
+      Promise.reject(
+        refusal(400, "VALIDATION_FAILED", {
+          violations: [
+            { field: "newPassword", code: "TOO_SHORT", message: "Too short." },
+            { field: "newPassword", code: "WEAK", message: "Too weak." },
+          ],
+        }),
+      ),
+    );
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: "Change password" }));
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: "old" } });
+    fireEvent.change(screen.getByLabelText("New password"), { target: { value: "short" } });
+    fireEvent.click(screen.getByRole("button", { name: "Change password" }));
+    const alert = await screen.findByRole("alert");
+    const lines = alert.querySelectorAll(".error-note-line");
+    expect([...lines].map((line) => line.textContent)).toEqual(["New password: Too short.", "New password: Too weak."]);
+    expect(lines[0].id).not.toBe("");
+    expect(lines[1].id).toBe("");
+    expect(document.querySelectorAll(`[id="${lines[0].id}"]`)).toHaveLength(1);
     expect(screen.getByLabelText("New password")).toHaveAccessibleDescription("At least 12 characters. New password: Too short.");
   });
 

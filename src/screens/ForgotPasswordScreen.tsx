@@ -6,7 +6,17 @@ import { AuthShell } from "../components/AuthShell";
 import { ErrorNote } from "../components/ErrorNote";
 import { useMutation } from "../hooks/useMutation";
 import { usePressKeys } from "../hooks/usePressKeys";
-import { FORGOT_LEAD, isTooMany, recoverySentText, violationLines, type FormField } from "./accountText";
+import {
+  FORGOT_LEAD,
+  REQUEST_LOST_TEXT,
+  RESEND_LOST_TEXT,
+  answered,
+  backLabel,
+  isTooMany,
+  recoverySentText,
+  violationLines,
+  type FormField,
+} from "./accountText";
 import { formatCountdown, tooManyAttemptsText } from "./authText";
 import { CredentialRefusal } from "./credentialFields";
 import type { ScreenProps } from "./App";
@@ -170,6 +180,10 @@ export function ForgotPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "
     resend.mutate({ address: sent, key: resendKeys.take({ email: sent }) });
   };
 
+  // Read during render, like the guard: with a session held, `/login` goes on
+  // into the app, and the ghost says so (N3).
+  const back = backLabel(taskaApi.hasSession());
+
   const useDifferentEmail = () => {
     setSent(null);
     setAnnouncement(null);
@@ -202,13 +216,15 @@ export function ForgotPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "
             {resend.isPending ? "Sending" : "Resend link"}
           </button>
           {resendFailed ? (
+            // Nothing answered: the link may or may not have gone (N2); a
+            // refusal: §4.31's sentence, the server's words and the id.
             <ErrorNote
               key={resend.submittedAt}
               live="alert"
               requestId={apiErrorFacts(resendRefusal).requestId}
-              serverWords={apiErrorFacts(resendRefusal).status !== null ? apiErrorFacts(resendRefusal).message : null}
+              serverWords={answered(resendRefusal) ? apiErrorFacts(resendRefusal).message : null}
             >
-              Resending did not go through.
+              {answered(resendRefusal) ? "Resending did not go through." : RESEND_LOST_TEXT}
             </ErrorNote>
           ) : null}
           <p className="auth-hint" id={hintId}>
@@ -226,7 +242,7 @@ export function ForgotPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "
               Use a different email
             </button>
             <Link className="auth-ghost" to="/login">
-              Back to sign in
+              {back}
             </Link>
           </div>
           {/* Mounted with the view and never re-mounted, so a resend's answer is
@@ -291,10 +307,11 @@ export function ForgotPasswordScreen({ theme, toggleTheme }: Pick<ScreenProps, "
             fields={FIELDS}
             key={request.submittedAt}
             lineId={(field) => `${lineId}-${field}`}
+            lost={REQUEST_LOST_TEXT}
           />
         ) : null}
         <Link className="auth-ghost" to="/login">
-          Back to sign in
+          {back}
         </Link>
       </form>
     </AuthShell>

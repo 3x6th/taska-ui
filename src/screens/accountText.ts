@@ -1,3 +1,4 @@
+import { wasAnswered } from "../api/accountCredentials";
 import { apiErrorFacts, refusalCode, refusalRetryAfter, refusalViolations } from "../api/errors";
 import { formatLockDeadline } from "../lib/accountLock";
 import { tooManyAttemptsText } from "./authText";
@@ -25,15 +26,27 @@ export const recoverySentText = (email: string, again: boolean) =>
   `If ${email} belongs to a Taska account, we’ve sent ${again ? "another link" : "a link"} there. Open it to choose a new password.`;
 
 /**
- * Above the new password (orchestrator decision 4): the contract's fact — a
- * completed recovery ends every session and grant of the account
- * (contracts.md, ask Q3) — and, with a session in this browser, that it is
- * one of them.
+ * Above the new password (orchestrator decision 4, art-director's build
+ * review B2): the contract's fact — a completed recovery ends every session
+ * and grant of the account (contracts.md, ask Q3) — in Settings' own verbs:
+ * tokens are revoked, apps disconnected; and, with a session in this
+ * browser, that it is one of them.
  */
 export const recoveryLead = (signedInHere: boolean) =>
   signedInHere
-    ? "Setting a new password signs you out of Taska on every device, this browser included, and disconnects your access tokens and connected apps."
-    : "Setting a new password signs you out of Taska on every device and disconnects your access tokens and connected apps.";
+    ? "Setting a new password signs you out of Taska on every device, this browser included. It also revokes your access tokens and disconnects your connected apps."
+    : "Setting a new password signs you out of Taska on every device. It also revokes your access tokens and disconnects your connected apps.";
+
+/**
+ * The ghost under both recovery pages (art-director's build review N3): its
+ * address is `/login` either way, which with a session held goes on into the
+ * app — so then it says where it goes.
+ */
+export const backLabel = (signedIn: boolean) => (signedIn ? "Back to Taska" : "Back to sign in");
+
+/** The forgot form's and Resend's press nothing answered (build review N2). */
+export const REQUEST_LOST_TEXT = "The server could not be reached, so the link may or may not have been sent. Try again to make sure.";
+export const RESEND_LOST_TEXT = "The server could not be reached, so another link may or may not have been sent. Try again to make sure.";
 
 /** The one sentence for every way a link is dead (A101): 401, 422 `CONFIRMATION_EXPIRED`, a `token` violation. */
 export const DEAD_LINK_TEXT =
@@ -91,8 +104,12 @@ export function normalizeCode(value: string): string {
 
 /* ----------------------------------------------------------- the refusals */
 
-/** Whether anything answered: an HTTP status. A request that never reached the server has none. */
-export const answered = (error: unknown): boolean => apiErrorFacts(error).status !== null;
+/**
+ * Whether anything answered: an HTTP status — or an answer this build could
+ * not read (`MalformedAnswerError`), which the server did send. A request that
+ * never reached the server has neither.
+ */
+export const answered = (error: unknown): boolean => wasAnswered(error);
 
 /** A 429 — or the blueprint's code for one. Its wait is `refusalRetryAfter`. */
 export const isTooMany = (error: unknown): boolean => apiErrorFacts(error).status === 429 || refusalCode(error) === "RATE_LIMITED";
