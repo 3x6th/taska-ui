@@ -43,9 +43,11 @@ export function planNameParts(plan: PlanVersion): { name: string; version: strin
   return { name: planName(plan), version: plan.version === null ? null : ` · version ${plan.version}` };
 }
 
-/** «Cancelled»'s second line (D213): no automatic move to a free plan. */
-export const renewalNote = (company: string | null) =>
-  `When the paid period ends, ${companyInside(company)} becomes read-only. It doesn’t move to a free plan on its own.`;
+/** «Cancelled»'s second line (D213): no automatic move to a free plan; with a change scheduled, its last paid period (TAS-515). */
+export const renewalNote = (company: string | null, scheduled = false) =>
+  scheduled
+    ? `When its last paid period ends, ${companyInside(company)} becomes read-only. It doesn’t move to a free plan on its own.`
+    : `When the paid period ends, ${companyInside(company)} becomes read-only. It doesn’t move to a free plan on its own.`;
 
 /** Automatic payments, the fact only: a state outside the dictionary as it came (§6). */
 export function autopayWord(state: string): string {

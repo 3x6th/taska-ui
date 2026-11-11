@@ -2,7 +2,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import { UnreadableAnswerError } from "../../api/billing";
 import { WorkspaceClosedError } from "../../api/errors";
 import { ForeignCompanyAnswerError, type PlanVersion, type Subscription } from "../../api/tenants";
-import { forgetSubscriptionIntents, hasCurrentPeriod, intentFor, keepsIntent, planChoices, settleIntent } from "./companyPlanChange";
+import {
+  forgetSubscriptionIntents,
+  hasCurrentPeriod,
+  intentFor,
+  keepsIntent,
+  openIntent,
+  pendingSuperseded,
+  planChoices,
+  settleIntent,
+  type PendingChange,
+} from "./companyPlanChange";
 import {
   autopayLineText,
   canTurnOff,
@@ -14,6 +24,7 @@ import {
   planChangedStatus,
   subscriptionRefusalWords,
   turnOffQuestion,
+  withdrawalStatus,
 } from "./companyPlanChangeText";
 
 /*
@@ -36,7 +47,15 @@ const plan = (id: string, overrides: Partial<PlanVersion> = {}): PlanVersion => 
   state: "PUBLISHED",
   ...overrides,
 });
-const FREE = plan("free", { kind: "FREE", price: EUR("0"), period: "NONE", limits: [{ kind: "PROJECT", limit: "1", unlimited: false }] });
+const FREE = plan("free", {
+  kind: "FREE",
+  price: EUR("0"),
+  period: "NONE",
+  limits: [
+    { kind: "SEAT", limit: "5", unlimited: false },
+    { kind: "PROJECT", limit: "1", unlimited: false },
+  ],
+});
 const STARTER = plan("starter", { price: EUR("1000") });
 const TEAM = plan("team");
 const BUSINESS = plan("business", { price: EUR("4000") });
@@ -118,6 +137,53 @@ describe("one key per intent (§2)", () => {
   });
 });
 
+describe("an intent a reopened dialog shows again (art-director copy ruling)", () => {
+  it("only an open one — kept after an answer that never came, with what it was said as", () => {
+    const sent = intentFor("me", "t", "changePlan", "starter:EUR", "7", "s1", "starter");
+    expect(openIntent("me", "t", "changePlan", "s1")).toBeNull();
+    const shown = { text: "Taska couldn’t confirm the plan change.", words: "down", requestId: "rid" };
+    settleIntent("me", "t", sent, new TypeError("Failed to fetch"), shown);
+    expect(openIntent("me", "t", "changePlan", "s1")).toMatchObject({ planId: "starter", shown });
+    expect(openIntent("me", "t", "changePlan", "s2")).toBeNull();
+    settleIntent("me", "t", sent, null);
+    expect(openIntent("me", "t", "changePlan", "s1")).toBeNull();
+  });
+});
+
+describe("a pending change superseded (guard M-1, release-reviewer M1)", () => {
+  const change: PendingChange = {
+    effect: "AFTER_PAYMENT",
+    planVersionId: "starter",
+    invoice: { kind: "none" },
+    sessionId: "s1",
+    subscriptionVersion: "8",
+    paidThrough: THROUGH,
+    entitlementVersion: "3",
+    entitlementPlan: "team",
+  };
+  const ent = (version: string, planVersionId: string) => ({ ...entitlement, version, planVersionId });
+
+  it("stays while nothing says otherwise — a restriction moving the entitlement's version included", () => {
+    expect(pendingSuperseded(change, subscription({ version: "8" }), ent("3", "team"))).toBe(false);
+    expect(pendingSuperseded(change, subscription({ version: "8" }), ent("4", "team"))).toBe(false);
+    // A later version with nothing scheduled and the same paid period — a cancel in another tab — is not it.
+    expect(pendingSuperseded(change, subscription({ version: "9", renewalCancelled: true }), ent("3", "team"))).toBe(false);
+  });
+
+  it("goes when a later subscription schedules something, or starts another paid period, or a later entitlement names another plan", () => {
+    expect(pendingSuperseded(change, subscription({ version: "9", scheduledPlanVersionId: "business", scheduledEffectiveAt: THROUGH }), ent("3", "team"))).toBe(true);
+    expect(pendingSuperseded(change, subscription({ version: "9", paidThrough: "2027-01-20T09:00:00Z" }), ent("3", "team"))).toBe(true);
+    expect(pendingSuperseded(change, subscription({ version: "8" }), ent("4", "starter"))).toBe(true);
+    expect(pendingSuperseded(change, subscription({ version: "8" }), ent("4", "free"))).toBe(true);
+  });
+
+  it("a NEXT_PERIOD record lasts while its plan is the scheduled one", () => {
+    const next: PendingChange = { ...change, effect: "NEXT_PERIOD", planVersionId: "business" };
+    expect(pendingSuperseded(next, subscription({ scheduledPlanVersionId: "business", scheduledEffectiveAt: THROUGH }), null)).toBe(false);
+    expect(pendingSuperseded(next, subscription({ scheduledPlanVersionId: null }), null)).toBe(true);
+  });
+});
+
 describe("the plans offered (decision 3)", () => {
   const choices = (overrides: Partial<Subscription> = {}, restrictions: string[] = [], freeUsed = false, ent = entitlement) =>
     planChoices({ catalogue: CATALOGUE, entitlement: ent, subscription: subscription(overrides), restrictions, freeUsed }).map((choice) => [
@@ -170,7 +236,7 @@ describe("what the dialog says before the press (decision 2, guard B2)", () => {
     expect(lines[0]).toBe("Umbrella moves to Free as soon as you confirm.");
     expect(lines[1]).toMatch(/^Its paid period ends now\. The rest of it, until Dec 2[56], .+, isn’t kept or refunded — moving back to a paid plan later needs a new payment and starts a new month\.$/);
     expect(lines[2]).toBe(
-      "Free allows 1 project. If Umbrella uses more, nothing new can be added or changed until it’s back within them, though members can still be removed and invitations revoked. Archived projects count too.",
+      "Free allows 1 project and 5 seats. If Umbrella uses more, nothing new can be added or changed until it’s back within them, though members can still be removed and invitations revoked. Archived projects count too.",
     );
     expect(lines[3]).toBe("Automatic payments turn off.");
     expect(planChangeConsequences({ ...base, target: FREE, autopayState: "SUSPENDED" })).not.toContain("Automatic payments turn off.");
@@ -192,13 +258,19 @@ describe("what the dialog says before the press (decision 2, guard B2)", () => {
   });
 
   it("the current plan while a change is scheduled: what is dropped", () => {
+    // Nothing says whether it is paid: a paid one still starts (guard M-2).
     expect(planChangeConsequences({ ...base, target: TEAM, withdrawal: { scheduled: BUSINESS, at: THROUGH } })[0]).toMatch(
-      /^Umbrella stays on Team, and the change to Business from Dec 2[56], .+ is dropped\.$/,
+      /^Umbrella stays on Team\. The change to Business from Dec 2[56], .+ is dropped — unless it’s already paid for; then it still starts on that date\.$/,
+    );
+    expect(withdrawalStatus({ company: "Umbrella", current: TEAM, scheduled: BUSINESS, kept: false, at: null })).toBe("The change to Business is dropped. Umbrella stays on Team.");
+    expect(withdrawalStatus({ company: "Umbrella", current: TEAM, scheduled: BUSINESS, kept: true, at: THROUGH })).toMatch(
+      /^The change to Business is already paid for, so it still starts Dec 2[56], .+\.$/,
     );
   });
 
   it("the context line, with and without a paid period", () => {
-    expect(dialogContextText("Umbrella", TEAM, THROUGH)).toMatch(/^Umbrella is on Team · version 1 · €20 a month, paid until Dec 2[56], /);
+    expect(dialogContextText("Umbrella", TEAM, THROUGH)).toMatch(/^Umbrella is on Team · version 1, €20 a month, paid until Dec 2[56], /);
+    expect(dialogContextText("Umbrella", TEAM, THROUGH, true)).toMatch(/^Umbrella is on Team · version 1, €20 a month\. Its paid period ended Dec 2[56], .+\.$/);
     expect(dialogContextText("Umbrella", FREE, null)).toBe("Umbrella is on Free · version 1.");
     expect(dialogContextText("Umbrella", null, THROUGH)).toBeNull();
   });
@@ -214,7 +286,7 @@ describe("after the answer (B5, decision 4)", () => {
       "Invoice TSK-1 for Starter is ready in Billing. Umbrella moves to Starter once it’s paid.",
     );
     expect(status("AFTER_PAYMENT", { kind: "unread", id: "i" })).toBe("An invoice for Starter is ready in Billing. Umbrella moves to Starter once it’s paid.");
-    expect(status("AFTER_PAYMENT", { kind: "none" })).toBe("Umbrella moves to Starter once it’s paid. There’s no invoice for this change yet.");
+    expect(status("AFTER_PAYMENT", { kind: "none" })).toBe("Umbrella moves to Starter once it’s paid for. There’s no invoice for this change yet.");
     expect(status("NEXT_PERIOD", { kind: "verified", id: "i", number: "TSK-1" }, THROUGH)).toMatch(
       /^Starter starts Dec 2[56], .+\. Nothing is charged now — pay its invoice in Billing before then, or Umbrella becomes read-only on that date\.$/,
     );
@@ -223,7 +295,8 @@ describe("after the answer (B5, decision 4)", () => {
   });
 
   it("the invoice page's line: only when it moves the company somewhere it is not", () => {
-    expect(planChangeInvoiceText("Umbrella", STARTER, TEAM)).toBe("Paying this invoice moves Umbrella to Starter. Until it’s paid, it stays on Team.");
+    // True for a NEXT_PERIOD invoice too (art-director blocker 3).
+    expect(planChangeInvoiceText("Umbrella", STARTER, TEAM)).toBe("Paying this invoice moves Umbrella to Starter. Until Starter starts, it stays on Team.");
     expect(planChangeInvoiceText("Umbrella", TEAM, TEAM)).toBeNull();
     expect(planChangeInvoiceText("Umbrella", null, TEAM)).toBeNull();
   });
@@ -240,6 +313,7 @@ describe("renewal and automatic payments (B7, decision 1)", () => {
     expect(autopayLineText("DISABLED", "Umbrella")).toBe("You pay Umbrella’s invoices here yourself. This version of Taska can’t turn automatic payments on.");
     expect(autopayLineText("PAUSED_BY_BANK", "Umbrella")).toBeNull();
     expect(["CONSENTED", "SUSPENDED", "DISABLED", "PAUSED_BY_BANK", null].map(canTurnOff)).toEqual([true, true, false, false, false]);
+    expect(turnOffQuestion("Umbrella", THROUGH)).toMatch(/ If Umbrella isn’t paid for by Dec 2[56], .+, it becomes read-only\. /);
     expect(turnOffQuestion("Umbrella", null)).toBe(
       "Automatic payments stop for Umbrella, and you pay its invoices here yourself. This version of Taska can’t turn them back on.",
     );

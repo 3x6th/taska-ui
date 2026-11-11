@@ -31,6 +31,8 @@ const { fakeApi, state } = vi.hoisted(() => {
     ownerRequired: null as string | null,
     /** Refusals by read, so a failure that stays carries a request id of its own. */
     refused: {} as Record<string, number>,
+    /** TAS-515: what a renewal command answers. */
+    renewalAnswer: (() => Promise.resolve({})) as () => Promise<unknown>,
   };
   // A definite refusal: an answer that never came would be retried once (`retryUnanswered`).
   const refuse = (name: string, code = "SCOPE_DENIED") => {
@@ -98,6 +100,9 @@ const { fakeApi, state } = vi.hoisted(() => {
     reenterCompany: async () => {
       state.reentered += 1;
     },
+    // TAS-515: the renewal commands, answered by the test.
+    cancelSubscriptionRenewal: () => state.renewalAnswer(),
+    resumeSubscriptionRenewal: () => state.renewalAnswer(),
   };
   return { fakeApi: api as unknown as TaskaApi, state };
 });
@@ -138,6 +143,7 @@ beforeEach(() => {
   state.me = "tom";
   state.owner = "tom";
   state.restrictions = [];
+  state.renewalAnswer = () => Promise.resolve({});
   state.calls = [];
   state.entitlementPlan = "team-1";
   state.fail = new Set();
@@ -168,7 +174,11 @@ describe("who sees what (B1, art-director B4)", () => {
     expect(dd("Paid until").querySelector("time")).toHaveAttribute("dateTime", IN_A_MONTH);
     expect(dd("Automatic payments")).toHaveTextContent("On");
     // TAS-515 (B6, B10): the owner's own NEXT_PERIOD choice — its line, then «From {date} · {limits}», one colon fewer.
-    expect(dd("Scheduled change")).toHaveTextContent(/^Team · version 2, €20 a monthFrom [A-Z][a-z]{2} \d{1,2}, (\d{4}, )?\d\d:\d\d · 5 projects · 50 seats$/);
+    expect(dd("Scheduled change")).toHaveTextContent(
+      /^Team · version 2, €20 a monthFrom [A-Z][a-z]{2} \d{1,2}, (\d{4}, )?\d\d:\d\d · 5 projects · 50 seatsIt starts only if it’s paid for by then\. If it isn’t, Umbrella becomes read-only on that date\.$/,
+    );
+    // Two lines of the rule, each its own note (art-director blocker 2).
+    expect(dd("Scheduled change").querySelectorAll(".company-plan-note")).toHaveLength(2);
     expect(dd("Scheduled change").querySelector("time")).toHaveAttribute("dateTime", IN_A_MONTH);
     expect(state.calls.sort()).toEqual(["entitlement", "plans", "quotas", "subscription", "tenant"]);
   });
@@ -215,8 +225,9 @@ describe("who sees what (B1, art-director B4)", () => {
     expect(dd("Plan")).toHaveTextContent("This plan isn’t in Taska’s plan list.");
     expect(labels()).not.toContain("Price");
     expect(dd("Renewal")).toHaveTextContent("Cancelled");
-    expect(dd("Renewal")).toHaveTextContent("When the paid period ends, Umbrella becomes read-only. It doesn’t move to a free plan on its own.");
-    expect(dd("Scheduled change")).toHaveTextContent(/^The plan changes from [A-Z][a-z]{2} \d{1,2}, (\d{4}, )?\d\d:\d\d\.$/);
+    // A change is scheduled: read-only comes with the last paid period (art-director blocker 4).
+    expect(dd("Renewal")).toHaveTextContent("When its last paid period ends, Umbrella becomes read-only. It doesn’t move to a free plan on its own.");
+    expect(dd("Scheduled change")).toHaveTextContent(/^The plan changes from [A-Z][a-z]{2} \d{1,2}, (\d{4}, )?\d\d:\d\d\.It starts only if it’s paid for by then\./);
   });
 
   it("TAS-515 F6: no Renewal row without a paid period — a company moved to Free never shows the old one as kept", async () => {
@@ -511,5 +522,53 @@ describe("the boundary's timers (release-reviewer L-4)", () => {
     const ids = cleared.mock.calls.map(([id]) => id);
     expect(ids).toContain(first);
     expect(ids).toContain(again);
+  });
+});
+
+describe("TAS-515: a renewal refusal whose re-read changed the row (art-director blocker 5, NB7)", () => {
+  const stale = () => Object.assign(new Error("stale"), { status: 412, code: "VERSION_CONFLICT", requestId: "rid-412", details: null, reasons: [] });
+
+  beforeEach(() => {
+    state.subscription = { ...state.subscription, scheduledPlanVersionId: null, scheduledEffectiveAt: null };
+  });
+
+  it("a 412 on cancel whose re-read shows it cancelled already: said as done, no note, focus on «Resume renewal»", async () => {
+    state.renewalAnswer = () => {
+      state.subscription = { ...state.subscription, renewalCancelled: true, version: "3" };
+      return Promise.reject(stale());
+    };
+    renderPlan();
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel renewal" }));
+    const band = document.querySelector(".company-plan-band") as HTMLElement;
+    fireEvent.click(within(band).getByRole("button", { name: "Cancel renewal" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Resume renewal" })).toHaveFocus());
+    expect(screen.getByText("Umbrella’s renewal is already cancelled.")).toBeInTheDocument();
+    expect(document.querySelector(".company-plan-zone .error-note")).toBeNull();
+  });
+
+  it("a refusal whose re-read leaves no renewal button keeps its note, and focus goes to «Change plan»", async () => {
+    state.subscription = { ...state.subscription, renewalCancelled: true };
+    state.renewalAnswer = () => {
+      state.restrictions = ["PAYMENT_EXPIRED"];
+      return Promise.reject(Object.assign(new Error("no"), { status: 409, code: "INVALID_STATE", requestId: "rid-409", details: null, reasons: [] }));
+    };
+    renderPlan();
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "Resume renewal" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Change plan" })).toHaveFocus());
+    expect(screen.queryByRole("button", { name: "Resume renewal" })).toBeNull();
+    expect(document.querySelector(".company-plan-zone .error-note")).toHaveTextContent("Renewal wasn’t resumed.");
+  });
+
+  it("with a change scheduled, cancelling says read-only comes with the last paid period (blocker 4)", async () => {
+    state.subscription = { ...state.subscription, scheduledPlanVersionId: "team-2", scheduledEffectiveAt: IN_A_MONTH };
+    renderPlan();
+    await ready();
+    expect(screen.getByText(/^Cancelling renewal keeps Umbrella on Team until .+\. It becomes read-only when its last paid period ends\.$/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel renewal" }));
+    expect(document.querySelector(".company-plan-band")).toHaveTextContent(
+      /^Umbrella stays on Team until .+\. When its last paid period ends, it becomes read-only: everything can still be read/,
+    );
   });
 });

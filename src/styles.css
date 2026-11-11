@@ -4548,13 +4548,19 @@ h1 {
   margin: 10px 0 0;
 }
 
-/* «Pending change»'s invoice: the number-link recipe (§4.41) inside the rule's
-   line — a 28 target whose 5.5 above and below are taken back. */
+/* The invoice inside a rule's line (Pending change, Scheduled change): an
+   inline link, so its focus ring hugs the number and never covers the line
+   above (art-director blocker 1); the target grows by `::before`, 29 tall here
+   and 45 below 820. */
 .company-plan-invoice-link {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  margin: -5.5px 0;
+  position: relative;
+  white-space: nowrap;
+}
+
+.company-plan-invoice-link::before {
+  position: absolute;
+  content: "";
+  inset: -7px -2px;
 }
 
 /* The dialog (§4.11, B3): the body 13 apart, the context line quiet. */
@@ -4637,13 +4643,22 @@ h1 {
   outline: 0;
 }
 
+/* As wide as its words, so the ring does not span the column (blocker 6). */
+.company-autopay .company-group-title {
+  width: fit-content;
+}
+
 .company-autopay .company-group-title:focus-visible {
-  border-radius: 4px;
   outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  outline-offset: 2px;
 }
 
 /* An open plan change's invoice (B12): under the heading, before its state and Pay. */
+/* A plan that can't be chosen reads quiet to its price too (art-director NB1); the radio alone fades. */
+.company-plan-change-option.is-used .create-company-plan-price {
+  color: var(--fg-2);
+}
+
 .company-invoice-plan-change {
   margin: 0 0 8px;
   color: var(--fg-2);
@@ -4675,14 +4690,8 @@ h1 {
     min-height: 44px;
   }
 
-  .company-plan-invoice-link {
-    position: relative;
-  }
-
   .company-plan-invoice-link::before {
-    position: absolute;
-    content: "";
-    inset: -8px -4px;
+    inset: -15px -4px;
   }
 }
 

@@ -1,7 +1,7 @@
 import { ForeignCompanyAnswerError, type PlanVersion } from "../../api/tenants";
 import { UnreadableAnswerError } from "../../api/billing";
 import { apiErrorFacts, isB2bErrorCode, refusalCode, refusalReasons, refusalRetryAfter } from "../../api/errors";
-import { planLimitsText, planName, planPriceText } from "../../lib/plans";
+import { planLimitsList, planLimitsText, planName, planPriceText } from "../../lib/plans";
 import { reasonedRefusal } from "../../lib/companyRestrictions";
 import { formatWait } from "../authText";
 import { companyInside, companyStart, formatPaidUntil, type RefusalWords } from "./companyGeneralText";
@@ -31,8 +31,14 @@ const ownInside = (company: string | null) => `${companyInside(company)}’s`;
 export const changePlanRowText = (company: string | null) =>
   `Move ${companyInside(company)} to another plan. You’ll see what changes, and when, before you confirm.`;
 
-export const cancelRenewalRowText = (company: string | null, plan: PlanVersion | null, paidThrough: string) =>
-  `Cancelling renewal keeps ${companyInside(company)} on ${nameOf(plan)} until ${formatPaidUntil(paidThrough)}, then makes it read-only.`;
+/**
+ * The cancel row. While a change is scheduled (art-director blocker 4, guard L-2) cancelling does not
+ * cancel it — paid, it still starts at the boundary — so read-only comes only with the last paid period.
+ */
+export const cancelRenewalRowText = (company: string | null, plan: PlanVersion | null, paidThrough: string, scheduled = false) =>
+  scheduled
+    ? `Cancelling renewal keeps ${companyInside(company)} on ${nameOf(plan)} until ${formatPaidUntil(paidThrough)}. It becomes read-only when its last paid period ends.`
+    : `Cancelling renewal keeps ${companyInside(company)} on ${nameOf(plan)} until ${formatPaidUntil(paidThrough)}, then makes it read-only.`;
 
 export const resumeRenewalRowText = (company: string | null, paidThrough: string) =>
   `Resuming renewal keeps ${companyInside(company)} on its plan after ${formatPaidUntil(paidThrough)}. It takes no payment now.`;
@@ -41,18 +47,28 @@ export const resumeRenewalRowText = (company: string | null, paidThrough: string
 export const renewalEndedRowText = (company: string | null, paidThrough: string) =>
   `Renewal is cancelled, and the paid period ended ${formatPaidUntil(paidThrough)}. To use ${companyInside(company)} again, change its plan.`;
 
-/** The question before cancelling (B7); the turn-off hint only while automatic payments are on. */
-export function cancelRenewalQuestion(company: string | null, plan: PlanVersion | null, paidThrough: string, autopayOn: boolean): string {
+/** The question before cancelling (B7); the turn-off hint only while automatic payments are on; a schedule as the row's. */
+export function cancelRenewalQuestion(company: string | null, plan: PlanVersion | null, paidThrough: string, autopayOn: boolean, scheduled = false): string {
+  const when = scheduled ? "When its last paid period ends, it becomes read-only" : "After that it becomes read-only";
   const head =
-    `${companyStart(company)} stays on ${nameOf(plan)} until ${formatPaidUntil(paidThrough)}. After that it becomes read-only: ` +
+    `${companyStart(company)} stays on ${nameOf(plan)} until ${formatPaidUntil(paidThrough)}. ${when}: ` +
     "everything can still be read, but nothing can be changed until it’s paid for again. It doesn’t move to the free plan on its own.";
   return autopayOn ? `${head} To keep renewing and pay by hand instead, turn off automatic payments in Billing.` : head;
 }
 
-export const renewalCancelledStatus = (company: string | null, plan: PlanVersion | null, paidThrough: string | null) =>
-  paidThrough === null
+export function renewalCancelledStatus(company: string | null, plan: PlanVersion | null, paidThrough: string | null, scheduled = false): string {
+  if (scheduled) return `${ownName(company)} renewal is cancelled. It becomes read-only when its last paid period ends.`;
+  return paidThrough === null
     ? `${ownName(company)} renewal is cancelled.`
     : `${ownName(company)} renewal is cancelled. It stays on ${nameOf(plan)} until ${formatPaidUntil(paidThrough)}, then becomes read-only.`;
+}
+
+/** A renewal 412 whose re-read already shows what was asked (art-director non-blocking 7): said as done. */
+export const renewalAlreadyCancelledStatus = (company: string | null) => `${ownName(company)} renewal is already cancelled.`;
+export const renewalAlreadyOnStatus = (company: string | null, paidThrough: string | null) =>
+  paidThrough === null
+    ? `${companyStart(company)} already renews when its paid period ends.`
+    : `${companyStart(company)} already renews when its paid period ends, ${formatPaidUntil(paidThrough)}.`;
 
 export const renewalResumedStatus = (company: string | null, paidThrough: string | null) =>
   paidThrough === null
@@ -76,10 +92,17 @@ export const scheduledTail = (plan: PlanVersion) => {
 
 export const SCHEDULED_UNPAID_TEXT = "Its start date passed before it was paid for.";
 
+/** The scheduled change's consequence, on the row and not only in the status (art-director blocker 2). */
+export const scheduledPaymentText = (company: string | null) =>
+  `It starts only if it’s paid for by then. If it isn’t, ${companyInside(company)} becomes read-only on that date.`;
+/** The same with this session's verified invoice: the page links the number between the two parts. */
+export const scheduledInvoiceHead = "It starts only if invoice ";
+export const scheduledInvoiceTail = (company: string | null) => ` is paid by then. If it isn’t, ${companyInside(company)} becomes read-only on that date.`;
+
 /** The pending change's second line, after its invoice link or without one (decision 4). */
 export const pendingUntilText = (company: string | null, current: PlanVersion | null) => `Until then, ${companyInside(company)} stays on ${nameOf(current)}.`;
 export const pendingNoInvoiceText = (company: string | null, current: PlanVersion | null) =>
-  `There’s no invoice for this change yet. Until it’s paid, ${companyInside(company)} stays on ${nameOf(current)}.`;
+  `Starts once it’s paid for — there’s no invoice for it yet. Until then, ${companyInside(company)} stays on ${nameOf(current)}.`;
 export const OPEN_INVOICE_LINK = "Open the invoice";
 
 /* --------------------------------------------------------- the dialog (B3) */
@@ -91,15 +114,23 @@ export const CHOOSE_PLAN_TEXT = "Choose a plan to see what changes, and when.";
 export const CURRENT_PLAN_NOTE = "Current plan";
 export const scheduledPlanNote = (at: string | null) => (at === null ? "Already scheduled" : `Already scheduled from ${formatPaidUntil(at)}`);
 
-/** «{Company} is on {plan} · {price}, paid until {date}.» — without a paid period, «{Company} is on {plan}.» */
-export function dialogContextText(company: string | null, current: PlanVersion | null, paidThrough: string | null): string | null {
+/**
+ * «{Company} is on {plan}, {price}, paid until {date}.» (art-director NB2); under `PAYMENT_EXPIRED`
+ * «… is on {plan}, {price}. Its paid period ended {date}.»; without a paid period «{Company} is on {plan}.»
+ */
+export function dialogContextText(company: string | null, current: PlanVersion | null, paidThrough: string | null, expired = false): string | null {
   if (current === null) return null;
   const { name, version } = planNameParts(current);
   const price = planPriceText(current);
   const head = `${companyStart(company)} is on ${name}${version ?? ""}`;
   if (paidThrough === null) return `${head}.`;
-  return `${head}${price === null ? "" : ` · ${price}`}, paid until ${formatPaidUntil(paidThrough)}.`;
+  const priced = `${head}${price === null ? "" : `, ${price}`}`;
+  return expired ? `${priced}. Its paid period ended ${formatPaidUntil(paidThrough)}.` : `${priced}, paid until ${formatPaidUntil(paidThrough)}.`;
 }
+
+/** «a», «a and b», «a, b and c» — the limits as prose (art-director copy ruling). */
+const prose = (items: readonly string[]) =>
+  items.length <= 1 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 
 export interface ConsequenceInput {
   company: string | null;
@@ -121,9 +152,11 @@ export function planChangeConsequences(input: ConsequenceInput): string[] {
   const { company, target, current, covered, paidThrough, autopayState, withdrawal } = input;
   const name = planName(target);
   if (withdrawal !== null) {
+    // Nothing on the wire says whether the scheduled change is paid: a paid one still starts (guard M-2, A76).
     const scheduled = withdrawal.scheduled === null ? "another plan" : planName(withdrawal.scheduled);
     const from = withdrawal.at === null ? "" : ` from ${formatPaidUntil(withdrawal.at)}`;
-    return [`${companyStart(company)} stays on ${nameOf(current)}, and the change to ${scheduled}${from} is dropped.`];
+    const then = withdrawal.at === null ? "then it still starts" : "then it still starts on that date";
+    return [`${companyStart(company)} stays on ${nameOf(current)}. The change to ${scheduled}${from} is dropped — unless it’s already paid for; ${then}.`];
   }
   if (target.kind === "FREE") {
     const lines = [`${companyStart(company)} moves to ${name} as soon as you confirm.`];
@@ -132,10 +165,10 @@ export function planChangeConsequences(input: ConsequenceInput): string[] {
         `Its paid period ends now. The rest of it, until ${formatPaidUntil(paidThrough)}, isn’t kept or refunded — moving back to a paid plan later needs a new payment and starts a new month.`,
       );
     }
-    const limits = planLimitsText(target);
-    if (limits !== "") {
+    const limits = planLimitsList(target);
+    if (limits.length > 0) {
       lines.push(
-        `${name} allows ${limits}. If ${companyInside(company)} uses more, nothing new can be added or changed until it’s back within them, though members can still be removed and invitations revoked. Archived projects count too.`,
+        `${name} allows ${prose(limits)}. If ${companyInside(company)} uses more, nothing new can be added or changed until it’s back within them, though members can still be removed and invitations revoked. Archived projects count too.`,
       );
     }
     if (autopayState === "CONSENTED") lines.push("Automatic payments turn off.");
@@ -173,7 +206,7 @@ export function planChangedStatus(input: {
     case "IMMEDIATE":
       return target === null ? `${ownName(company)} plan has changed.` : `${companyStart(company)} is now on ${name}.`;
     case "AFTER_PAYMENT":
-      if (invoice.kind === "none") return `${companyStart(company)} moves to ${inName} once it’s paid. There’s no invoice for this change yet.`;
+      if (invoice.kind === "none") return `${companyStart(company)} moves to ${inName} once it’s paid for. There’s no invoice for this change yet.`;
       if (invoice.kind === "verified" && invoice.number !== null) {
         return `Invoice ${invoice.number} for ${inName} is ready in Billing. ${companyStart(company)} moves to ${inName} once it’s paid.`;
       }
@@ -189,6 +222,20 @@ export function planChangedStatus(input: {
     default:
       return `${ownName(company)} plan change was accepted.`;
   }
+}
+
+/**
+ * After a withdrawal (guard M-2): the re-read subscription says whether the scheduled change went — a
+ * paid one stays and still starts.
+ */
+export function withdrawalStatus(input: { company: string | null; current: PlanVersion | null; scheduled: PlanVersion | null; kept: boolean; at: string | null }): string {
+  const scheduled = input.scheduled === null ? "the scheduled plan" : planName(input.scheduled);
+  if (input.kept) {
+    return input.at === null
+      ? `The change to ${scheduled} is already paid for, so it still starts.`
+      : `The change to ${scheduled} is already paid for, so it still starts ${formatPaidUntil(input.at)}.`;
+  }
+  return `The change to ${scheduled} is dropped. ${companyStart(input.company)} stays on ${nameOf(input.current)}.`;
 }
 
 /* --------------------------------------------- automatic payments (decision 1) */
@@ -218,21 +265,23 @@ export function autopayLineText(state: string, company: string | null): string |
 /** Whether «Turn off» is offered: only a mandate that is on or suspended (decision 1). */
 export const canTurnOff = (state: string | null) => state === "CONSENTED" || state === "SUSPENDED";
 
-/** The «Turn off» question (decision 1): the read-only sentence only when the paid-through was sent. */
+/** The «Turn off» question (decision 1, NB3): the read-only sentence only when the paid-through was sent. */
 export function turnOffQuestion(company: string | null, paidThrough: string | null): string {
   const head = `Automatic payments stop for ${companyInside(company)}, and you pay its invoices here yourself.`;
-  const middle = paidThrough === null ? "" : ` If it isn’t paid for by ${formatPaidUntil(paidThrough)}, it becomes read-only.`;
+  const middle = paidThrough === null ? "" : ` If ${companyInside(company)} isn’t paid for by ${formatPaidUntil(paidThrough)}, it becomes read-only.`;
   return `${head}${middle} This version of Taska can’t turn them back on.`;
 }
 
 export const autopayOffStatus = (company: string | null) => `Automatic payments are off for ${companyInside(company)}.`;
+/** A 412 whose re-read shows them off already (art-director blocker 5): done, not refused. */
+export const autopayAlreadyOffStatus = (company: string | null) => `Automatic payments are already off for ${companyInside(company)}.`;
 
 /* ----------------------------------------------- the invoice page (B12) */
 
 /** The open PLAN_CHANGE invoice's line — neither plan unknown, and only when it moves the company somewhere. */
 export function planChangeInvoiceText(company: string | null, plan: PlanVersion | null, current: PlanVersion | null): string | null {
   if (plan === null || current === null || plan.id === current.id) return null;
-  return `Paying this invoice moves ${companyInside(company)} to ${planName(plan)}. Until it’s paid, it stays on ${planName(current)}.`;
+  return `Paying this invoice moves ${companyInside(company)} to ${planName(plan)}. Until ${planName(plan)} starts, it stays on ${planName(current)}.`;
 }
 
 export const nowOnText = (company: string | null, plan: PlanVersion) => `${companyStart(company)} is now on ${planName(plan)}.`;

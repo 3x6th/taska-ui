@@ -17,7 +17,15 @@ import { ChangePlanModal, type PlanChangeOutcome } from "./ChangePlanModal";
 import { COMPANY_SUBSCRIPTION_KEY, companySubscriptionOptions, companyTenantKey, companyTenantOptions } from "./companyGeneral";
 import { formatPaidUntil, type RefusalWords } from "./companyGeneralText";
 import { Strip } from "./CompanyMembersSection";
-import { intentFor, setPendingChange, settleIntent, usePendingChange, type PendingChange, type SubscriptionIntent } from "./companyPlanChange";
+import {
+  intentFor,
+  pendingSuperseded,
+  setPendingChange,
+  settleIntent,
+  usePendingChange,
+  type PendingChange,
+  type SubscriptionIntent,
+} from "./companyPlanChange";
 import {
   CHANGE_PLAN,
   OPEN_INVOICE_LINK,
@@ -30,12 +38,18 @@ import {
   pendingNoInvoiceText,
   pendingUntilText,
   planChangedStatus,
+  renewalAlreadyCancelledStatus,
+  renewalAlreadyOnStatus,
   renewalCancelledStatus,
   renewalEndedRowText,
   renewalResumedStatus,
   resumeRenewalRowText,
+  scheduledInvoiceHead,
+  scheduledInvoiceTail,
+  scheduledPaymentText,
   scheduledTail,
   subscriptionRefusalWords,
+  withdrawalStatus,
 } from "./companyPlanChangeText";
 import { COMPANY_QUOTAS_KEY } from "./companyMembersQuery";
 import {
@@ -225,23 +239,34 @@ function CompanyPlan({ companyId }: { companyId: string }) {
   const changeButton = useRef<HTMLButtonElement>(null);
   const renewalButton = useRef<HTMLButtonElement>(null);
   const pendingLink = useRef<HTMLAnchorElement>(null);
-  const [focusRequest, setFocusRequest] = useState<{ target: "change" | "renewal" | "pending"; seq: number } | null>(null);
-  const requestFocus = (target: "change" | "renewal" | "pending") => setFocusRequest((current) => ({ target, seq: (current?.seq ?? 0) + 1 }));
+  /**
+   * Where focus goes once the page has drawn an outcome: the button that was pressed, with its ring;
+   * «refused» keeps the renewal button without a ring — and when a refusal's re-read took that button
+   * away, «Change plan» with its ring (art-director blocker 5).
+   */
+  type FocusTarget = "change" | "renewal" | "refused" | "pending";
+  const [focusRequest, setFocusRequest] = useState<{ target: FocusTarget; seq: number } | null>(null);
+  const requestFocus = (target: FocusTarget) => setFocusRequest((current) => ({ target, seq: (current?.seq ?? 0) + 1 }));
   useEffect(() => {
     if (focusRequest === null) return;
+    const { target } = focusRequest;
+    if (target === "refused" && renewalButton.current !== null) {
+      renewalButton.current.focus();
+      return;
+    }
     const node =
-      focusRequest.target === "pending" ? (pendingLink.current ?? changeButton.current) : focusRequest.target === "renewal" ? renewalButton.current : changeButton.current;
+      target === "pending" ? (pendingLink.current ?? changeButton.current) : target === "renewal" ? (renewalButton.current ?? changeButton.current) : changeButton.current;
     focusDrawn(node);
   }, [focusRequest]);
   const [changing, setChanging] = useState(false);
   const pendingChange = usePendingChange(meId, companyId, sessionId);
-  // In force once a later entitlement names its plan: the pending row goes (decision 5).
-  const entitledPlan = entitlementRead.data?.planVersionId ?? null;
-  const entitledVersion = entitlementRead.data?.version ?? null;
+  // Over once the reads show it settled or replaced (decision 5, guard M-1): the record goes.
+  const subscriptionNow = owner ? (subscriptionRead.data ?? null) : null;
+  const entitlementNow = entitlementRead.data ?? null;
   useEffect(() => {
     if (pendingChange === null || meId === null) return;
-    if (entitledPlan === pendingChange.planVersionId && entitledVersion !== pendingChange.since) setPendingChange(meId, companyId, null);
-  }, [companyId, entitledPlan, entitledVersion, meId, pendingChange]);
+    if (pendingSuperseded(pendingChange, subscriptionNow, entitlementNow)) setPendingChange(meId, companyId, null);
+  }, [companyId, entitlementNow, meId, pendingChange, subscriptionNow]);
   const [asking, setAsking] = useState(false);
   const [renewalRefusal, setRenewalRefusal] = useState<(RefusalWords & { requestId: string | null; seq: number }) | null>(null);
   const stripId = useId();
@@ -275,18 +300,30 @@ function CompanyPlan({ companyId }: { companyId: string }) {
       setRenewalRefusal(null);
       const fresh = queryClient.getQueryData<Subscription>(COMPANY_SUBSCRIPTION_KEY) ?? null;
       const through = fresh?.paidThrough ?? null;
-      say(cancel ? renewalCancelledStatus(companyRef.current, currentRef.current, through) : renewalResumedStatus(companyRef.current, through));
+      say(
+        cancel
+          ? renewalCancelledStatus(companyRef.current, currentRef.current, through, (fresh?.scheduledPlanVersionId ?? null) !== null)
+          : renewalResumedStatus(companyRef.current, through),
+      );
       // One element for both commands: the label switched, focus stays and its ring is drawn (B7).
       requestFocus("renewal");
     },
     onError: (error, { intent, cancel }) => {
       if (meId !== null) settleIntent(meId, companyId, intent, error);
       setAsking(false);
+      // A 412 whose re-read already shows what was asked is done, not refused (art-director NB7).
+      const fresh = queryClient.getQueryData<Subscription>(COMPANY_SUBSCRIPTION_KEY) ?? null;
+      if (apiErrorFacts(error).status === 412 && fresh !== null && fresh.renewalCancelled === cancel) {
+        setRenewalRefusal(null);
+        say(cancel ? renewalAlreadyCancelledStatus(companyRef.current) : renewalAlreadyOnStatus(companyRef.current, fresh.paidThrough));
+        requestFocus("renewal");
+        return;
+      }
       const words = subscriptionRefusalWords(cancel ? "cancelRenewal" : "resumeRenewal", error, companyRef.current);
       setRenewalRefusal((current) => ({ ...words, requestId: apiErrorFacts(error).requestId, seq: (current?.seq ?? 0) + 1 }));
       // The box under the row is not live; the page's status says it (B11).
       say(words.text);
-      renewalButton.current?.focus();
+      requestFocus("refused");
       const reread = refusedTenant.current;
       if (refusalCode(error) === "OWNER_REQUIRED" && reread !== null && reread.ownerId !== null && reread.ownerId !== meId) void followOwner(reread);
     },
@@ -307,15 +344,41 @@ function CompanyPlan({ companyId }: { companyId: string }) {
 
   const onChanged = (outcome: PlanChangeOutcome) => {
     setChanging(false);
+    // The subscription as read again after the answer (guard M-1), the entitlement as it stood.
+    const fresh = queryClient.getQueryData<Subscription>(COMPANY_SUBSCRIPTION_KEY) ?? null;
     if (meId !== null) {
-      // Another accepted change replaces a pending one; an AFTER_PAYMENT one is pending in this session only (A63).
+      // Another accepted change replaces a pending one; a paid one is kept in this session only (A63).
       setPendingChange(
         meId,
         companyId,
-        outcome.effect === "AFTER_PAYMENT"
-          ? { planVersionId: outcome.target.id, invoice: outcome.invoice, sessionId, since: entitlementRead.data?.version ?? null }
+        outcome.effect === "AFTER_PAYMENT" || outcome.effect === "NEXT_PERIOD"
+          ? {
+              effect: outcome.effect,
+              planVersionId: outcome.target.id,
+              invoice: outcome.invoice,
+              sessionId,
+              subscriptionVersion: fresh?.version ?? null,
+              paidThrough: fresh?.paidThrough ?? null,
+              entitlementVersion: entitlementRead.data?.version ?? null,
+              entitlementPlan: entitlementRead.data?.planVersionId ?? null,
+            }
           : null,
       );
+    }
+    if (outcome.withdrawal !== null) {
+      // A paid scheduled change still starts: the re-read says which (guard M-2).
+      const kept = (fresh?.scheduledPlanVersionId ?? null) !== null;
+      say(
+        withdrawalStatus({
+          company: companyRef.current,
+          current: currentRef.current,
+          scheduled: outcome.withdrawal.scheduled,
+          kept,
+          at: fresh?.scheduledEffectiveAt ?? null,
+        }),
+      );
+      requestFocus("change");
+      return;
     }
     say(planChangedStatus({ company: companyRef.current, target: outcome.target, effect: outcome.effect, effectiveAt: outcome.effectiveAt, invoice: outcome.invoice }));
     requestFocus(outcome.effect === "AFTER_PAYMENT" && outcome.invoice.kind !== "none" ? "pending" : "change");
@@ -464,7 +527,18 @@ function CompanyPlan({ companyId }: { companyId: string }) {
     sub !== null && sub.scheduledPlanVersionId !== null && catalogue !== null
       ? { at: sub.scheduledEffectiveAt, plan: planById(catalogue, sub.scheduledPlanVersionId) }
       : null;
-  const pending = owner && pendingChange !== null && catalogue !== null ? { change: pendingChange, plan: planById(catalogue, pendingChange.planVersionId) } : null;
+  const pending =
+    owner && pendingChange?.effect === "AFTER_PAYMENT" && catalogue !== null ? { change: pendingChange, plan: planById(catalogue, pendingChange.planVersionId) } : null;
+  // This session's answer named the scheduled change's invoice, and its read said so (decision 4).
+  const scheduledInvoice =
+    pendingChange?.effect === "NEXT_PERIOD" &&
+    pendingChange.planVersionId === sub?.scheduledPlanVersionId &&
+    pendingChange.invoice.kind === "verified" &&
+    pendingChange.invoice.number !== null
+      ? { id: pendingChange.invoice.id, number: pendingChange.invoice.number }
+      : null;
+  // A change is scheduled: cancelling the renewal does not cancel it (art-director blocker 4, guard L-2).
+  const scheduledAhead = (sub?.scheduledPlanVersionId ?? null) !== null;
   const lines = usageLines(quotasRead.data ?? null, entitled ?? null);
   const refreshFailed = reads.some(stale);
 
@@ -497,7 +571,7 @@ function CompanyPlan({ companyId }: { companyId: string }) {
     // company moved to Free never shows the old one as kept. Past it the state block speaks, not the note.
     if (paidThrough !== null && sub.renewalCancelled === true) {
       ownerFacts.push(
-        <Fact key="renewal" label="Renewal" note={expired ? null : renewalNote(company)}>
+        <Fact key="renewal" label="Renewal" note={expired ? null : renewalNote(company, scheduledAhead)}>
           Cancelled
         </Fact>,
       );
@@ -508,19 +582,39 @@ function CompanyPlan({ companyId }: { companyId: string }) {
     if (scheduledChange !== null) {
       const { at, plan } = scheduledChange;
       const date = at === null ? null : <time dateTime={at}>{formatPaidUntil(at)}</time>;
+      // While its date stands, what happens if it is not paid by then — on the row, not only in the status (blocker 2).
+      const payment =
+        at === null ? null : scheduledInvoice !== null ? (
+          <>
+            {scheduledInvoiceHead}
+            <Link
+              className="admin-note-link company-plan-invoice-link"
+              state={{ focusHeading: true }}
+              to={`/company/billing/${encodeURIComponent(scheduledInvoice.id)}`}
+            >
+              {scheduledInvoice.number}
+            </Link>
+            {scheduledInvoiceTail(company)}
+          </>
+        ) : (
+          scheduledPaymentText(company)
+        );
       ownerFacts.push(
         <Fact
           key="scheduled"
           label="Scheduled change"
           note={
-            at === null ? (
-              SCHEDULED_UNPAID_TEXT
-            ) : plan !== null ? (
-              <>
-                From {date}
-                {scheduledTail(plan)}
-              </>
-            ) : null
+            at === null
+              ? SCHEDULED_UNPAID_TEXT
+              : plan !== null
+                ? [
+                    <>
+                      From {date}
+                      {scheduledTail(plan)}
+                    </>,
+                    payment,
+                  ]
+                : payment
           }
         >
           {plan !== null ? changedPlanLine(plan) : at !== null ? <>The plan changes from {date}.</> : <span className="company-plan-quiet">{NOT_IN_CATALOGUE}</span>}
@@ -543,7 +637,7 @@ function CompanyPlan({ companyId }: { companyId: string }) {
     !zone || paidThrough === null || cancelled === null
       ? null
       : !cancelled && !expired
-        ? { text: cancelRenewalRowText(company, current, paidThrough), action: "cancel" as const }
+        ? { text: cancelRenewalRowText(company, current, paidThrough, scheduledAhead), action: "cancel" as const }
         : cancelled && !expired
           ? { text: resumeRenewalRowText(company, paidThrough), action: "resume" as const }
           : cancelled
@@ -659,7 +753,7 @@ function CompanyPlan({ companyId }: { companyId: string }) {
                       setAsking(false);
                       renewalButton.current?.focus();
                     }}
-                    sentence={cancelRenewalQuestion(company, current, paidThrough, sub?.autopayState === "CONSENTED")}
+                    sentence={cancelRenewalQuestion(company, current, paidThrough, sub?.autopayState === "CONSENTED", scheduledAhead)}
                   />
                 ) : null}
                 {renewalRefusal ? (
@@ -752,13 +846,20 @@ function PendingNote({
 }
 
 /** One `dt` / `dd` pair of §4.39's facts recipe, with the rule's second line when there is one. */
-function Fact({ label, note = null, children }: { label: string; note?: ReactNode; children: ReactNode }) {
+function Fact({ label, note = null, children }: { label: string; note?: ReactNode | ReactNode[]; children: ReactNode }) {
   return (
     <div>
       <dt>{label}</dt>
       <dd>
         <span className="company-plan-value">{children}</span>
-        {note !== null ? <span className="company-plan-note">{note}</span> : null}
+        {/* One `.company-plan-note` per line of the rule (TAS-515: a scheduled change has two). */}
+        {(Array.isArray(note) ? note : [note])
+          .filter((line) => line !== null && line !== undefined)
+          .map((line, index) => (
+            <span className="company-plan-note" key={index}>
+              {line}
+            </span>
+          ))}
       </dd>
     </div>
   );

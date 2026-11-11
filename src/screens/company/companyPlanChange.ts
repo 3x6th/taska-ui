@@ -29,6 +29,10 @@ export interface SubscriptionIntent {
   /** The body, as a comparable string (the target plan for a change; the command for the rest). */
   body: string;
   sessionId: string | null;
+  /** A change's chosen row, so a reopened dialog can show it again (art-director copy ruling). */
+  planId?: string;
+  /** What the answer that never came was said as — drawn again, not live, when the dialog reopens. */
+  shown?: { text: string; words: string | null; requestId: string | null };
 }
 
 const intents = new Map<string, SubscriptionIntent>();
@@ -50,13 +54,21 @@ export function intentFor(
   body: string,
   version: string,
   sessionId: string | null,
+  planId?: string,
 ): SubscriptionIntent {
   const id = slot(accountId, companyId, command);
   const previous = intents.get(id);
   if (previous !== undefined && previous.body === body && previous.sessionId === sessionId) return previous;
-  const intent: SubscriptionIntent = { command, key: newKey(), version, body, sessionId };
+  const intent: SubscriptionIntent = { command, key: newKey(), version, body, sessionId, ...(planId === undefined ? {} : { planId }) };
   intents.set(id, intent);
   return intent;
+}
+
+/** The intent of `command` still open from an answer that never came, under this session — or `null`. */
+export function openIntent(accountId: string | null, companyId: string, command: SubscriptionCommand, sessionId: string | null): SubscriptionIntent | null {
+  if (accountId === null) return null;
+  const intent = intents.get(slot(accountId, companyId, command));
+  return intent !== undefined && intent.sessionId === sessionId && intent.shown !== undefined ? intent : null;
 }
 
 /**
@@ -72,27 +84,61 @@ export function keepsIntent(error: unknown): boolean {
   return apiErrorFacts(error).status === 429 || refusalCode(error) === "RATE_LIMITED";
 }
 
-/** The answer to `intent` arrived: `null` for a 2xx. Closes it unless the answer leaves it open. */
-export function settleIntent(accountId: string, companyId: string, intent: SubscriptionIntent, error: unknown | null): void {
+/**
+ * The answer to `intent` arrived: `null` for a 2xx. Closes it unless the answer leaves it open — then
+ * `shown`, the sentence it was said as, is kept with it for a dialog opened again.
+ */
+export function settleIntent(
+  accountId: string,
+  companyId: string,
+  intent: SubscriptionIntent,
+  error: unknown | null,
+  shown?: SubscriptionIntent["shown"],
+): void {
   const id = slot(accountId, companyId, intent.command);
   if (intents.get(id) !== intent) return;
   if (error === null || !keepsIntent(error)) intents.delete(id);
+  else if (shown !== undefined) intent.shown = shown;
 }
 
 /* --------------------------------------- the pending change, in this session (A63) */
 
 /**
- * An AFTER_PAYMENT change the server accepted in this session (decision 5):
- * develop puts nothing of it on the wire, so after a reload there is nothing to
- * draw — and nothing is inferred from the invoices (guard B5). Gone once the
- * company's re-read entitlement is on its plan, or another change replaces it.
+ * A paid change the server accepted in this session (decision 5): develop puts
+ * nothing of an AFTER_PAYMENT one on the wire, so after a reload there is
+ * nothing to draw — and nothing is inferred from the invoices (guard B5). A
+ * NEXT_PERIOD one is kept only for its invoice, which the «Scheduled change»
+ * row may name. `pendingSuperseded` says when the reads show it is over.
  */
 export interface PendingChange {
+  effect: "AFTER_PAYMENT" | "NEXT_PERIOD";
   planVersionId: string;
   invoice: ChangeInvoice;
   sessionId: string | null;
-  /** `Entitlement.version` when it was accepted: the change is in force once a later one names its plan. */
-  since: string | null;
+  /** The subscription as read again right after the answer: its version and paid period. */
+  subscriptionVersion: string | null;
+  paidThrough: string | null;
+  /** The entitlement when it was accepted: its version and plan. */
+  entitlementVersion: string | null;
+  entitlementPlan: string | null;
+}
+
+/**
+ * Guard M-1 (release-reviewer M1): an AFTER_PAYMENT change is over once a later
+ * subscription — another version — carries a schedule (only a later NEXT_PERIOD
+ * choice writes one; an AFTER_PAYMENT selection nulls it, SPC 315-340) or a
+ * paid period other than the one it was accepted under (its settlement starts a
+ * new month; nothing else moves it while a change is active); or once a later
+ * entitlement — another version — names a plan other than the one it was
+ * accepted on (its settlement, or another tab's move to Free). Never on an
+ * entitlement version alone: restrictions move it too. A NEXT_PERIOD record
+ * lasts while the subscription schedules its plan.
+ */
+export function pendingSuperseded(change: PendingChange, subscription: Subscription | null, entitlement: Entitlement | null): boolean {
+  if (change.effect === "NEXT_PERIOD") return subscription !== null && subscription.scheduledPlanVersionId !== change.planVersionId;
+  const laterSubscription = subscription !== null && subscription.version !== change.subscriptionVersion;
+  if (laterSubscription && (subscription.scheduledPlanVersionId !== null || subscription.paidThrough !== change.paidThrough)) return true;
+  return entitlement !== null && entitlement.version !== change.entitlementVersion && entitlement.planVersionId !== change.entitlementPlan;
 }
 
 const pending = new Map<string, PendingChange>();

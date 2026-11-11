@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { taskaApi } from "../api/client";
@@ -6,6 +6,7 @@ import { companiesHarness } from "../test/companiesHarness";
 import { CompanySetupScreen } from "./CompanySetupScreen";
 import { CompanyBillingSection } from "./company/CompanyBillingSection";
 import { CompanyInvoiceSection } from "./company/CompanyInvoiceSection";
+import { CompanyPlanSection } from "./company/CompanyPlanSection";
 
 /**
  * What Company › Billing and the never-opened card cost on the wire (TAS-513,
@@ -45,7 +46,7 @@ vi.mock("../api/client", async () => {
 });
 
 const EUR = (amountMinor: string) => ({ amountMinor, currency: "EUR", exponent: 2 });
-const server = { invoiceState: "OPEN", tenantId: NORTHWIND, lifecycle: "ACTIVE" };
+const server = { invoiceState: "OPEN", tenantId: NORTHWIND, lifecycle: "ACTIVE", purpose: null as string | null };
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const session = (sessionId: string, tag: string, tenantId?: string) => ({
@@ -62,7 +63,7 @@ const invoice = () => ({
   id: INVOICE,
   tenantId: server.tenantId,
   number: "TSK-2026-01008",
-  purpose: server.tenantId === STARK ? "INITIAL" : "RENEWAL",
+  purpose: server.purpose ?? (server.tenantId === STARK ? "INITIAL" : "RENEWAL"),
   state: server.invoiceState,
   planVersionId: "plan-team",
   total: EUR("2000"),
@@ -110,6 +111,12 @@ function stubGateway() {
         if (path.startsWith("/billing/plans")) return json(200, { items: [] });
         if (path.startsWith(`/tenants/${server.tenantId}/billing/invoices?`)) return json(200, { items: [invoice()] });
         if (path === `/tenants/${server.tenantId}/billing/invoices/${INVOICE}`) return json(200, invoice());
+        if (path === `/tenants/${server.tenantId}/billing/entitlement`) {
+          return json(200, { tenantId: server.tenantId, version: "2", planVersionId: "plan-team", limits: [{ kind: "TASK_LIFETIME", unlimited: true }] });
+        }
+        if (path === `/tenants/${server.tenantId}/quotas`) {
+          return json(200, { tenantId: server.tenantId, version: "1", quotas: [{ kind: "SEAT", used: "1", reserved: "0", limit: "5", unlimited: false, version: "1" }] });
+        }
         if (path === `/tenants/${server.tenantId}/billing/subscription`) {
           return json(200, { tenantId: server.tenantId, planVersionId: "plan-team", version: "4", paidThrough: "2099-01-02T09:00:00Z", renewalCancelled: false, autopayState: "CONSENTED" });
         }
@@ -132,10 +139,11 @@ const one = (entries: typeof log, route: string) => {
   return found[0];
 };
 
-async function enter(tenantId: string, lifecycle: string, invoiceState = "OPEN") {
+async function enter(tenantId: string, lifecycle: string, invoiceState = "OPEN", purpose: string | null = null) {
   server.tenantId = tenantId;
   server.lifecycle = lifecycle;
   server.invoiceState = invoiceState;
+  server.purpose = purpose;
   if (!taskaApi.hasSession()) await taskaApi.signIn({ email: "anna@example.com", password: "x" });
   await taskaApi.enterCompany(tenantId);
   return log.length;
@@ -151,6 +159,7 @@ const tenantRoute = (tenantId: string) => `GET /tenants/${tenantId}`;
 const invoicesRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/invoices?limit=100`;
 const invoiceRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/invoices/${INVOICE}`;
 const subscriptionRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/subscription`;
+const entitlementRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/entitlement`;
 
 describe("the request budget of Billing and the never-opened card (F9)", () => {
   it("the list: getTenant ∥ me, then listInvoices ∥ getSubscription — and nothing else of the company's", async () => {
@@ -188,6 +197,43 @@ describe("the request budget of Billing and the never-opened card (F9)", () => {
       ["GET /users/me", invoiceRoute(NORTHWIND), tenantRoute(NORTHWIND)].sort(),
     );
     expect(one(routes, invoiceRoute(NORTHWIND)).started).toBeGreaterThan(one(routes, tenantRoute(NORTHWIND)).answered);
+    view.unmount();
+  });
+
+  it("TAS-515 (guard L-5): a PLAN_CHANGE invoice adds the entitlement, beside it — the plan it moves the company from", async () => {
+    const from = await enter(NORTHWIND, "ACTIVE", "OPEN", "PLAN_CHANGE");
+    const { wrapper } = companiesHarness({ companyId: NORTHWIND, path: `/company/billing/${INVOICE}` });
+    const view = render(
+      <Routes>
+        <Route path="/company/billing/:invoiceId" element={<CompanyInvoiceSection />} />
+      </Routes>,
+      { wrapper },
+    );
+    await screen.findByRole("button", { name: "Pay €20.00" });
+    await waitFor(() => expect(sent(from).map((entry) => entry.route)).toContain(entitlementRoute(NORTHWIND)));
+    const routes = sent(from);
+    expect(routes.map((entry) => entry.route).filter((route) => !route.startsWith("GET /billing/plans")).sort()).toEqual(
+      ["GET /users/me", entitlementRoute(NORTHWIND), invoiceRoute(NORTHWIND), tenantRoute(NORTHWIND)].sort(),
+    );
+    // Asked once the invoice says what it is for.
+    expect(one(routes, entitlementRoute(NORTHWIND)).started).toBeGreaterThan(one(routes, invoiceRoute(NORTHWIND)).answered);
+    view.unmount();
+  });
+
+  it("TAS-515 (guard L-5, L-1): opening «Change plan» on a fresh page reads the subscription again — and nothing else", async () => {
+    const before = await enter(NORTHWIND, "ACTIVE");
+    const harness = companiesHarness({ companyId: NORTHWIND, path: "/company/plan" });
+    // The app's freshness (`createQueryClient`): the page's reads are fresh when the dialog opens.
+    harness.client.setDefaultOptions({ queries: { retry: false, staleTime: 20_000 } });
+    const view = render(<CompanyPlanSection />, { wrapper: harness.wrapper });
+    const open = await screen.findByRole("button", { name: "Change plan" });
+    expect(sent(before).map((entry) => entry.route)).toContain(subscriptionRoute(NORTHWIND));
+    const from = log.length;
+    fireEvent.click(open);
+    await screen.findByRole("dialog", { name: "Change plan" });
+    await waitFor(() => expect(sent(from).map((entry) => entry.route)).toEqual([subscriptionRoute(NORTHWIND)]));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(sent(from).map((entry) => entry.route)).toEqual([subscriptionRoute(NORTHWIND)]);
     view.unmount();
   });
 

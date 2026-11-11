@@ -18,6 +18,7 @@ import { companyInvoiceOptions } from "./companyBilling";
 import {
   hasCurrentPeriod,
   intentFor,
+  openIntent,
   planChoices,
   sendableCurrency,
   settleIntent,
@@ -46,28 +47,22 @@ export interface PlanChangeOutcome {
   target: PlanVersion;
   effectiveAt: string | null;
   invoice: ChangeInvoice;
+  /** The current plan chosen while a change was scheduled: the plan that was scheduled (guard M-2). */
+  withdrawal: { scheduled: PlanVersion | null } | null;
 }
 
 interface ShownRefusal extends RefusalWords {
   requestId: string | null;
   seq: number;
+  /** An answer to a press here is announced; the one drawn again when the dialog reopens is not. */
+  live: boolean;
 }
 
 interface Sent {
   intent: SubscriptionIntent;
   input: ChangePlanInput;
   target: PlanVersion;
-}
-
-/** A refusal, with the company as the re-read after it found it (`null`: not read, or the read failed). */
-class Refused extends Error {
-  constructor(
-    readonly error: unknown,
-    readonly tenant: Tenant | null,
-  ) {
-    super("");
-    this.name = "Refused";
-  }
+  withdrawal: PlanChangeOutcome["withdrawal"];
 }
 
 /**
@@ -107,10 +102,15 @@ export function ChangePlanModal({
   const groupRef = useRef<HTMLFieldSetElement>(null);
   const plans = useQuery(plansQueryOptions(taskaApi), accountClient ?? undefined);
   const subscription = useQuery(companySubscriptionOptions(companyId));
-  const entitlement = useQuery(companyEntitlementOptions(companyId));
-  const tenant = useQuery(companyTenantOptions(companyId));
-  const [chosenId, setChosenId] = useState<string | null>(null);
-  const [refusal, setRefusal] = useState<ShownRefusal | null>(null);
+  // The page has just read these: opening reads only the subscription again (guard L-1).
+  const entitlement = useQuery({ ...companyEntitlementOptions(companyId), refetchOnMount: false });
+  const tenant = useQuery({ ...companyTenantOptions(companyId), refetchOnMount: false });
+  // An answer that never came is still open: the dialog opens on it, said again, not announced (art-director).
+  const [reopened] = useState(() => openIntent(meId, companyId, "changePlan", sessionId));
+  const [chosenId, setChosenId] = useState<string | null>(reopened?.planId ?? null);
+  const [refusal, setRefusal] = useState<ShownRefusal | null>(reopened?.shown ? { ...reopened.shown, seq: 1, live: false } : null);
+  /** The company as a refusal's re-read found it, for its OWNER_REQUIRED (G6). */
+  const refusedTenant = useRef<Tenant | null>(null);
   /** A 412 asked for focus on the heading once the re-reads have answered (B11). */
   const [headingFocus, setHeadingFocus] = useState(0);
 
@@ -132,7 +132,7 @@ export function ChangePlanModal({
   const chosen = choices.find((choice) => choice.plan.id === chosenId && choice.selectable) ?? null;
   const covered = hasCurrentPeriod(sub, restrictions);
   const scheduledPlan = catalogue && sub?.scheduledPlanVersionId ? planById(catalogue, sub.scheduledPlanVersionId) : null;
-  const context = dialogContextText(company, current, sub?.paidThrough ?? null);
+  const context = dialogContextText(company, current, sub?.paidThrough ?? null, restrictions.includes("PAYMENT_EXPIRED"));
   const consequences =
     chosen === null
       ? null
@@ -150,8 +150,9 @@ export function ChangePlanModal({
     Promise.all(keys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))).catch(() => undefined);
 
   const change = useMutation({
-    mutationFn: async ({ intent, input, target }: Sent): Promise<PlanChangeOutcome> => {
+    mutationFn: async ({ intent, input, target, withdrawal }: Sent): Promise<PlanChangeOutcome> => {
       let answer;
+      refusedTenant.current = null;
       try {
         answer = await taskaApi.changeSubscriptionPlan(companyId, input, intent.version, intent.key);
       } catch (error) {
@@ -159,6 +160,7 @@ export function ChangePlanModal({
         if (isUnanswered(error) || isWorkspaceClosed(error)) throw error;
         // Any other refusal: in flight until the subscription and the company have been read again
         // (B11), so the next press goes with the fresh If-Match — the catalogue too after a 412, 404 or 400.
+        // The refusal itself is thrown as it came (guard L-3): the gate's refresh reads its code.
         const status = apiErrorFacts(error).status;
         const code = refusalCode(error);
         const catalogue =
@@ -170,41 +172,49 @@ export function ChangePlanModal({
           queryClient.fetchQuery({ ...companyTenantOptions(companyId), staleTime: 0 }).catch(() => null),
           catalogue,
         ]);
-        throw new Refused(error, company);
+        refusedTenant.current = company;
+        throw error;
       }
       if (meId !== null) settleIntent(meId, companyId, intent, null);
-      // The invoice it named — presented as this change's only when it says so (decision 4).
-      let invoice: ChangeInvoice = { kind: "none" };
-      if (answer.invoiceId !== null) {
+      // The invoice it named — presented as this change's only when it says so (decision 4) — read
+      // beside the re-reads (guard L-6).
+      const readInvoice = async (invoiceId: string): Promise<ChangeInvoice> => {
         try {
-          const read = await queryClient.fetchQuery({ ...companyInvoiceOptions(companyId, answer.invoiceId), staleTime: 0 });
-          invoice = read.purpose === "PLAN_CHANGE" && read.planVersionId === target.id ? { kind: "verified", id: read.id, number: read.number } : { kind: "none" };
+          const read = await queryClient.fetchQuery({ ...companyInvoiceOptions(companyId, invoiceId), staleTime: 0 });
+          return read.purpose === "PLAN_CHANGE" && read.planVersionId === target.id ? { kind: "verified", id: read.id, number: read.number } : { kind: "none" };
         } catch {
-          invoice = { kind: "unread", id: answer.invoiceId };
+          return { kind: "unread", id: invoiceId };
         }
-      }
-      // Never the answer's subscription: what the page draws next is read again (guard §1, §7).
-      if (answer.effect === "IMMEDIATE") {
-        await reread(COMPANY_SUBSCRIPTION_KEY, COMPANY_ENTITLEMENT_KEY, COMPANY_QUOTAS_KEY, companyTenantKey(companyId));
-      } else {
-        await reread(COMPANY_SUBSCRIPTION_KEY);
-      }
-      return { effect: answer.effect, target, effectiveAt: answer.effectiveAt, invoice };
+      };
+      // Never the answer's subscription: what the page draws next is read again (guard §1, §7) — after
+      // an effect this build does not know, everything IMMEDIATE would read (guard L-4).
+      const scheduledOrPaid = answer.effect === "AFTER_PAYMENT" || answer.effect === "NEXT_PERIOD";
+      const [invoice] = await Promise.all([
+        answer.invoiceId === null ? Promise.resolve<ChangeInvoice>({ kind: "none" }) : readInvoice(answer.invoiceId),
+        scheduledOrPaid
+          ? reread(COMPANY_SUBSCRIPTION_KEY)
+          : reread(COMPANY_SUBSCRIPTION_KEY, COMPANY_ENTITLEMENT_KEY, COMPANY_QUOTAS_KEY, companyTenantKey(companyId)),
+      ]);
+      return { effect: answer.effect, target, effectiveAt: answer.effectiveAt, invoice, withdrawal };
     },
-    onSuccess: (outcome) => onChanged(outcome),
-    onError: (thrown, sent) => {
-      const error = thrown instanceof Refused ? thrown.error : thrown;
-      if (meId !== null) settleIntent(meId, companyId, sent.intent, error);
+    onSuccess: (outcome) => {
+      // Free once taken is known to be used until sign-out, as a refusal is (release-reviewer L4).
+      if (outcome.target.kind === "FREE" && outcome.effect === "IMMEDIATE" && meId !== null) markFreeUsed(meId);
+      onChanged(outcome);
+    },
+    onError: (error, sent) => {
       const code = refusalCode(error);
       const status = apiErrorFacts(error).status;
-      const rereadCompany = thrown instanceof Refused ? thrown.tenant : null;
+      const rereadCompany = refusedTenant.current;
+      const words = subscriptionRefusalWords("changePlan", error, company, sent.target);
+      const requestId = apiErrorFacts(error).requestId;
+      if (meId !== null) settleIntent(meId, companyId, sent.intent, error, { text: words.text, words: words.words, requestId });
       if (code === "OWNER_REQUIRED" && rereadCompany !== null && rereadCompany.ownerId !== null && rereadCompany.ownerId !== meId) {
         // Somebody else owns it now (§4.39's G6): the dialog closes and the page follows.
         onOwnerLost(rereadCompany);
         return;
       }
-      const words = subscriptionRefusalWords("changePlan", error, company, sent.target);
-      setRefusal((previous) => ({ ...words, requestId: apiErrorFacts(error).requestId, seq: (previous?.seq ?? 0) + 1 }));
+      setRefusal((previous) => ({ ...words, requestId, seq: (previous?.seq ?? 0) + 1, live: true }));
       if (code === "FREE_ELIGIBILITY_USED") {
         // Known until sign-out (TAS-501's precedent); the row says so, and nothing is chosen.
         if (meId !== null) markFreeUsed(meId);
@@ -237,9 +247,14 @@ export function ChangePlanModal({
       void reread(COMPANY_SUBSCRIPTION_KEY);
       return;
     }
-    const intent = intentFor(meId, companyId, "changePlan", `${chosen.sendId}:${currency}`, version, sessionId);
+    const intent = intentFor(meId, companyId, "changePlan", `${chosen.sendId}:${currency}`, version, sessionId, chosen.plan.id);
     setRefusal(null);
-    change.mutate({ intent, input: { planVersionId: chosen.sendId, currency, paymentMethod: "PSP" }, target: chosen.plan });
+    change.mutate({
+      intent,
+      input: { planVersionId: chosen.sendId, currency, paymentMethod: "PSP" },
+      target: chosen.plan,
+      withdrawal: chosen.withdrawal ? { scheduled: scheduledPlan } : null,
+    });
   };
 
   const close = () => {
@@ -247,7 +262,11 @@ export function ChangePlanModal({
     if (!busy) onClose();
   };
 
-  const firstSelectable = choices.find((choice) => choice.selectable)?.plan.id ?? null;
+  // Focus on open: the restored choice when the dialog reopens on an open intent, else the first plan that can be chosen.
+  const firstSelectable =
+    (reopened?.planId !== undefined && choices.some((choice) => choice.plan.id === reopened.planId && choice.selectable) ? reopened.planId : null) ??
+    choices.find((choice) => choice.selectable)?.plan.id ??
+    null;
   let field;
   if (plans.isPending) {
     field = (
@@ -319,7 +338,7 @@ export function ChangePlanModal({
           )}
         </div>
         {refusal ? (
-          <ErrorNote key={refusal.seq} live="alert" requestId={refusal.requestId} serverWords={refusal.words}>
+          <ErrorNote key={refusal.seq} live={refusal.live ? "alert" : undefined} requestId={refusal.requestId} serverWords={refusal.words}>
             {refusal.text}
           </ErrorNote>
         ) : null}

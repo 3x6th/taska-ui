@@ -22,6 +22,7 @@ import {
   KEEP_THEM_ON,
   TURN_OFF,
   TURN_OFF_LABEL,
+  autopayAlreadyOffStatus,
   autopayLineText,
   autopayOffStatus,
   billingAutopayLeadText,
@@ -314,6 +315,23 @@ function AutopayGroup({
   const offer = canTurnOff(state) && isSendableVersion(subscription.version);
   const open = asking && offer;
   const invalidate = (queryKey: QueryKey) => queryClient.invalidateQueries({ queryKey }).catch(() => undefined);
+  /**
+   * Focus once the page has drawn the outcome (art-director blocker 5): «Turn off» when it is still
+   * there, else the group's heading — or the page's, when the re-read took the whole group away.
+   */
+  const [focusTo, setFocusTo] = useState<{ target: "button" | "title"; seq: number } | null>(null);
+  useEffect(() => {
+    if (focusTo === null) return;
+    const node = focusTo.target === "button" ? (button.current ?? titleRef.current) : titleRef.current;
+    (node ?? zoneHeading())?.focus();
+  }, [focusTo]);
+  const focusAfter = (target: "button" | "title") => {
+    const fresh = queryClient.getQueryData<Subscription>(COMPANY_SUBSCRIPTION_KEY) ?? null;
+    const groupStays = fresh !== null && fresh.autopayState !== null && (fresh.paidThrough !== null || fresh.autopayState !== "DISABLED");
+    // The group unmounts with the read that removed it: nothing here would run, so the page's heading now.
+    if (!groupStays) zoneHeading()?.focus();
+    else setFocusTo((current) => ({ target, seq: (current?.seq ?? 0) + 1 }));
+  };
 
   const turnOff = useMutation({
     mutationFn: async (intent: SubscriptionIntent) => {
@@ -334,16 +352,25 @@ function AutopayGroup({
       setRefusal(null);
       say(autopayOffStatus(company));
       // The button is gone: focus on the group's heading — or the page's, when the group went with it.
-      (titleRef.current ?? zoneHeading())?.focus();
+      focusAfter("title");
     },
     onError: (error, intent) => {
       settleIntent(meId, companyId, intent, error);
       setAsking(false);
+      if (refusalCode(error) === "OWNER_REQUIRED") void accountClient?.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
+      // A 412 whose re-read shows them off already is done, not refused (art-director blocker 5).
+      const fresh = queryClient.getQueryData<Subscription>(COMPANY_SUBSCRIPTION_KEY) ?? null;
+      if (apiErrorFacts(error).status === 412 && fresh?.autopayState === "DISABLED") {
+        setRefusal(null);
+        say(autopayAlreadyOffStatus(company));
+        focusAfter("title");
+        return;
+      }
       const words = subscriptionRefusalWords("autopayOff", error, company);
       setRefusal((current) => ({ ...words, requestId: apiErrorFacts(error).requestId, seq: (current?.seq ?? 0) + 1 }));
       say(words.text);
-      button.current?.focus();
-      if (refusalCode(error) === "OWNER_REQUIRED") void accountClient?.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
+      // «Turn off» when the re-read keeps it; the heading when it took it away (the note stays under it).
+      focusAfter(fresh !== null && !canTurnOff(fresh.autopayState) ? "title" : "button");
     },
   });
   const busy = turnOff.isPending;
