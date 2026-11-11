@@ -72,25 +72,47 @@ export function recoveryRouteUrl(base: string, mode: RouterMode): string {
   return mode === "hash" ? `${root}#${RESET_PASSWORD_ROUTE}` : `${root}${RESET_PASSWORD_ROUTE.slice(1)}`;
 }
 
+/**
+ * Whether a router path is the reset page — with its trailing slash too, which
+ * react-router matches to the same route (api-contract-guard build review,
+ * finding 2).
+ */
+export const isResetPasswordPath = (pathname: string) =>
+  pathname === RESET_PASSWORD_ROUTE || pathname === `${RESET_PASSWORD_ROUTE}/`;
+
+/** Either page of a password reset, with or without the trailing slash. */
+export const isPasswordResetPath = (pathname: string) =>
+  isResetPasswordPath(pathname) || pathname === FORGOT_PASSWORD_ROUTE || pathname === `${FORGOT_PASSWORD_ROUTE}/`;
+
+/** The hash build's own route with a query — `#/reset-password?token=…` or `#/reset-password/?token=…`. */
+const HASH_ROUTE = /^#\/reset-password\/?(\?.*)?$/;
+
 /** The browser objects `captureRecoveryLink` touches, so a test can stand in for them. */
 export interface RecoveryLandingWindow {
-  location: Pick<Location, "pathname" | "search">;
+  location: Pick<Location, "pathname" | "search" | "hash">;
   history: Pick<History, "replaceState">;
 }
 
 /**
  * Called once, before the router mounts and before the invitation's capture.
- * Answers whether the page landed on the recovery path. On it, whatever the
+ * Answers whether it took the address. On the recovery path, whatever the
  * query holds, the address becomes the in-app route — with nothing held when
  * no token came, which the page answers with «Open the link from your email
- * again». `replaceState`, not a navigation: the entry the link made simply
- * stops saying what it said.
+ * again». In the hash build it also takes the app's own route carrying a
+ * token, `#/reset-password(/)?token=…` — never mailed (A99), but typed or
+ * pasted it is a recovery link, and the invitation's capture, which reads the
+ * query inside any hash, would otherwise post it as an invitation's (finding
+ * 2). `replaceState`, not a navigation: the entry simply stops saying what it
+ * said.
  */
 export function captureRecoveryLink(page: RecoveryLandingWindow, base: string, mode: RouterMode): boolean {
   const root = base.endsWith("/") ? base : `${base}/`;
   const path = `${root}${RESET_PASSWORD_ROUTE.slice(1)}`;
-  if (page.location.pathname !== path && page.location.pathname !== `${path}/`) return false;
-  const token = recoveryTokenOf(page.location.search);
+  const onPath = page.location.pathname === path || page.location.pathname === `${path}/`;
+  const hashRoute = mode === "hash" ? HASH_ROUTE.exec(page.location.hash) : null;
+  const hashToken = hashRoute === null ? null : recoveryTokenOf(hashRoute[1] ?? "");
+  if (!onPath && hashToken === null) return false;
+  const token = (onPath ? recoveryTokenOf(page.location.search) : null) ?? hashToken;
   if (token !== null) holdRecoveryToken(token);
   page.history.replaceState(null, "", recoveryRouteUrl(base, mode));
   return true;

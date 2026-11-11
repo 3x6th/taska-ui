@@ -16,7 +16,14 @@ import { useTheme } from "../hooks/useTheme";
 import { CREATE_COMPANY_ROUTE, OUTSIDE_COMPANY_ROUTES, forgetFreeUsed } from "../lib/companies";
 import { holdInviteToken, inviteTokenIn } from "../lib/inviteLink";
 import { refreshAccountReads } from "../lib/accountChange";
-import { FORGOT_PASSWORD_ROUTE, RESET_PASSWORD_ROUTE, holdRecoveryToken, recoveryTokenOf } from "../lib/recoveryLink";
+import {
+  FORGOT_PASSWORD_ROUTE,
+  RESET_PASSWORD_ROUTE,
+  holdRecoveryToken,
+  isPasswordResetPath,
+  isResetPasswordPath,
+  recoveryTokenOf,
+} from "../lib/recoveryLink";
 import { AdminAuditSection } from "./admin/AdminAuditSection";
 import { AdminDataSection } from "./admin/AdminDataSection";
 import { AdminEventsProblems } from "./admin/AdminEventsProblems";
@@ -90,17 +97,18 @@ export function App() {
     location.pathname === "/login" ||
     location.pathname === "/invite" ||
     location.pathname === "/auth/callback" ||
-    (companies !== null && (location.pathname === FORGOT_PASSWORD_ROUTE || location.pathname === RESET_PASSWORD_ROUTE));
+    (companies !== null && isPasswordResetPath(location.pathname));
   // An invitation link that reached a running app (DESIGN.md §4.27): on the
   // hash build, `#/invite?token=…` typed or pasted into this tab is a hash
   // change, not a page load, so `captureInviteLink` in main.tsx never sees it
   // and the router does. Held and taken out of the address the same way, on
   // any path. The first render under it does no harm: every route reads it as
   // an unknown parameter, and the replace lands before anything is asked.
-  // In the companies build, never on `/reset-password` (TAS-527, F2): there the
-  // `?token=` is a recovery link's, held for its own form and taken out of
+  // In the companies build, never on `/reset-password` — with its trailing
+  // slash too, which the router matches to the same page (TAS-527, F2): there
+  // the `?token=` is a recovery link's, held for its own form and taken out of
   // the address the same way.
-  const onRecoveryRoute = companies !== null && location.pathname === RESET_PASSWORD_ROUTE;
+  const onRecoveryRoute = companies !== null && isResetPasswordPath(location.pathname);
   const routedInviteToken = onRecoveryRoute ? null : inviteTokenIn({ search: location.search, hash: "" });
   const routedRecoveryToken = onRecoveryRoute ? recoveryTokenOf(location.search) : null;
 

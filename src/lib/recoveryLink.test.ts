@@ -4,6 +4,8 @@ import {
   captureRecoveryLink,
   forgetRecoveryToken,
   heldRecoveryToken,
+  isPasswordResetPath,
+  isResetPasswordPath,
   recoveryRouteUrl,
   recoveryTokenOf,
   subscribeRecoveryToken,
@@ -79,6 +81,45 @@ describe("captureRecoveryLink", () => {
     expect(heldRecoveryToken()).toBe(TOKEN);
     expect(JSON.stringify({ ...window.localStorage })).not.toContain(TOKEN);
     expect(JSON.stringify({ ...window.sessionStorage })).not.toContain(TOKEN);
+  });
+
+  it("in the hash build, the app's own route with a token too — #/reset-password(/)?token= — before the invitation's capture (guard finding 2)", () => {
+    for (const hash of [`#/reset-password?token=${TOKEN}`, `#/reset-password/?token=${TOKEN}`]) {
+      forgetRecoveryToken();
+      const { page, replaceState } = landing("/", "", hash);
+      expect(captureRecoveryLink(page, "/", "hash"), hash).toBe(true);
+      expect(heldRecoveryToken()).toBe(TOKEN);
+      expect(replaceState).toHaveBeenCalledWith(null, "", "/#/reset-password");
+      expect(captureInviteLink(page, "/", "hash")).toBe(false);
+      expect(heldInviteToken()).toBeNull();
+    }
+  });
+
+  it("leaves alone the route without a token, another route's token, and the hash in the browser build", () => {
+    for (const [hash, mode] of [
+      ["#/reset-password", "hash"],
+      [`#/login?token=${TOKEN}`, "hash"],
+      [`#/reset-passwords?token=${TOKEN}`, "hash"],
+      [`#/reset-password?token=${TOKEN}`, "browser"],
+    ] as const) {
+      forgetRecoveryToken();
+      const { page, replaceState } = landing("/", "", hash);
+      expect(captureRecoveryLink(page, "/", mode), `${mode} ${hash}`).toBe(false);
+      expect(replaceState).not.toHaveBeenCalled();
+      expect(heldRecoveryToken()).toBeNull();
+    }
+  });
+
+  it("knows the two pages with and without the trailing slash, as the router matches them", () => {
+    for (const path of ["/reset-password", "/reset-password/"]) {
+      expect(isResetPasswordPath(path)).toBe(true);
+      expect(isPasswordResetPath(path)).toBe(true);
+    }
+    for (const path of ["/forgot-password", "/forgot-password/"]) {
+      expect(isResetPasswordPath(path)).toBe(false);
+      expect(isPasswordResetPath(path)).toBe(true);
+    }
+    for (const path of ["/reset-passwords", "/login", "/c/x/reset-password"]) expect(isPasswordResetPath(path)).toBe(false);
   });
 
   it("tells a subscriber when the token comes and goes", () => {
