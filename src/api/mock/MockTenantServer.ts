@@ -23,17 +23,19 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * revoked one, a suspended membership or a paused company is refused here the
  * way the blueprint says the gateway will refuse it.
  *
- * **Shared by every tab** through `localStorage` `taska.mockServer.v5`: the
+ * **Shared by every tab** through `localStorage` `taska.mockServer.v7`: the
  * companies, memberships, sessions and tokens — since TAS-501 the FREE
  * ledger, the creations' operations and their durable receipts, since TAS-502
  * the invitations, the seat limits, the membership generation and the member
  * writes' durable receipts, since TAS-504 each company's subscription, and
  * since TAS-512 each company's entitlement version, its scheduled plan, the
  * quota kinds it is over and every project's lifetime issue counter, and
- * since TAS-513 each company's invoices and their checkouts — read and written
- * on every operation, so a second tab — or a duplicated one — meets the same
- * server. (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's, v4 TAS-504's, v5
- * TAS-512's; each bump re-seeds, signing every mock account out once.)
+ * since TAS-513 each company's invoices and their checkouts, and since TAS-515
+ * each subscription's plan change, renewal calendar and mandate, and the
+ * subscription commands' durable receipts — read and written on every
+ * operation, so a second tab — or a duplicated one — meets the same server.
+ * (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's, v4 TAS-504's, v5 TAS-512's,
+ * v6 TAS-513's; each bump re-seeds, signing every mock account out once.)
  * Each company's projects and issues are this page's own, in memory, as
  * today's mock's are: they reset with a reload — the lifetime counters do not.
  *
@@ -42,7 +44,7 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * untouched and enforces nothing.
  */
 
-export const MOCK_SERVER_KEY = "taska.mockServer.v6";
+export const MOCK_SERVER_KEY = "taska.mockServer.v7";
 
 /**
  * `localStorage` key for the server's test hooks, as JSON — the seam
@@ -127,17 +129,17 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v6";
  * - `refuseNext`, `delayMs` and `loseAnswer` take `getEntitlement` too, and
  *   `loseAnswer` also `getTenantQuotas`;
  * - `applyPlan`: `{[tenantId]: planVersionId}` — stands in for a plan change
- *   (TAS-354 / TAS-483): applied once per value set — the plan swapped, the
- *   seat limit set, the entitlement version moved, and `OVER_QUOTA` set with
- *   every quota kind over its new limit; a FREE plan drops the paid period and
- *   switches automatic payments off;
+ *   made elsewhere (TAS-483): applied once per value set — the plan swapped,
+ *   the seat limit set, the entitlement version moved, and `OVER_QUOTA` set
+ *   with every quota kind over its new limit; a FREE plan ends the paid
+ *   coverage as develop's Paid→FREE does (TAS-515 F8): CONSENTED automatic
+ *   payments go DISABLED, SUSPENDED stay, `renewalCancelled` is kept (A73);
  * - `taskLifetime`: `{[projectId]: n}` — a project's lifetime issue counter set
  *   to `n`, once per value; past a finite `TASK_LIFETIME` the company is
  *   `OVER_QUOTA`;
  * - `paymentDispute`: `{[tenantId]: boolean}` — sets or lifts
- *   `PAYMENT_DISPUTE`;
- * - `clockOffsetMs` also applies a scheduled plan change once its
- *   `scheduledEffectiveAt` has passed.
+ *   `PAYMENT_DISPUTE`; since TAS-515 a dispute switches automatic payments off
+ *   (DISABLED), and lifting it never turns them back on (F7).
  *
  * The company's invoices and their hosted checkout (TAS-513,
  * api-contract-guard §5 and its addendum) — **all payment state is here**,
@@ -158,6 +160,24 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v6";
  *   late answer for the invoice's open or UNKNOWN checkout, once per checkout;
  * - `clockOffsetMs` also expires an OPEN invoice at its `dueAt`, and its open
  *   checkouts with it.
+ *
+ * The company's plan change, renewal and automatic payments (TAS-515,
+ * api-contract-guard's pre-build ruling §6) — the owner's commands, each with
+ * `If-Match` = `Subscription.version` and a durable receipt per (company,
+ * actor, key):
+ *
+ * - `refuseNext`, `delayMs` and `loseAnswer` take `changeSubscriptionPlan`,
+ *   `cancelSubscriptionRenewal`, `resumeSubscriptionRenewal` and
+ *   `setAutopayConsent` — a lost command is applied, its answer lost, once;
+ * - `autopaySuspended`: `{[tenantId]: true}` — CONSENTED automatic payments
+ *   become SUSPENDED (no writer on develop names the event, A69); taking the
+ *   hook out never restores them;
+ * - `autopayConsentEnabled` (default `true`): `false` refuses
+ *   `setAutopayConsent` 403 `CAPABILITY_DISABLED` (the AUTOPAY flag);
+ * - `clockOffsetMs` also runs the renewal calendar — a RENEWAL issued 7 days
+ *   before `paidThrough`, due at it, only with renewal on and no change
+ *   active — and a NEXT_PERIOD change's boundary: paid, the plan switches
+ *   there with a month from it; unpaid, the date goes and the plan id stays.
  *
  * The stand-in payment page (`/mock-checkout/{token}`, the mock build only)
  * reads its checkout by an opaque token only this server maps back
@@ -203,6 +223,8 @@ export interface MockTenantHooks {
   settlementDelayMs?: number;
   checkoutTtlMs?: number;
   resolveCheckout?: Record<string, string>;
+  autopaySuspended?: Record<string, boolean>;
+  autopayConsentEnabled?: boolean;
 }
 
 /** The fixture companies' ids (fixed, `createdAt` ascending in this order). */
@@ -226,12 +248,17 @@ export const MOCK_TENANT_IDS = {
  * The mock's catalogue (TAS-501): fixed ids, the mock's own codes — the UI
  * never compares a code. Free and Team are `PUBLISHED`; Team's first version is
  * `RETIRED`, listed and never offered, so the screen's filter has something to
- * leave out.
+ * leave out. TAS-515 publishes Starter (€10) and Business (€40) — invented
+ * (art-director B15), so a company on Team v1 (€15) reaches all three
+ * outcomes of a plan change: Free at once, a cheaper plan after its payment,
+ * a dearer one from the next period.
  */
 export const MOCK_PLAN_IDS = {
   free: "7d2c4e1a-5b3f-4a6c-9e8d-0f1a2b3c4d01",
   team: "7d2c4e1a-5b3f-4a6c-9e8d-0f1a2b3c4d02",
   teamRetired: "7d2c4e1a-5b3f-4a6c-9e8d-0f1a2b3c4d03",
+  starter: "7d2c4e1a-5b3f-4a6c-9e8d-0f1a2b3c4d04",
+  business: "7d2c4e1a-5b3f-4a6c-9e8d-0f1a2b3c4d05",
 } as const;
 
 interface MockPlan {
@@ -305,6 +332,43 @@ const MOCK_PLANS: readonly MockPlan[] = [
     state: "PUBLISHED",
     publishedAt: "2026-05-01T00:00:00Z",
   },
+  // TAS-515, invented (B15): one paid plan cheaper than Team v1, one dearer than Team v2.
+  {
+    id: MOCK_PLAN_IDS.starter,
+    kind: "PAID",
+    code: "mock-starter",
+    version: "1",
+    name: "Starter",
+    price: { amountMinor: "1000", currency: "EUR", exponent: 2 },
+    period: "CALENDAR_MONTH",
+    limits: [
+      { kind: "PROJECT", limit: "2", unlimited: false },
+      { kind: "SEAT", limit: "10", unlimited: false },
+      { kind: "STORAGE_BYTES", limit: "1000000000", unlimited: false },
+      { kind: "TASK_LIFETIME", unlimited: true },
+    ],
+    capabilities: ["projects.basic"],
+    state: "PUBLISHED",
+    publishedAt: "2026-11-01T00:00:00Z",
+  },
+  {
+    id: MOCK_PLAN_IDS.business,
+    kind: "PAID",
+    code: "mock-business",
+    version: "1",
+    name: "Business",
+    price: { amountMinor: "4000", currency: "EUR", exponent: 2 },
+    period: "CALENDAR_MONTH",
+    limits: [
+      { kind: "PROJECT", limit: "20", unlimited: false },
+      { kind: "SEAT", limit: "200", unlimited: false },
+      { kind: "STORAGE_BYTES", limit: "50000000000", unlimited: false },
+      { kind: "TASK_LIFETIME", unlimited: true },
+    ],
+    capabilities: ["projects.basic", "projects.unlimited-issues"],
+    state: "PUBLISHED",
+    publishedAt: "2026-11-01T00:00:00Z",
+  },
 ];
 
 /**
@@ -320,7 +384,7 @@ export const MOCK_INVOICE_IDS = {
   /** Stark Industries' first payment: OPEN, due at its creation deadline. */
   starkInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e06",
   wayneInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e07",
-  /** Umbrella's renewal onto Team v2: OPEN, due a week after its paid-through. */
+  /** Umbrella's renewal of Team v1: OPEN, due a week after its paid-through. */
   umbrellaRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e08",
 } as const;
 
@@ -369,9 +433,35 @@ interface StoredSubscription {
   anchorDay?: number;
   renewalCancelled: boolean;
   autopayState: string;
-  /** TAS-512: an announced move to another plan version, applied once `scheduledEffectiveAt` has passed. */
+  /**
+   * TAS-515: the owner's NEXT_PERIOD choice (develop's `writeSelection`) — the
+   * plan it moves to and when. The date goes once the boundary passes unpaid;
+   * the id stays (`SubscriptionStore.java:629-640`).
+   */
   scheduledPlanVersionId?: string;
   scheduledEffectiveAt?: string;
+  /** TAS-515: the plan change in force — develop's off-wire `active_plan_change_id`. Never on the wire (A63). */
+  activeChange?: StoredPlanChange;
+  /** TAS-515: the `paidThrough` the renewal calendar has issued a RENEWAL for. Never on the wire. */
+  renewalIssuedFor?: string;
+  /** TAS-515: `AutopayMandate.version` — deliberately never the subscription's. Never on the wire. */
+  mandateVersion?: number;
+}
+
+/**
+ * A plan change awaiting its payment (TAS-515): AFTER_PAYMENT switches once
+ * its invoice settles, NEXT_PERIOD at its boundary if its invoice settled by
+ * then. It ends when its invoice expires (the mock's choice, recorded), and a
+ * new selection supersedes it.
+ */
+interface StoredPlanChange {
+  operationId: string;
+  planVersionId: string;
+  effect: "AFTER_PAYMENT" | "NEXT_PERIOD";
+  invoiceId: string;
+  effectiveAt?: string;
+  /** Its invoice settled (NEXT_PERIOD): the switch waits for the boundary. */
+  paidAt?: string;
 }
 
 interface StoredTenant {
@@ -548,7 +638,7 @@ interface StoredCheckout {
 }
 
 interface ServerState {
-  v: 6;
+  v: 7;
   tenants: StoredTenant[];
   memberships: StoredMembership[];
   sessions: StoredSession[];
@@ -597,6 +687,13 @@ interface ServerState {
    * it carries the page's address.
    */
   checkoutReceipts: Record<string, { hash: string; checkoutId: string }>;
+  /**
+   * TAS-515: the subscription commands' receipts — durable, `{tenant}:{actor}:{key}`,
+   * checked before `If-Match` (develop's SPC 68-81): the same request (operation,
+   * `If-Match` and body) answers what it answered — a refused FREE change its
+   * refusal (SPC 404-406) —, another is 409 `IDEMPOTENCY_CONFLICT`.
+   */
+  billingReceipts: Record<string, { hash: string; answer?: unknown; refusal?: { status: number; code: string; title: string } }>;
 }
 
 /**
@@ -673,6 +770,11 @@ const BREACH_KINDS: readonly string[] = ["SEAT", "PROJECT", "STORAGE_BYTES", "TA
 
 /** How long a paid period the mock starts on a confirmed first payment lasts — its own choice (TAS-504). */
 const PAID_PERIOD_MS = 30 * DAY;
+/** TAS-515, the mock's own choices: an AFTER_PAYMENT invoice is due a week after the change; the calendar's RENEWAL is issued a week before the end. */
+const PLAN_CHANGE_DUE_MS = 7 * DAY;
+const RENEWAL_LEAD_MS = 7 * DAY;
+/** The restrictions the AUTOPAY profile refuses `setAutopayConsent` under (`CapabilityEvaluator.java:456-462`, A68). */
+const AUTOPAY_DENIED: readonly string[] = ["OWNER_PAUSE", "PLATFORM_BLOCK", "PAYMENT_DISPUTE", "PENDING_FIRST_PAYMENT"];
 
 /** TAS-513, the mock's own choices: a checkout's life, the settlement's delay, and a late 3-D Secure success. */
 const CHECKOUT_TTL_MS = 30 * MINUTE;
@@ -827,11 +929,17 @@ export type MockRouteKind = "tenant-read" | "tenant-write" | "tenant-self" | "ac
  * ask A46); Northwind's lifetime counters are TAS 47, WEB 50 and MOB 12, so
  * WEB refuses a new issue while it can still be edited, moved and commented
  * on, and TAS takes three more. Umbrella is on Team v1 (€15, 25 seats, now
- * retired) with a move to Team v2 announced for its paid-through — the notice
- * was created ten days before the seed, so the first boundary after its 30
- * days is that one — and RND at 50 on a plan without a task limit. The
- * long-named company's renewal is cancelled; `applyPlan` moving it to FREE is
- * AC2 — its LNG at 64 is then past the free limit. Initech's HLP is at 12.
+ * retired) and RND at 50 on a plan without a task limit. The long-named
+ * company's renewal is cancelled; `applyPlan` moving it to FREE is AC2 — its
+ * LNG at 64 is then past the free limit. Initech's HLP is at 12.
+ *
+ * TAS-515 drops TAS-512's Team v1 → v2 «announcement» on Umbrella: develop
+ * writes the scheduled fields only for the owner's own NEXT_PERIOD change
+ * (api-contract-guard §0.2), so a scheduled or pending change now comes from
+ * the owner's actions. Umbrella's renewal invoice renews the plan it is on.
+ * The FREE ledger is unchanged: Tom still has his, so Umbrella → Free applies
+ * at once, and Priya — who used hers on Globex — is refused it on the
+ * long-named company through the same route.
  */
 function seedTenants(
   seedAt: number,
@@ -911,11 +1019,10 @@ function seedTenants(
       tenant(ids.northwind, "Northwind", anna, 1, "ACTIVE", [], free, freePlan),
       tenant(ids.globex, "Globex", priya, 2, "ACTIVE", [], free, freePlan),
       tenant(ids.initech, "Initech", sofia, 3, "ACTIVE", ["OWNER_PAUSE"], undefined, paid(32, "CONSENTED")),
-      // Team v1, with Team v2 announced for the first boundary after its notice — the paid-through (TAS-512).
+      // Team v1 (retired), its renewal already issued (TAS-513) — so the calendar does not issue a second one (TAS-515).
       tenant(ids.umbrella, "Umbrella", tom, 4, "ACTIVE", [], seatLimitOf(MOCK_PLAN_IDS.teamRetired), {
         ...umbrellaPaid,
-        scheduledPlanVersionId: MOCK_PLAN_IDS.team,
-        scheduledEffectiveAt: umbrellaPaid.paidThrough,
+        renewalIssuedFor: umbrellaPaid.paidThrough,
       }),
       // Blocked: no automatic payment is taken while it is (D145).
       tenant(ids.hooli, "Hooli", priya, 5, "ACTIVE", ["PLATFORM_BLOCK"], undefined, paid(38, "SUSPENDED")),
@@ -1004,7 +1111,7 @@ function seedTenants(
       MOCK_TASK_LIFETIME_SEED.map(([tenantId, projectId, count]) => [projectId, { tenantId, count }]),
     ),
     // TAS-513: what the server issued — every paid company's INITIAL, and the
-    // RENEWAL of Umbrella onto the Team v2 announced for its paid-through.
+    // RENEWAL of Umbrella's Team v1 (TAS-515: no longer onto an announced v2).
     invoices: [
       seedInvoice(1001, MOCK_INVOICE_IDS.initechInitial, ids.initech, "INITIAL", "PAID", MOCK_PLAN_IDS.team, at(3), DAY * 30),
       seedInvoice(1002, MOCK_INVOICE_IDS.umbrellaInitial, ids.umbrella, "INITIAL", "PAID", MOCK_PLAN_IDS.teamRetired, at(4), DAY * 30),
@@ -1019,7 +1126,7 @@ function seedTenants(
         ids.umbrella,
         "RENEWAL",
         "OPEN",
-        MOCK_PLAN_IDS.team,
+        MOCK_PLAN_IDS.teamRetired,
         iso(seedAt - DAY),
         Date.parse(umbrellaPaid.paidThrough ?? iso(seedAt)) + 7 * DAY - (seedAt - DAY),
       ),
@@ -1317,6 +1424,10 @@ export class MockTenantServer {
       getInvoice: (bearer, tenantId, invoiceId) => this.getInvoice(bearer, tenantId, invoiceId),
       createCheckout: (bearer, tenantId, invoiceId, returnTarget, key) => this.createCheckout(bearer, tenantId, invoiceId, returnTarget, key),
       getCheckout: (bearer, tenantId, checkoutId) => this.getCheckout(bearer, tenantId, checkoutId),
+      changeSubscriptionPlan: (bearer, tenantId, input, version, key) => this.changeSubscriptionPlan(bearer, tenantId, input, version, key),
+      cancelSubscriptionRenewal: (bearer, tenantId, version, key) => this.setRenewalCancelled(bearer, tenantId, true, version, key),
+      resumeSubscriptionRenewal: (bearer, tenantId, version, key) => this.setRenewalCancelled(bearer, tenantId, false, version, key),
+      setAutopayConsent: (bearer, tenantId, consent, version, key) => this.setAutopayConsent(bearer, tenantId, consent, version, key),
     };
   }
 
@@ -2431,6 +2542,334 @@ export class MockTenantServer {
     return answer;
   }
 
+  /* -------------------- plan change, renewal and automatic payments (TAS-515) */
+
+  /*
+   * api-contract-guard's pre-build ruling §6, develop's TAS-354 order
+   * (`SubscriptionPlanChanges.java`, SPC): (1) a company session of exactly
+   * this company — the `refuseNext` hook first —, the company there and
+   * ACTIVE (else 409, «no subscription»), the caller ACTIVE and its owner
+   * (403 `OWNER_REQUIRED`); **no restriction stops the plan commands**
+   * (FINANCE_RECOVERY); automatic payments are refused `READ_ONLY` under a
+   * pause, a block, a dispute or before the first payment (A68), and
+   * `CAPABILITY_DISABLED` behind the flag hook; (2) the key a canonical UUID
+   * and its durable receipt — replayed before the version, so a retry with the
+   * same key, `If-Match` and body answers what it answered; (3) `If-Match`,
+   * `Subscription.version` (428 / 412); (4) the body; (5) apply, the
+   * subscription's version moving with every accepted command.
+   */
+
+  /**
+   * `POST /tenants/{t}/billing/plan-changes` — develop's effect rule (SPC
+   * 164-173): a FREE target IMMEDIATE (the ledger first, 409
+   * `FREE_ELIGIBILITY_USED` — a refusal that still moves the version, SPC
+   * 315-345); the plan it is on while paid and current IMMEDIATE (withdrawing
+   * a scheduled change); a dearer one while covered NEXT_PERIOD, from the end
+   * of the paid period; anything else AFTER_PAYMENT. A target that is not the
+   * latest published version of its code is 404 `RESOURCE_NOT_FOUND`; another
+   * version of the code it is on 409 `INVALID_STATE`
+   * (`PLAN_TERMS_CHANGE_REQUIRES_NOTICE`). A paid effect needs `currency` and
+   * `paymentMethod` (400). The mock issues the change's invoice itself and
+   * names it in `invoiceId` (invented, A62); a new selection VOIDs every OPEN
+   * invoice of the older one, RENEWAL included (invented, A65's target).
+   */
+  private async changeSubscriptionPlan(
+    bearer: string | null,
+    tenantId: string,
+    input: { planVersionId: string; currency?: string; paymentMethod?: string },
+    version: string,
+    key: string,
+  ): Promise<unknown> {
+    await this.delay("changeSubscriptionPlan");
+    const answer = this.write((state) => {
+      const { session, tenant } = this.authorizeSubscription(state, bearer, tenantId, "changeSubscriptionPlan");
+      const request = {
+        operation: "changeSubscriptionPlan",
+        version,
+        planVersionId: input.planVersionId,
+        currency: input.currency,
+        paymentMethod: input.paymentMethod,
+        confirmed: true,
+      };
+      const receipt = this.billingReceipt(state, tenantId, session.userId, key, request);
+      if (receipt.replay !== undefined) return receipt.replay;
+      const sub = tenant.subscription;
+      this.checkVersion(version, sub.version);
+      if (typeof input.planVersionId !== "string" || !UUID_PATTERN.test(input.planVersionId)) {
+        throw invalid("Invalid request", [{ field: "planVersionId", code: "INVALID", message: "planVersionId must be a UUID" }]);
+      }
+      const target = MOCK_PLANS.find((plan) => plan.id === input.planVersionId);
+      const latest = target
+        ? MOCK_PLANS.filter((plan) => plan.code === target.code && plan.state === "PUBLISHED").sort((a, b) => Number(b.version) - Number(a.version))[0]
+        : undefined;
+      if (!target || target.state !== "PUBLISHED" || latest?.id !== target.id) throw problem(404, "RESOURCE_NOT_FOUND", "Plan version not found");
+      const current = MOCK_PLANS.find((plan) => plan.id === sub.planVersionId);
+      if (current && current.code === target.code && current.id !== target.id) {
+        // PLAN_TERMS_CHANGE_REQUIRES_NOTICE, mapped to the blueprint's code (A70).
+        throw problem(409, "INVALID_STATE", "Another version of the same plan needs a notice");
+      }
+      const now = this.lifecycleNow();
+      const covered = sub.paidThrough !== undefined && Date.parse(sub.paidThrough) > now;
+      const price = (plan: MockPlan | undefined) => BigInt(plan?.price.amountMinor ?? "0");
+      const effect =
+        target.kind === "FREE"
+          ? "IMMEDIATE"
+          : target.id === sub.planVersionId && (covered || isFreePlan(sub.planVersionId))
+            ? "IMMEDIATE"
+            : covered && price(target) > price(current)
+              ? "NEXT_PERIOD"
+              : "AFTER_PAYMENT";
+      if (effect !== "IMMEDIATE" && (input.currency === undefined || input.paymentMethod === undefined)) {
+        throw invalid("Invalid request", [{ field: "currency", code: "REQUIRED", message: "A paid change needs currency and paymentMethod" }]);
+      }
+      const operationId = uuid();
+      let invoiceId: string | undefined;
+      let effectiveAt: string | undefined;
+      if (target.kind === "FREE" && isFreePlan(sub.planVersionId)) {
+        // Already on FREE: a no-op, the ledger untouched (SPC 164-173).
+        tenant.subscription = { ...sub, version: nextVersion(sub.version) };
+        effectiveAt = new Date(now).toISOString();
+      } else if (target.kind === "FREE") {
+        const used = state.freeLedger[session.userId];
+        if (used !== undefined && used !== tenantId) {
+          // develop writes twice before it refuses: the version moves all the same.
+          sub.version = nextVersion(sub.version);
+          const refusal = { status: 409, code: "FREE_ELIGIBILITY_USED", title: "The free company allowance has been used" };
+          receipt.refuse(refusal);
+          throw problem(refusal.status, refusal.code, refusal.title);
+        }
+        this.toFree(state, tenant, session.userId);
+        effectiveAt = new Date(now).toISOString();
+      } else if (effect === "IMMEDIATE") {
+        // The plan it is on: the scheduled change, if any, is dropped (SPC 221-247).
+        this.supersede(state, tenant, false);
+        tenant.subscription = { ...tenant.subscription, version: nextVersion(tenant.subscription.version) };
+        effectiveAt = new Date(now).toISOString();
+      } else {
+        this.supersede(state, tenant, true);
+        effectiveAt = effect === "NEXT_PERIOD" ? sub.paidThrough : undefined;
+        const invoice = this.issueInvoice(state, tenant, "PLAN_CHANGE", target.id, now, effectiveAt === undefined ? now + PLAN_CHANGE_DUE_MS : Date.parse(effectiveAt));
+        invoiceId = invoice.id;
+        tenant.subscription = {
+          ...tenant.subscription,
+          version: nextVersion(tenant.subscription.version),
+          ...(effect === "NEXT_PERIOD" && effectiveAt !== undefined ? { scheduledPlanVersionId: target.id, scheduledEffectiveAt: effectiveAt } : {}),
+          activeChange: {
+            operationId,
+            planVersionId: target.id,
+            effect,
+            invoiceId: invoice.id,
+            ...(effectiveAt === undefined ? {} : { effectiveAt }),
+          },
+        };
+      }
+      return receipt.keep({
+        subscription: this.wireSubscription(tenant),
+        effect,
+        ...(invoiceId === undefined ? {} : { invoiceId }),
+        ...(effectiveAt === undefined ? {} : { effectiveAt }),
+        operationId,
+      });
+    });
+    if (this.takeLostAnswer("changeSubscriptionPlan")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /**
+   * `PUT` (cancel, `{confirmed: true}`) and `DELETE` (resume) `…/billing/renewal-cancellation`:
+   * cancel needs a paid subscription with current coverage, resume a paid one
+   * — an ended period too (Q6) — else 409 `INVALID_STATE`
+   * (`PAID_SUBSCRIPTION_REQUIRED`, A70). Each moves the version, a no-op
+   * included (develop's, A72); neither touches automatic payments, and an
+   * issued RENEWAL stays OPEN (A66).
+   */
+  private async setRenewalCancelled(bearer: string | null, tenantId: string, cancel: boolean, version: string, key: string): Promise<unknown> {
+    const operation = cancel ? "cancelSubscriptionRenewal" : "resumeSubscriptionRenewal";
+    await this.delay(operation);
+    const answer = this.write((state) => {
+      const { session, tenant } = this.authorizeSubscription(state, bearer, tenantId, operation);
+      const receipt = this.billingReceipt(state, tenantId, session.userId, key, { operation, version, ...(cancel ? { confirmed: true } : {}) });
+      if (receipt.replay !== undefined) return receipt.replay;
+      const sub = tenant.subscription;
+      this.checkVersion(version, sub.version);
+      const paid = sub.paidThrough !== undefined && !isFreePlan(sub.planVersionId);
+      if (!paid || (cancel && Date.parse(sub.paidThrough ?? "") <= this.lifecycleNow())) {
+        throw problem(409, "INVALID_STATE", "A paid subscription is required");
+      }
+      tenant.subscription = { ...sub, renewalCancelled: cancel, version: nextVersion(sub.version) };
+      return receipt.keep(this.wireSubscription(tenant));
+    });
+    if (this.takeLostAnswer(operation)) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /**
+   * `PUT …/billing/autopay` — withdrawal only (`consent: true` would need a
+   * payment method and a terms version nothing serves: 400, A67). CONSENTED
+   * and SUSPENDED become DISABLED; the subscription's version moves; the
+   * answer's mandate version is deliberately not the subscription's.
+   */
+  private async setAutopayConsent(bearer: string | null, tenantId: string, consent: unknown, version: string, key: string): Promise<unknown> {
+    await this.delay("setAutopayConsent");
+    const answer = this.write((state) => {
+      const { session, tenant } = this.authorizeSubscription(state, bearer, tenantId, "setAutopayConsent");
+      if (this.hooks().autopayConsentEnabled === false) throw problem(403, "CAPABILITY_DISABLED", "Automatic payments are not available");
+      const restrictions = orderedRestrictions(tenant.restrictions);
+      if (restrictions.some((code) => AUTOPAY_DENIED.includes(code))) throw problem(403, "READ_ONLY", "The tenant is read-only", restrictions);
+      const receipt = this.billingReceipt(state, tenantId, session.userId, key, { operation: "setAutopayConsent", version, consent, confirmed: true });
+      if (receipt.replay !== undefined) return receipt.replay;
+      const sub = tenant.subscription;
+      this.checkVersion(version, sub.version);
+      if (consent !== false) {
+        throw invalid("Invalid request", [{ field: "paymentMethodId", code: "REQUIRED", message: "consent=true requires paymentMethodId and termsVersion" }]);
+      }
+      const mandateVersion = (sub.mandateVersion ?? 40) + 1;
+      tenant.subscription = { ...sub, autopayState: "DISABLED", version: nextVersion(sub.version), mandateVersion };
+      return receipt.keep({
+        id: tenant.id.replace(/^.{8}/, "a0a0a0a0"),
+        ownerId: tenant.ownerId,
+        state: "DISABLED",
+        version: String(mandateVersion),
+        ownerVersion: tenant.ownerVersion,
+        consentChannel: "WEB",
+      });
+    });
+    if (this.takeLostAnswer("setAutopayConsent")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /** Check (1) for the four subscription commands — see the block comment above. */
+  private authorizeSubscription(
+    state: ServerState,
+    bearer: string | null,
+    tenantId: string,
+    operation: string,
+  ): { session: StoredSession; tenant: StoredTenant } {
+    const granted = this.authorizeControl(state, bearer, tenantId, operation);
+    if (granted.tenant.lifecycle !== "ACTIVE") throw problem(409, "INVALID_STATE", "The tenant has no subscription to change");
+    if (granted.tenant.ownerId !== granted.session.userId) throw problem(403, "OWNER_REQUIRED", "Only the owner can change the subscription");
+    return granted;
+  }
+
+  /**
+   * Check (2): the key a canonical UUID and its receipt, `{tenant}:{actor}:{key}`.
+   * `replay` is what the same request answered (a refusal is thrown again);
+   * `keep` records an answer, `refuse` a refusal that a replay repeats.
+   */
+  private billingReceipt(
+    state: ServerState,
+    tenantId: string,
+    actorId: string,
+    key: string,
+    request: unknown,
+  ): { replay: unknown; keep: <T>(answer: T) => T; refuse: (refusal: { status: number; code: string; title: string }) => void } {
+    if (!CANONICAL_KEY.test(key)) throw problem(400, "VALIDATION_FAILED", "Idempotency-Key must be a canonical UUID");
+    const receiptKey = `${tenantId}:${actorId}:${key}`;
+    const hash = JSON.stringify(request);
+    const stored = state.billingReceipts[receiptKey];
+    if (stored) {
+      if (stored.hash !== hash) throw problem(409, "IDEMPOTENCY_CONFLICT", "The key was used for another request");
+      if (stored.refusal) throw problem(stored.refusal.status, stored.refusal.code, stored.refusal.title);
+      return { replay: stored.answer ?? null, keep: (answer) => answer, refuse: () => undefined };
+    }
+    return {
+      replay: undefined,
+      keep: (answer) => {
+        state.billingReceipts[receiptKey] = { hash, answer };
+        return answer;
+      },
+      refuse: (refusal) => {
+        state.billingReceipts[receiptKey] = { hash, refusal };
+      },
+    };
+  }
+
+  /**
+   * A new selection supersedes the one before it (SPC 763-771): the change
+   * in force ends, its invoices OPEN are VOIDed with their open checkouts —
+   * and, when the new selection moves the plan, every OPEN RENEWAL too, so no
+   * money is taken for coverage that will not come (A65). The scheduled date
+   * and id go, and the renewal calendar may issue again.
+   */
+  private supersede(state: ServerState, tenant: StoredTenant, renewals: boolean): void {
+    const change = tenant.subscription.activeChange;
+    for (const invoice of state.invoices) {
+      if (invoice.tenantId !== tenant.id || invoice.state !== "OPEN") continue;
+      const older = (change !== undefined && invoice.id === change.invoiceId) || invoice.purpose === "PLAN_CHANGE" || (renewals && invoice.purpose === "RENEWAL");
+      if (!older) continue;
+      invoice.state = "VOID";
+      invoice.version += 1;
+      for (const checkout of state.checkouts) {
+        if (checkout.invoiceId === invoice.id && OPEN_CHECKOUT_STATES.has(checkout.state)) checkout.state = "EXPIRED";
+      }
+    }
+    const {
+      activeChange: _change,
+      scheduledPlanVersionId: _plan,
+      scheduledEffectiveAt: _at,
+      renewalIssuedFor: issued,
+      ...kept
+    } = tenant.subscription;
+    // A RENEWAL VOIDed here may be issued again once nothing is in force.
+    tenant.subscription = renewals ? kept : { ...kept, ...(issued === undefined ? {} : { renewalIssuedFor: issued }) };
+  }
+
+  /**
+   * Paid → FREE (develop's SPC 533-553, guard §6): every coverage ends — no
+   * `paidThrough`, the rest neither kept nor refunded —, CONSENTED automatic
+   * payments go DISABLED and SUSPENDED stay (A69), `renewalCancelled` stays
+   * (A73), the older selection's invoices are VOIDed, `PAYMENT_EXPIRED` goes
+   * (FREE needs no paid period), and every kind over the free limits is
+   * breached — `OVER_QUOTA`, never a refusal. With an actor, its FREE
+   * allowance is spent on this company.
+   */
+  private toFree(state: ServerState, tenant: StoredTenant, actorId: string | null): void {
+    this.supersede(state, tenant, true);
+    const sub = tenant.subscription;
+    tenant.subscription = {
+      planVersionId: MOCK_PLAN_IDS.free,
+      version: nextVersion(sub.version),
+      renewalCancelled: sub.renewalCancelled,
+      autopayState: sub.autopayState === "CONSENTED" ? "DISABLED" : sub.autopayState,
+      ...(sub.mandateVersion === undefined ? {} : { mandateVersion: sub.mandateVersion }),
+    };
+    this.switchPlan(state, tenant, MOCK_PLAN_IDS.free);
+    setRestriction(tenant, "PAYMENT_EXPIRED", false);
+    if (actorId !== null) state.freeLedger[actorId] = tenant.id;
+    this.reconcileBreaches(state, tenant);
+  }
+
+  /** The subscription's plan moved to `planVersionId`: its seat limit, the entitlement's version, and every kind now over its limit. */
+  private switchPlan(state: ServerState, tenant: StoredTenant, planVersionId: string): void {
+    tenant.subscription = { ...tenant.subscription, planVersionId };
+    tenant.seatLimit = seatLimitOf(planVersionId);
+    tenant.entitlementVersion += 1;
+    tenant.quotaBreach = BREACH_KINDS.filter((kind) => !this.withinLimit(state, tenant, kind));
+  }
+
+  /** An invoice the server issues (TAS-515: a PLAN_CHANGE at the command, a RENEWAL by the calendar) — OPEN, PSP, the plan's price. */
+  private issueInvoice(state: ServerState, tenant: StoredTenant, purpose: string, planVersionId: string, issuedAt: number, dueAt: number): StoredInvoice {
+    const total = planPrice(planVersionId);
+    const invoice: StoredInvoice = {
+      id: uuid(),
+      tenantId: tenant.id,
+      number: invoiceNumber(state.invoiceSeq),
+      purpose,
+      state: "OPEN",
+      planVersionId,
+      total,
+      allocated: zeroOf(total),
+      remaining: { ...total },
+      issuedAt: new Date(issuedAt).toISOString(),
+      dueAt: new Date(dueAt).toISOString(),
+      paymentMethod: "PSP",
+      version: 1,
+    };
+    state.invoices.push(invoice);
+    state.invoiceSeq += 1;
+    return invoice;
+  }
+
   /**
    * The stand-in payment page's read of its checkout, by the opaque token
    * only this server maps back — not a gateway route, and not on `TaskaApi`.
@@ -2899,7 +3338,12 @@ export class MockTenantServer {
     return { ...rest, restrictions: [...tenant.restrictions] };
   }
 
-  /** `Subscription`: `paidThrough` and `anchorDay` only when there is a paid period (ask A37), the scheduled plan only when one is announced. */
+  /**
+   * `Subscription`: `paidThrough` and `anchorDay` only when there is a paid
+   * period (ask A37); the scheduled plan only when the owner chose one — its
+   * date gone once the boundary passed unpaid (TAS-515). Never the change in
+   * force, the renewal calendar or the mandate version: none is on the wire.
+   */
   private wireSubscription(tenant: StoredTenant): unknown {
     const { planVersionId, version, paidThrough, anchorDay, renewalCancelled, autopayState, scheduledPlanVersionId, scheduledEffectiveAt } =
       tenant.subscription;
@@ -2910,7 +3354,8 @@ export class MockTenantServer {
       ...(paidThrough === undefined ? {} : { paidThrough }),
       ...(anchorDay === undefined ? {} : { anchorDay }),
       renewalCancelled,
-      ...(scheduledPlanVersionId === undefined || scheduledEffectiveAt === undefined ? {} : { scheduledPlanVersionId, scheduledEffectiveAt }),
+      ...(scheduledPlanVersionId === undefined ? {} : { scheduledPlanVersionId }),
+      ...(scheduledEffectiveAt === undefined ? {} : { scheduledEffectiveAt }),
       autopayState,
     };
   }
@@ -2983,29 +3428,22 @@ export class MockTenantServer {
   }
 
   /**
-   * A plan applied (the `applyPlan` hook, standing in for TAS-354 / TAS-483):
-   * the subscription moves to it — a FREE one without a paid period or
-   * automatic payments, an announced change dropped either way — the seat
-   * limit follows, the entitlement version moves, and every kind over its new
-   * limit is breached (`reconcileBreaches` sets `OVER_QUOTA`).
+   * A plan applied (the `applyPlan` hook, standing in for a change made
+   * elsewhere, TAS-483): a FREE one as develop's Paid→FREE (`toFree`, F8,
+   * without spending anybody's allowance); a paid one keeps the paid period,
+   * any scheduled change dropped. The seat limit follows, the entitlement
+   * version moves, and every kind over its new limit is breached
+   * (`reconcileBreaches` sets `OVER_QUOTA`).
    */
   private applyPlan(state: ServerState, tenant: StoredTenant, planVersionId: string): void {
-    const sub = tenant.subscription;
-    const version = nextVersion(sub.version);
-    tenant.subscription = isFreePlan(planVersionId)
-      ? { planVersionId, version, renewalCancelled: false, autopayState: "DISABLED" }
-      : {
-          planVersionId,
-          version,
-          ...(sub.paidThrough === undefined ? {} : { paidThrough: sub.paidThrough }),
-          ...(sub.anchorDay === undefined ? {} : { anchorDay: sub.anchorDay }),
-          renewalCancelled: sub.renewalCancelled,
-          autopayState: sub.autopayState,
-        };
-    tenant.seatLimit = seatLimitOf(planVersionId);
-    tenant.entitlementVersion += 1;
     tenant.appliedPlan = planVersionId;
-    tenant.quotaBreach = BREACH_KINDS.filter((kind) => !this.withinLimit(state, tenant, kind));
+    if (isFreePlan(planVersionId)) {
+      this.toFree(state, tenant, null);
+      return;
+    }
+    this.supersede(state, tenant, false);
+    tenant.subscription = { ...tenant.subscription, version: nextVersion(tenant.subscription.version) };
+    this.switchPlan(state, tenant, planVersionId);
   }
 
   /** The company a project belongs to, from the counters, else this page's stores. */
@@ -3146,16 +3584,17 @@ export class MockTenantServer {
       const raw = this.storage.getItem(MOCK_SERVER_KEY);
       if (raw !== null) {
         const parsed = JSON.parse(raw) as ServerState;
-        if (parsed && parsed.v === 6 && Array.isArray(parsed.tenants)) return parsed;
+        if (parsed && parsed.v === 7 && Array.isArray(parsed.tenants)) return parsed;
       }
     } catch {
       if (this.memory) return this.memory;
     }
     return {
-      v: 6,
+      v: 7,
       ...seedTenants(this.now()),
       checkouts: [],
       checkoutReceipts: {},
+      billingReceipts: {},
       lifetimeApplied: {},
       sessions: [],
       access: {},
@@ -3276,19 +3715,14 @@ export class MockTenantServer {
       state.lifetimeApplied[projectId] = count;
       changed = true;
     }
-    // TAS-512: an announced plan once its date has passed, a plan the hook
-    // applies, a payment dispute, and the quota kinds a company is over.
+    // TAS-515: a NEXT_PERIOD change's boundary — never a scheduled plan applied
+    // without its payment (F2). TAS-512: a plan the hook applies, a payment
+    // dispute, and the quota kinds a company is over.
     const plans = typeof hooks.applyPlan === "object" && hooks.applyPlan !== null ? hooks.applyPlan : {};
     const disputes = typeof hooks.paymentDispute === "object" && hooks.paymentDispute !== null ? hooks.paymentDispute : {};
+    const suspended = typeof hooks.autopaySuspended === "object" && hooks.autopaySuspended !== null ? hooks.autopaySuspended : {};
     for (const tenant of state.tenants) {
-      const sub = tenant.subscription;
-      if (sub.scheduledPlanVersionId !== undefined && sub.scheduledEffectiveAt !== undefined && Date.parse(sub.scheduledEffectiveAt) <= now) {
-        const { scheduledPlanVersionId: planVersionId, scheduledEffectiveAt: _at, ...kept } = sub;
-        tenant.subscription = { ...kept, planVersionId, version: nextVersion(sub.version) };
-        tenant.seatLimit = seatLimitOf(planVersionId);
-        tenant.entitlementVersion += 1;
-        changed = true;
-      }
+      if (this.passBoundary(state, tenant, now)) changed = true;
       const wanted = plans[tenant.id];
       if (typeof wanted === "string" && wanted !== tenant.appliedPlan && MOCK_PLANS.some((plan) => plan.id === wanted)) {
         this.applyPlan(state, tenant, wanted);
@@ -3297,6 +3731,14 @@ export class MockTenantServer {
       const dispute = disputes[tenant.id];
       if (typeof dispute === "boolean" && setRestriction(tenant, "PAYMENT_DISPUTE", dispute)) {
         tenant.entitlementVersion += 1;
+        // A dispute switches automatic payments off, and lifting it never turns them back on (F7).
+        if (dispute && tenant.subscription.autopayState !== "DISABLED") {
+          tenant.subscription = { ...tenant.subscription, autopayState: "DISABLED", version: nextVersion(tenant.subscription.version) };
+        }
+        changed = true;
+      }
+      if (suspended[tenant.id] === true && tenant.subscription.autopayState === "CONSENTED") {
+        tenant.subscription = { ...tenant.subscription, autopayState: "SUSPENDED", version: nextVersion(tenant.subscription.version) };
         changed = true;
       }
       if (this.reconcileBreaches(state, tenant)) changed = true;
@@ -3312,8 +3754,51 @@ export class MockTenantServer {
         tenant.entitlementVersion += 1;
         changed = true;
       }
+      if (this.issueRenewal(state, tenant, now)) changed = true;
     }
     return changed;
+  }
+
+  /**
+   * A NEXT_PERIOD change at its boundary (`PlanCoveragePolicy.java:151-200`):
+   * paid by then, the plan switches there with a month from it, the anchor
+   * kept; unpaid, its date goes and the plan id stays — the invoice expired
+   * at the same instant, and with it the change (the mock's choice).
+   */
+  private passBoundary(state: ServerState, tenant: StoredTenant, now: number): boolean {
+    const sub = tenant.subscription;
+    const change = sub.activeChange;
+    const at = sub.scheduledEffectiveAt;
+    if (at === undefined || Date.parse(at) > now) return false;
+    if (change?.effect === "NEXT_PERIOD" && change.paidAt !== undefined) {
+      const { activeChange: _change, scheduledPlanVersionId: _plan, scheduledEffectiveAt: _at, renewalIssuedFor: _issued, ...kept } = sub;
+      const end = new Date(Date.parse(at) + PAID_PERIOD_MS);
+      tenant.subscription = { ...kept, version: nextVersion(sub.version), paidThrough: end.toISOString() };
+      this.switchPlan(state, tenant, change.planVersionId);
+      setRestriction(tenant, "PAYMENT_EXPIRED", false);
+      this.reconcileBreaches(state, tenant);
+      return true;
+    }
+    const { activeChange: _change, scheduledEffectiveAt: _at, ...kept } = sub;
+    tenant.subscription = { ...kept, version: nextVersion(sub.version) };
+    return true;
+  }
+
+  /**
+   * The renewal calendar (invented, guard §6): a RENEWAL of the plan it is on,
+   * issued 7 days before `paidThrough` and due at it, once per period — only
+   * with renewal on, no plan change in force, and the period not yet over (no
+   * invoice is issued after an unpaid boundary, `RenewalCalendar.java:68-73`).
+   */
+  private issueRenewal(state: ServerState, tenant: StoredTenant, now: number): boolean {
+    const sub = tenant.subscription;
+    const through = sub.paidThrough === undefined ? Number.NaN : Date.parse(sub.paidThrough);
+    if (tenant.lifecycle !== "ACTIVE" || !Number.isFinite(through) || sub.renewalCancelled || sub.activeChange !== undefined) return false;
+    if (isFreePlan(sub.planVersionId) || sub.renewalIssuedFor === sub.paidThrough || now < through - RENEWAL_LEAD_MS || now >= through) return false;
+    if (state.invoices.some((invoice) => invoice.tenantId === tenant.id && invoice.purpose === "RENEWAL" && invoice.state === "OPEN")) return false;
+    this.issueInvoice(state, tenant, "RENEWAL", sub.planVersionId, through - RENEWAL_LEAD_MS, through);
+    tenant.subscription = { ...sub, renewalIssuedFor: sub.paidThrough };
+    return true;
   }
 
   /**
@@ -3368,6 +3853,15 @@ export class MockTenantServer {
       for (const checkout of state.checkouts) {
         if (checkout.invoiceId === invoice.id && OPEN_CHECKOUT_STATES.has(checkout.state)) checkout.state = "EXPIRED";
       }
+      // TAS-515: a plan change ends with its invoice (the mock's choice, Q4); a
+      // NEXT_PERIOD one keeps its plan id without a date, as develop does past
+      // an unpaid boundary.
+      const tenant = state.tenants.find((item) => item.id === invoice.tenantId);
+      const change = tenant?.subscription.activeChange;
+      if (tenant && change?.invoiceId === invoice.id) {
+        const { activeChange: _change, scheduledEffectiveAt: _at, ...kept } = tenant.subscription;
+        tenant.subscription = { ...kept, version: nextVersion(kept.version) };
+      }
       changed = true;
     }
     return changed;
@@ -3386,6 +3880,25 @@ export class MockTenantServer {
       return;
     }
     const sub = tenant.subscription;
+    if (invoice.purpose === "PLAN_CHANGE") {
+      // F1 (`PlanCoveragePolicy.java:151-200`, `PaymentSettlement.java:293-337`).
+      const change = sub.activeChange;
+      // An older selection's invoice changes nothing (develop: PLAN_SELECTION_CHANGED; here they are VOID first).
+      if (change === undefined || change.invoiceId !== invoice.id) return;
+      if (change.effect === "NEXT_PERIOD") {
+        // Paid before its boundary: the switch waits for it (`passBoundary`).
+        tenant.subscription = { ...sub, version: nextVersion(sub.version), activeChange: { ...change, paidAt: new Date(at).toISOString() } };
+        return;
+      }
+      // AFTER_PAYMENT: the plan now, with a new month from the payment; every coverage before it superseded.
+      const { activeChange: _change, scheduledPlanVersionId: _plan, scheduledEffectiveAt: _at, renewalIssuedFor: _issued, ...kept } = sub;
+      const end = new Date(at + PAID_PERIOD_MS);
+      tenant.subscription = { ...kept, version: nextVersion(sub.version), paidThrough: end.toISOString(), anchorDay: end.getUTCDate() };
+      this.switchPlan(state, tenant, change.planVersionId);
+      setRestriction(tenant, "PAYMENT_EXPIRED", false);
+      this.reconcileBreaches(state, tenant);
+      return;
+    }
     const through = sub.paidThrough === undefined ? Number.NaN : Date.parse(sub.paidThrough);
     const from = Number.isFinite(through) && through > at ? through : at;
     const end = new Date(from + PAID_PERIOD_MS);

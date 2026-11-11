@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CheckoutRedirect, httpsOnly, readAllInvoices, toCheckout, toInvoice, toInvoicePage } from "./billing";
+import { CheckoutRedirect, httpsOnly, readAllInvoices, toAutopayConsentResult, toCheckout, toInvoice, toInvoicePage, toPlanChange } from "./billing";
 
 /*
  * TAS-513's narrowing (api-contract-guard §1): an invoice keeps no buyer,
@@ -119,3 +119,31 @@ describe("a checkout's page address (§1, art-director B4)", () => {
 function structuredCloneSafe(value: object): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value));
 }
+
+describe("a plan change and a mandate (TAS-515, §1)", () => {
+  it("PlanChange: every field optional, the effect open, the subscription narrowed — and no body that is not an object", () => {
+    expect(
+      toPlanChange({
+        subscription: { tenantId: "t", planVersionId: "p", version: "9", renewalCancelled: false, autopayState: "DISABLED" },
+        effect: "NEXT_PERIOD",
+        invoiceId: "inv-1",
+        effectiveAt: "2026-12-20T09:00:00Z",
+        operationId: "op-1",
+      }),
+    ).toMatchObject({ effect: "NEXT_PERIOD", invoiceId: "inv-1", effectiveAt: "2026-12-20T09:00:00Z", operationId: "op-1", subscription: { tenantId: "t", version: "9" } });
+    expect(toPlanChange({ effect: "LATER_SOMETIME", effectiveAt: "not a date" })).toEqual({
+      subscription: null,
+      effect: "LATER_SOMETIME",
+      invoiceId: null,
+      effectiveAt: null,
+      operationId: null,
+    });
+    for (const body of [null, "accepted", 42, []]) expect(toPlanChange(body), String(body)).toBeNull();
+  });
+
+  it("AutopayMandate is kept as its state only: no version, owner or snapshot", () => {
+    expect(toAutopayConsentResult({ id: "m", ownerId: "o", state: "DISABLED", version: "41", consentSnapshot: {} })).toEqual({ state: "DISABLED" });
+    expect(toAutopayConsentResult({})).toEqual({ state: null });
+    expect(toAutopayConsentResult("ok")).toBeNull();
+  });
+});

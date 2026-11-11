@@ -255,17 +255,15 @@ describe("the other two create refusals (§5)", () => {
 });
 
 describe("the lifecycle clock and the hooks (§5)", () => {
-  it("Umbrella at its paid-through: Team v2 applies (seats 50, the entitlement moves, nothing announced) and the period ends", async () => {
+  it("Umbrella at its paid-through: nothing is announced or applied — TAS-515 dropped the seed (F2) — and the period ends", async () => {
     const { api, hooks } = await inCompany("tom@example.com", UM);
     const before = await api.getSubscription(UM);
-    expect(before).toMatchObject({ planVersionId: MOCK_PLAN_IDS.teamRetired, scheduledPlanVersionId: MOCK_PLAN_IDS.team });
-    expect(before.scheduledEffectiveAt).toBe(before.paidThrough);
+    expect(before).toMatchObject({ planVersionId: MOCK_PLAN_IDS.teamRetired, scheduledPlanVersionId: null, scheduledEffectiveAt: null });
     hooks({ clockOffsetMs: 45 * DAY + 60_000 });
     const after = await api.getSubscription(UM);
-    expect(after).toMatchObject({ planVersionId: MOCK_PLAN_IDS.team, scheduledPlanVersionId: null, scheduledEffectiveAt: null, version: "3" });
-    await expect(api.getEntitlement(UM)).resolves.toMatchObject({ planVersionId: MOCK_PLAN_IDS.team });
-    expect(Number((await api.getEntitlement(UM)).version)).toBeGreaterThan(1);
-    expect(await quotaRow(api, UM, "SEAT")).toMatchObject({ limit: "50" });
+    expect(after).toMatchObject({ planVersionId: MOCK_PLAN_IDS.teamRetired, scheduledPlanVersionId: null, version: before.version });
+    await expect(api.getEntitlement(UM)).resolves.toMatchObject({ planVersionId: MOCK_PLAN_IDS.teamRetired });
+    expect(await quotaRow(api, UM, "SEAT")).toMatchObject({ limit: "25" });
     await expect(api.getTenant(UM)).resolves.toMatchObject({ restrictions: ["PAYMENT_EXPIRED"] });
   });
 

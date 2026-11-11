@@ -380,13 +380,15 @@ export interface Subscription {
   autopayState: AutopayState | null;
   renewalCancelled: boolean | null;
   /**
-   * TAS-512: the plan version the subscription is scheduled to move to, read
-   * as the owner's announced terms (ask A47 — the blueprint does not say whose
-   * change it is). `null` when absent. `currentPeriodId` and `anchorDay` are
-   * not read: nothing draws them.
+   * The plan version the owner chose to move to from the next period (TAS-515,
+   * api-contract-guard §0.2): develop writes it only for an owner's NEXT_PERIOD
+   * change — no catalogue notice writes it (TAS-483 is unbuilt), so it is read
+   * as the owner's own schedule (ask A64). It stays after its boundary passed
+   * unpaid, without `scheduledEffectiveAt`. `null` when absent.
+   * `currentPeriodId` and `anchorDay` are not read: nothing draws them.
    */
   scheduledPlanVersionId: string | null;
-  /** When the scheduled plan applies — an instant, or `null` when absent or unreadable. */
+  /** When the scheduled plan starts — an instant, or `null` when absent or unreadable. */
   scheduledEffectiveAt: string | null;
 }
 
@@ -401,7 +403,9 @@ export function toSubscription(wire: unknown): Subscription {
   return {
     tenantId: text(row.tenantId),
     planVersionId: text(row.planVersionId),
-    version: text(row.version),
+    // The `If-Match` of every subscription command (TAS-515): the blueprint's
+    // decimal, or nothing — an unreadable one offers no command (guard F4).
+    version: typeof row.version === "string" && DECIMAL.test(row.version) ? row.version : null,
     // An instant the page can draw, or nothing: a value `Date` cannot read is not «Paid until» (api-contract-guard M2).
     paidThrough: instant(row.paidThrough),
     autopayState: text(row.autopayState),

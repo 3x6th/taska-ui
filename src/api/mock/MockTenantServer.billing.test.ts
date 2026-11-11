@@ -82,7 +82,8 @@ describe("owner only (§5.5, §7)", () => {
     ]);
     expect(page.nextCursor).toBeNull();
     expect(JSON.stringify(page)).not.toContain("billing@example.com");
-    expect((await api.getInvoice(UM, RENEWAL)).total).toEqual({ amountMinor: "2000", currency: "EUR", exponent: 2 });
+    // TAS-515: the renewal of the plan Umbrella is on, Team v1 — no longer onto an announced v2.
+    expect(await api.getInvoice(UM, RENEWAL)).toMatchObject({ planVersionId: MOCK_PLAN_IDS.teamRetired, total: { amountMinor: "1500", currency: "EUR", exponent: 2 } });
     expect(facts(await caught(api.getInvoice(UM, MOCK_INVOICE_IDS.starkInitial)))).toMatchObject({ status: 404, code: "RESOURCE_NOT_FOUND" });
   });
 });

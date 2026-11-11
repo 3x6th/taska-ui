@@ -111,6 +111,12 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   getInvoice: "session",
   createCheckout: "session",
   getCheckout: "session",
+  // TAS-515: the owner's plan change, renewal and automatic payments, with the
+  // tab's company session, picked by the session layer as for the REST leg.
+  changeSubscriptionPlan: "session",
+  cancelSubscriptionRenewal: "session",
+  resumeSubscriptionRenewal: "session",
+  setAutopayConsent: "session",
   getMeta: "account",
   listProjects: "tenant-read",
   createProject: "tenant-write",
@@ -256,6 +262,10 @@ type SessionMethods = Pick<
   | "getInvoice"
   | "createCheckout"
   | "getCheckout"
+  | "changeSubscriptionPlan"
+  | "cancelSubscriptionRenewal"
+  | "resumeSubscriptionRenewal"
+  | "setAutopayConsent"
 >;
 
 type AnyMethod = (...args: unknown[]) => unknown;
@@ -344,6 +354,10 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     getInvoice: (tenantId, invoiceId) => web.getInvoice(tenantId, invoiceId),
     createCheckout: (tenantId, invoiceId, returnTarget, key) => web.createCheckout(tenantId, invoiceId, returnTarget, key),
     getCheckout: (tenantId, checkoutId) => web.getCheckout(tenantId, checkoutId),
+    changeSubscriptionPlan: (tenantId, input, version, key) => web.changeSubscriptionPlan(tenantId, input, version, key),
+    cancelSubscriptionRenewal: (tenantId, version, key) => web.cancelSubscriptionRenewal(tenantId, version, key),
+    resumeSubscriptionRenewal: (tenantId, version, key) => web.resumeSubscriptionRenewal(tenantId, version, key),
+    setAutopayConsent: (tenantId, consent, version, key) => web.setAutopayConsent(tenantId, consent, version, key),
   };
 
   const api: Record<string, unknown> = {};
