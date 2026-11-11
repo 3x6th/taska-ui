@@ -62,7 +62,7 @@ test("paid → Free applies at once: Paid until goes, and with it the Renewal an
   await expect(zone(page)).toContainText("Move Umbrella to another plan. You’ll see what changes, and when, before you confirm.");
 
   const change = await openChange(page);
-  await expect(change.getByText(/^Umbrella is on Team · version 1 · €15 a month, paid until /)).toBeVisible();
+  await expect(change.getByText(/^Umbrella is on Team · version 1, €15 a month, paid until /)).toBeVisible();
   // Published plans by price; nothing preselected; the answer unavailable until a choice.
   await expect(change.getByRole("radio")).toHaveCount(4);
   await expect(answer(page)).toHaveAttribute("aria-disabled", "true");
@@ -123,7 +123,7 @@ test("paid → cheaper paid: an invoice, Pay through the mock's checkout, and th
 
   await link.click();
   await expect(page.getByRole("heading", { level: 1, name: /Invoice TSK-2026-01009/ })).toBeFocused();
-  await expect(page.getByText("Paying this invoice moves Umbrella to Starter. Until it’s paid, it stays on Team.")).toBeVisible();
+  await expect(page.getByText("Paying this invoice moves Umbrella to Starter. Until Starter starts, it stays on Team.")).toBeVisible();
   await page.getByRole("button", { name: "Pay €10.00" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Test checkout — no real payment" })).toBeFocused();
   await page.getByRole("button", { name: "Payment succeeds" }).click();
@@ -150,8 +150,15 @@ test("a dearer plan is scheduled from the next period, with its invoice in Billi
     new RegExp(`^Business starts ${DATE.source}\\. Nothing is charged now — pay its invoice in Billing before then, or Umbrella becomes read-only on that date\\.$`),
   );
   await expect(zoneButton(page, "Change plan")).toBeFocused();
+  // What happens if it isn't paid by then is on the row (art-director blocker 2) — this session knows its invoice.
   await expect(fact(page, "Scheduled change")).toHaveText(
-    new RegExp(`^Business · version 1, €40 a monthFrom ${DATE.source} · 20 projects · 200 seats · 50 GB storage · unlimited issues$`),
+    new RegExp(
+      `^Business · version 1, €40 a monthFrom ${DATE.source} · 20 projects · 200 seats · 50 GB storage · unlimited issuesIt starts only if invoice TSK-2026-01009 is paid by then\\. If it isn’t, Umbrella becomes read-only on that date\\.$`,
+    ),
+  );
+  await expect(fact(page, "Scheduled change").getByRole("link", { name: "TSK-2026-01009" })).toHaveAttribute(
+    "href",
+    new RegExp(`/company/billing/[0-9a-f-]{36}$`),
   );
   await expect(fact(page, "Plan")).toHaveText("Team · version 1");
 
@@ -162,7 +169,7 @@ test("a dearer plan is scheduled from the next period, with its invoice in Billi
   await expect(row).toContainText("€40.00");
   await expect(page.locator(".company-invoice-row").filter({ has: page.getByRole("link", { name: "TSK-2026-01008" }) })).toContainText("void");
   await row.getByRole("link", { name: "TSK-2026-01009" }).click();
-  await expect(page.getByText("Paying this invoice moves Umbrella to Business. Until it’s paid, it stays on Team.")).toBeVisible();
+  await expect(page.getByText("Paying this invoice moves Umbrella to Business. Until Business starts, it stays on Team.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Pay €40.00" })).toBeVisible();
 });
 
@@ -181,11 +188,13 @@ test("choosing the plan it is on while a change is scheduled withdraws it", asyn
   await expect(change.getByText(new RegExp(`^Already scheduled from ${DATE.source}$`))).toBeVisible();
   await change.getByRole("radio", { name: /^Team/ }).check();
   await expect(change.locator(".company-plan-change-consequences")).toHaveText(
-    new RegExp(`^${LONG_NAME} stays on Team, and the change to Business from ${DATE.source} is dropped\\.$`),
+    new RegExp(
+      `^${LONG_NAME} stays on Team\\. The change to Business from ${DATE.source} is dropped — unless it’s already paid for; then it still starts on that date\\.$`,
+    ),
   );
   await answer(page).click();
   await expect(dialog(page)).toHaveCount(0);
-  await expect(said(page)).toHaveText(`${LONG_NAME} is now on Team.`);
+  await expect(said(page)).toHaveText(`The change to Business is dropped. ${LONG_NAME} stays on Team.`);
   await expect(labels(page)).not.toContainText(["Scheduled change"]);
   await expect(zoneButton(page, "Change plan")).toBeFocused();
 });
@@ -251,7 +260,7 @@ test("Turn off asks first, then the group says Off — and nothing anywhere turn
   await group.getByRole("button", { name: "Turn off automatic payments" }).click();
   const band = page.locator(".company-autopay-band");
   await expect(band.getByRole("button", { name: "Keep them on" })).toBeFocused();
-  await expect(band).toContainText(new RegExp(`If it isn’t paid for by ${DATE.source}, it becomes read-only\\. This version of Taska can’t turn them back on\\.`));
+  await expect(band).toContainText(new RegExp(`If Umbrella isn’t paid for by ${DATE.source}, it becomes read-only\\. This version of Taska can’t turn them back on\\.`));
   await band.getByRole("button", { name: "Turn off", exact: true }).click();
   await expect(page.getByRole("heading", { level: 2, name: "Automatic payments" })).toBeFocused();
   await expect(said(page)).toHaveText("Automatic payments are off for Umbrella.");
@@ -381,4 +390,96 @@ test("a non-owner has no zone, no group and sends no billing request — even at
   await expect(page.getByText("Invoices and payments for Umbrella are shown only to its owner.")).toBeVisible();
   const hooks = await page.evaluate(() => JSON.parse(window.localStorage.getItem("taska.mockTenantHooks") ?? "{}") as { refuseNext?: Record<string, unknown> });
   expect(Object.keys(hooks.refuseNext ?? {}).sort()).toEqual(Object.keys(untaken).sort());
+});
+
+test("a scheduled change that is already paid for is not dropped by choosing the plan it is on — it still starts (guard M-2)", async ({ page }) => {
+  await inCompany(page, "Consolidated", COMPANY.longName, "priya@example.com");
+  await setHooks(page, { settlementDelayMs: 500 });
+  await openPlan(page, COMPANY.longName);
+  let change = await openChange(page);
+  await change.getByRole("radio", { name: /^Business/ }).check();
+  await answer(page).click();
+  const link = fact(page, "Scheduled change").getByRole("link", { name: /^TSK-2026-\d{5}$/ });
+  await link.click();
+  await page.getByRole("button", { name: "Pay €40.00" }).click();
+  await page.getByRole("button", { name: "Payment succeeds" }).click();
+  await expect(page.locator(".company-payment-state")).toContainText("Paid.", { timeout: 15_000 });
+
+  await page.getByRole("navigation", { name: "Company" }).getByRole("link", { name: "Plan" }).click();
+  change = await openChange(page);
+  await change.getByRole("radio", { name: /^Team/ }).check();
+  await expect(change.locator(".company-plan-change-consequences")).toContainText("is dropped — unless it’s already paid for; then it still starts on that date.");
+  await answer(page).click();
+  await expect(dialog(page)).toHaveCount(0);
+  await expect(said(page)).toHaveText(new RegExp(`^The change to Business is already paid for, so it still starts ${DATE.source}\\.$`));
+  await expect(zoneButton(page, "Change plan")).toBeFocused();
+  await expect(fact(page, "Scheduled change")).toContainText("Business · version 1, €40 a month");
+});
+
+test("a Pending change another tab superseded goes once this tab reads the subscription again (guard M-1)", async ({ page }) => {
+  await inCompany(page, "Umbrella", COMPANY.umbrella, "tom@example.com");
+  await openPlan(page, COMPANY.umbrella);
+  let change = await openChange(page);
+  await change.getByRole("radio", { name: /^Starter/ }).check();
+  await answer(page).click();
+  await expect(fact(page, "Pending change")).toContainText("Starter · version 1");
+
+  const other = await page.context().newPage();
+  await other.goto(companyPath(COMPANY.umbrella, "/company/plan"));
+  await zoneButton(other, "Change plan").click();
+  await other.getByRole("dialog", { name: "Change plan" }).getByRole("radio", { name: /^Business/ }).check();
+  await other.getByRole("dialog", { name: "Change plan" }).getByRole("button", { name: "Change plan" }).click();
+  await expect(other.getByRole("dialog", { name: "Change plan" })).toHaveCount(0);
+  await other.close();
+
+  // Opening «Change plan» reads the subscription again; the superseded row goes with it.
+  change = await openChange(page);
+  await change.getByRole("button", { name: "Cancel" }).click();
+  await expect(fact(page, "Scheduled change")).toContainText("Business · version 1");
+  await expect(labels(page)).not.toContainText(["Pending change"]);
+});
+
+test("a 412 on Turn off whose re-read finds them off already is said as done, with focus on the group's heading", async ({ page }) => {
+  await inCompany(page, "Umbrella", COMPANY.umbrella, "tom@example.com");
+  await openCompanyZone(page, COMPANY.umbrella, "Billing");
+  const group = page.getByRole("region", { name: "Automatic payments" });
+  await group.getByRole("button", { name: "Turn off automatic payments" }).click();
+  const other = await page.context().newPage();
+  await other.goto(companyPath(COMPANY.umbrella, "/company/billing"));
+  const otherGroup = other.getByRole("region", { name: "Automatic payments" });
+  await otherGroup.getByRole("button", { name: "Turn off automatic payments" }).click();
+  await other.locator(".company-autopay-band").getByRole("button", { name: "Turn off", exact: true }).click();
+  await expect(otherGroup).toContainText("Off");
+  await other.close();
+  await page.locator(".company-autopay-band").getByRole("button", { name: "Turn off", exact: true }).click();
+  await expect(said(page)).toHaveText("Automatic payments are already off for Umbrella.");
+  await expect(page.getByRole("heading", { level: 2, name: "Automatic payments" })).toBeFocused();
+  await expect(group.locator(".error-note")).toHaveCount(0);
+  await expect(page.locator(".company-autopay-band")).toHaveCount(0);
+  await expect(group).toContainText("Off");
+});
+
+test("closed after an answer that never came, «Change plan» reopens on it — the choice, its sentence and focus — and the press repeats it", async ({ page }) => {
+  await inCompany(page, "Umbrella", COMPANY.umbrella, "tom@example.com");
+  await setHooks(page, { loseAnswer: ["changeSubscriptionPlan"] });
+  await openPlan(page, COMPANY.umbrella);
+  let change = await openChange(page);
+  await change.getByRole("radio", { name: /^Starter/ }).check();
+  await answer(page).click();
+  await expect(change.getByRole("alert")).toContainText("Taska couldn’t confirm the plan change.");
+  await change.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog(page)).toHaveCount(0);
+
+  await zoneButton(page, "Change plan").click();
+  change = dialog(page);
+  await expect(change.getByRole("radio", { name: /^Starter/ })).toBeChecked();
+  await expect(change.getByRole("radio", { name: /^Starter/ })).toBeFocused();
+  // Drawn again, not announced again.
+  await expect(change.locator(".error-note")).toContainText("Taska couldn’t confirm the plan change. Press Change plan again — it won’t be applied twice.");
+  await expect(change.getByRole("alert")).toHaveCount(0);
+  await answer(page).click();
+  await expect(dialog(page)).toHaveCount(0);
+  await expect(said(page)).toHaveText(/^Invoice TSK-2026-01009 for Starter is ready in Billing\./);
+  const state = await server(page);
+  expect(state.invoices.filter((invoice) => invoice.tenantId === COMPANY.umbrella && invoice.purpose === "PLAN_CHANGE")).toHaveLength(1);
 });
