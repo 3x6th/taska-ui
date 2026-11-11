@@ -4760,3 +4760,15 @@ Rulings in `docs/ai/reviews/TAS-513-*.md` (git-ignored); the divergence entries 
   next visit or reload (release-reviewer, by design until A57 + A58 give the list one read).
 - **bfcache restore of the invoice page has component tests only**: Playwright's Chromium gives a fresh `back_forward`
   load even with the cache allowed; check once in Safari / iOS when the flag goes on (release-reviewer).
+- **Three TAS-513 fixes have tests that cannot fail** (api-contract-guard re-verdict, each fix reverted alone): F1
+  (`IDEMPOTENCY_CONFLICT` re-reads) has no screen test — the guard's P3 probe has the shape; F5's test
+  (`CompanyBillingSection.test.tsx:334`) passes through the watch's own poll — also assert the redirect's `go` was never
+  called; F7's (`CompanySetupScreen.test.tsx:232`) never opens the race — answer `me` before `getTenant`.
+- **`BillingRequests.test.tsx` does not pin the watch tick** (2 reads per tick) **or the card with a record**
+  (`getInvoice ∥ getCheckout`, not waiting for the list) (api-contract-guard).
+- **Focus falls to `<body>` when Pay disappears for «already in progress»** (409 `INVALID_STATE` or
+  `IDEMPOTENCY_CONFLICT`): the state is announced, but the keyboard user loses their place — focus the state block or
+  the `h1` when it appears (release-reviewer N-a, pre-existing on the first build).
+- **The Back check is per document** (`loadedByHistory()`, `companyBilling.ts`): in a page loaded by Back, the first
+  click into an invoice marks it left; the list's word after Back is `confirming` on a fresh load and `unpaid` on a
+  bfcache restore. Wording only (release-reviewer L1).
