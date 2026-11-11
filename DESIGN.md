@@ -421,7 +421,8 @@ Slide-over — единственная поверхность с горизон
   рабочих экранов не бывает.
 - Выбор компании (§4.33), создание (§4.36) и карточка компании до открытия (§4.37) живут в той же
   оболочке, но входят `tk-pop var(--dur-enter)`: 500 мс `.auth-card-wrap` остаются только за `/login`,
-  `/invite` и `/auth/callback` (TAS-500, TAS-501). Переход между ними — смена содержимого той же
+  `/invite` и `/auth/callback` (TAS-500, TAS-501); `/forgot-password` и `/reset-password` (TAS-527) тоже входят
+  `tk-pop var(--dur-enter)`, а из `/login` только меняют содержимое карточки. Переход между ними — смена содержимого той же
   карточки: оболочка не перемонтируется, второго входа нет.
 
 ---
@@ -1926,7 +1927,8 @@ UI (`channel` в `IssueHistoryResponseDto` — открытая строка), �
   Кнопка в полёте — `aria-disabled`, не `disabled` (§4.21), подпись «Activating».
 - **Подсказка под кнопкой** — `.auth-hint` 11.5 `--fg-2` (7.26 / 6.75; `--fg-3` давал
   3.14 / 3.05, а это единственный указанный путь, не мета). Sign in: «Forgot your password?
-  Taska has no password reset yet.» Accept invite: «Link expired? Ask the person who invited
+  Taska has no password reset yet.» (В сборке компаний — TAS-527, §4.42: вместо неё ghost-ссылка «Forgot your
+  password?» в том же месте; без флага текст не меняется.) Accept invite: «Link expired? Ask the person who invited
   you to send a new one.» Приглашает только global admin, так что пригласивший — по
   построению тот, кто может прислать новую ссылку.
 - **Sign in** (TAS-299). Password — та же раскладка, что у New password: `<label for>` над
@@ -3641,6 +3643,27 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 
 **Цвет и движение.** Новых токенов нет. Акцента на странице нет ни в покое, ни у действий: страница только читает. Контраст — как в §4.38 (`--fg` 16.56 / 17.13, `--fg-2` 6.73 / 7.35 на `--bg`); маркер §4.34 — `--fg-2` на `--surface` 7.26 / 6.75. Ничего не анимируется, кроме пульсации `.value-skeleton`, которая уже есть в списке §3.
 
+### 4.42 Учётные данные аккаунта (TAS-527)
+Только сборка компаний (`VITE_TASKA_TENANTS`). Решение art-director до сборки (B1–B16), сведённое с api-contract-guard и его дополнением (`docs/ai/reviews/TAS-527-*`; `API-DIVERGENCE.md` «TAS-527»). Без флага ничего не меняется: `/login` побайтно прежний, «Taska has no password reset yet.» на месте, ни одного нового запроса. **Смена email подтверждается 8-значным кодом в настройках, не ссылкой** (контракт выше задачи). **Своих фраз для неверного текущего пароля и занятого адреса нет** — кодов в контракте нет (A98, A100): слова сервера по §5.6 или общий отказ с id.
+
+**Маршруты** (§5.1): `/forgot-password` (запрос и экран «отправлено») и `/reset-password` (новый пароль по ссылке) — вне префикса компании, в оболочке `AuthShellFrame` без табов, `h1.auth-title`, **не** под `RedirectSignedIn` (ссылку можно открыть и с сессией; Settings ведёт на `/forgot-password`). Вход — `tk-pop var(--dur-enter)`, из `/login` — только смена содержимого карточки. Ссылка восстановления — `/reset-password?token=…`: токен снимается до роутера (раньше захвата приглашения), адрес чистится `history.replaceState`, токен живёт только в памяти и забывается после 204 или мёртвой ссылки; правило приглашения `?token=` маршрут восстановления не трогает (ни `/reset-password`, ни `/reset-password/`); в hash-сборке `#/reset-password(/)?token=` тоже снимается до захвата приглашения.
+
+**Вход** (§4.27). На табе Sign in (и Sign in страницы `/invite`) вместо `.auth-hint` — ghost-ссылка «Forgot your password?» (`.auth-ghost`: 32, 12.5/550 `--fg-2`, по центру, без подчёркивания; hover `--surface-2` + `--fg`), роутерная (`#/forgot-password` в hash-сборке), после кнопки и `ErrorNote`; набранный адрес уходит в состояние роутера один раз, в адрес не попадает. Никогда третий таб.
+
+**`/forgot-password`.** `.form-stack` gap 13. Форма: `h1` «Reset your password»; лид 12.5/400 `--fg-2`, lh 1.55 «Enter the email you sign in with. If it belongs to a Taska account, we’ll send a link to choose a new password.»; Email (38, `--surface`, `autocomplete=email`, placeholder `you@company.com`, `noValidate`; пусто — «Enter your email.»); primary «Send reset link» во всю ширину, 39 (в полёте «Sending»); `ErrorNote`; ghost «Back to sign in» («Back to Taska», если в браузере есть сессия; ссылка та же). **Отправлено** — на месте формы: `h1` «Check your email»; `.auth-text` 13/400 `--fg` «If {email} belongs to a Taska account, we’ve sent a link there. Open it to choose a new password.» (после повтора — «…we’ve sent another link there…»); secondary «Resend link» во всю ширину, 39 (в полёте «Sending»; в ожидании — `.auth-retry.is-waiting`, `.58`, `not-allowed`); подсказка «You can resend in {m:ss}.» / «Too many attempts. You can resend in {m:ss}.» / «Didn’t get it? Check your spam folder, then resend.»; два ghost «Use a different email», «Back to sign in». **Без перечисления аккаунтов**: каждый 202 даёт побайтно один и тот же экран; единственная переменная — набранный (обрезанный) адрес, никогда не ответ; из ответа берётся только `retryAfterSeconds` (0 — без отсчёта; нет числа — 60 с, §4.31). Отказы: 400 — слова нарушения, поле помечено; 429 — «Too many attempts. Try again in {wait}.»; нет HTTP-статуса — «The server could not be reached, so the link may or may not have been sent. Try again to make sure.»; прочее — «The reset link could not be sent.» + слова сервера + id; отказ повтора без ответа — «The server could not be reached, so another link may or may not have been sent. Try again to make sure.», с ответом — «Resending did not go through.» + слова + id.
+
+**`/reset-password`.** `h1` «Choose a new password»; лид «Setting a new password signs you out of Taska on every device. It also revokes your access tokens and disconnects your connected apps.» (с сессией в этом браузере — «Setting a new password signs you out of Taska on every device, this browser included. It also revokes your access tokens and disconnects your connected apps.»); New password (переключатель показа, `autocomplete=new-password`, подсказка «At least 12 characters.», пусто — «Enter a new password.»); primary «Set new password» во всю ширину, 39 (в полёте «Setting password»); `ErrorNote`; ghost «Back to sign in». **Мёртвая ссылка** (401 с любым кодом, 422 `CONFIRMATION_EXPIRED` или нарушение на `token`): поле, кнопка и лид уходят, `h1` остаётся; блок отказа (`tabIndex=-1`, не живой, фокус на нём) «This reset link no longer works: it expired or was already used. If you asked for more than one link, open the newest, or request a new one.» → primary `<a>` «Request a new link» → ghost. **Перезагрузка без токена**: под `h1` «Choose a new password» — «Open the link from your email again to choose a new password.» + secondary «Request a new link», без id. Нет HTTP-статуса — «The server could not be reached, so your password may or may not have been reset. Try again to make sure.» (повтор — тем же ключом). После 204 форма остаётся в полёте («Setting password») до перехода на `/login`, вид «нет ссылки» не показывается; затем локальный выход и `/login` с заметкой «Password reset. Sign in with your email and new password.», фокус в Email.
+
+**Settings › Account** (§5.9). Личный раздел «Account» (`LockKeyhole` 15), вторым после My profile, `/c/{id}/settings/account`; не в группе «Company», без ворот по роли, жизненному циклу, ограничениям и capabilities. Шапка «Settings ›» «Account»; лид «This email and password sign you in to every company you belong to.»; две строки рецепта §5.9: Email · {email} → «Change email»; Password · «Changing it needs your current password.» → «Change password». Открытая форма — на месте строки, триггер уходит (§4.28), `max-width:440`, `.form-stack` gap 13, поля 38, подписи 11.5/550 `--fg-2`; ряд кнопок `gap:8`; одна форма за раз (второй триггер закрывает открытую без вопроса; в полёте записи второй триггер отказывает — `aria-disabled`, `cursor:progress`, без затемнения, §4.1). Под каждым Current password — `.admin-note-link` «Forgot your current password?» на `/forgot-password`. Смена email: шаг 1 — New email + Current password → «Send code» · Cancel; на 201 пароль стирается из состояния, `challengeId` — только в памяти; шаг 2 — «We sent a code to {maskedDestination}.» (без маски — «We sent a code by email.» / «…to your Telegram.» / «We sent you a code.»; при `expiresAt` — « It works until {HH:MM}.», статично), поле Code (`inputmode=numeric`, `autocomplete=one-time-code`, `tabular-nums`, без `maxLength`/`pattern`/автоотправки; пробелы и дефисы снимаются при отправке), подсказка «Didn’t get it? Check your spam folder, or start over to send a new code.», «Change email» · «Start over» · Cancel. Мёртвый код (422 `CONFIRMATION_EXPIRED`, 404) — «This code can’t be used any more. Start over to get a new one.», ряд — primary «Start over» · Cancel. «Start over» — шаг 1 с адресом и пустым паролем, новый ключ. Смена пароля: Current → New → «Change password» · Cancel (скрытое `autocomplete=username` с текущим адресом). Успех — форма закрывается, фокус на триггер (`focusVisible`), строка в постоянной `role="status"` в конце раздела: «Email changed. Sign in with the new address from now on.» / «Password changed.» Email никогда не пишется оптимистично — только перечитанный `GET /users/me`. Загрузка `["me"]` — скелетон 140×11 в описании Email (`aria-busy`, скрытое «Loading your email», не живой) без «Change email»; отказ — «Your email could not be loaded.» Отказы: 400 — нарушения по §5.6; 429 — «Too many attempts. Try again in {wait}.»; нет статуса — «The server could not be reached, so {…may or may not…}. {Send it again / Press Change email again / Press Change password again} to make sure.» (тем же ключом); прочее — «Your email was not changed.» / «Your password was not changed.» + заголовок сервера + id; 401 сначала идёт путём сессии §5.1 (одна ротация и тот же запрос), а 401 после удачной ротации (`proof`) — этой же общей строкой с ошибкой и id **повтора**, без выхода из аккаунта. Ответ 201 без вызова подтверждения — «Your email was not changed.» без деталей и id, следующее нажатие с новым ключом.
+
+**Во всех вкладках.** После 204 подтверждения email (и смены пароля) — сигнал без данных в `localStorage` `taska.accountRevision` (`{nonce, userId}`); каждая вкладка того же пользователя перечитывает `["me"]` (и настройки уведомлений, где виден Notifications › Email) — меню, шапка My profile, строка Email, Account, «Signed in as» на `/companies`; без перезагрузки и без уведомления в других вкладках.
+
+**Ключи.** Один на нажатие-намерение; повтор после ответа без HTTP-статуса — тот же ключ и то же тело; любая правка, «Start over», «Send again» — новый. Ни токен, ни код, ни пароль не пишутся в `localStorage` / `sessionStorage` / состояние роутера / лог.
+
+**Клавиатура и фокус.** Enter отправляет форму (`isComposing` игнорируется); в Settings `Esc` = Cancel; на страницах входа `Esc` ничего. Пустое обязательное поле — ничего не отправляется, фокус на первое пустое, причина в слоте подсказки с `aria-invalid`. Фокус: вход на `/forgot-password` — Email; 202 — `h1` «Check your email» (`tabIndex=-1`, исключение 4 §7); «Use a different email» — Email с выделенным значением; вход на `/reset-password` с токеном — New password; мёртвая ссылка / мёртвый код — блок отказа; открытие формы — первое поле; 201 — Code; 400 по коду из Enter — Code с выделением; Start over — Current password; Cancel / Esc — триггер; 204 в Settings — триггер с кольцом. Переключатель показа пароля (§4.27: 28, `Eye`/`EyeOff` 14, «Show password», `aria-pressed`) — у каждого поля пароля, сбрасывается при закрытии и смене шага.
+
+**Цвет, движение, цели.** Новых токенов нет; ≤2 уровней фона (`--bg` + `--surface` в Settings, `--surface` в карточке); каждый текстовый узел задаёт цвет; без спиннеров, иллюстраций и движения, кроме входа карточки и пульсации `.value-skeleton` (§3, §5.6). ≤820 в Settings: compact (29): primary — `::before{inset:-7.5px 0}`, secondary — `::before{inset:-8.5px 0}` (рамка 1px лежит вне padding-box, от которого считается `::before`; −7.5 у secondary давал 42); обе — 44; переключатели — `::before{inset:-8px}`, ссылка — `::before{inset:-8px -4px}`; новых долгов §7 нет. В карточке ghost (32), переключатели (28), «Request a new link» / «Resend link» (39) — к долгам TAS-426 и TAS-208.
+
 ## 5. Patterns
 
 ### 5.1 App shell и маршруты
@@ -3689,11 +3712,12 @@ Safari 16.2) *новее* базы `dvh` (Chrome 108 / Safari 15.4) — брау
 | Notifications | поповер, без маршрута | — |
 | Choose a company (сборка B2B) | `/companies` (§4.33) | по сессии аккаунта |
 | Create a company (сборка B2B) | `/companies/new` (§4.36) | по сессии аккаунта |
+| Forgot password / Reset password (сборка B2B, TAS-527) | `/forgot-password`, `/reset-password`; токен ссылки — из адреса до роутера и до захвата приглашения (§4.42) | публичный, и с сессией тоже (не `RedirectSignedIn`) |
 | Компания (сборка B2B) | `/c/:companyId/…` — Projects, Board, Issue card, Issue by key и Settings (в том числе Settings › Members, §4.38) под префиксом; Admin нет (§4.16) | по сессии аккаунта и сессии компании вкладки; отказ — §4.35 / §4.18; компания, которая ещё не открывалась, — карточка §4.37 вместо app shell |
 
 **Компания — в адресе** (TAS-500, сборка B2B). Компания вкладки — та, что в адресе:
 `/c/{companyId}` — префикс, под которым живёт всё приложение, кроме `/login`, `/invite`,
-`/auth/callback` и `/companies`; внутренние `to="/projects"` остаются в нём (механизм —
+`/auth/callback`, `/companies`, `/forgot-password` и `/reset-password` (TAS-527); внутренние `to="/projects"` остаются в нём (механизм —
 `basename` роутера или равный ему). Settings — тоже под префиксом: их чтения и записи идут с
 сессией компании (api-contract-guard §2: настройки уведомлений — свои у каждой компании), а сессия
 аккаунта данных не открывает. Гарантии, которые механизм обязан держать: короткая ссылка не
@@ -3842,6 +3866,7 @@ select встаёт по своему правилу по умолчанию, п
 
 ### 5.6 Empty / loading / error
 - **Контекст проекта** читается одним запросом и отказывает одним баннером (TAS-251).
+- **Нарушения сервера** (`Problem.violations`, TAS-527) печатаются в `ErrorNote` под кнопкой, дословно, по строке в порядке полей формы; от двух строк каждая с нашей подписью поля («New password: …»); поле помечается `aria-invalid` и `aria-describedby` на первую строку, которая его называет, только если `violation.field` точно равно имени поля в контракте. Под полем отказ сервера не печатается.
 - **Loading:** скелетоны формой конечного элемента (карточки колонок, строки списка),
   пульсация `opacity .35→1`. Спиннеров в контенте не использовать. Заливка скелетона — на
   шаг **выше** поверхности, на которой он лежит: `--surface-3` на `--surface` (панель задачи,
@@ -4839,8 +4864,8 @@ TAS-389). Под почтой через 11 — управление фото: �
 (pill `user-status`), Role (строки нет, если роль не пришла); сетка `140px 1fr`, `dt` 11.5/550
 `--fg-2`, `dd` 13/400 `--fg`, строка `padding:9 0`, волосяная линия между строками; уже 560 —
 стопкой. Имя и почта не повторяются — они в шапке. Адрес ещё раз стоит в Notifications →
-Email: там он назначение канала, а не факт об аккаунте. Почта не правится — ручки нет; правится
-только имя.
+Email: там он назначение канала, а не факт об аккаунте. Почта меняется в Settings › Account (сборка
+компаний, TAS-527, §4.42) и здесь не правится; здесь правится только имя.
 
 **Имя (TAS-425).** `PATCH /users/me` `{displayName}` → 200 в форме `GET /users/me`.
 - **Чтение.** Строка имени — flex, `align-items:center; gap:8; min-width:0` (`gap:8` — кольцо §7

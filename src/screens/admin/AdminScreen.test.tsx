@@ -243,6 +243,7 @@ const {
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
+    onAccountChanged: () => () => {},
     // `GET /meta` (TAS-173), answered with no dictionaries: every reader then
     // uses the build's own words and sets, which is what these tests are about.
     getMeta: async () => ({ issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null }),

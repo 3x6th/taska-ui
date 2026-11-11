@@ -104,6 +104,15 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   // TAS-512: every member's plan read, with the tab's company session, picked
   // by the session layer as for the REST leg.
   getEntitlement: "session",
+  // TAS-527: the session layer picks the credential — none for the two
+  // recovery routes, the account session for the three commands — as for the
+  // REST leg; `MockTenantServer` answers them the blueprint's way.
+  requestPasswordRecovery: "session",
+  completePasswordRecovery: "session",
+  changeAccountPassword: "session",
+  requestAccountEmailChange: "session",
+  confirmAccountEmailChange: "session",
+  onAccountChanged: "session",
   getMeta: "account",
   listProjects: "tenant-read",
   createProject: "tenant-write",
@@ -245,6 +254,12 @@ type SessionMethods = Pick<
   | "transferTenantOwnership"
   | "getSubscription"
   | "getEntitlement"
+  | "requestPasswordRecovery"
+  | "completePasswordRecovery"
+  | "changeAccountPassword"
+  | "requestAccountEmailChange"
+  | "confirmAccountEmailChange"
+  | "onAccountChanged"
 >;
 
 type AnyMethod = (...args: unknown[]) => unknown;
@@ -324,6 +339,12 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
       web.transferTenantOwnership(tenantId, newOwnerUserId, version, key),
     getSubscription: (tenantId) => web.getSubscription(tenantId),
     getEntitlement: (tenantId) => web.getEntitlement(tenantId),
+    requestPasswordRecovery: (email, key) => web.requestPasswordRecovery(email, key),
+    completePasswordRecovery: (token, newPassword, key) => web.completePasswordRecovery(token, newPassword, key),
+    changeAccountPassword: (currentPassword, newPassword, key) => web.changeAccountPassword(currentPassword, newPassword, key),
+    requestAccountEmailChange: (newEmail, currentPassword, key) => web.requestAccountEmailChange(newEmail, currentPassword, key),
+    confirmAccountEmailChange: (challengeId, code, key) => web.confirmAccountEmailChange(challengeId, code, key),
+    onAccountChanged: (listener) => web.onAccountChanged(listener),
   };
 
   const api: Record<string, unknown> = {};

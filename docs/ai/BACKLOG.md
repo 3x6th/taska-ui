@@ -4688,3 +4688,25 @@ into the fix round.
 - **Scroll-to-submit ignores where focus is**: Enter in Summary at a refusal scrolls the focused field out of the modal
   body (scrollTop 65 at 1440×810, 381 at 320×568) — §4.40 says only when focus stays on the submit; scroll only when
   the submit has focus (release-reviewer wave 2, low 2).
+
+### Left by TAS-527 build (account password, email and recovery, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-527-*.md` (git-ignored); divergence in `API-DIVERGENCE.md` «TAS-527».
+
+- **«Wrong current password» and «address in use» sentences** — not delivered until the contract names a code (A98, A100).
+- **B2B `/invite` hint** follows the legacy accept route's policy (8 + uppercase, digit, symbol) while TAS-527's forms say 12;
+  unify under A102, and switch when `acceptTenantInvitation` is built (guard Q8).
+- **Referrer** — the recovery and invitation links' tokens are in the address while `index.html` loads its assets, so they
+  go out as `Referer` to the Pages host; add `<meta name="referrer" content="strict-origin">` (guard F8).
+- **Pages landing `reset-password/`** — needed only for the flag-on deploy (precedent `scripts/callbackLanding.ts`; guard F9).
+- **An account whose companies are all closed** can't reach Settings › Account; recovery from sign-in is its only route
+  (art-director N4).
+- **`/reset-password` can't give a password manager the account name** (no preview route; art-director N5).
+- **§5.9 Name form Cancel hit area is 42, not 44** — the same `::before` inset issue TAS-527 fixed with −8.5 for its own
+  compact buttons.
+- **`/invite`'s «Forgot your password?» ghost** is not covered by e2e.
+- **The hash-mode recovery link and capture** are unit-tested only (no hash-mode B2B e2e server).
+- **A lost-answer reset retried with the same key** may meet a spent token on a real server and say the link no longer works
+  after the reset took (backend A108; optional copy for that case).
+- **`/login` flashes «Sign in | Accept invite»** until `GET /auth/methods` answers (166 ms on a cold load), and again after a
+  reset because `queryClient.removeQueries()` clears the cached methods — TAS-426's tabs (art-director, TAS-527 re-review).

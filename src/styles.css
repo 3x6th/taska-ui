@@ -12442,3 +12442,203 @@ button.attachment-open:hover:not(:disabled) {
   font-size: 13px;
   font-weight: 400;
 }
+
+/* ---------- The account's own credentials (TAS-527) ---------- */
+
+/* The two pages of a password reset (art-director's anatomy): the lead under
+   `h1.auth-title`, 12.5/400 `--fg-2` lh 1.55, a heading's 6 below it rather
+   than the stack's 13. */
+.auth-lead {
+  margin: -7px 0 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+/* §4.1's ghost and the card's full-width buttons as router links (B2, B3):
+   the box a button has, without the link's underline. */
+a.auth-ghost,
+.auth-link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.primary-button.auth-link-button:hover {
+  filter: brightness(1.06);
+}
+
+.primary-button.auth-link-button:active {
+  filter: brightness(0.96);
+}
+
+/* «Use a different email» over «Back to sign in»: two ghosts stacked and
+   centred, 2 between them. */
+.auth-ghosts {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+/* The dead link (B3, B12): `ErrorNote`'s box, focusable from script
+   (`tabIndex=-1`), with §7's ring on the box's own arc. */
+.auth-refusal-block,
+.settings-account-dead {
+  border-radius: 9px;
+}
+
+.auth-refusal-block > .error-note,
+.settings-account-dead > .error-note {
+  margin: 0;
+}
+
+/* A refusal of several fields (B6): one violation per line. */
+.error-note-line {
+  display: block;
+}
+
+/* Settings › Account (B1, B9–B11). The column is the containing block of the
+   empty success region, which is out of the flow until it has a line. */
+.settings-account {
+  position: relative;
+}
+
+/* The address whole, broken anywhere (§4.16's recipe). */
+.settings-account-email {
+  overflow-wrap: anywhere;
+}
+
+/* While `GET /users/me` is out: §5.6's bar where the address will stand. */
+.settings-account-skeleton {
+  width: 140px;
+  height: 11px;
+  vertical-align: middle;
+}
+
+/* The account could not be read: a fact about the reader's own data, so
+   `--fg`, no tint (the photo's line, §5.9). */
+.settings-account-unloaded {
+  margin: 3px 0 0;
+  color: var(--fg);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+/* The open form spans the row, under its text, where the trigger stood
+   (§4.28): no wider than the page's notes. */
+.settings-account-form {
+  grid-column: 1 / -1;
+  justify-self: stretch;
+  max-width: 440px;
+  margin-top: 14px;
+}
+
+/* The action row: compact buttons left, 8 apart, wrapping at 292. */
+.settings-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* §4.1's in-flight recipe: the progress cursor and nothing dimmed. */
+.settings-account-actions [aria-disabled="true"],
+.settings-account-trigger[aria-disabled="true"] {
+  cursor: progress;
+}
+
+/* The refusal 8 under the action row (B6), not the stack's 13. */
+.settings-account-form > .error-note {
+  margin-top: -5px;
+}
+
+/* Where the code went, first in the stack: 12.5/400 `--fg`, an address
+   broken anywhere. */
+.settings-account-sent {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* The code's figures do not shift as they are typed (N3). */
+.settings-account-code {
+  font-variant-numeric: tabular-nums;
+}
+
+/* «Forgot your current password?» under Current password: the quiet link at
+   28 tall and only as wide as its words. */
+.settings-account-forgot {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 28px;
+  font-size: 11.5px;
+}
+
+/* The persistent polite line at the end of the section (B11): 14 under the
+   rows, 12.5/400 `--fg`, no fill — and out of the flow while empty. */
+.settings-account-success {
+  margin: 14px 0 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.settings-account-success:empty {
+  position: absolute;
+  margin: 0;
+}
+
+@media (max-width: 820px) {
+  /* §7's 44 without growing anything drawn (B15): the compact buttons by 7.5
+     above and below, the toggles by 8 all round, the note link by 8 and 4. */
+  .settings-account-trigger,
+  .settings-account-actions button {
+    position: relative;
+  }
+
+  .settings-account-trigger::before,
+  .settings-account-actions button::before {
+    position: absolute;
+    content: "";
+    inset: -7.5px 0;
+  }
+
+  /* A secondary's 1px border is outside its padding box, where `::before`
+     starts: 7.5 more past the border is 8.5 from the padding box — 44 tall,
+     where 7.5 measured 42. */
+  .settings-account-trigger.secondary-button::before,
+  .settings-account-actions .secondary-button::before {
+    inset: -8.5px 0;
+  }
+
+  .settings-account-form .password-toggle::before {
+    position: absolute;
+    content: "";
+    inset: -8px;
+  }
+
+  .settings-account-forgot {
+    position: relative;
+  }
+
+  .settings-account-forgot::before {
+    position: absolute;
+    content: "";
+    inset: -8px -4px;
+  }
+}
+
+/* Below 560 the row stacks with 9 between its parts (§5.9): the form's 14
+   from the text stays 14. */
+@media (max-width: 559px) {
+  .settings-account-form {
+    margin-top: 5px;
+  }
+}

@@ -98,6 +98,7 @@ import {
   attachmentRefusal,
   attachmentSizeRefusalMessage,
 } from "../attachments";
+import type { DeliveryAcknowledgement, EmailChangeChallenge } from "../accountCredentials";
 import { compareBoardIssues } from "../boardOrder";
 import { toViewLinkType } from "../linkViewTypes";
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
@@ -4219,6 +4220,30 @@ export class MockTaskaStore {
   overrideAccountStatus(userId: string, status: UserStatus): void {
     const user = this.users.find((item) => item.id === userId);
     if (user) user.status = status;
+  }
+
+  /**
+   * An account's address after a confirmed email change (TAS-527), applied by
+   * `MockTenantServer` from its shared record before every operation — so
+   * `GET /users/me`, the member rows, the notification channel and sign-in all
+   * read the new one in every tab, and the old one signs in to nothing. Never
+   * called in today's build.
+   */
+  overrideAccountEmail(userId: string, email: string): void {
+    const user = this.users.find((item) => item.id === userId);
+    if (user) user.email = email;
+  }
+
+  /**
+   * Who an address belongs to, compared trimmed and without case, with the
+   * account's status — for the companies build's recovery and email change
+   * (TAS-527); `null` for an address nobody holds. Never called in today's
+   * build.
+   */
+  accountByEmail(email: string): { userId: string; email: string; status: UserStatus } | null {
+    const wanted = email.trim().toLowerCase();
+    const user = this.users.find((item) => item.email.trim().toLowerCase() === wanted);
+    return user ? { userId: user.id, email: user.email, status: user.status } : null;
   }
 
   currentUser(): User {
@@ -9794,6 +9819,33 @@ export class MockTaskaApi implements TaskaApi {
 
   async getEntitlement(_tenantId: string): Promise<Entitlement> {
     throw new TenancyUnavailableError("getEntitlement");
+  }
+
+  // TAS-527: the account's own credentials live in the companies build only
+  // (`createCompaniesMockApi`, MockTenantServer's five routes). Today's build
+  // refuses each without a request, and its account never changes beneath it.
+  async requestPasswordRecovery(_email: string, _idempotencyKey: string): Promise<DeliveryAcknowledgement> {
+    throw new TenancyUnavailableError("requestPasswordRecovery");
+  }
+
+  async completePasswordRecovery(_token: string, _newPassword: string, _idempotencyKey: string): Promise<void> {
+    throw new TenancyUnavailableError("completePasswordRecovery");
+  }
+
+  async changeAccountPassword(_currentPassword: string, _newPassword: string, _idempotencyKey: string): Promise<void> {
+    throw new TenancyUnavailableError("changeAccountPassword");
+  }
+
+  async requestAccountEmailChange(_newEmail: string, _currentPassword: string | null, _idempotencyKey: string): Promise<EmailChangeChallenge> {
+    throw new TenancyUnavailableError("requestAccountEmailChange");
+  }
+
+  async confirmAccountEmailChange(_challengeId: string, _code: string, _idempotencyKey: string): Promise<void> {
+    throw new TenancyUnavailableError("confirmAccountEmailChange");
+  }
+
+  onAccountChanged(_listener: () => void): () => void {
+    return () => {};
   }
 
   async getMeta(): Promise<EnumDictionaries> {

@@ -15,6 +15,15 @@ import type { Theme } from "../hooks/useTheme";
 import { useTheme } from "../hooks/useTheme";
 import { CREATE_COMPANY_ROUTE, OUTSIDE_COMPANY_ROUTES, forgetFreeUsed } from "../lib/companies";
 import { holdInviteToken, inviteTokenIn } from "../lib/inviteLink";
+import { refreshAccountReads } from "../lib/accountChange";
+import {
+  FORGOT_PASSWORD_ROUTE,
+  RESET_PASSWORD_ROUTE,
+  holdRecoveryToken,
+  isPasswordResetPath,
+  isResetPasswordPath,
+  recoveryTokenOf,
+} from "../lib/recoveryLink";
 import { AdminAuditSection } from "./admin/AdminAuditSection";
 import { AdminDataSection } from "./admin/AdminDataSection";
 import { AdminEventsProblems } from "./admin/AdminEventsProblems";
@@ -29,12 +38,15 @@ import { AuthCallbackScreen } from "./AuthCallbackScreen";
 import { BoardScreen } from "./BoardScreen";
 import { CompaniesScreen } from "./CompaniesScreen";
 import { CreateCompanyScreen } from "./CreateCompanyScreen";
+import { ForgotPasswordScreen } from "./ForgotPasswordScreen";
 import { IssueKeyScreen } from "./IssueKeyScreen";
 import { LoginScreen } from "./LoginScreen";
 import { NotFoundScreen } from "./NotFoundScreen";
 import { ProjectsScreen } from "./ProjectsScreen";
+import { ResetPasswordScreen } from "./ResetPasswordScreen";
 import { SettingsAppearanceSection } from "./settings/SettingsAppearanceSection";
 import { SettingsProfileSection } from "./settings/SettingsProfileSection";
+import { SettingsAccountSection } from "./settings/SettingsAccountSection";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { SettingsConnectedAppsSection } from "./settings/SettingsConnectedAppsSection";
 import { SettingsCompanySection } from "./settings/SettingsCompanySection";
@@ -78,22 +90,44 @@ export function App() {
   // expiry returns to the same company; identical to the router path in today's.
   const from = appPath;
   // The public auth routes, where no session is there to die: `/auth/callback`
-  // (TAS-426) exchanges a code without the session and then replaces it.
+  // (TAS-426) exchanges a code without the session and then replaces it; in
+  // the companies build the two pages of a password reset (TAS-527), sent with
+  // no credential, whose completion signs this browser out by itself.
   const onAuthRoute =
-    location.pathname === "/login" || location.pathname === "/invite" || location.pathname === "/auth/callback";
+    location.pathname === "/login" ||
+    location.pathname === "/invite" ||
+    location.pathname === "/auth/callback" ||
+    (companies !== null && isPasswordResetPath(location.pathname));
   // An invitation link that reached a running app (DESIGN.md §4.27): on the
   // hash build, `#/invite?token=…` typed or pasted into this tab is a hash
   // change, not a page load, so `captureInviteLink` in main.tsx never sees it
   // and the router does. Held and taken out of the address the same way, on
   // any path. The first render under it does no harm: every route reads it as
   // an unknown parameter, and the replace lands before anything is asked.
-  const routedInviteToken = inviteTokenIn({ search: location.search, hash: "" });
+  // In the companies build, never on `/reset-password` — with its trailing
+  // slash too, which the router matches to the same page (TAS-527, F2): there
+  // the `?token=` is a recovery link's, held for its own form and taken out of
+  // the address the same way.
+  const onRecoveryRoute = companies !== null && isResetPasswordPath(location.pathname);
+  const routedInviteToken = onRecoveryRoute ? null : inviteTokenIn({ search: location.search, hash: "" });
+  const routedRecoveryToken = onRecoveryRoute ? recoveryTokenOf(location.search) : null;
 
   useEffect(() => {
     if (routedInviteToken === null) return;
     holdInviteToken(routedInviteToken);
     navigate("/invite", { replace: true });
   }, [routedInviteToken, navigate]);
+
+  useEffect(() => {
+    if (routedRecoveryToken === null) return;
+    holdRecoveryToken(routedRecoveryToken);
+    navigate(RESET_PASSWORD_ROUTE, { replace: true });
+  }, [routedRecoveryToken, navigate]);
+
+  // The account's password or email changed — here or in another tab of the
+  // same account (TAS-527, api-contract-guard §6): the account's own client
+  // reads it again. A company's client is the gate's to refresh.
+  useEffect(() => taskaApi.onAccountChanged(() => refreshAccountReads(queryClient)), [queryClient]);
 
   useEffect(() => {
     // A session dies in one place — a 401 the refresh could not repair — so it
@@ -142,6 +176,11 @@ export function App() {
                   </RequireSession>
                 }
               />
+              {/* TAS-527: the two pages of a password reset — public, and not
+                  behind `RedirectSignedIn`: a link opened while signed in
+                  works, and Settings › Account links here. */}
+              <Route path={FORGOT_PASSWORD_ROUTE} element={<ForgotPasswordScreen theme={theme} toggleTheme={toggleTheme} />} />
+              <Route path={RESET_PASSWORD_ROUTE} element={<ResetPasswordScreen theme={theme} toggleTheme={toggleTheme} />} />
               {/* TAS-501, §4.36: the same card, its contents changed in place. */}
               <Route
                 path={CREATE_COMPANY_ROUTE}
@@ -197,6 +236,8 @@ export function App() {
               <Route path="/settings" element={<SettingsScreen {...screenProps} setTheme={setTheme} />}>
                 <Route index element={<Navigate to="/settings/profile" replace />} />
                 <Route path="/settings/profile" element={<SettingsProfileSection />} />
+                {/* The account's email and password (TAS-527) — this build only. */}
+                <Route path="/settings/account" element={<SettingsAccountSection />} />
                 <Route path="/settings/tokens" element={<SettingsTokensSection />} />
                 <Route path="/settings/connected-apps" element={<SettingsConnectedAppsSection />} />
                 <Route path="/settings/appearance" element={<SettingsAppearanceSection />} />
