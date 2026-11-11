@@ -2338,6 +2338,66 @@ Everything below is the entry as it stood, in the past tense.
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
 - **Removal:** delete with the flag, after the probe.
 
+### TAS-527: account password change, email change and password recovery ship ahead of the gateway, on the B2B blueprint
+
+- **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`, unchanged at `43d6c89d`; none in `openapi.yml`):
+  `POST /api/v1/auth/password-recovery` (requestPasswordRecovery) and `POST /api/v1/auth/password-recovery/complete`
+  (completePasswordRecovery), TAS-327; `PUT /api/v1/account/password` (changeAccountPassword), TAS-477; `POST
+  /api/v1/account/email-changes` (requestAccountEmailChange) and `POST /api/v1/account/email-changes/confirm`
+  (confirmAccountEmailChange), TAS-479. Backend: no controller, proto or service for any of the five (waves 8–11).
+- **Observed (2026-11-11T09:33:57Z, no token, no body):** all five 404 «No static resource» — recovery
+  `be13d386-5ad3-496c-97a1-25290007566b`, complete `8fdca228-c3a1-4eed-b4bc-b19f5d4d57b8`, PUT password
+  `673a337b-8393-4e49-89d6-e849048e7783`, email-changes `9488d62f-4b43-4cf8-bfff-bbdcbe0abac0`, confirm
+  `f7b5f1cb-f7af-4cac-9614-a4417a4c3cdd`; control `GET /projects` 401 `66607594-434f-4174-b094-8a480f5ae2b9`.
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`. Off: no link, no forms, no request.
+- **Not delivered, because the contract has no code:** the story's «own sentences» for a wrong current password and for an
+  address in use (A98, A100); the server's `violations` or the generic refusal with its id are shown instead. The story's
+  «confirm the email by a link» is not built: the contract confirms by an 8-digit code typed in Settings (A105, owner's
+  call; the contract wins).
+- **What the UI assumes where the blueprint is silent — each removable:**
+  - Account commands go with the global web session (WEB_GLOBAL) through the account path, with a `proof` option: a 401 on
+    the retry after a successful rotation rejects with the original error instead of expiring the account (A98, A103).
+  - Field refusals are the server's `violations` in the ErrorNote; a field is marked only on an exact contract field name.
+  - One dead-link sentence for 401 (any code), 422 `CONFIRMATION_EXPIRED` or a `token` violation on complete; one dead-code
+    sentence for 422 `CONFIRMATION_EXPIRED` and 404 on confirm; any other 422 takes the generic row (A101).
+  - The recovery link is `/reset-password?token=…` at the app's base, captured before the invitation capture, stripped from
+    the address, held in memory only (A99). A routed `?token=` on `/reset-password` in a running hash app is held the same
+    way.
+  - Recovery success signs this browser out locally (contracts §8) and the lead says access tokens and connected apps are
+    disconnected too (contracts.md:146).
+  - No pre-validation beyond «required»; the hint says only «At least 12 characters.» (A102; the deployed validator differs).
+  - A missing `retryAfterSeconds` → a 60 s client countdown (§4.31); 0 → none.
+  - No passwordless path (provider sign-in is hidden in this build; A107 with A8). «Start over» re-requests with a new key
+    (A104).
+  - Cross-tab: a data-free `taska.accountRevision` storage signal; every tab re-reads `GET /users/me` (and, where My profile
+    is on screen, the notification preferences that print the address) — client coordination, no synthesis.
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts`; own keys `taska.mockAccounts.v1`,
+  `taska.mockMailbox.v1`; `taska.mockServer` stays v5):
+  - Validation messages per field (`email`, `newEmail`, `newPassword` 12–128, `currentPassword` 1–128, `token` 32–512, `code`
+    8 digits, `challengeId` UUID), code `INVALID`; a missing `Idempotency-Key` 400 with no violations.
+  - Wrong current password: 400 violation on `currentPassword`, code `MISMATCH`, «The current password is not correct.» — only
+    once TAS-527 has set a password (before that any current password is accepted, like sign-in); an email change without
+    `currentPassword` is accepted unless a password has been set.
+  - Address in use: 409 `INVALID_STATE` «This email is already in use»; the account's own address «This is already the
+    account's email»; checked again at confirm.
+  - Dead token: 401 `AUTHENTICATION_REQUIRED` «Invalid or expired token». Wrong code: 400 violation on `code`, `MISMATCH`.
+    The fifth wrong code and an expired code: 422 `CONFIRMATION_EXPIRED`, after which even the right code is refused. Unknown,
+    another account's, used or superseded challenge: 404 `RESOURCE_NOT_FOUND` «Challenge not found». A new start supersedes
+    open challenges; a successful recovery or password change spends every open link of the account.
+  - A password change keeps the presenting family (WEB_GLOBAL and its children) and revokes every other session; a recovery
+    revokes every session; an email change revokes none.
+  - The 202 is always `{accepted: true, retryAfterSeconds: 60}`; no server rate limit (429 only via `refuseNext`).
+    `delivery: "EMAIL"`, `maskedDestination` masks the new address as MFA does; the code goes to the new address. Mail only to
+    an existing ACTIVE account; the mailbox keeps the last 50 entries; the link is `{origin}{BASE_URL}reset-password?token=<43
+    base64url>`; a link lives 15 minutes and a code 10, on the lifecycle clock (`clockOffsetMs` expires them).
+  - Receipts keyed `{op}:{actor|public}:{key}` with a body digest; another body → 409 `IDEMPOTENCY_CONFLICT`; refusals never
+    stored; pruned after 24 h. The accounts record holds only one-way digests of passwords, tokens, codes and bodies.
+    `refuseNext`, `delayMs`, `loseAnswer` work on all five.
+- **Turning the flag on** needs TAS-477, TAS-327 and TAS-479 deployed, A98 and A99 answered, and a Pages landing at
+  `reset-password/`. Probe: recovery for an unknown and a known address answer identically; a link works once; a wrong current
+  password is not 401; an email change shows in a second tab.
+- **Removal:** delete with the flag, after the probe. Asks A98–A107 on TAS-327 (14534), TAS-477 (14535), TAS-479 (14536).
+
 ### TAS-512: the company plan, usage and the explanation of restrictions ship ahead of the gateway, on the B2B blueprint
 
 - **Endpoints** (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`; none in `openapi.yml`):
