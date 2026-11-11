@@ -4238,6 +4238,8 @@ export class RestTaskaApi implements TaskaApi {
         Accept: "application/pdf, application/problem+json, application/json",
         ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
       },
+      // Never from or into the browser's HTTP cache: the bytes go to `saveBlob` and nowhere else (A79).
+      cache: "no-store",
       ...(signal ? { signal } : {}),
     });
     if (!response.ok) await this.readAnswer<never>(response);
