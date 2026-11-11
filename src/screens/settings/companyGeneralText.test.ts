@@ -246,6 +246,14 @@ describe("who may be the new owner, and the hand-over", () => {
     expect(transferCandidates(undefined, "tom")).toEqual([]);
   });
 
+  it("never offers a deleted account, ACTIVE or not (TAS-529, api-contract-guard N1)", () => {
+    const rows = [
+      member("tom", "Tom Becker", { role: "TENANT_ADMIN", isOwner: true }),
+      member("sofia", null, { email: null, deleted: true }),
+    ];
+    expect(transferCandidates(rows, "tom")).toEqual([]);
+  });
+
   it("reads back only the hand-over this page wrote", () => {
     const value = { fromSession: "ts-1", recipient: { userId: "priya", name: "Priya Nair", email: null, role: "TENANT_ADMIN" }, status: "s" };
     expect(handOverOf({ companyHandOver: value })).toEqual(value);

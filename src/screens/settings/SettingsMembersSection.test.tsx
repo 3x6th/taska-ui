@@ -243,6 +243,52 @@ describe("gating by the reader's own row (B8)", () => {
   });
 });
 
+/**
+ * A deleted account's membership (TAS-529, art-director §5 and B6,
+ * api-contract-guard N1): drawn as the server listed it, as «Deleted user» on
+ * the neutral circle, with nothing to act on and never an address, after
+ * every named row — and the invitation it sent says «a deleted user».
+ */
+describe("a deleted account's row", () => {
+  it("is «Deleted user» with its role word only, after every other member; «Suspended» alone when suspended", async () => {
+    state.members = [
+      member("zz-gone", "ignored", { displayName: null, email: null, deleted: true }),
+      ...umbrella(),
+      member("aa-gone", "ignored", { displayName: null, email: null, deleted: true, state: "SUSPENDED", role: "TENANT_ADMIN" }),
+    ];
+    state.invitations = [{ ...lena, createdBy: "zz-gone" }];
+    renderSection();
+    expect(await screen.findByText("Everyone in Umbrella, and the people invited to join.")).toBeInTheDocument();
+
+    const keys = [...document.querySelectorAll(".company-member-row:not(.is-invitation)")].map((row) => row.getAttribute("data-row-key"));
+    expect(keys.slice(-2)).toEqual(["member:aa-gone", "member:zz-gone"]);
+    for (const userId of ["aa-gone", "zz-gone"]) {
+      const row = document.querySelector(`[data-row-key="member:${userId}"]`) as HTMLElement;
+      const name = row.querySelector(".company-member-name") as HTMLElement;
+      expect(name).toHaveTextContent(/^Deleted user$/);
+      expect(name).toHaveClass("person-deleted");
+      expect(name).toHaveAttribute("title", "Deleted user");
+      const circle = row.querySelector(".avatar") as HTMLElement;
+      expect(circle).toHaveClass("avatar-deleted");
+      expect(circle).toHaveAttribute("title", "Deleted user");
+      expect(circle.getAttribute("style")).toBeNull();
+      expect(within(row).queryAllByRole("button")).toEqual([]);
+      expect(within(row).queryByRole("combobox")).toBeNull();
+      expect(row.querySelector(".company-member-action")).toHaveAttribute("aria-hidden", "true");
+      expect(row.querySelector(".company-member-destructive")).toHaveAttribute("aria-hidden", "true");
+    }
+    const active = document.querySelector('[data-row-key="member:zz-gone"]') as HTMLElement;
+    expect(active.querySelector(".company-member-line")).toHaveTextContent(/^$/);
+    expect(within(active).getByText("Member")).toBeInTheDocument();
+    const suspended = document.querySelector('[data-row-key="member:aa-gone"]') as HTMLElement;
+    expect(suspended.querySelector(".company-member-line")).toHaveTextContent(/^Suspended$/);
+    expect(within(suspended).getByText("Admin")).toBeInTheDocument();
+
+    expect(await screen.findByText(/^Invited by a deleted user · Expires /)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("zz-gone@example.com");
+  });
+});
+
 describe("no optimism (B2): the row changes only after the server and the re-read", () => {
   it("a promotion is in flight with the requested role shown, and the list is the server's after the re-read", async () => {
     const write = gate<unknown>();

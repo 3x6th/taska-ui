@@ -4,6 +4,7 @@ import {
   earliestPendingExpiry,
   groupRows,
   invitationsSentBy,
+  inviterName,
   isIndefinite,
   keyFor,
   memberControls,
@@ -28,8 +29,8 @@ const member = (userId: string, overrides: Partial<Membership> = {}): Membership
   email: `${userId}@example.com`,
   avatarPath: null,
   version: "1",
-  ...overrides,
   deleted: false,
+  ...overrides,
 });
 
 const invitation = (id: string, overrides: Partial<Invitation> = {}): Invitation => ({
@@ -91,7 +92,13 @@ describe("the reader's own row decides what is offered (B8)", () => {
   });
 
   it("an unnamed row (develop's empty profile) is the address, else the short id; one's own is «You»", () => {
-    expect(memberSubject(member("u-1", { displayName: null }), null)).toEqual({ title: "Unknown", name: "u-1@example.com", self: false, named: false });
+    expect(memberSubject(member("u-1", { displayName: null }), null)).toEqual({
+      title: "Unknown",
+      name: "u-1@example.com",
+      self: false,
+      named: false,
+      deleted: false,
+    });
     expect(memberSubject(member("u-1", { displayName: null, email: null }), "u-1")).toMatchObject({ title: "You", self: true, named: false });
     expect(memberSubject(member("0123456789abcdef", { displayName: null, email: null }), null).name).toMatch(/^The member with ID /);
   });
@@ -127,6 +134,46 @@ describe("the groups (B2)", () => {
     expect(invitationsSentBy(undefined, "priya")).toBe(0);
     expect(earliestPendingExpiry(rows)).toBe(Date.parse("2026-11-08T10:00:00Z"));
     expect(earliestPendingExpiry([])).toBeNull();
+  });
+});
+
+/**
+ * A deleted account's membership (TAS-529, api-contract-guard N1, art-director
+ * §5): «Deleted user» on the row and in every sentence that names it, never
+ * the address; no control; after every other member, by `userId`.
+ */
+describe("a deleted account's row", () => {
+  const gone = (userId: string, overrides: Partial<Membership> = {}) =>
+    member(userId, { displayName: null, email: null, deleted: true, ...overrides });
+
+  it("is «Deleted user», never the address — even if one were there", () => {
+    expect(memberSubject(gone("sofia"), null)).toEqual({ title: "Deleted user", name: "Deleted user", self: false, named: false, deleted: true });
+    expect(memberSubject(gone("sofia", { email: "sofia@example.com" }), null).name).toBe("Deleted user");
+  });
+
+  it("offers an admin nothing, ACTIVE or SUSPENDED", () => {
+    const list = [member("anna", { role: "TENANT_ADMIN", isOwner: true }), gone("sofia"), gone("omar", { state: "SUSPENDED" })];
+    const access = readerAccess(list, "anna");
+    expect(memberControls(list[1], access, "anna")).toEqual({ role: false, action: null, remove: false });
+    expect(memberControls(list[2], access, "anna")).toEqual({ role: false, action: null, remove: false });
+  });
+
+  it("comes after every other member, unnamed ones too, by userId", () => {
+    const groups = groupRows(
+      [gone("zz"), member("zoe", { displayName: "Zoë" }), gone("aa"), member("bea", { displayName: null }), member("adam", { displayName: "Adam" })],
+      [],
+    );
+    expect(groups.members.map((row) => row.userId)).toEqual(["adam", "bea", "zoe", "aa", "zz"]);
+  });
+
+  it("is «a deleted user» as an invitation's sender, never the address; «you» for the reader; nobody for a sender not listed", () => {
+    const list = [member("anna", { displayName: "Anna Ivanova" }), gone("sofia", { email: "sofia@example.com" }), member("bea", { displayName: null })];
+    expect(inviterName(list, "anna", "sofia")).toBe("a deleted user");
+    expect(inviterName(list, "anna", "anna")).toBe("you");
+    expect(inviterName(list, "tom", "anna")).toBe("Anna Ivanova");
+    expect(inviterName(list, "anna", "bea")).toBe("bea@example.com");
+    expect(inviterName(list, "anna", "nobody")).toBeNull();
+    expect(inviterName(list, "anna", null)).toBeNull();
   });
 });
 
