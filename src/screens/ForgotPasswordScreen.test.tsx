@@ -81,6 +81,8 @@ describe("the reset request", () => {
     await waitFor(() => expect(screen.getByTestId("state")).toHaveTextContent("null"));
     expect(screen.getByRole("heading", { level: 1, name: "Reset your password" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back to sign in" })).toHaveAttribute("href", "/login");
+    // Nothing is asked on arrival (api-contract-guard §7: 0 on first paint).
+    expect(state.calls).toEqual([]);
   });
 
   it("an empty address sends nothing: the reason in the hint slot, the field marked and focused", () => {
