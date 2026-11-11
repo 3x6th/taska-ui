@@ -12610,6 +12610,14 @@ a.auth-ghost,
     inset: -7.5px 0;
   }
 
+  /* A secondary's 1px border is outside its padding box, where `::before`
+     starts: 7.5 more past the border is 8.5 from the padding box — 44 tall,
+     where 7.5 measured 42. */
+  .settings-account-trigger.secondary-button::before,
+  .settings-account-actions .secondary-button::before {
+    inset: -8.5px 0;
+  }
+
   .settings-account-form .password-toggle::before {
     position: absolute;
     content: "";
