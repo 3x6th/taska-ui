@@ -46,15 +46,16 @@ test("AC1: Nina creates a free company and lands in its Projects — no projects
   // One card, its contents changed in place.
   await expect(page.locator(".auth-card")).toHaveCount(1);
   await expect(nameField(page)).toBeFocused();
-  // The published plans only, the free one chosen, a paid one never.
-  await expect(page.getByRole("radio")).toHaveCount(2);
+  // The published plans only — Free, Starter, Team and Business since TAS-515 — the free one chosen, a paid one never.
+  await expect(page.getByRole("radio")).toHaveCount(4);
   await expect(freePlan(page)).toBeChecked();
   await expect(teamPlan(page)).not.toBeChecked();
   // «seats» since TAS-512 (§4.36, art-director B10).
   await expect(page.getByText("1 project · 5 seats · 100 MB storage · 50 issues per project")).toBeVisible();
   await expect(page.getByText("€20 a month")).toBeVisible();
   await expect(page.getByText("5 projects · 50 seats · 5 GB storage · unlimited issues")).toBeVisible();
-  await expect(page.getByText("Nothing is charged now. The company opens once its first payment is confirmed.")).toBeVisible();
+  // Under each of the three paid plans.
+  await expect(page.getByText("Nothing is charged now. The company opens once its first payment is confirmed.")).toHaveCount(3);
 
   // An empty name is said, and nothing is sent.
   await page.getByRole("button", { name: "Create company" }).click();
