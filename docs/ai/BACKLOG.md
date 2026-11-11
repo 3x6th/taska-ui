@@ -4705,6 +4705,8 @@ Rulings in `docs/ai/reviews/TAS-529-*.md` (git-ignored); divergence in `API-DIVE
   convenience the contract lacks, seen after the board remounts (guard re-verdict 2, note 3).
 - **Marks are remembered from board reads only** — a card drawn before any read marks the person stays named until the
   board is read again (builder, fix round 2).
+- **Assignee filter chips** have no `aria-pressed`, and the kept «Deleted user» chip is named only by its avatar's label
+  (release-reviewer re-verdict 2, Low; predates TAS-529).
 - **Three sources of `deletedIdsInIssue` untested** — watchers, uploaders, history actors/participants
   (`BoardScreen.tsx` ~7948-7953); one unit test: a stale named member who is a marked watcher isn't offered as a chip
   (release-reviewer re-verdict note 1).
