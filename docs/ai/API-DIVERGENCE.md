@@ -2338,6 +2338,54 @@ Everything below is the entry as it stood, in the past tense.
   it; the owner and the last admin are refused; a self-demotion keeps the tab open.
 - **Removal:** delete with the flag, after the probe.
 
+### TAS-514: wire invoices, documents and refunds ship ahead of the gateway, on the B2B blueprint
+
+- **Endpoints** (blueprint at develop `43d6c89d`, none in `openapi.yml`): `GET …/billing/invoices/{invoiceId}` now read
+  whole (buyer, seller, lines, FX, `wireInstructions`); `GET …/billing/invoices/{invoiceId}/document` (PDF, authenticated
+  proxy); `GET …/billing/refunds`. Gateway route `GET …/tenants/{tenantId}/capabilities` (deployed on the stand; missing
+  from the vendored `openapi.yml` at `758f8fc6`), read for `WIRE_RECONCILIATION_TARGET_SECONDS` only. Not called:
+  `createInvoice`, `getRefund`, `requestFullSubscriptionRefund`, `listSubscriptionPeriods`, every admin wire and refund
+  route. Backend: TAS-356 (billing profile) has no operation; TAS-357, 358, 482, 484, 486 docs only; develop's owner
+  `createInvoice` resolves PLAN_CHANGE only (INITIAL and RENEWAL 503).
+- **Observed (2026-11-11 ~04:22Z, no token, `not-a-uuid`):** 404 «No static resource» — document
+  `03ef36a4-9fc6-4cdc-87fa-8ed2fd67dae0`, refunds `312f13a8-ed42-48e8-8634-3ab2619d36e2`, admin wire-receipts
+  `03578dc3-62c1-4973-960d-4aca54446c25`, `…/billing/profile` `9354d6e1-7b7c-4139-a9db-c044cefba398`, invoices
+  `abd91f5c-b8aa-4e5e-874d-204d19629d71`; capabilities 400 `INVALID_ARGUMENT` (path validation reached — deployed;
+  `requestId` null); control `GET /projects` 401 `d2d4bc03-3cf1-405c-a53f-3c5f69df4c74`.
+- **Compensation: none.** Behind `VITE_TASKA_TENANTS`.
+- **Not delivered, because the backend has no operation:** the story's «edit the billing profile for future invoices»
+  (How 1). No route, proto or table exists; the mock invents none and nothing is stored in the browser. The invoice shows
+  its immutable buyer and seller snapshot read-only. Removal: A77 (TAS-356). «Pay by bank transfer instead» on a PSP
+  invoice is not offered either: another method for the same obligation silently returns the existing invoice on
+  develop, and checkout is PSP only. Removal: A78.
+- **What the UI assumes where the blueprint is silent — each removable:**
+  - A WIRE invoice exists only when the server issued it as WIRE; bank details are kept only all five, WIRE + EUR, and
+    shown only while OPEN or PARTIALLY_PAID with `remaining` > 0 — by server state, even past `dueAt`, because on develop
+    nothing expires an invoice (A85).
+  - «Received» is `matchedUnallocated` (an admin-matched partial), never «arrived»: the owner reads no receipt (A80).
+  - The reconciliation target is one static sentence from capabilities, with no start time, countdown or 24 h fallback
+    (A80 freezes it per receipt).
+  - A document's availability is learnt from the refusal; the file name is «{number}.pdf» unless a readable
+    `Content-Disposition` gives one (A79).
+  - Refunds are a separate list in Billing; no refund is tied to an invoice (A81). `sendDueAt` is drawn only for
+    REQUESTED / APPROVED WIRE refunds as «Taska aims to send it by {date}», never as arrival. UNKNOWN reads «Taska is
+    checking whether it went through».
+  - A bank-paid month's start date is not shown (A82); the tax rate is not drawn, only label and amount (A84); the
+    replacement of an invoice is found by scanning the list (A86); a closed creation's refund is invisible, its session
+    being refused (A2 extended); late PLAN_CHANGE money has no sentence (A88).
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v8` — every mock session is
+  signed out once): invoice snapshots stored at issuance (a rename no longer rewrites old invoices); the WIRE fixtures on
+  one new seeded owner company; bank details invalid by construction (country `XX` IBAN failing mod-97, BIC
+  «MOCKESM0XXX», bank «Mock Bank», beneficiary «Taska Mock S.L. (test only)»), a reference different from the number;
+  receipts, matching, returns and refund progress as admin-side hooks only (matching at confirm time); the PDF a tiny
+  document marked «MOCK — not a tax document»; capabilities 86400 with an omit hook; a `holdExpiry` hook for an OPEN
+  invoice past `dueAt` (develop's real behaviour); 30-day periods. Details are completed from the builder's report.
+- **Turning the flag on** additionally needs TAS-357, 358 and 482 behind a gateway REST route, asks A78, A79 and A80
+  answered, and the vendored gateway contract re-vendored (capabilities); «edit billing details» needs A77.
+- **Removal:** with the flag, after a stand probe — a partial transfer → expiry → a return; 25 against 20 → 20 covered and
+  a return of 5; a late first payment → a replacement invoice and a return; a late renewal → a month from confirmation; a
+  non-owner's download 403.
+
 ### TAS-515: plan change, renewal and automatic payments ship ahead of the gateway, on the B2B blueprint
 
 - **Endpoints** (blueprint at develop `43d6c89d`, none in `openapi.yml`): `POST …/billing/plan-changes`
@@ -2495,8 +2543,8 @@ Everything below is the entry as it stood, in the past tense.
 - **What the UI assumes where the blueprint is silent:** Pay only on an OPEN PSP invoice with `remaining = total` (PR
   #323 charges `invoice.total`, and develop's `PaymentAttemptStore.accept` — the TAS-349 core — accepts only
   `state='OPEN' AND payable_until > now`); PARTIALLY_PAID and WIRE invoices show
-  their state and no Pay (TAS-514). The client drops `buyer`, `seller`, `lines`, FX and wire details from `Invoice`
-  (TAS-514). An answer about another company, invoice or checkout is a failed read (`ForeignCompanyAnswerError`).
+  their state and no Pay (TAS-514). The client dropped `buyer`, `seller`, `lines`, FX and wire details from `Invoice` here;
+  TAS-514 reads them (see «TAS-514»). An answer about another company, invoice or checkout is a failed read (`ForeignCompanyAnswerError`).
   Only `https:` redirect addresses are followed (the mock's own origin too). Billing is owner only in the UI although
   `listInvoices` is `OWNER_OR_ADMIN_READ`.
 - **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `mockCompanies.ts`, `taska.mockServer.v6` —

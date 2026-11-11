@@ -4806,3 +4806,17 @@ Rulings in `docs/ai/reviews/TAS-515-*.md` (git-ignored); divergence in `API-DIVE
 - **Re-buy Pending row copy** (art-director): on a re-buy of the current plan under PAYMENT_EXPIRED, «Starts a new month
   once invoice {number} is paid. Until then, {Company} stays read-only.» instead of «…stays on {current}» naming the
   same plan.
+
+### Left by TAS-514 pre-build (wire invoices, documents, refunds, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-514-*.md` (git-ignored); divergence in `API-DIVERGENCE.md` «TAS-514».
+
+- **Billing details editor** — the story's How 1 «edit the billing profile for future invoices» is not delivered: no
+  backend operation exists (A77, TAS-356). The art-director's B12 (group, page `/company/billing/details`, the B12a form
+  and its refusal table) is ruled and waits for A77.
+- **«Pay by bank transfer instead»** on a PSP invoice — not offered (A78); the art-director's B13 page and the §4.40
+  «Pay by» choice wait for it.
+- **Re-vendor the gateway `openapi.yml`** — now needed: TAS-514 calls `GET …/tenants/{tenantId}/capabilities`, which the
+  vendored snapshot (`758f8fc6`) lacks (api-contract-guard F7); fold into the re-vendor line above.
+- **Duplicate payments between arrival and an admin's record** — the owner sees nothing until a platform admin records
+  the bank statement, so payers may send twice (ends as a DUPLICATE_PAYMENT return) until A80.
