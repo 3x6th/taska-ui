@@ -4667,8 +4667,8 @@ into the fix round.
   (guard N6).
 - **A failed `/users/me` on Plan** (and General) shows the owner the non-owner page and lead with no ErrorNote (guard N7,
   release-reviewer L-6; TAS-504's pattern).
-- **The mock's TASK_LIFETIME breach counts archived projects' counters** (L04 says live projects), and an archived
-  project at the limit answers 422 before the archived refusal (guard N8).
+- ~~**The mock's TASK_LIFETIME breach counts archived projects' counters**~~ — answered by develop (archived projects are
+  live: `retired_at IS NULL`), and the mock now checks archived before the counter (TAS-528).
 - **A rename moves `Tenant.version`**, so the owner's subscription is re-read on General — by B4; asks A31 / A49 remove it
   (guard N9).
 - **`.company-marker` duplicates `.admin-readonly`** (§5.8) with identical tokens — one shared class (art-director 6).
@@ -4688,3 +4688,13 @@ into the fix round.
 - **Scroll-to-submit ignores where focus is**: Enter in Summary at a refusal scrolls the focused field out of the modal
   body (scrollTop 65 at 1440×810, 381 at 320×568) — §4.40 says only when focus stays on the submit; scroll only when
   the submit has focus (release-reviewer wave 2, low 2).
+
+### Left by TAS-528 pre-build (project issue counter, 2026-11-11)
+
+Rulings in `docs/ai/reviews/TAS-528-*.md` (git-ignored); divergence in `API-DIVERGENCE.md` «TAS-528».
+
+- **Permanent project deletion** — split to TAS-531, blocked by TAS-459 (asks A112, A113). The guard's rules for the later
+  build are in its ruling §2.
+- **The counter on the project's own reads** (A115 / A45) would remove the +1 read per dialog open.
+- **Modal padding drift** — the code's modal padding 16 and header 12 14 vs «18» and «15 18» in §2.4 / §4.11; `.modal-actions`
+  sits inside the body without §4.11's `--surface-2` footer (art-director N5, pre-existing).
