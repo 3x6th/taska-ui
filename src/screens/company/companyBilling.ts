@@ -1,7 +1,7 @@
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { taskaApi } from "../../api/client";
-import { readAllInvoices, type Checkout, type Invoice, type ReturnTarget } from "../../api/billing";
+import { readAllInvoices, readAllRefunds, type Checkout, type Invoice, type ReturnTarget } from "../../api/billing";
 import {
   CHECKOUT_ATTEMPT_PREFIX,
   browserCheckoutLocks,
@@ -19,7 +19,9 @@ import { TENANTS_QUERY_KEY } from "../../lib/companies";
 import { ME_QUERY_KEY } from "../../lib/ownAvatarLink";
 import { useAccountQueryClient } from "../../lib/companyAddress";
 import { POLL_LIMIT_MS, SLOW_SETUP_MS, pollDelay } from "../companySetupText";
+import { saveBlob } from "../../lib/browserFiles";
 import { closesAttempt, isPayable, payRefusalWords, type PayRefusalWords, type WatchStage } from "./billingText";
+import { documentName, downloadRefusalWords, downloadedStatus, downloadingStatus } from "./wireText";
 import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey, companyTenantOptions } from "./companyGeneral";
 import { retryUnanswered } from "./companyMembersQuery";
 import { COMPANY_ENTITLEMENT_KEY } from "./companyPlan";
@@ -50,6 +52,142 @@ export const companyInvoiceOptions = (companyId: string, invoiceId: string) =>
     queryFn: () => taskaApi.getInvoice(companyId, invoiceId),
     retry: retryUnanswered,
   });
+
+/* --------------------------------------------- refunds and durations (TAS-514) */
+
+export const COMPANY_REFUNDS_KEY = ["company-refunds"] as const;
+export const COMPANY_DURATIONS_KEY = ["company-durations"] as const;
+
+/** Every refund, all pages (B11) — the owner's; no refund is ever joined to an invoice (A81). */
+export const companyRefundsOptions = (companyId: string) =>
+  queryOptions({
+    queryKey: COMPANY_REFUNDS_KEY,
+    queryFn: () => readAllRefunds((params) => taskaApi.listRefunds(companyId, params)),
+    retry: retryUnanswered,
+  });
+
+/**
+ * The company's durations (Q3, decision 4): read on arrival and on every
+ * return to the tab — `private, no-store`, current for 30 s at most — and
+ * never on an interval. A failure only drops the number; it is not said.
+ */
+export const companyDurationsOptions = (companyId: string) =>
+  queryOptions({
+    queryKey: COMPANY_DURATIONS_KEY,
+    queryFn: () => taskaApi.getTenantCapabilities(companyId),
+    retry: false,
+    staleTime: 0,
+    refetchOnWindowFocus: "always",
+  });
+
+/** The largest delay `setTimeout` takes; a due date further away needs no timer this visit. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * Whether the local clock has passed `iso`, re-rendering once when it does,
+ * and calling `onPass` then — **wording and one re-read only** (B3, A85): the
+ * server, not this, ends an invoice.
+ */
+export function usePassedAt(iso: string | null, onPass?: () => void): boolean {
+  const [now, setNow] = useState(() => Date.now());
+  const at = iso === null ? Number.NaN : Date.parse(iso);
+  const latest = useRef(onPass);
+  useEffect(() => {
+    latest.current = onPass;
+  });
+  useEffect(() => {
+    if (Number.isNaN(at)) return;
+    const left = at - Date.now();
+    if (left <= 0 || left > MAX_TIMER_MS) return;
+    const timer = window.setTimeout(() => {
+      setNow(Date.now());
+      latest.current?.();
+    }, left);
+    return () => window.clearTimeout(timer);
+  }, [at]);
+  return !Number.isNaN(at) && at <= now;
+}
+
+/** Reads again when the reader comes back to the tab (B3: «re-read on entry, on return to the tab») — no polling. */
+export function useReadOnReturn(enabled: boolean, read: () => void): void {
+  const latest = useRef(read);
+  useEffect(() => {
+    latest.current = read;
+  });
+  useEffect(() => {
+    if (!enabled) return;
+    let last = 0;
+    const onReturn = () => {
+      // `visibilitychange` and `focus` arrive together on a return: one read.
+      if (document.visibilityState !== "visible" || Date.now() - last < 500) return;
+      last = Date.now();
+      latest.current();
+    };
+    document.addEventListener("visibilitychange", onReturn);
+    window.addEventListener("focus", onReturn);
+    return () => {
+      document.removeEventListener("visibilitychange", onReturn);
+      window.removeEventListener("focus", onReturn);
+    };
+  }, [enabled]);
+}
+
+/** A refusal of «Download PDF», as the page says it: its words, the request id, a key that remounts the note per press (B10). */
+export interface DownloadRefusal {
+  text: string;
+  words: string | null;
+  requestId: string | null;
+  key: number;
+}
+
+/**
+ * «Download PDF» (B10, decision 5): one press at a time — presses while one
+ * is out send nothing —, an authenticated fetch with the session of the
+ * address's company, the bytes handed straight to `saveBlob` and dropped —
+ * never cached, stored or opened here. The hidden status says it started and
+ * that it is done; a refusal is said with its id, and an `OWNER_REQUIRED` one
+ * re-reads who owns the company. Focus is never moved.
+ */
+export function useInvoiceDownload(companyId: string, company: string | null) {
+  const queryClient = useQueryClient();
+  const accountClient = useAccountQueryClient();
+  const [pending, setPending] = useState<string | null>(null);
+  const busy = useRef(false);
+  const [status, setStatus] = useState<{ text: string; seq: number } | null>(null);
+  const [refusal, setRefusal] = useState<(DownloadRefusal & { invoiceId: string }) | null>(null);
+  const seq = useRef(0);
+  const download = useCallback(
+    async (invoice: Pick<Invoice, "id" | "number">) => {
+      if (busy.current) return;
+      busy.current = true;
+      seq.current += 1;
+      setPending(invoice.id);
+      setRefusal(null);
+      setStatus({ text: downloadingStatus(invoice.number), seq: seq.current });
+      try {
+        const document = await taskaApi.getInvoiceDocument(companyId, invoice.id);
+        saveBlob(document.blob, documentName(invoice.number, document.fileName));
+        seq.current += 1;
+        setStatus({ text: downloadedStatus(invoice.number), seq: seq.current });
+      } catch (error) {
+        seq.current += 1;
+        setStatus(null);
+        const words = downloadRefusalWords(error, company);
+        setRefusal({ ...words, requestId: apiErrorFacts(error).requestId, key: seq.current, invoiceId: invoice.id });
+        if (refusalCode(error) === "OWNER_REQUIRED") {
+          // Who owns it is the re-read company's to say (§4.39's G6).
+          void queryClient.invalidateQueries({ queryKey: companyTenantKey(companyId) });
+          void accountClient?.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
+        }
+      } finally {
+        busy.current = false;
+        setPending(null);
+      }
+    },
+    [companyId, company, queryClient, accountClient],
+  );
+  return { download, pending, status, refusal };
+}
 
 /**
  * The reader and the company, and whether the reader owns it — `getTenant()

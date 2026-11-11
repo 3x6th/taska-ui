@@ -4695,6 +4695,366 @@ h1 {
   }
 }
 
+/* ---------- Bank transfer, items, billing details, refunds (TAS-514) ---------- */
+
+/* «Download PDF» (B10): secondary at its regular 34, `Download` 13 with 6 to
+   the label (the button's own gap). In flight: no fade, the progress cursor. */
+.company-invoice-download[data-in-flight] {
+  cursor: progress;
+}
+
+/* «Bank transfer» (B4): on --bg, no card, fill or frame; §4.38's group label;
+   the lead 4 above the facts; the facts §4.39's. */
+.company-bank-lead {
+  margin: 0 0 8px;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+/* A value and its Copy right after it (B5): the value wraps, the 28 button's
+   4 above and below are taken back so it never grows the row. */
+.company-bank-value-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.company-bank-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+/* Hand-transcribed values in Plex Mono (§2.3): 0/O and 1/l/I apart. */
+.company-bank-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+/* The IBAN wraps between its groups of four, never inside one. */
+.company-bank-iban {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+/* The reference exactly as received, selected whole by a press. */
+.company-bank-reference {
+  user-select: all;
+}
+
+.icon-button.company-bank-copy {
+  width: 28px;
+  height: 28px;
+  margin: -4px 0;
+  border-radius: 7px;
+}
+
+.company-bank-amount {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A row's second line (Amount, Reference). */
+.company-bank-line {
+  display: block;
+  margin-top: 2px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+/* The reconciliation note (B6): 12 under the facts, a paragraph per sentence, 6 apart. */
+.company-bank-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.company-bank-note > p {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+/* Where the first sentence stands while the durations are read: no spinner (§5.6). */
+.company-bank-note-skeleton {
+  display: block;
+  width: 70%;
+  max-width: 360px;
+  height: 12px;
+  margin: 4px 0;
+}
+
+/* One persistent status for every Copy (B5): no height while empty. A
+   refusal is said in --fg, since it asks the reader to act. */
+.company-bank-copy-status {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.company-bank-copy-status:not(:empty) {
+  padding-top: 8px;
+}
+
+.company-bank-copy-status.is-failed {
+  color: var(--fg);
+}
+
+/* The card's form (B14): on the card's --surface, the label legend-style, the facts always stacked. */
+.company-bank.is-card {
+  margin-top: 0;
+}
+
+.company-bank.is-card .company-group-title {
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.company-bank.is-card .settings-details > div {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 2px;
+}
+
+.secondary-button.company-setup-download {
+  width: 100%;
+  height: 39px;
+  margin-top: 12px;
+}
+
+.company-setup-slot > .secondary-button.company-setup-download {
+  margin-top: 0;
+}
+
+.company-setup-refund {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+/* «Received» (B7) and its second line. */
+.company-invoice-received {
+  font-variant-numeric: tabular-nums;
+}
+
+.company-invoice-fact-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+/* «Items» (B8): the invoice row's anatomy, hairlines between, no hover. */
+.company-item-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.company-item-row {
+  display: grid;
+  align-items: baseline;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 10px;
+  padding: 8px 0;
+}
+
+.company-item-row + .company-item-row {
+  border-top: 1px solid var(--border);
+}
+
+.company-item-text {
+  min-width: 0;
+}
+
+.company-item-description {
+  margin: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.company-item-meta {
+  margin: 2px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.company-item-amount {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.company-item-row.is-total .company-item-description,
+.company-item-row.is-total .company-item-amount {
+  font-weight: 600;
+}
+
+.company-items-fx {
+  margin: 8px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+/* «Billing details» (B9): as issued, read-only — a block per line. */
+.company-snapshot-note {
+  margin: 0 0 8px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.company-snapshot-line {
+  display: block;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* «Refunds» (B11): the invoice list's subgrid — reason · amount · marker. */
+.company-refunds-lead {
+  margin: 0 0 4px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.company-refund-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  column-gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.company-refund-row {
+  display: grid;
+  grid-column: 1 / -1;
+  align-items: center;
+  grid-template-columns: subgrid;
+  column-gap: 0;
+  min-height: 48px;
+  padding: 8px 0;
+}
+
+.company-refund-row + .company-refund-row {
+  border-top: 1px solid var(--border);
+}
+
+.company-refund-text {
+  min-width: 0;
+}
+
+.company-refund-reason {
+  margin: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.company-refund-meta {
+  margin: 2px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.company-refund-amount {
+  padding-left: 10px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.company-refund-status {
+  display: flex;
+  justify-content: flex-end;
+  padding-left: 10px;
+}
+
+@media (max-width: 820px) {
+  /* §7's 44 (B16): «Download PDF», a bank row with a Copy, the Copy itself by 8 on every side. */
+  .company-invoice-download {
+    min-height: 44px;
+  }
+
+  .company-bank-details > div:has(.company-bank-copy) {
+    min-height: 44px;
+  }
+
+  .icon-button.company-bank-copy::before {
+    position: absolute;
+    content: "";
+    inset: -8px;
+  }
+
+  .secondary-button.company-setup-download {
+    height: 44px;
+  }
+}
+
+/* Below 560 the refunds take the invoice list's two columns: the marker after the meta. */
+@media (max-width: 559px) {
+  .company-refund-list {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .company-refund-status {
+    display: none;
+  }
+
+  .company-refund-meta .company-invoice-marker-inline {
+    display: inline-block;
+  }
+}
+
 /* ---------- Data section ---------- */
 
 .admin-data {

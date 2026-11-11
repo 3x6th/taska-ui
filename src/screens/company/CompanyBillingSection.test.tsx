@@ -28,6 +28,10 @@ const { fakeApi, state } = vi.hoisted(() => {
     subscription: null as null | Record<string, unknown>,
     autopayAnswer: null as null | (() => Promise<unknown>),
     autopaySent: [] as Array<{ version: string; key: string }>,
+    /** TAS-514. */
+    refunds: [] as Array<Record<string, unknown>>,
+    targetSeconds: 86400 as number | null,
+    document: null as null | (() => Promise<unknown>),
   };
   const workspace = { tenantId: "n", tenantName: "Northwind", tenantSessionId: "s-n" };
   const tenant = () => ({ id: "n", name: "Northwind", ownerId: "tom", lifecycle: "ACTIVE", restrictions: state.restrictions, createdAt: "2026-05-01T09:00:00Z", version: "1" });
@@ -68,6 +72,20 @@ const { fakeApi, state } = vi.hoisted(() => {
       state.calls.push("getInvoice");
       return state.invoices.find((invoice) => invoice.id === invoiceId);
     },
+    // TAS-514: the refunds beside the list, none by default; the durations of an open wire invoice.
+    listRefunds: async () => {
+      state.calls.push("listRefunds");
+      return { items: state.refunds, nextCursor: null };
+    },
+    getTenantCapabilities: async () => {
+      state.calls.push("getTenantCapabilities");
+      return { tenantId: "n", wireReconciliationTargetSeconds: state.targetSeconds, expiresAt: null };
+    },
+    getInvoiceDocument: async () => {
+      state.calls.push("getInvoiceDocument");
+      if (state.document) return state.document();
+      return { blob: new Blob(["%PDF-1.4"], { type: "application/pdf" }), fileName: null };
+    },
     getCheckout: () => {
       state.calls.push("getCheckout");
       return state.checkout ? state.checkout() : new Promise(() => {});
@@ -107,6 +125,11 @@ const invoice = (overrides: Record<string, unknown> = {}) => ({
   paymentMethod: "PSP",
   version: "1",
   replacesInvoiceId: null,
+  wireInstructions: null,
+  buyer: null,
+  seller: null,
+  lines: null,
+  fxQuote: null,
   ...overrides,
 });
 
@@ -141,6 +164,9 @@ beforeEach(() => {
   state.subscription = null;
   state.autopayAnswer = null;
   state.autopaySent = [];
+  state.refunds = [];
+  state.targetSeconds = 86400;
+  state.document = null;
 });
 
 afterEach(() => {
@@ -536,5 +562,106 @@ describe("«See Billing» (B2c)", () => {
       </MemoryRouter>,
     );
     expect(screen.queryByRole("link", { name: "See Billing" })).not.toBeInTheDocument();
+  });
+});
+
+describe("TAS-514: refunds, the wire invoice and its document", () => {
+  const BANK = { beneficiaryName: "Taska Mock S.L. (test only)", iban: "XX00MOCK0000000000000000", bic: "MOCKESM0XXX", bankName: "Mock Bank", reference: "TASKA-TSK-2026-01008" };
+  const wireRenewal = () => invoice({ paymentMethod: "WIRE", wireInstructions: BANK, dueAt: "2099-12-04T09:00:00Z" });
+  const refund = (overrides: Record<string, unknown> = {}) => ({
+    id: "rf-1",
+    tenantId: "n",
+    kind: "UNALLOCATED_RETURN",
+    state: "UNKNOWN",
+    amount: state.EUR("500"),
+    reasonCode: "EXCESS",
+    sourceMethod: "WIRE",
+    requestedAt: "2026-11-10T09:00:00Z",
+    confirmedAt: null,
+    feeBearer: "TASKA",
+    sendDueAt: null,
+    decidedAt: null,
+    ...overrides,
+  });
+
+  it("«Refunds» after «Invoices», only when there is one: its reason, amount and marker — UNKNOWN is checked, never sent", async () => {
+    renderAt("/company/billing");
+    await screen.findByRole("link", { name: "TSK-2026-01008" });
+    expect(screen.queryByRole("region", { name: /^Refunds/ })).not.toBeInTheDocument();
+    expect(state.calls).toContain("listRefunds");
+    state.refunds = [refund()];
+    renderAt("/company/billing");
+    const group = await screen.findByRole("region", { name: /^Refunds/ });
+    expect(within(group).getByRole("heading")).toHaveTextContent("Refunds1");
+    const row = group.querySelector(".company-refund-row") as HTMLElement;
+    expect(row).toHaveTextContent("Overpayment");
+    expect(row).toHaveTextContent("Bank transfer · Taska is checking whether it went through");
+    expect(within(row).getAllByText("checking").length).toBeGreaterThan(0);
+    expect(row).not.toHaveTextContent(/TSK-|sent/i);
+    expect(within(row).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("the refunds that failed to load: their note in their place, the page's one Try again under the first note", async () => {
+    const original = fakeApi.listRefunds;
+    let refusing = true;
+    (fakeApi as unknown as Record<string, unknown>).listRefunds = async () => {
+      if (refusing) throw Object.assign(new Error("down"), { status: 503, code: "DEPENDENCY_UNAVAILABLE", requestId: "rid-refunds" });
+      return { items: [refund({ state: "CONFIRMED", confirmedAt: "2026-11-12T09:00:00Z" })], nextCursor: null };
+    };
+    try {
+      renderAt("/company/billing");
+      // A 503 is retried once before it is said (`retryUnanswered`).
+      expect(await screen.findByText("Refunds could not be loaded.", undefined, { timeout: 4000 })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "TSK-2026-01008" })).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(1);
+      refusing = false;
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      expect(await screen.findByRole("region", { name: /^Refunds/ })).toHaveTextContent(/Refunded Nov 12/);
+    } finally {
+      (fakeApi as unknown as Record<string, unknown>).listRefunds = original;
+    }
+  });
+
+  it("a wire invoice: bank details, no Pay, the target in the note — and a refused copy selects the value and says how", async () => {
+    state.invoices = [wireRenewal()];
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    try {
+      renderAt("/company/billing/inv-renewal");
+      const bank = await screen.findByRole("region", { name: "Bank transfer" });
+      expect(screen.queryByRole("button", { name: /^Pay/ })).not.toBeInTheDocument();
+      expect(block()).toHaveTextContent("Waiting for the bank transfer.");
+      await waitFor(() => expect(bank).toHaveTextContent("within 24 hours of the money arriving"));
+      expect(state.calls).toContain("getTenantCapabilities");
+      const copy = within(bank).getByRole("button", { name: "Copy IBAN" });
+      copy.focus();
+      fireEvent.click(copy);
+      await waitFor(() =>
+        expect(bank.querySelector(".company-bank-copy-status")).toHaveTextContent("Couldn’t copy the IBAN automatically. It’s selected — press Ctrl+C or ⌘C to copy it."),
+      );
+      expect(writeText).toHaveBeenCalledWith("XX00MOCK0000000000000000");
+      expect(window.getSelection()?.toString()).toBe("XX00 MOCK 0000 0000 0000 0000");
+      expect(copy).toHaveFocus();
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    }
+  });
+
+  it("the target omitted: the sentence without a number; Download refused: its words and id under the action row, focus kept", async () => {
+    state.invoices = [wireRenewal()];
+    state.targetSeconds = null;
+    state.document = () => Promise.reject(Object.assign(new Error("no format"), { status: 503, code: "POLICY_NOT_CONFIGURED", requestId: "rid-doc" }));
+    renderAt("/company/billing/inv-renewal");
+    const bank = await screen.findByRole("region", { name: "Bank transfer" });
+    await waitFor(() => expect(bank).toHaveTextContent("Taska matches bank transfers to invoices by hand once the money arrives."));
+    expect(bank).not.toHaveTextContent(/hours?\b/);
+    const download = screen.getByRole("button", { name: "Download PDF of invoice TSK-2026-01008" });
+    download.focus();
+    fireEvent.click(download);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Invoice PDFs aren’t available for Northwind yet.");
+    expect(alert.closest(".error-note")).toHaveTextContent("rid-doc");
+    expect(download).toHaveFocus();
+    expect(state.calls.filter((call) => call === "getInvoiceDocument")).toHaveLength(1);
   });
 });

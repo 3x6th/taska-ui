@@ -206,7 +206,9 @@ export interface PaymentState {
     | "expired"
     | "in-progress"
     | "not-found"
-    | "unreadable";
+    | "unreadable"
+    /** TAS-514: a bank-transfer invoice's own state (B3) — read from the invoice, never from a checkout. */
+    | "wire";
   fact: string;
   explanation: string;
   /** The control the block offers: Pay again, the same payment page again, or a manual re-read. */

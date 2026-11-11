@@ -4,6 +4,18 @@ import type { Invoice } from "../../api/billing";
 import { apiErrorFacts } from "../../api/errors";
 import { ErrorNote } from "../../components/ErrorNote";
 import { PaymentStateBlock } from "./BillingParts";
+import { BankTransferGroup, DownloadPdfButton } from "./WireParts";
+import {
+  cardWireLine,
+  isWireOpen,
+  lateFirstPaymentLine,
+  listedRefunds,
+  pastDue,
+  purposeSentence,
+  reconciliationSentences,
+  showsBankDetails,
+  wireState,
+} from "./wireText";
 import {
   INVOICES_READ_FAILED,
   NO_INVOICE_YET_TEXT,
@@ -25,12 +37,17 @@ import {
 } from "./billingText";
 import {
   closeAttempt,
+  companyDurationsOptions,
   companyInvoicesOptions,
+  companyRefundsOptions,
   returnToPayment,
   unresolved,
   useCheckoutAttempts,
+  useInvoiceDownload,
+  usePassedAt,
   usePayInvoice,
   usePaymentWatch,
+  useReadOnReturn,
   useRestoredFromCache,
 } from "./companyBilling";
 
@@ -47,6 +64,12 @@ type Outcome = "failed" | "expired" | "not-found" | null;
  * then polls it (release-reviewer N1) — and only its `lifecycle` ACTIVE hands
  * the address to the app shell. `stalled`: the card's poll gave up after
  * `POLL_LIMIT_MS`, so «Check again» (`onCheckAgain`) stands under the state.
+ *
+ * TAS-514 (art-director B14, decision 7, api-contract-guard F3): the open or
+ * part-paid first invoice **of either method** — a bank-transfer one shows its
+ * bank details in the card's form, «Download PDF» and the reconciliation note,
+ * and no Pay; and the company's refunds are read (+1) for the line about money
+ * that arrived after an earlier first invoice was due.
  */
 export function CreationPaySlot({
   companyId,
@@ -74,6 +97,8 @@ export function CreationPaySlot({
   // open first payment — or one already PAID, settled before this card read it, the one the company opens on.
   const outstanding = [...attempts.values()].find((item) => unresolved(item)) ?? null;
   const listChoice =
+    // The open or part-paid first invoice of either method (F3) — a wire one is never `isPayable`.
+    listed.find((invoice) => invoice.purpose === "INITIAL" && (invoice.state === "OPEN" || invoice.state === "PARTIALLY_PAID")) ??
     listed.find((invoice) => invoice.purpose === "INITIAL" && isPayable(invoice)) ??
     listed.find(isPayable) ??
     listed.find((invoice) => invoice.purpose === "INITIAL" && invoice.state === "PAID") ??
@@ -86,6 +111,14 @@ export function CreationPaySlot({
   const invoice: Invoice | null = watch.invoiceQuery.data ?? listRow;
   const press = usePayInvoice({ companyId, userId, returnTarget: "CREATION", company, creationDeadline });
   const [outcome, setOutcome] = useState<Outcome>(null);
+  // TAS-514: the refunds (+1, decision 7) and, for an open wire invoice, the durations (Q3).
+  const refunds = useQuery(companyRefundsOptions(companyId));
+  const wireOpen = invoice !== null && isWireOpen(invoice);
+  const durations = useQuery({ ...companyDurationsOptions(companyId), enabled: wireOpen });
+  const download = useInvoiceDownload(companyId, company);
+  // Never polled (B3): read again on return to the tab and once when the clock passes its due date.
+  useReadOnReturn(wireOpen && !unresolved(record), () => void invoices.refetch());
+  usePassedAt(wireOpen ? (invoice?.dueAt ?? null) : null, () => void invoices.refetch());
   const [returning, setReturning] = useState(false);
   /** «Return to payment»'s read refused (F2): said under the block, with its id; remounted per press. */
   const [reopenFailure, setReopenFailure] = useState<{ error: unknown; key: number } | null>(null);
@@ -172,8 +205,77 @@ export function CreationPaySlot({
   else if (outcome === "not-found") state = notFoundState(company);
   else if (invoiceId !== null && press.inProgress === invoiceId) state = inProgressState(null);
 
+  // Money that arrived after an earlier first invoice was due (decision 7): one line each, above the slot.
+  const lateLines = listedRefunds(refunds.data ?? [])
+    .filter((refund) => refund.reasonCode === "LATE_FIRST_PAYMENT")
+    .map((refund) => ({ id: refund.id, text: lateFirstPaymentLine(refund) }))
+    .filter((line): line is { id: string; text: string } => line.text !== null);
+  const refundLines =
+    lateLines.length > 0 ? (
+      <>
+        {lateLines.map((line) => (
+          <p className="company-setup-refund" key={line.id}>
+            {line.text}
+          </p>
+        ))}
+      </>
+    ) : null;
+
   if (invoice === null && !watching) {
-    return <p className="company-setup-pay">{NO_INVOICE_YET_TEXT}</p>;
+    return refundLines === null ? (
+      <p className="company-setup-pay">{NO_INVOICE_YET_TEXT}</p>
+    ) : (
+      <div className="company-setup-slot">
+        {refundLines}
+        <p className="company-setup-pay">{NO_INVOICE_YET_TEXT}</p>
+      </div>
+    );
+  }
+
+  // TAS-514 (B14): a first payment by bank transfer — its card form, no Pay.
+  if (invoice !== null && invoice.paymentMethod === "WIRE" && !watching) {
+    const sentence3 = purposeSentence({ invoice, company, restrictions: [], lifecycle: "AWAITING_PAYMENT", creationDeadline });
+    const wire = wireState(invoice, { sentence3 });
+    const bank = showsBankDetails(invoice) && invoice.wireInstructions !== null ? invoice.wireInstructions : null;
+    const [sentence1, sentence2] = reconciliationSentences(durations.data?.wireReconciliationTargetSeconds ?? null);
+    const downloadRefusal = download.refusal?.invoiceId === invoice.id ? download.refusal : null;
+    const downloadRow = (
+      <>
+        <DownloadPdfButton className="company-setup-download" invoice={invoice} press={download} />
+        <span className="visually-hidden" role="status">
+          {download.status !== null ? <span key={download.status.seq}>{download.status.text}</span> : null}
+        </span>
+        {downloadRefusal !== null ? (
+          <ErrorNote key={downloadRefusal.key} live="alert" requestId={downloadRefusal.requestId} serverWords={downloadRefusal.words}>
+            {downloadRefusal.text}
+          </ErrorNote>
+        ) : null}
+      </>
+    );
+    return (
+      <div className="company-setup-slot">
+        {refundLines}
+        <p className="company-setup-pay">{cardWireLine(invoice)}</p>
+        <PaymentStateBlock factId={factId} state={wire} />
+        {bank !== null ? (
+          <BankTransferGroup
+            after={downloadRow}
+            card
+            details={bank}
+            invoice={invoice}
+            note={
+              <>
+                {durations.isPending ? <span aria-hidden="true" className="value-skeleton company-bank-note-skeleton" /> : <p>{sentence1}</p>}
+                <p>{sentence2}</p>
+                {sentence3 !== null && !pastDue(invoice) ? <p>{sentence3}</p> : null}
+              </>
+            }
+          />
+        ) : (
+          downloadRow
+        )}
+      </div>
+    );
   }
 
   const offerPay =
@@ -191,6 +293,7 @@ export function CreationPaySlot({
 
   return (
     <div className="company-setup-slot">
+      {refundLines}
       <PaymentStateBlock factId={factId} state={state} />
       {offerPay ? (
         <>
