@@ -4799,3 +4799,10 @@ Rulings in `docs/ai/reviews/TAS-515-*.md` (git-ignored); divergence in `API-DIVE
   current plan, SPC 167, 221): pass the pending change into `planChoices` (api-contract-guard L-7).
 - **The vendored gateway `openapi.yml` is one route behind** develop (`GET /tenants/{tenantId}/capabilities`) — fold into
   the re-vendor line above.
+- **Withdrawal copy refinements** (art-director re-verdict, non-blocking): pre-confirm «The change to {scheduled} from
+  {date} is dropped, and {Company} stays on {current}. If that change is already paid for, it can't be dropped: it still
+  starts on that date.»; without a date, no second sentence; after a paid withdrawal, for the rest of the session the
+  Scheduled row's third line «It's already paid for, so it starts on that date.» (after a reload unknowable, A76).
+- **Re-buy Pending row copy** (art-director): on a re-buy of the current plan under PAYMENT_EXPIRED, «Starts a new month
+  once invoice {number} is paid. Until then, {Company} stays read-only.» instead of «…stays on {current}» naming the
+  same plan.

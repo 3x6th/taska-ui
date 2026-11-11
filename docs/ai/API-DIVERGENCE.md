@@ -2365,8 +2365,11 @@ Everything below is the entry as it stood, in the past tense.
   - An AFTER_PAYMENT change is shown only in the session that made it; after a reload nothing. The in-session row is
     cleared by a heuristic: a subscription re-read after the acceptance with another version **and** a
     `scheduledPlanVersionId` (a NEXT_PERIOD selection superseded it — an AFTER_PAYMENT selection nulls the schedule,
-    SPC 315-340), or an entitlement with another version **and** another plan (a FREE move elsewhere). A withdrawal or
-    another AFTER_PAYMENT change made in another tab stays invisible. Removal: A63.
+    SPC 315-340), or an entitlement with another version **and** another plan (a FREE move elsewhere), or a subscription with another
+    version **and** another `paidThrough` (a re-buy of the current plan settled). On develop two more writers move
+    `paidThrough` while an AFTER_PAYMENT change is pending — coverage revoked on a full refund or final chargeback
+    (`SubscriptionStore.java:539`) and a paid future period starting (`:596-603`) — so the row can go early, as after a
+    reload. A withdrawal or another AFTER_PAYMENT change made in another tab stays invisible. Removal: A63.
   - Whether a scheduled change is already paid is not on the wire. Withdrawing it (choosing the current plan) is
     worded «…dropped — unless it's already paid for; then it still starts on that date.» and the result is read from
     the re-read subscription. On develop a paid NEXT_PERIOD change cannot be withdrawn: `applied()` keeps the schedule
@@ -2404,7 +2407,10 @@ Everything below is the entry as it stood, in the past tense.
   the mandate version answered deliberately unequal to the subscription version (it starts at 41; the mandate id is
   derived from the tenant id). The Umbrella Team v1 → v2 «announcement» seed is gone, so Umbrella's seeded renewal
   01008 now renews Team v1 at €15 (due at its `paidThrough`, not after it). A withdrawal over a **paid** scheduled
-  change is an IMMEDIATE no-op that keeps the schedule, as on develop. Also invented: the AFTER_PAYMENT invoice is due 7 days after the command; cancel
+  change is an IMMEDIATE no-op that keeps the schedule, as on develop — but the mock bumps `Subscription.version` there
+  and develop does not. Any new selection drops a paid NEXT_PERIOD change at once on the mock; on develop its granted
+  future period still starts at the boundary unless a later AFTER_PAYMENT selection settles first (`window()` then
+  forfeits it), and a later NEXT_PERIOD is scheduled after the paid period (`boundary()` takes the max GRANTED end). Also invented: the AFTER_PAYMENT invoice is due 7 days after the command; cancel
   needs a current paid period and resume accepts an ended one (else 409 `INVALID_STATE`), and both move the version
   even when nothing changes (A72); a withdrawal is IMMEDIATE, drops the schedule and VOIDs the older PLAN_CHANGE invoice
   but not a RENEWAL; VOIDing an invoice expires its open checkouts; Paid → FREE also lifts PAYMENT_EXPIRED; FREE → FREE
