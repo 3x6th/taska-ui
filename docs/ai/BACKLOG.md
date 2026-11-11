@@ -4701,3 +4701,7 @@ Rulings in `docs/ai/reviews/TAS-529-*.md` (git-ignored); divergence in `API-DIVE
 - **The vendored `openapi.yml` lags develop** (`RestErrorResponse` gains `requestId`, `reasons`, `status`, `title`; capabilities;
   board DONE ordering, `doneSince`) — the «`requestId` lives only in a response header» divergence entry's Contract line is
   stale (guard N6; a refresh task under the scope freeze).
+- **Three sources of `deletedIdsInIssue` untested** — watchers, uploaders, history actors/participants
+  (`BoardScreen.tsx` ~7948-7953); one unit test: a stale named member who is a marked watcher isn't offered as a chip
+  (release-reviewer re-verdict note 1).
+- **The deleted company row renders an empty `<p class="company-member-line">`** (height 0) — return `null` (art-director, optional).

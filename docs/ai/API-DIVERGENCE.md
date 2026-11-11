@@ -4394,6 +4394,7 @@ The entry as it stood:
 
 - **TAS-529:** a person the server marks deleted (proposed `deleted === true`) is drawn «Deleted user» and never takes
   the member-list fallback below; an unmarked blank name still does (see «TAS-529» above).
+
 **Measured 2026-10-07 20:03 UTC** (owner's session, GET only, 25 issues across 12 projects; first request id `4ce3d29e-776e-46d8-9d33-32d8da87ab5d`): every `GET /issues/{id}` answered 200 with `{issue, history}`; `reporter` and `assignee` are `{id, displayName, avatarUrl}` objects; `version` is a number and equals the list read's; `links[].target` is present; a watcher whose user has no profile (the Swagger example id `3fa85f64-…`) arrives with `displayName: null` — explicitly null, not absent and not `""`; no blank `displayName` was seen on reporter or assignee (auth-service was up); comments carry `author` with a non-empty name. A key in place of the UUID answers 400 INVALID_ARGUMENT "body.issueId must be a valid UUID"; a missing UUID answers 404 NOT_FOUND "Issue not found: …". No issue on the stand had attachments, so `uploadedByUser` and the `[]`-for-a-failed-part claim stay code-read.
 
 - **Endpoints:** `GET /api/v1/issues/{issueId}`, which answers
