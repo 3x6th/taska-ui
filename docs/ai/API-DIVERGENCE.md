@@ -2356,13 +2356,15 @@ Everything below is the entry as it stood, in the past tense.
   call; the contract wins).
 - **What the UI assumes where the blueprint is silent — each removable:**
   - Account commands go with the global web session (WEB_GLOBAL) through the account path, with a `proof` option: a 401 on
-    the retry after a successful rotation rejects with the original error instead of expiring the account (A98, A103).
+    the retry after a successful rotation rejects with the retry's own error (and id) instead of expiring the account (A98,
+    A103). A 201 without a challenge counts as answered: «Your email was not changed.», the next press with a new key.
   - Field refusals are the server's `violations` in the ErrorNote; a field is marked only on an exact contract field name.
   - One dead-link sentence for 401 (any code), 422 `CONFIRMATION_EXPIRED` or a `token` violation on complete; one dead-code
     sentence for 422 `CONFIRMATION_EXPIRED` and 404 on confirm; any other 422 takes the generic row (A101).
   - The recovery link is `/reset-password?token=…` at the app's base, captured before the invitation capture, stripped from
-    the address, held in memory only (A99). A routed `?token=` on `/reset-password` in a running hash app is held the same
-    way.
+    the address, held in memory only (A99). A routed `?token=` on `/reset-password` or `/reset-password/` in a running
+    hash app, and a fresh hash load of `#/reset-password(/)?token=`, are held the same way. A lost-answer reset retried with the
+    same key may meet a spent token on a real server (A108).
   - Recovery success signs this browser out locally (contracts §8) and the lead says access tokens and connected apps are
     disconnected too (contracts.md:146).
   - No pre-validation beyond «required»; the hint says only «At least 12 characters.» (A102; the deployed validator differs).

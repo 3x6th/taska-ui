@@ -4706,3 +4706,5 @@ Rulings in `docs/ai/reviews/TAS-527-*.md` (git-ignored); divergence in `API-DIVE
   compact buttons.
 - **`/invite`'s «Forgot your password?» ghost** is not covered by e2e.
 - **The hash-mode recovery link and capture** are unit-tested only (no hash-mode B2B e2e server).
+- **A lost-answer reset retried with the same key** may meet a spent token on a real server and say the link no longer works
+  after the reset took (backend A108; optional copy for that case).
