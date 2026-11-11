@@ -4863,3 +4863,6 @@ Rulings in `docs/ai/reviews/TAS-516-*.md` (git-ignored); divergence in `API-DIVE
 - **The mock ignores an already-paid future period on revocation** — an early renewal's period never starts later on the
   mock (simplification).
 - **The card's late-payment line** silently drops when its refunds read fails (unchanged since TAS-514).
+- **« · » after an undated segment** sits inside it («Bank transfer ·»), so in principle the dot could open a new line; it
+  can't today (the method opens the line and fits 233 px at 320). A no-break space before «·» would make it hold for any
+  text (art-director, optional).
