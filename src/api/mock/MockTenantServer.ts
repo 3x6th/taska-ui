@@ -11,6 +11,7 @@ import {
   type ListCompanyPageParams,
 } from "../tenantMembers";
 import { tenantNameProblem, type CreateTenantInput, type ListBillingPlansParams, type ListTenantsParams } from "../tenants";
+import type { DocumentAnswer } from "../billing";
 import type { B2bTransport } from "../webSession";
 import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed } from "./MockTaskaApi";
 
@@ -23,7 +24,7 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * revoked one, a suspended membership or a paused company is refused here the
  * way the blueprint says the gateway will refuse it.
  *
- * **Shared by every tab** through `localStorage` `taska.mockServer.v7`: the
+ * **Shared by every tab** through `localStorage` `taska.mockServer.v8`: the
  * companies, memberships, sessions and tokens — since TAS-501 the FREE
  * ledger, the creations' operations and their durable receipts, since TAS-502
  * the invitations, the seat limits, the membership generation and the member
@@ -32,10 +33,12 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * quota kinds it is over and every project's lifetime issue counter, and
  * since TAS-513 each company's invoices and their checkouts, and since TAS-515
  * each subscription's plan change, renewal calendar and mandate, and the
- * subscription commands' durable receipts — read and written on every
- * operation, so a second tab — or a duplicated one — meets the same server.
- * (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's, v4 TAS-504's, v5 TAS-512's,
- * v6 TAS-513's; each bump re-seeds, signing every mock account out once.)
+ * subscription commands' durable receipts, and since TAS-514 each invoice's
+ * snapshots as issued, the bank receipts an admin records and the refunds —
+ * read and written on every operation, so a second tab — or a duplicated one
+ * — meets the same server. (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's, v4
+ * TAS-504's, v5 TAS-512's, v6 TAS-513's, v7 TAS-515's; each bump re-seeds,
+ * signing every mock account out once.)
  * Each company's projects and issues are this page's own, in memory, as
  * today's mock's are: they reset with a reload — the lifetime counters do not.
  *
@@ -44,7 +47,7 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * untouched and enforces nothing.
  */
 
-export const MOCK_SERVER_KEY = "taska.mockServer.v7";
+export const MOCK_SERVER_KEY = "taska.mockServer.v8";
 
 /**
  * `localStorage` key for the server's test hooks, as JSON — the seam
@@ -179,6 +182,64 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v7";
  *   active — and a NEXT_PERIOD change's boundary: paid, the plan switches
  *   there with a month from it; unpaid, the date goes and the plan id stays.
  *
+ * The company's bank-transfer invoices, their documents and refunds (TAS-514,
+ * api-contract-guard's pre-build ruling §7 with its addendum B17) — **an admin's
+ * side, as hooks**: the owner reads no receipt on any route, and nothing here
+ * is on `TaskaApi`. Every one is applied once per id and evaluated on every
+ * read, like `resolveCheckout`:
+ *
+ * - `issueMethod`: `{[tenantId | "*"]: "WIRE" | "PSP"}` — the method of the
+ *   invoices the server issues from then on, for that company, or with `*` for
+ *   any company not named (invented — nothing on the wire says who picks it,
+ *   A78); Cyberdyne Systems is seeded WIRE. A WIRE invoice is EUR only and
+ *   carries all five bank details; a WIRE first payment is due a week after
+ *   issuance, never after the creation deadline;
+ * - `wireDetailsVariant: "long"` — wire invoices issued from then on carry a
+ *   200-character beneficiary and a 140-character reference (layout review);
+ * - `wireReceipts`: `[{id, tenantId, amountMinor, occurredAt?, precision?}]` —
+ *   the admin records a bank statement line (`occurredAt` defaults to the
+ *   lifecycle clock; `precision` `INSTANT` or `DAY`); nothing the owner reads
+ *   changes;
+ * - `confirmWire`: `{[receiptId]: invoiceId}` — the admin matches the receipt
+ *   to the invoice and confirms it (matching at confirmation, not at record —
+ *   invented). Arrived by `dueAt`: short of the rest, matched — PARTIALLY_PAID,
+ *   `matchedUnallocated` up, nothing covered; the rest reached, one allocation
+ *   of the whole total — PAID, the excess left on the receipt, the period from
+ *   the confirmation (a first or resumed month) or from the current end (an
+ *   early renewal). Arrived late: a first payment while the creation is still
+ *   open — the invoice EXPIRED, nothing activated, a replacement INITIAL
+ *   (`replacesInvoiceId`, due a week on, never after the unchanged deadline);
+ *   a closed or cancelled creation — a return, except D216 (AUTO_CLOSED, paid
+ *   in full by the earlier of due and deadline: it opens); a renewal of a
+ *   company neither blocked nor deleted — PAID, a new month from the
+ *   confirmation (D247); a plan change, a blocked or deleted company, DAY
+ *   precision on the due date, money for an invoice not here — nothing
+ *   visible (A88, B09). An invoice already PAID: all of it is a duplicate;
+ * - `returnUnallocated`: `[receiptId]` — the admin returns the receipt's whole
+ *   unallocated money: one Refund per receipt, REQUESTED, WIRE, fee borne by
+ *   Taska, its reason from what happened (EXCESS, LATE_FIRST_PAYMENT,
+ *   CLOSED_CREATION, INCOMPLETE_BANK_PAYMENT — only once the invoice has
+ *   expired —, DUPLICATE_PAYMENT); never automatic, never coverage;
+ * - `refundProgress`: `{[receiptId]: state}` — the receipt's refund moves to
+ *   that state (APPROVED and REJECTED decided now, SUBMITTING submitted now);
+ *   CONFIRMED gives the money back — the receipt holds nothing and the
+ *   invoice's `matchedUnallocated` falls by it;
+ * - `evidenceComplete`: `[receiptId]` — the refund's evidence is complete: the
+ *   WIRE SLA set, frozen once, `sendDueAt` = `decisionDueAt` five business
+ *   dates on, Mon–Fri, the evidence date excluded, the same UTC time (no
+ *   holidays, not Madrid's wall clock — invented);
+ * - `holdExpiry`: `[invoiceId]` — an OPEN or PARTIALLY_PAID invoice stays as it
+ *   is past its `dueAt` (develop's own behaviour: nothing expires there yet);
+ * - `documentOff: true` — the document is 503 `POLICY_NOT_CONFIGURED`;
+ *   `documentType` — the `Content-Type` it answers with instead of
+ *   `application/pdf`;
+ * - `reconciliationTargetSeconds`: a number replaces the capabilities' 86 400
+ *   seconds; `null` leaves the duration out;
+ * - `refuseNext`, `delayMs` and `loseAnswer` take `getInvoiceDocument`,
+ *   `listRefunds` and `getTenantCapabilities`;
+ * - `clockOffsetMs` also expires a PARTIALLY_PAID invoice at its `dueAt`; its
+ *   `matchedUnallocated` stays until its return is CONFIRMED.
+ *
  * The stand-in payment page (`/mock-checkout/{token}`, the mock build only)
  * reads its checkout by an opaque token only this server maps back
  * (`mockCheckoutPage`) and reports the provider's outcome
@@ -225,6 +286,27 @@ export interface MockTenantHooks {
   resolveCheckout?: Record<string, string>;
   autopaySuspended?: Record<string, boolean>;
   autopayConsentEnabled?: boolean;
+  issueMethod?: Record<string, string>;
+  wireDetailsVariant?: string;
+  wireReceipts?: MockWireReceiptHook[];
+  confirmWire?: Record<string, string>;
+  returnUnallocated?: string[];
+  refundProgress?: Record<string, string>;
+  evidenceComplete?: string[];
+  holdExpiry?: string[];
+  documentOff?: boolean;
+  documentType?: string;
+  reconciliationTargetSeconds?: number | null;
+}
+
+/** A bank statement line as the admin records it (TAS-514): the server's own id for it, chosen by whoever sets the hook. */
+export interface MockWireReceiptHook {
+  id: string;
+  tenantId: string;
+  amountMinor: string;
+  /** When the money arrived; the lifecycle clock when absent. */
+  occurredAt?: string;
+  precision?: "INSTANT" | "DAY";
 }
 
 /** The fixture companies' ids (fixed, `createdAt` ascending in this order). */
@@ -242,6 +324,8 @@ export const MOCK_TENANT_IDS = {
   wayne: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b09",
   /** TAS-501: Sofia's deleted FREE company, unlisted — deletion did not give her FREE back. */
   vandelay: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b0a",
+  /** TAS-514: Tom's company that pays by bank transfer — every wire fixture is its own. */
+  cyberdyne: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b0b",
 } as const;
 
 /**
@@ -386,7 +470,31 @@ export const MOCK_INVOICE_IDS = {
   wayneInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e07",
   /** Umbrella's renewal of Team v1: OPEN, due at its paid-through. */
   umbrellaRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e08",
+  /**
+   * TAS-514, Cyberdyne Systems — all by bank transfer but the plan change: its
+   * first invoice, EXPIRED because the money arrived after its due date
+   * (refunded, LATE_FIRST_PAYMENT); the replacement that opened it, PAID, in
+   * three lines; a plan change in US dollars, online, VOID; and its renewal,
+   * OPEN, due at its paid-through.
+   */
+  cyberdyneLateInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e09",
+  cyberdyneInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0a",
+  cyberdynePlanChange: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0b",
+  cyberdyneRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0c",
 } as const;
+
+/**
+ * TAS-514: the bank's details on every wire invoice this mock issues —
+ * **invalid by construction**: the country `XX` is no ISO country and the
+ * check digits `00` never pass mod-97, so nothing can be paid to it. Neither
+ * the BIC nor the bank is real.
+ */
+export const MOCK_WIRE_BENEFICIARY = "Taska Mock S.L. (test only)";
+export const MOCK_WIRE_IBAN = "XX00MOCK0000000000000000";
+export const MOCK_WIRE_BIC = "MOCKESM0XXX";
+export const MOCK_WIRE_BANK = "Mock Bank";
+/** The reference the mock gives a wire invoice — never the number itself (Q8); invented. */
+export const mockWireReference = (number: string) => `TASKA-${number}`;
 
 /** The projects the fixture companies add of their own (fixed ids). Globex's WEB shares its key with Northwind's. */
 export const MOCK_TENANT_PROJECT_IDS = {
@@ -396,6 +504,7 @@ export const MOCK_TENANT_PROJECT_IDS = {
   umbrellaResearch: "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c04",
   hooliSearch: "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c05",
   longNameProject: "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c07",
+  cyberdyneSkynet: "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c08",
 } as const;
 
 /** A company name at the blueprint's maximum, 120 characters, for the layout review. */
@@ -492,6 +601,8 @@ interface StoredTenant {
   quotaBreach: string[];
   /** TAS-512: the last `applyPlan` value applied, so one value is applied once. Never on the wire. */
   appliedPlan?: string;
+  /** TAS-514: how the server issues this company's invoices when no hook says otherwise (`PSP` when absent). Never on the wire. */
+  invoiceMethod?: string;
 }
 
 interface StoredMembership {
@@ -590,10 +701,64 @@ interface StoredMoney {
   exponent: number;
 }
 
+interface StoredAddress {
+  country: string;
+  postalCode: string;
+  city: string;
+  line1: string;
+  line2?: string;
+}
+
+/** The buyer as the invoice was issued to it (TAS-514, F1): copied once, at issuance — a rename never reaches it. */
+interface StoredBuyer {
+  kind: string;
+  name: string;
+  email: string;
+  address: StoredAddress;
+  taxId?: string;
+}
+
+interface StoredSeller {
+  legalName: string;
+  registrationId: string;
+  taxId?: string;
+  address: StoredAddress;
+}
+
+interface StoredLine {
+  description: string;
+  quantity: number;
+  net: StoredMoney;
+  /** `rate` a fraction («0.21», develop's), kept on the wire though the client draws none (A84). */
+  taxes: Array<{ label: string; rate: string; amount: StoredMoney }>;
+  total: StoredMoney;
+}
+
+interface StoredWire {
+  beneficiaryName: string;
+  iban: string;
+  bic: string;
+  bankName: string;
+  reference: string;
+}
+
+interface StoredFxQuote {
+  baseCurrency: string;
+  quoteCurrency: string;
+  rate: string;
+  source: string;
+  observedAt: string;
+  expiresAt: string;
+}
+
 /**
  * An invoice (TAS-513) — issued by the server only: the INITIAL one when a
  * paid company is created (the mock's answer to A53), a RENEWAL by its
  * calendar. Never written by a client: there is no `createInvoice` here.
+ * TAS-514: its buyer, seller, lines, bank details and FX quote are stored when
+ * it is issued and never written again (F1); `matchedUnallocated` is the bank
+ * money matched to it and not allocated — a partial payment, or money waiting
+ * to go back once it expired.
  */
 interface StoredInvoice {
   id: string;
@@ -610,6 +775,60 @@ interface StoredInvoice {
   paymentMethod: string;
   version: number;
   replacesInvoiceId?: string;
+  buyer: StoredBuyer;
+  seller: StoredSeller;
+  lines: StoredLine[];
+  wireInstructions?: StoredWire;
+  fxQuote?: StoredFxQuote;
+  matchedUnallocated: StoredMoney;
+}
+
+/**
+ * A bank statement line an admin recorded (TAS-514; `PaymentFact` on develop)
+ * — **admin-only, never on an owner's route**. `outcome` is what its
+ * confirmation did; `unallocated` the money of it that went to no invoice,
+ * which only a return (`StoredRefund`) gives back.
+ */
+interface StoredWireReceipt {
+  id: string;
+  tenantId: string;
+  /** The payment fact's id, as a refund names its source (`Refund.paymentId`). */
+  paymentId: string;
+  amount: StoredMoney;
+  occurredAt: string;
+  precision: "INSTANT" | "DAY";
+  observedAt: string;
+  invoiceId?: string;
+  confirmedAt?: string;
+  outcome?: "MATCHED" | "ALLOCATED" | "LATE_FIRST_PAYMENT" | "CLOSED_CREATION" | "LATE_PARTIAL" | "DUPLICATE_PAYMENT";
+  unallocated: StoredMoney;
+  refundId?: string;
+}
+
+/** A refund (TAS-514): an UNALLOCATED_RETURN of one receipt's money, moved by the admin's hooks only. */
+interface StoredRefund {
+  id: string;
+  tenantId: string;
+  receiptId: string;
+  paymentId: string;
+  kind: string;
+  state: string;
+  amount: StoredMoney;
+  requestedAt: string;
+  confirmedAt?: string;
+  version: number;
+  reasonCode: string;
+  sourceMethod: string;
+  feeBearer?: string;
+  evidenceCompletedAt?: string;
+  businessCalendarId?: string;
+  calendarVersion?: string;
+  slaPolicyVersion?: string;
+  slaSnapshot?: Record<string, unknown>;
+  decisionDueAt?: string;
+  sendDueAt?: string;
+  decidedAt?: string;
+  submittedAt?: string;
 }
 
 /**
@@ -638,7 +857,7 @@ interface StoredCheckout {
 }
 
 interface ServerState {
-  v: 7;
+  v: 8;
   tenants: StoredTenant[];
   memberships: StoredMembership[];
   sessions: StoredSession[];
@@ -680,6 +899,9 @@ interface ServerState {
   /** The next invoice number's sequence. */
   invoiceSeq: number;
   checkouts: StoredCheckout[];
+  /** TAS-514: the bank receipts an admin recorded, and the refunds of their money. */
+  wireReceipts: StoredWireReceipt[];
+  refunds: StoredRefund[];
   /**
    * `createCheckout`'s receipts — durable, `{actor}:{tenant}:{key}`: the same
    * key with the same body answers the checkout it made, as it is now; with
@@ -783,6 +1005,12 @@ const LATE_SUCCESS_MS = 20_000;
 /** The checkouts the server's unique index counts as active for their invoice (`payment_attempts_invoice_active_uniq`). */
 const ACTIVE_CHECKOUT_STATES: ReadonlySet<string> = new Set(["CREATED", "PENDING", "UNKNOWN", "SUCCEEDED"]);
 const OPEN_CHECKOUT_STATES: ReadonlySet<string> = new Set(["CREATED", "PENDING"]);
+/** TAS-514: the capabilities' `WIRE_RECONCILIATION_TARGET_SECONDS` — develop's default (`0003-platform-flags.sql`). */
+const DEFAULT_RECONCILIATION_TARGET_S = 86_400;
+/** The invoice states a wire payment may still arrive for. */
+const PAYABLE_BY_WIRE: ReadonlySet<string> = new Set(["OPEN", "PARTIALLY_PAID"]);
+/** The states the `refundProgress` hook may move a refund to. */
+const REFUND_PROGRESS: ReadonlySet<string> = new Set(["APPROVED", "SUBMITTING", "UNKNOWN", "CONFIRMED", "FAILED", "REJECTED"]);
 
 const money = (amountMinor: string, currency = "EUR", exponent = 2): StoredMoney => ({ amountMinor, currency, exponent });
 const zeroOf = (total: StoredMoney): StoredMoney => ({ ...total, amountMinor: "0" });
@@ -805,6 +1033,52 @@ export interface MockCheckoutPage {
   open: boolean;
 }
 
+/**
+ * A minimal valid PDF of an invoice's stored snapshot (TAS-514, invented): one
+ * page of Helvetica in WinAnsi — so «—» and «€» are one byte each and every
+ * offset in the cross-reference table is exact — marked as no tax document.
+ */
+function mockInvoicePdf(invoice: StoredInvoice): Uint8Array {
+  const amount = (value: StoredMoney) => {
+    const digits = value.amountMinor.padStart(value.exponent + 1, "0");
+    const whole = digits.slice(0, digits.length - value.exponent);
+    return `${value.currency} ${value.exponent > 0 ? `${whole}.${digits.slice(digits.length - value.exponent)}` : whole}`;
+  };
+  const lines = [
+    "MOCK — not a tax document",
+    `Invoice ${invoice.number}`,
+    `Issued ${invoice.issuedAt}`,
+    `Due ${invoice.dueAt}`,
+    `Billed to ${invoice.buyer.name}`,
+    `From ${invoice.seller.legalName}`,
+    ...invoice.lines.map((line) => `${line.description} x${line.quantity}: ${amount(line.total)}`),
+    `Total ${amount(invoice.total)}`,
+    ...(invoice.wireInstructions ? [`Reference ${invoice.wireInstructions.reference}`] : []),
+  ];
+  const WIN_ANSI: Readonly<Record<string, number>> = { "€": 0x80, "—": 0x97, "–": 0x96, "’": 0x92 };
+  // One character, one byte: anything WinAnsi has no byte for (an emoji in a company's name) is «?».
+  const single = (text: string) => Array.from(text, (char) => (WIN_ANSI[char] !== undefined || (char.length === 1 && char.charCodeAt(0) < 0x100) ? char : "?")).join("");
+  const escape = (text: string) => single(text).replace(/[\\()]/g, (char) => `\\${char}`);
+  const content = `BT /F1 12 Tf 56 780 Td 18 TL ${lines.map((line) => `(${escape(line)}) Tj T*`).join(" ")} ET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  objects.forEach((object, index) => {
+    offsets.push(body.length);
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = body.length;
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}`;
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Uint8Array.from(body, (char) => WIN_ANSI[char] ?? char.charCodeAt(0));
+}
+
 /** Sets or lifts one restriction, kept in `RESTRICTION_ORDER`; a change moves the company's version. */
 function setRestriction(tenant: StoredTenant, code: string, on: boolean): boolean {
   if (tenant.restrictions.includes(code) === on) return false;
@@ -813,12 +1087,112 @@ function setRestriction(tenant: StoredTenant, code: string, on: boolean): boolea
   return true;
 }
 
-/** An invoice paid in full (TAS-513): everything allocated, nothing left, a new version. */
+/** An invoice paid in full (TAS-513): everything allocated in one allocation, nothing left or matched aside, a new version. */
 function markPaid(invoice: StoredInvoice): void {
   invoice.state = "PAID";
   invoice.allocated = { ...invoice.total };
   invoice.remaining = zeroOf(invoice.total);
+  invoice.matchedUnallocated = zeroOf(invoice.total);
   invoice.version += 1;
+}
+
+/* --------------------------------------- an invoice's snapshots (TAS-514, F1) */
+
+/** Who the mock bills: the company's name at issuance — every company the same placeholder address but Cyberdyne. */
+function buyerOf(tenant: Pick<StoredTenant, "id" | "name">): StoredBuyer {
+  if (tenant.id === MOCK_TENANT_IDS.cyberdyne) {
+    return {
+      kind: "BUSINESS",
+      name: tenant.name,
+      email: "accounts@cyberdyne.example",
+      address: { country: "ES", postalCode: "28013", city: "Madrid", line1: "14 Mock Avenue", line2: "Floor 3" },
+      taxId: "XX-CYB-0001",
+    };
+  }
+  return { kind: "BUSINESS", name: tenant.name, email: "billing@example.com", address: { country: "ES", postalCode: "28001", city: "Madrid", line1: "1 Mock Street" } };
+}
+
+/** The seller every mock invoice names — invented, and marked as a test. */
+const MOCK_SELLER: StoredSeller = {
+  legalName: "Taska Mock S.L. (test only)",
+  registrationId: "MOCK-0000",
+  taxId: "XX-MOCK-0000",
+  address: { country: "ES", postalCode: "28001", city: "Madrid", line1: "2 Mock Street" },
+};
+
+/** One line, the plan by its catalogue name at issuance, no tax. */
+function planLines(planVersionId: string, total: StoredMoney): StoredLine[] {
+  const plan = MOCK_PLANS.find((item) => item.id === planVersionId);
+  return [{ description: `${plan?.name ?? "Plan"} plan`, quantity: 1, net: { ...total }, taxes: [], total: { ...total } }];
+}
+
+const LONG_BENEFICIARY = `${MOCK_WIRE_BENEFICIARY} — consolidated settlement account for invoices issued to companies on the mock server, kept long on purpose so that the bank details wrap`;
+
+/** A wire invoice's bank details (invalid by construction); `long` for the layout review's 200 and 140 characters. */
+function wireDetails(number: string, variant: string | undefined): StoredWire {
+  if (variant === "long") {
+    const reference = `${mockWireReference(number)}-`;
+    return {
+      beneficiaryName: LONG_BENEFICIARY.padEnd(200, ".").slice(0, 200),
+      iban: MOCK_WIRE_IBAN,
+      bic: MOCK_WIRE_BIC,
+      bankName: MOCK_WIRE_BANK,
+      reference: `${reference}${"0123456789".repeat(14)}`.slice(0, 140),
+    };
+  }
+  return { beneficiaryName: MOCK_WIRE_BENEFICIARY, iban: MOCK_WIRE_IBAN, bic: MOCK_WIRE_BIC, bankName: MOCK_WIRE_BANK, reference: mockWireReference(number) };
+}
+
+/** A wire first payment's due date (invented, after the blueprint's 7 days): a week after issuance, never after the deadline. */
+const WIRE_DUE_MS = 7 * DAY;
+
+const addMoney = (a: StoredMoney, b: StoredMoney): StoredMoney => ({ ...a, amountMinor: (BigInt(a.amountMinor) + BigInt(b.amountMinor)).toString() });
+const subtractMoney = (a: StoredMoney, b: StoredMoney): StoredMoney => {
+  const left = BigInt(a.amountMinor) - BigInt(b.amountMinor);
+  return { ...a, amountMinor: (left > 0n ? left : 0n).toString() };
+};
+const isPositive = (value: StoredMoney | undefined) => value !== undefined && BigInt(value.amountMinor) > 0n;
+
+/**
+ * Five business dates after `from` (`WIRE_RETURN_ES_V1`'s count, invented
+ * here): Mon–Fri, the evidence date itself excluded, no holidays, the same UTC
+ * time of day — not Madrid's wall clock.
+ */
+function businessDatesAfter(from: number, count: number): number {
+  let at = from;
+  let left = count;
+  while (left > 0) {
+    at += DAY;
+    const weekday = new Date(at).getUTCDay();
+    if (weekday !== 0 && weekday !== 6) left -= 1;
+  }
+  return at;
+}
+
+/** The WIRE SLA set a refund gets once its evidence is complete — every field at once, frozen. */
+function wireSla(evidenceAt: number): Pick<
+  StoredRefund,
+  "evidenceCompletedAt" | "businessCalendarId" | "calendarVersion" | "slaPolicyVersion" | "slaSnapshot" | "decisionDueAt" | "sendDueAt"
+> {
+  const due = new Date(businessDatesAfter(evidenceAt, 5)).toISOString();
+  return {
+    evidenceCompletedAt: new Date(evidenceAt).toISOString(),
+    businessCalendarId: "MOCK-ES-BANKING",
+    calendarVersion: "mock-2026-1",
+    slaPolicyVersion: "WIRE_RETURN_ES_V1",
+    slaSnapshot: {
+      businessDays: 5,
+      feeBearer: "TASKA",
+      countingRule: "T_PLUS_5_BUSINESS_DATES_SAME_LOCAL_TIME",
+      timezone: "Europe/Madrid",
+      calendarDigest: "0".repeat(64),
+      excludeEvidenceDate: true,
+      dstGapRule: "NEXT_VALID_INSTANT",
+      dstOverlapRule: "LATER_OFFSET",
+    },
+    decisionDueAt: due,
+    sendDueAt: due,
+  };
 }
 
 /** A subscription with no paid period: FREE, or a paid plan before its first payment (TAS-504). */
@@ -943,7 +1317,7 @@ export type MockRouteKind = "tenant-read" | "tenant-write" | "tenant-self" | "ac
  */
 function seedTenants(
   seedAt: number,
-): Pick<ServerState, "tenants" | "memberships" | "freeLedger" | "invitations" | "taskLifetime" | "invoices" | "invoiceSeq"> {
+): Pick<ServerState, "tenants" | "memberships" | "freeLedger" | "invitations" | "taskLifetime" | "invoices" | "invoiceSeq" | "wireReceipts" | "refunds"> {
   const at = (day: number) => `2026-05-${String(day).padStart(2, "0")}T09:00:00Z`;
   const iso = (ms: number) => new Date(ms).toISOString();
   const tenant = (
@@ -984,6 +1358,7 @@ function seedTenants(
     };
   };
   const umbrellaPaid = paid(45, "CONSENTED", MOCK_PLAN_IDS.teamRetired);
+  const named = (id: string, name: string) => ({ id, name });
   const free = seatLimitOf(MOCK_PLAN_IDS.free);
   const freePlan = unpaid(MOCK_PLAN_IDS.free);
   const ids = MOCK_TENANT_IDS;
@@ -998,7 +1373,16 @@ function seedTenants(
     [ids.stark, iso(seedAt - 20 * DAY)],
     [ids.wayne, iso(seedAt - 5 * DAY)],
     [ids.vandelay, at(10)],
+    [ids.cyberdyne, iso(seedAt - 40 * DAY)],
   ]);
+  // TAS-514: Cyberdyne Systems pays by bank transfer. Its first invoice's money arrived two days after its
+  // due date while the creation was still open: refunded, and a replacement issued — paid in time, which
+  // opened it 26 days ago. A plan change in US dollars, online, was VOIDed; its renewal is OPEN, due at the
+  // paid-through, four days ahead.
+  const cyberdyneCreated = seedAt - 40 * DAY;
+  const cyberdyneOpened = seedAt - 26 * DAY;
+  const cyberdyneThrough = new Date(cyberdyneOpened + PAID_PERIOD_MS).toISOString();
+  const cyberdyne = named(ids.cyberdyne, "Cyberdyne Systems");
   const member = (
     tenantId: string,
     userId: string,
@@ -1045,6 +1429,19 @@ function seedTenants(
         version: "2",
       },
       tenant(ids.vandelay, "Vandelay Industries", sofia, 10, "DELETED", [], free, freePlan),
+      {
+        ...tenant(ids.cyberdyne, "Cyberdyne Systems", tom, 11, "ACTIVE", [], seatLimitOf(MOCK_PLAN_IDS.team), {
+          planVersionId: MOCK_PLAN_IDS.team,
+          version: "4",
+          paidThrough: cyberdyneThrough,
+          anchorDay: new Date(cyberdyneThrough).getUTCDate(),
+          renewalCancelled: false,
+          autopayState: "DISABLED",
+          renewalIssuedFor: cyberdyneThrough,
+        }),
+        createdAt: iso(cyberdyneCreated),
+        invoiceMethod: "WIRE",
+      },
     ],
     memberships: [
       member(ids.northwind, anna, "TENANT_ADMIN"),
@@ -1067,6 +1464,9 @@ function seedTenants(
       member(ids.stark, tom, "TENANT_ADMIN"),
       member(ids.wayne, tom, "TENANT_ADMIN"),
       member(ids.vandelay, sofia, "TENANT_ADMIN", "REMOVED"),
+      member(ids.cyberdyne, tom, "TENANT_ADMIN"),
+      // An admin who is not the owner: no Billing, no document, no refund (TAS-514 B10).
+      member(ids.cyberdyne, priya, "TENANT_ADMIN"),
     ],
     freeLedger: { [anna]: ids.northwind, [priya]: ids.globex, [sofia]: ids.vandelay },
     invitations: [
@@ -1112,18 +1512,37 @@ function seedTenants(
     ),
     // TAS-513: what the server issued — every paid company's INITIAL, and the
     // RENEWAL of Umbrella's Team v1 (TAS-515: no longer onto an announced v2).
+    // TAS-514: each with its snapshots as issued, the buyer the company's name then.
     invoices: [
-      seedInvoice(1001, MOCK_INVOICE_IDS.initechInitial, ids.initech, "INITIAL", "PAID", MOCK_PLAN_IDS.team, at(3), DAY * 30),
-      seedInvoice(1002, MOCK_INVOICE_IDS.umbrellaInitial, ids.umbrella, "INITIAL", "PAID", MOCK_PLAN_IDS.teamRetired, at(4), DAY * 30),
-      seedInvoice(1003, MOCK_INVOICE_IDS.hooliInitial, ids.hooli, "INITIAL", "PAID", MOCK_PLAN_IDS.team, at(5), DAY * 30),
-      seedInvoice(1004, MOCK_INVOICE_IDS.massiveInitial, ids.massive, "INITIAL", "EXPIRED", MOCK_PLAN_IDS.team, at(6), DAY * 30),
-      seedInvoice(1005, MOCK_INVOICE_IDS.longNameInitial, ids.longName, "INITIAL", "PAID", MOCK_PLAN_IDS.team, at(7), DAY * 30),
-      seedInvoice(1006, MOCK_INVOICE_IDS.starkInitial, ids.stark, "INITIAL", "OPEN", MOCK_PLAN_IDS.team, iso(seedAt - 20 * DAY), CREATION_WINDOW_MS),
-      seedInvoice(1007, MOCK_INVOICE_IDS.wayneInitial, ids.wayne, "INITIAL", "VOID", MOCK_PLAN_IDS.team, iso(seedAt - 5 * DAY), CREATION_WINDOW_MS),
+      seedInvoice(1001, MOCK_INVOICE_IDS.initechInitial, named(ids.initech, "Initech"), "INITIAL", "PAID", MOCK_PLAN_IDS.team, at(3), DAY * 30),
+      seedInvoice(1002, MOCK_INVOICE_IDS.umbrellaInitial, named(ids.umbrella, "Umbrella"), "INITIAL", "PAID", MOCK_PLAN_IDS.teamRetired, at(4), DAY * 30),
+      seedInvoice(1003, MOCK_INVOICE_IDS.hooliInitial, named(ids.hooli, "Hooli"), "INITIAL", "PAID", MOCK_PLAN_IDS.team, at(5), DAY * 30),
+      seedInvoice(1004, MOCK_INVOICE_IDS.massiveInitial, named(ids.massive, "Massive Dynamic"), "INITIAL", "EXPIRED", MOCK_PLAN_IDS.team, at(6), DAY * 30),
+      seedInvoice(1005, MOCK_INVOICE_IDS.longNameInitial, named(ids.longName, MOCK_LONG_TENANT_NAME), "INITIAL", "PAID", MOCK_PLAN_IDS.team, at(7), DAY * 30),
+      seedInvoice(
+        1006,
+        MOCK_INVOICE_IDS.starkInitial,
+        named(ids.stark, "Stark Industries"),
+        "INITIAL",
+        "OPEN",
+        MOCK_PLAN_IDS.team,
+        iso(seedAt - 20 * DAY),
+        CREATION_WINDOW_MS,
+      ),
+      seedInvoice(
+        1007,
+        MOCK_INVOICE_IDS.wayneInitial,
+        named(ids.wayne, "Wayne Enterprises"),
+        "INITIAL",
+        "VOID",
+        MOCK_PLAN_IDS.team,
+        iso(seedAt - 5 * DAY),
+        CREATION_WINDOW_MS,
+      ),
       seedInvoice(
         1008,
         MOCK_INVOICE_IDS.umbrellaRenewal,
-        ids.umbrella,
+        named(ids.umbrella, "Umbrella"),
         "RENEWAL",
         "OPEN",
         MOCK_PLAN_IDS.teamRetired,
@@ -1131,27 +1550,124 @@ function seedTenants(
         // Due at the paid-through, never after it (TAS-515, art-director NB4): as the calendar issues it.
         Date.parse(umbrellaPaid.paidThrough ?? iso(seedAt)) - (seedAt - DAY),
       ),
+      // TAS-514: Cyberdyne's, numbered in a series of their own so that the next invoice issued is still
+      // TSK-2026-01009 (the TAS-515 specs read it).
+      seedInvoice(901, MOCK_INVOICE_IDS.cyberdyneLateInitial, cyberdyne, "INITIAL", "EXPIRED", MOCK_PLAN_IDS.team, iso(cyberdyneCreated), WIRE_DUE_MS, {
+        method: "WIRE",
+      }),
+      seedInvoice(902, MOCK_INVOICE_IDS.cyberdyneInitial, cyberdyne, "INITIAL", "PAID", MOCK_PLAN_IDS.team, iso(seedAt - 30 * DAY), WIRE_DUE_MS, {
+        method: "WIRE",
+        replacesInvoiceId: MOCK_INVOICE_IDS.cyberdyneLateInitial,
+        // Three lines summing to the catalogue's €20 (B17).
+        lines: [
+          { description: "Team plan", quantity: 1, net: money("1500"), taxes: [], total: money("1500") },
+          { description: "Additional seats", quantity: 5, net: money("400"), taxes: [], total: money("400") },
+          { description: "Storage add-on", quantity: 1, net: money("100"), taxes: [], total: money("100") },
+        ],
+      }),
+      // Online, in US dollars: Business's €40 at 1.0832, rounded half up once — $43.33, VAT a fraction (B17).
+      seedInvoice(903, MOCK_INVOICE_IDS.cyberdynePlanChange, cyberdyne, "PLAN_CHANGE", "VOID", MOCK_PLAN_IDS.business, iso(seedAt - 15 * DAY), PLAN_CHANGE_DUE_MS, {
+        method: "PSP",
+        total: money("4333", "USD"),
+        lines: [
+          {
+            description: "Business plan",
+            quantity: 1,
+            net: money("3581", "USD"),
+            taxes: [{ label: "VAT", rate: "0.21", amount: money("752", "USD") }],
+            total: money("4333", "USD"),
+          },
+        ],
+        fxQuote: {
+          baseCurrency: "EUR",
+          quoteCurrency: "USD",
+          rate: "1.0832",
+          source: "Mock FX desk",
+          observedAt: iso(seedAt - 15 * DAY - 10 * MINUTE),
+          expiresAt: iso(seedAt - 15 * DAY + 50 * MINUTE),
+        },
+      }),
+      seedInvoice(904, MOCK_INVOICE_IDS.cyberdyneRenewal, cyberdyne, "RENEWAL", "OPEN", MOCK_PLAN_IDS.team, iso(Date.parse(cyberdyneThrough) - RENEWAL_LEAD_MS), RENEWAL_LEAD_MS, {
+        method: "WIRE",
+      }),
+    ],
+    // TAS-514: what the admin recorded for Cyberdyne's first payment — the late money returned, the replacement's allocated.
+    wireReceipts: [
+      {
+        id: "7e1a0c55-4d2b-4c1e-9f3a-000000000901",
+        tenantId: ids.cyberdyne,
+        paymentId: "8f2b1d66-5e3c-4d2f-8a4b-000000000901",
+        amount: money("2000"),
+        occurredAt: iso(seedAt - 31 * DAY),
+        precision: "INSTANT",
+        observedAt: iso(seedAt - 31 * DAY),
+        invoiceId: MOCK_INVOICE_IDS.cyberdyneLateInitial,
+        confirmedAt: iso(seedAt - 30 * DAY),
+        outcome: "LATE_FIRST_PAYMENT",
+        unallocated: money("0"),
+        refundId: "9a3c2e77-6f4d-4e3a-9b5c-000000000901",
+      },
+      {
+        id: "7e1a0c55-4d2b-4c1e-9f3a-000000000902",
+        tenantId: ids.cyberdyne,
+        paymentId: "8f2b1d66-5e3c-4d2f-8a4b-000000000902",
+        amount: money("2000"),
+        occurredAt: iso(seedAt - 27 * DAY),
+        precision: "INSTANT",
+        observedAt: iso(seedAt - 27 * DAY),
+        invoiceId: MOCK_INVOICE_IDS.cyberdyneInitial,
+        confirmedAt: iso(cyberdyneOpened),
+        outcome: "ALLOCATED",
+        unallocated: money("0"),
+      },
+    ],
+    refunds: [
+      {
+        id: "9a3c2e77-6f4d-4e3a-9b5c-000000000901",
+        tenantId: ids.cyberdyne,
+        receiptId: "7e1a0c55-4d2b-4c1e-9f3a-000000000901",
+        paymentId: "8f2b1d66-5e3c-4d2f-8a4b-000000000901",
+        kind: "UNALLOCATED_RETURN",
+        state: "CONFIRMED",
+        amount: money("2000"),
+        requestedAt: iso(seedAt - 30 * DAY),
+        confirmedAt: iso(seedAt - 24 * DAY),
+        version: 4,
+        reasonCode: "LATE_FIRST_PAYMENT",
+        sourceMethod: "WIRE",
+        feeBearer: "TASKA",
+        ...wireSla(seedAt - 30 * DAY),
+        decidedAt: iso(seedAt - 29 * DAY),
+        submittedAt: iso(seedAt - 25 * DAY),
+      },
     ],
     invoiceSeq: 1009,
   };
 }
 
-/** One seeded invoice: PAID ones fully allocated, the rest with all of it still to pay. */
+/**
+ * One seeded invoice: PAID ones fully allocated, the rest with all of it still
+ * to pay; its snapshots as they were at issuance — the buyer the company then,
+ * one line of its plan — unless `extra` gives its own (TAS-514).
+ */
 function seedInvoice(
   seq: number,
   id: string,
-  tenantId: string,
+  tenant: Pick<StoredTenant, "id" | "name">,
   purpose: string,
   state: string,
   planVersionId: string,
   issuedAt: string,
   dueInMs: number,
+  extra: { method?: string; replacesInvoiceId?: string; total?: StoredMoney; lines?: StoredLine[]; fxQuote?: StoredFxQuote } = {},
 ): StoredInvoice {
-  const total = planPrice(planVersionId);
+  const total = extra.total ?? planPrice(planVersionId);
+  const number = invoiceNumber(seq);
+  const method = extra.method ?? "PSP";
   return {
     id,
-    tenantId,
-    number: invoiceNumber(seq),
+    tenantId: tenant.id,
+    number,
     purpose,
     state,
     planVersionId,
@@ -1160,8 +1676,15 @@ function seedInvoice(
     remaining: state === "PAID" ? zeroOf(total) : { ...total },
     issuedAt,
     dueAt: new Date(Date.parse(issuedAt) + dueInMs).toISOString(),
-    paymentMethod: "PSP",
+    paymentMethod: method,
     version: state === "OPEN" ? 1 : 2,
+    ...(extra.replacesInvoiceId === undefined ? {} : { replacesInvoiceId: extra.replacesInvoiceId }),
+    buyer: buyerOf(tenant),
+    seller: { ...MOCK_SELLER, address: { ...MOCK_SELLER.address } },
+    lines: extra.lines ?? planLines(planVersionId, total),
+    ...(method === "WIRE" && total.currency === "EUR" ? { wireInstructions: wireDetails(number, undefined) } : {}),
+    ...(extra.fxQuote === undefined ? {} : { fxQuote: extra.fxQuote }),
+    matchedUnallocated: zeroOf(total),
   };
 }
 
@@ -1339,6 +1862,29 @@ const TENANT_SEEDS: Readonly<Record<string, MockTenantSeed>> = {
       },
     ],
   },
+  // TAS-514: Cyberdyne's one project, so the company has a Projects page to land on.
+  [MOCK_TENANT_IDS.cyberdyne]: {
+    keep: [],
+    add: [
+      {
+        id: MOCK_TENANT_PROJECT_IDS.cyberdyneSkynet,
+        key: "SKY",
+        name: "Skynet",
+        createdAt: "2026-10-02T09:00:00Z",
+        members: [[tom, "ADMIN"], [priya, "MEMBER"]],
+        issues: [
+          {
+            summary: "Pay the renewal by bank transfer",
+            issueType: "TASK",
+            status: "TODO",
+            priority: "MEDIUM",
+            assigneeId: tom,
+            reporterId: tom,
+          },
+        ],
+      },
+    ],
+  },
 };
 
 const EMPTY_SEED: MockTenantSeed = { keep: [], add: [] };
@@ -1425,6 +1971,9 @@ export class MockTenantServer {
       getInvoice: (bearer, tenantId, invoiceId) => this.getInvoice(bearer, tenantId, invoiceId),
       createCheckout: (bearer, tenantId, invoiceId, returnTarget, key) => this.createCheckout(bearer, tenantId, invoiceId, returnTarget, key),
       getCheckout: (bearer, tenantId, checkoutId) => this.getCheckout(bearer, tenantId, checkoutId),
+      getInvoiceDocument: (bearer, tenantId, invoiceId) => this.getInvoiceDocument(bearer, tenantId, invoiceId),
+      listRefunds: (bearer, tenantId, params) => this.listRefunds(bearer, tenantId, params),
+      getTenantCapabilities: (bearer, tenantId) => this.getTenantCapabilities(bearer, tenantId),
       changeSubscriptionPlan: (bearer, tenantId, input, version, key) => this.changeSubscriptionPlan(bearer, tenantId, input, version, key),
       cancelSubscriptionRenewal: (bearer, tenantId, version, key) => this.setRenewalCancelled(bearer, tenantId, true, version, key),
       resumeSubscriptionRenewal: (bearer, tenantId, version, key) => this.setRenewalCancelled(bearer, tenantId, false, version, key),
@@ -1786,25 +2335,12 @@ export class MockTenantServer {
       state.operations.push(operation);
       if (free) state.freeLedger[grant.userId] = tenant.id;
       // TAS-513: a paid company's first invoice, issued by the server with the
-      // company — the blueprint names no issuer (A53); due at its deadline.
+      // company — the blueprint names no issuer (A53); due at its deadline —
+      // TAS-514: by bank transfer, a week on, never after it.
       if (!free) {
-        const total = { ...plan.price };
-        state.invoices.push({
-          id: uuid(),
-          tenantId: tenant.id,
-          number: invoiceNumber(state.invoiceSeq),
-          purpose: "INITIAL",
-          state: "OPEN",
-          planVersionId: plan.id,
-          total,
-          allocated: zeroOf(total),
-          remaining: { ...total },
-          issuedAt: createdAt,
-          dueAt: tenant.creationDeadline ?? new Date(createdMs + CREATION_WINDOW_MS).toISOString(),
-          paymentMethod: "PSP",
-          version: 1,
-        });
-        state.invoiceSeq += 1;
+        const deadline = Date.parse(tenant.creationDeadline ?? new Date(createdMs + CREATION_WINDOW_MS).toISOString());
+        const wire = this.methodFor(tenant) === "WIRE";
+        this.issueInvoice(state, tenant, "INITIAL", plan.id, createdMs, wire ? Math.min(createdMs + WIRE_DUE_MS, deadline) : deadline);
       }
       state.creations[receiptKey] = { hash, tenantId: tenant.id, operationId: operation.id };
       // A zero `stepMs` finishes provisioning in the same answer.
@@ -2438,7 +2974,7 @@ export class MockTenantServer {
       const listed = state.invoices
         .filter((invoice) => invoice.tenantId === tenantId)
         .sort((a, b) => (a.issuedAt < b.issuedAt ? 1 : a.issuedAt > b.issuedAt ? -1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-      const items = listed.slice(offset, offset + limit).map((invoice) => this.wireInvoice(state, invoice));
+      const items = listed.slice(offset, offset + limit).map((invoice) => this.wireInvoice(invoice));
       const next = offset + limit;
       return next < listed.length ? { items, nextCursor: this.writeCursor(next, bound) } : { items };
     });
@@ -2454,7 +2990,7 @@ export class MockTenantServer {
       if (!UUID_PATTERN.test(invoiceId)) throw problem(400, "VALIDATION_FAILED", "invoiceId must be a UUID");
       const invoice = state.invoices.find((item) => item.id === invoiceId && item.tenantId === tenantId);
       if (!invoice) throw problem(404, "RESOURCE_NOT_FOUND", "Invoice not found");
-      return this.wireInvoice(state, invoice);
+      return this.wireInvoice(invoice);
     });
     if (this.takeLostAnswer("getInvoice")) throw new TypeError("Failed to fetch");
     return answer;
@@ -2541,6 +3077,98 @@ export class MockTenantServer {
     });
     if (this.takeLostAnswer("getCheckout")) throw new TypeError("Failed to fetch");
     return answer;
+  }
+
+  /* --------------------------- documents, refunds and durations (TAS-514) */
+
+  /**
+   * `GET /tenants/{t}/billing/invoices/{i}/document` (api-contract-guard §7.7):
+   * the billing checks — the owner only, 403 `OWNER_REQUIRED` for anybody
+   * else —, the invoice here (404 `RESOURCE_NOT_FOUND`, a DRAFT too), the
+   * `documentOff` hook (503 `POLICY_NOT_CONFIGURED`), then a minimal valid PDF
+   * of the stored snapshot marked «MOCK — not a tax document» (invented). No
+   * `Content-Disposition` the browser could read: the gateway exposes none to
+   * CORS (A79). `documentType` answers another type, for the client's check.
+   */
+  private async getInvoiceDocument(bearer: string | null, tenantId: string, invoiceId: string): Promise<DocumentAnswer> {
+    await this.delay("getInvoiceDocument");
+    const bytes = this.read((state) => {
+      this.authorizeBilling(state, bearer, tenantId, "getInvoiceDocument");
+      if (!UUID_PATTERN.test(invoiceId)) throw problem(400, "VALIDATION_FAILED", "invoiceId must be a UUID");
+      const invoice = state.invoices.find((item) => item.id === invoiceId && item.tenantId === tenantId);
+      if (!invoice || invoice.state === "DRAFT") throw problem(404, "RESOURCE_NOT_FOUND", "Invoice not found");
+      if (this.hooks().documentOff === true) throw problem(503, "POLICY_NOT_CONFIGURED", "No approved invoice format");
+      return mockInvoicePdf(invoice);
+    });
+    if (this.takeLostAnswer("getInvoiceDocument")) throw new TypeError("Failed to fetch");
+    const type = this.hooks().documentType;
+    const contentType = typeof type === "string" && type !== "" ? type : "application/pdf";
+    return { contentType, disposition: null, body: new Blob([bytes.buffer as ArrayBuffer], { type: contentType }) };
+  }
+
+  /**
+   * `GET /tenants/{t}/billing/refunds` (§7.6): the owner only, this company's,
+   * keyset by `requestedAt` then `id`, newest first (A87, invented); `limit`
+   * 1–100, the cursor bound to the reader and the company.
+   */
+  private async listRefunds(bearer: string | null, tenantId: string, params: ListCompanyPageParams): Promise<unknown> {
+    await this.delay("listRefunds");
+    const answer = this.read((state) => {
+      const { session } = this.authorizeBilling(state, bearer, tenantId, "listRefunds");
+      const limit = this.pageLimit(params);
+      const bound = `${session.userId}:refunds:${tenantId}`;
+      const offset = params.cursor === undefined ? 0 : this.readCursor(params.cursor, bound);
+      const listed = state.refunds
+        .filter((refund) => refund.tenantId === tenantId)
+        .sort((a, b) => (a.requestedAt < b.requestedAt ? 1 : a.requestedAt > b.requestedAt ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+      const items = listed.slice(offset, offset + limit).map((refund) => this.wireRefund(refund));
+      const next = offset + limit;
+      return next < listed.length ? { items, nextCursor: this.writeCursor(next, bound) } : { items };
+    });
+    if (this.takeLostAnswer("listRefunds")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /**
+   * `GET /tenants/{t}/capabilities` (§7.8): any ACTIVE member of the company,
+   * with its session; `durationsSeconds` the two public durations —
+   * `WIRE_RECONCILIATION_TARGET_SECONDS` 86 400 unless the
+   * `reconciliationTargetSeconds` hook changes it or (`null`) leaves it out,
+   * `UNPAID_CREATION_WINDOW_SECONDS` the creation window. `expiresAt` 30 s on;
+   * no `items` (A30).
+   */
+  private async getTenantCapabilities(bearer: string | null, tenantId: string): Promise<unknown> {
+    await this.delay("getTenantCapabilities");
+    const answer = this.read((state) => {
+      const { session, tenant } = this.authorizeControl(state, bearer, tenantId, "getTenantCapabilities");
+      const membership = state.memberships.find((item) => item.tenantId === tenantId && item.userId === session.userId);
+      const hook = this.hooks().reconciliationTargetSeconds;
+      const target = hook === undefined ? DEFAULT_RECONCILIATION_TARGET_S : hook;
+      const now = this.now();
+      return {
+        tenantId,
+        actorUserId: session.userId,
+        policyVersion: "mock-policy-1",
+        entitlementVersion: String(tenant.entitlementVersion),
+        membershipVersion: String(membership?.version ?? 1),
+        flagVersion: "mock-flags-1",
+        evaluatedAt: new Date(now).toISOString(),
+        durationsSeconds: {
+          UNPAID_CREATION_WINDOW_SECONDS: CREATION_WINDOW_MS / 1000,
+          ...(target === null ? {} : { WIRE_RECONCILIATION_TARGET_SECONDS: target }),
+        },
+        expiresAt: new Date(now + 30_000).toISOString(),
+        items: [],
+      };
+    });
+    if (this.takeLostAnswer("getTenantCapabilities")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /** `Refund` as the blueprint has it — the SLA set only once the evidence is complete. Its receipt is never on the wire. */
+  private wireRefund(refund: StoredRefund): unknown {
+    const { receiptId: _receipt, version, amount, slaSnapshot, ...rest } = refund;
+    return { ...rest, amount: { ...amount }, ...(slaSnapshot === undefined ? {} : { slaSnapshot: { ...slaSnapshot } }), version: String(version) };
   }
 
   /* -------------------- plan change, renewal and automatic payments (TAS-515) */
@@ -2651,7 +3279,9 @@ export class MockTenantServer {
       } else {
         this.supersede(state, tenant, true);
         effectiveAt = effect === "NEXT_PERIOD" ? sub.paidThrough : undefined;
-        const invoice = this.issueInvoice(state, tenant, "PLAN_CHANGE", target.id, now, effectiveAt === undefined ? now + PLAN_CHANGE_DUE_MS : Date.parse(effectiveAt));
+        const invoice = this.issueInvoice(state, tenant, "PLAN_CHANGE", target.id, now, effectiveAt === undefined ? now + PLAN_CHANGE_DUE_MS : Date.parse(effectiveAt), {
+          method: input.paymentMethod,
+        });
         invoiceId = invoice.id;
         tenant.subscription = {
           ...tenant.subscription,
@@ -2850,13 +3480,33 @@ export class MockTenantServer {
     tenant.quotaBreach = BREACH_KINDS.filter((kind) => !this.withinLimit(state, tenant, kind));
   }
 
-  /** An invoice the server issues (TAS-515: a PLAN_CHANGE at the command, a RENEWAL by the calendar) — OPEN, PSP, the plan's price. */
-  private issueInvoice(state: ServerState, tenant: StoredTenant, purpose: string, planVersionId: string, issuedAt: number, dueAt: number): StoredInvoice {
+  /**
+   * An invoice the server issues (TAS-513: the INITIAL with a paid company;
+   * TAS-515: a PLAN_CHANGE at the command, a RENEWAL by the calendar; TAS-514:
+   * a replacement INITIAL after a late first payment) — OPEN, the plan's
+   * price, by the method `methodFor` says. **Its snapshots are taken now and
+   * never again** (F1): the buyer the company is now, the plan's name now, and
+   * on a wire one in euros its bank details.
+   */
+  private issueInvoice(
+    state: ServerState,
+    tenant: StoredTenant,
+    purpose: string,
+    planVersionId: string,
+    issuedAt: number,
+    dueAt: number,
+    options: { replacesInvoiceId?: string; method?: string } = {},
+  ): StoredInvoice {
+    const { replacesInvoiceId } = options;
     const total = planPrice(planVersionId);
+    const number = invoiceNumber(state.invoiceSeq);
+    // A plan change's request names its method (TAS-515's always PSP); everything else is the server's pick.
+    const method = options.method === "WIRE" || options.method === "PSP" ? options.method : this.methodFor(tenant);
+    const wire = method === "WIRE" && total.currency === "EUR";
     const invoice: StoredInvoice = {
       id: uuid(),
       tenantId: tenant.id,
-      number: invoiceNumber(state.invoiceSeq),
+      number,
       purpose,
       state: "OPEN",
       planVersionId,
@@ -2865,12 +3515,26 @@ export class MockTenantServer {
       remaining: { ...total },
       issuedAt: new Date(issuedAt).toISOString(),
       dueAt: new Date(dueAt).toISOString(),
-      paymentMethod: "PSP",
+      paymentMethod: wire ? "WIRE" : "PSP",
       version: 1,
+      ...(replacesInvoiceId === undefined ? {} : { replacesInvoiceId }),
+      buyer: buyerOf(tenant),
+      seller: { ...MOCK_SELLER, address: { ...MOCK_SELLER.address } },
+      lines: planLines(planVersionId, total),
+      ...(wire ? { wireInstructions: wireDetails(number, this.hooks().wireDetailsVariant) } : {}),
+      matchedUnallocated: zeroOf(total),
     };
     state.invoices.push(invoice);
     state.invoiceSeq += 1;
     return invoice;
+  }
+
+  /** Who picks an issued invoice's method — the server, per company (invented, A78): the hook, then the company's own, then PSP. */
+  private methodFor(tenant: StoredTenant): "PSP" | "WIRE" {
+    const hook = this.hooks().issueMethod;
+    const named = typeof hook === "object" && hook !== null ? (hook[tenant.id] ?? hook["*"]) : undefined;
+    const method = named ?? tenant.invoiceMethod;
+    return method === "WIRE" ? "WIRE" : "PSP";
   }
 
   /**
@@ -2946,34 +3610,27 @@ export class MockTenantServer {
   }
 
   /**
-   * `Invoice` as the blueprint has it — buyer, seller and lines included, which
-   * the client never reads (api-contract-guard §1); `matchedUnallocated` zero:
-   * this mock has no partial wire payment.
+   * `Invoice` as the blueprint has it (TAS-514, F1): the snapshots **as they
+   * were stored at issuance** — never rebuilt from the company or the plan as
+   * they are now, so a rename or a transfer leaves every issued invoice as it
+   * was; `wireInstructions` only on a wire one, `fxQuote` only where there is
+   * one, `matchedUnallocated` the bank money matched to it and not allocated.
    */
-  private wireInvoice(state: ServerState, invoice: StoredInvoice): unknown {
-    const tenant = state.tenants.find((item) => item.id === invoice.tenantId);
-    const plan = MOCK_PLANS.find((item) => item.id === invoice.planVersionId);
-    const { version, replacesInvoiceId, ...rest } = invoice;
+  private wireInvoice(invoice: StoredInvoice): unknown {
+    const { version, replacesInvoiceId, wireInstructions, fxQuote, buyer, seller, lines, ...rest } = invoice;
     return {
       ...rest,
       total: { ...invoice.total },
       allocated: { ...invoice.allocated },
       remaining: { ...invoice.remaining },
-      buyer: {
-        kind: "BUSINESS",
-        name: tenant?.name ?? "Mock buyer",
-        email: "billing@example.com",
-        address: { country: "ES", postalCode: "28001", city: "Madrid", line1: "1 Mock Street" },
-      },
-      seller: {
-        legalName: "Taska Mock S.L.",
-        registrationId: "MOCK-0000",
-        address: { country: "ES", postalCode: "28001", city: "Madrid", line1: "2 Mock Street" },
-      },
-      lines: [{ description: `${plan?.name ?? "Plan"} plan`, quantity: 1, net: { ...invoice.total }, taxes: [], total: { ...invoice.total } }],
+      buyer: { ...buyer, address: { ...buyer.address } },
+      seller: { ...seller, address: { ...seller.address } },
+      lines: lines.map((line) => ({ ...line, net: { ...line.net }, total: { ...line.total }, taxes: line.taxes.map((tax) => ({ ...tax, amount: { ...tax.amount } })) })),
+      ...(fxQuote === undefined ? {} : { fxQuote: { ...fxQuote } }),
+      ...(wireInstructions === undefined || invoice.paymentMethod !== "WIRE" ? {} : { wireInstructions: { ...wireInstructions } }),
       version: String(version),
       ...(replacesInvoiceId === undefined ? {} : { replacesInvoiceId }),
-      matchedUnallocated: zeroOf(invoice.total),
+      matchedUnallocated: { ...invoice.matchedUnallocated },
     };
   }
 
@@ -3336,6 +3993,7 @@ export class MockTenantServer {
       entitlementVersion: _entitlement,
       quotaBreach: _breach,
       appliedPlan: _applied,
+      invoiceMethod: _method,
       ...rest
     } = tenant;
     return { ...rest, restrictions: [...tenant.restrictions] };
@@ -3587,13 +4245,13 @@ export class MockTenantServer {
       const raw = this.storage.getItem(MOCK_SERVER_KEY);
       if (raw !== null) {
         const parsed = JSON.parse(raw) as ServerState;
-        if (parsed && parsed.v === 7 && Array.isArray(parsed.tenants)) return parsed;
+        if (parsed && parsed.v === 8 && Array.isArray(parsed.tenants)) return parsed;
       }
     } catch {
       if (this.memory) return this.memory;
     }
     return {
-      v: 7,
+      v: 8,
       ...seedTenants(this.now()),
       checkouts: [],
       checkoutReceipts: {},
@@ -3849,8 +4507,11 @@ export class MockTenantServer {
         if (invoice && invoice.state === "OPEN") this.settle(state, invoice, Date.parse(checkout.settleAt), open);
       }
     }
+    // TAS-514: a PARTIALLY_PAID one expires too, its matched money kept until its return is confirmed —
+    // unless `holdExpiry` keeps it past its due date, as develop does.
+    const held = new Set(Array.isArray(hooks.holdExpiry) ? hooks.holdExpiry : []);
     for (const invoice of state.invoices) {
-      if (invoice.state !== "OPEN" || Date.parse(invoice.dueAt) > now) continue;
+      if (!PAYABLE_BY_WIRE.has(invoice.state) || Date.parse(invoice.dueAt) > now || held.has(invoice.id)) continue;
       invoice.state = "EXPIRED";
       invoice.version += 1;
       for (const checkout of state.checkouts) {
@@ -3867,7 +4528,204 @@ export class MockTenantServer {
       }
       changed = true;
     }
+    if (this.evaluateWire(state, now, open)) changed = true;
     return changed;
+  }
+
+  /**
+   * TAS-514, the admin's side of a bank transfer (the hooks' block comment):
+   * statement lines recorded, then confirmed against an invoice, their
+   * unallocated money returned, the returns moved on and their evidence
+   * completed — each once per receipt. Answers whether anything changed.
+   */
+  private evaluateWire(state: ServerState, now: number, open: (tenant: StoredTenant, paidAt?: number) => void): boolean {
+    const hooks = this.hooks();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    let changed = false;
+    for (const entry of Array.isArray(hooks.wireReceipts) ? hooks.wireReceipts : []) {
+      if (typeof entry !== "object" || entry === null || typeof entry.id !== "string" || typeof entry.tenantId !== "string") continue;
+      if (typeof entry.amountMinor !== "string" || !/^[1-9][0-9]{0,17}$/.test(entry.amountMinor)) continue;
+      if (state.wireReceipts.some((item) => item.id === entry.id)) continue;
+      const occurred = typeof entry.occurredAt === "string" && !Number.isNaN(Date.parse(entry.occurredAt)) ? Date.parse(entry.occurredAt) : now;
+      state.wireReceipts.push({
+        id: entry.id,
+        tenantId: entry.tenantId,
+        paymentId: uuid(),
+        amount: money(entry.amountMinor),
+        occurredAt: iso(occurred),
+        precision: entry.precision === "DAY" ? "DAY" : "INSTANT",
+        observedAt: iso(now),
+        unallocated: money(entry.amountMinor),
+      });
+      changed = true;
+    }
+    const confirm = typeof hooks.confirmWire === "object" && hooks.confirmWire !== null ? hooks.confirmWire : {};
+    for (const [receiptId, invoiceId] of Object.entries(confirm)) {
+      const receipt = state.wireReceipts.find((item) => item.id === receiptId);
+      if (!receipt || receipt.confirmedAt !== undefined || typeof invoiceId !== "string") continue;
+      if (this.confirmReceipt(state, receipt, invoiceId, now, open)) changed = true;
+    }
+    for (const receiptId of Array.isArray(hooks.returnUnallocated) ? hooks.returnUnallocated : []) {
+      const receipt = state.wireReceipts.find((item) => item.id === receiptId);
+      if (!receipt || receipt.refundId !== undefined || receipt.outcome === undefined || !isPositive(receipt.unallocated)) continue;
+      const invoice = state.invoices.find((item) => item.id === receipt.invoiceId);
+      const reason = (() => {
+        switch (receipt.outcome) {
+          case "ALLOCATED":
+            return "EXCESS";
+          case "LATE_FIRST_PAYMENT":
+          case "CLOSED_CREATION":
+          case "DUPLICATE_PAYMENT":
+            return receipt.outcome;
+          case "LATE_PARTIAL":
+            return "INCOMPLETE_BANK_PAYMENT";
+          default:
+            // Matched to an invoice still waiting for the rest: nothing goes back before it has expired (D246).
+            return invoice?.state === "EXPIRED" ? "INCOMPLETE_BANK_PAYMENT" : null;
+        }
+      })();
+      if (reason === null) continue;
+      const refund: StoredRefund = {
+        id: uuid(),
+        tenantId: receipt.tenantId,
+        receiptId: receipt.id,
+        paymentId: receipt.paymentId,
+        kind: "UNALLOCATED_RETURN",
+        state: "REQUESTED",
+        amount: { ...receipt.unallocated },
+        requestedAt: iso(now),
+        version: 1,
+        reasonCode: reason,
+        sourceMethod: "WIRE",
+        feeBearer: "TASKA",
+      };
+      state.refunds.push(refund);
+      receipt.refundId = refund.id;
+      changed = true;
+    }
+    const progress = typeof hooks.refundProgress === "object" && hooks.refundProgress !== null ? hooks.refundProgress : {};
+    for (const [receiptId, wanted] of Object.entries(progress)) {
+      const receipt = state.wireReceipts.find((item) => item.id === receiptId);
+      const refund = state.refunds.find((item) => item.id === receipt?.refundId);
+      if (!receipt || !refund || refund.state === wanted || !REFUND_PROGRESS.has(wanted) || refund.state === "CONFIRMED" || refund.state === "REJECTED") continue;
+      refund.state = wanted;
+      refund.version += 1;
+      if ((wanted === "APPROVED" || wanted === "REJECTED") && refund.decidedAt === undefined) refund.decidedAt = iso(now);
+      if (wanted === "SUBMITTING" && refund.submittedAt === undefined && refund.evidenceCompletedAt !== undefined) refund.submittedAt = iso(now);
+      if (wanted === "CONFIRMED") {
+        // The money is back where it came from: the receipt holds none, and an invoice it was matched to lets it go.
+        refund.confirmedAt = iso(now);
+        receipt.unallocated = zeroOf(receipt.amount);
+        const invoice = state.invoices.find((item) => item.id === receipt.invoiceId);
+        if (invoice && receipt.outcome === "MATCHED" && isPositive(invoice.matchedUnallocated)) {
+          invoice.matchedUnallocated = subtractMoney(invoice.matchedUnallocated, refund.amount);
+          invoice.remaining = invoice.state === "PAID" ? zeroOf(invoice.total) : subtractMoney(invoice.total, invoice.matchedUnallocated);
+          invoice.version += 1;
+        }
+      }
+      changed = true;
+    }
+    for (const receiptId of Array.isArray(hooks.evidenceComplete) ? hooks.evidenceComplete : []) {
+      const receipt = state.wireReceipts.find((item) => item.id === receiptId);
+      const refund = state.refunds.find((item) => item.id === receipt?.refundId);
+      if (!refund || refund.evidenceCompletedAt !== undefined || refund.sourceMethod !== "WIRE") continue;
+      Object.assign(refund, wireSla(now));
+      refund.version += 1;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * One receipt confirmed against one invoice (`confirmWire`) — the outcomes in
+   * the hooks' block comment. `false`, and the receipt left unconfirmed, where
+   * nothing would be visible: an invoice not here or not a wire one, a void
+   * one, DAY precision on its due date, a late plan change (A88), a late
+   * renewal of a company blocked or not active.
+   */
+  private confirmReceipt(
+    state: ServerState,
+    receipt: StoredWireReceipt,
+    invoiceId: string,
+    now: number,
+    open: (tenant: StoredTenant, paidAt?: number) => void,
+  ): boolean {
+    const invoice = state.invoices.find((item) => item.id === invoiceId && item.tenantId === receipt.tenantId);
+    const tenant = state.tenants.find((item) => item.id === receipt.tenantId);
+    if (!invoice || !tenant || invoice.paymentMethod !== "WIRE" || invoice.total.currency !== receipt.amount.currency) return false;
+    if (tenant.lifecycle === "DELETED" || tenant.lifecycle === "DELETING" || invoice.state === "VOID" || invoice.state === "DRAFT") return false;
+    const due = Date.parse(invoice.dueAt);
+    const occurred = Date.parse(receipt.occurredAt);
+    const dayStart = Date.UTC(new Date(occurred).getUTCFullYear(), new Date(occurred).getUTCMonth(), new Date(occurred).getUTCDate());
+    if (receipt.precision === "DAY" && due >= dayStart && due < dayStart + DAY) return false;
+    const arrivedBy = receipt.precision === "DAY" ? dayStart + DAY <= due : occurred <= due;
+    const done = (outcome: NonNullable<StoredWireReceipt["outcome"]>, unallocated: StoredMoney) => {
+      receipt.invoiceId = invoice.id;
+      receipt.confirmedAt = new Date(now).toISOString();
+      receipt.outcome = outcome;
+      receipt.unallocated = { ...unallocated };
+      return true;
+    };
+    if (invoice.state === "PAID") return done("DUPLICATE_PAYMENT", receipt.amount);
+    const matched = addMoney(invoice.matchedUnallocated, receipt.amount);
+    const enough = BigInt(matched.amountMinor) >= BigInt(invoice.total.amountMinor);
+    /** One allocation of the whole total: every receipt matched to it allocated, the excess left on this one. */
+    const allocate = () => {
+      for (const other of state.wireReceipts) {
+        if (other.invoiceId === invoice.id && other.outcome === "MATCHED") {
+          other.outcome = "ALLOCATED";
+          other.unallocated = zeroOf(other.amount);
+        }
+      }
+      return subtractMoney(matched, invoice.total);
+    };
+    if (invoice.purpose === "INITIAL") {
+      const deadline = tenant.creationDeadline === undefined ? Number.POSITIVE_INFINITY : Date.parse(tenant.creationDeadline);
+      if (tenant.lifecycle === "OWNER_CANCELLED") return done("CLOSED_CREATION", receipt.amount);
+      const closed = tenant.lifecycle === "AUTO_CLOSED" || (tenant.lifecycle === "AWAITING_PAYMENT" && now >= deadline);
+      if (closed) {
+        // D216: paid in full by the earlier of its due date and the deadline — the company opens after all.
+        if (!enough || occurred > Math.min(due, deadline)) return done("CLOSED_CREATION", receipt.amount);
+        const excess = allocate();
+        markPaid(invoice);
+        open(tenant, now);
+        return done("ALLOCATED", excess);
+      }
+      if (tenant.lifecycle === "AWAITING_PAYMENT" && !arrivedBy) {
+        // Late while the creation is still open (D238): nothing activates, the invoice ends, a new one is
+        // issued — due a week on, never after the deadline, which does not move — and the money goes back.
+        if (PAYABLE_BY_WIRE.has(invoice.state)) {
+          invoice.state = "EXPIRED";
+          invoice.version += 1;
+        }
+        const another = state.invoices.some((item) => item.tenantId === tenant.id && item.purpose === "INITIAL" && PAYABLE_BY_WIRE.has(item.state));
+        if (!another) {
+          this.issueInvoice(state, tenant, "INITIAL", invoice.planVersionId, now, Math.min(now + WIRE_DUE_MS, deadline), { replacesInvoiceId: invoice.id, method: "WIRE" });
+        }
+        return done("LATE_FIRST_PAYMENT", receipt.amount);
+      }
+      // A first invoice of a company that has opened since: its money is a second payment.
+      if (tenant.lifecycle !== "AWAITING_PAYMENT") return done("DUPLICATE_PAYMENT", receipt.amount);
+    }
+    if (!arrivedBy) {
+      if (invoice.purpose !== "RENEWAL" || tenant.lifecycle !== "ACTIVE" || tenant.restrictions.includes("PLATFORM_BLOCK")) return false;
+      // D247: a late renewal of a live company is paid by this money alone, with a new month from now.
+      if (BigInt(receipt.amount.amountMinor) < BigInt(invoice.total.amountMinor)) return done("LATE_PARTIAL", receipt.amount);
+      const excess = subtractMoney(receipt.amount, invoice.total);
+      this.settle(state, invoice, now, open);
+      return done("ALLOCATED", excess);
+    }
+    if (!enough) {
+      // On time and short of the rest (D246): matched, not allocated; nothing is covered.
+      invoice.matchedUnallocated = matched;
+      invoice.remaining = subtractMoney(invoice.total, matched);
+      if (PAYABLE_BY_WIRE.has(invoice.state)) invoice.state = "PARTIALLY_PAID";
+      invoice.version += 1;
+      return done("MATCHED", receipt.amount);
+    }
+    const excess = allocate();
+    this.settle(state, invoice, now, open);
+    return done("ALLOCATED", excess);
   }
 
   /** A settled invoice's effects (see `evaluatePayments`). */

@@ -111,6 +111,11 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   getInvoice: "session",
   createCheckout: "session",
   getCheckout: "session",
+  // TAS-514: the document and the refunds (the owner's) and the durations
+  // (every member's), with the tab's company session, as for the REST leg.
+  getInvoiceDocument: "session",
+  listRefunds: "session",
+  getTenantCapabilities: "session",
   // TAS-515: the owner's plan change, renewal and automatic payments, with the
   // tab's company session, picked by the session layer as for the REST leg.
   changeSubscriptionPlan: "session",
@@ -262,6 +267,9 @@ type SessionMethods = Pick<
   | "getInvoice"
   | "createCheckout"
   | "getCheckout"
+  | "getInvoiceDocument"
+  | "listRefunds"
+  | "getTenantCapabilities"
   | "changeSubscriptionPlan"
   | "cancelSubscriptionRenewal"
   | "resumeSubscriptionRenewal"
@@ -354,6 +362,9 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
     getInvoice: (tenantId, invoiceId) => web.getInvoice(tenantId, invoiceId),
     createCheckout: (tenantId, invoiceId, returnTarget, key) => web.createCheckout(tenantId, invoiceId, returnTarget, key),
     getCheckout: (tenantId, checkoutId) => web.getCheckout(tenantId, checkoutId),
+    getInvoiceDocument: (tenantId, invoiceId) => web.getInvoiceDocument(tenantId, invoiceId),
+    listRefunds: (tenantId, params) => web.listRefunds(tenantId, params),
+    getTenantCapabilities: (tenantId) => web.getTenantCapabilities(tenantId),
     changeSubscriptionPlan: (tenantId, input, version, key) => web.changeSubscriptionPlan(tenantId, input, version, key),
     cancelSubscriptionRenewal: (tenantId, version, key) => web.cancelSubscriptionRenewal(tenantId, version, key),
     resumeSubscriptionRenewal: (tenantId, version, key) => web.resumeSubscriptionRenewal(tenantId, version, key),
