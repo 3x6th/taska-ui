@@ -109,3 +109,57 @@ describe("Avatar", () => {
     expect(circle.textContent).toBe("");
   });
 });
+
+/**
+ * A deleted account (TAS-529, art-director §2 and B1): §4.4's neutral circle,
+ * whatever else the caller hands over — the id's palette colour, a stated
+ * colour, a picture and a label are all ignored, because each of them would
+ * say who this used to be.
+ */
+describe("Avatar of a deleted account", () => {
+  const deleted = { id: anna.id, displayName: "Deleted user", avatarUrl: "https://store.example/face.png?sig=1", color: "#ec4899", deleted: true as const };
+
+  it("draws the neutral circle: no inline fill, no picture, no initials, the glyph alone", () => {
+    render(<Avatar size="sm" user={deleted} />);
+
+    const circle = screen.getByLabelText("Deleted user");
+    expect(circle).toHaveClass("avatar", "avatar-sm", "avatar-deleted");
+    expect(circle.getAttribute("style")).toBeNull();
+    expect(circle.querySelector("img")).toBeNull();
+    expect(circle.textContent).toBe("");
+    const glyph = circle.querySelector("svg");
+    expect(glyph).toHaveAttribute("aria-hidden", "true");
+    expect(glyph).toHaveAttribute("width", "14");
+  });
+
+  it("is called «Deleted user» on hover and aloud, whatever label it is given", () => {
+    render(<Avatar label="Unknown" size="md" user={deleted} />);
+
+    const circle = screen.getByTitle("Deleted user");
+    expect(circle).toHaveAttribute("aria-label", "Deleted user");
+    expect(circle.querySelector("svg")).toHaveAttribute("width", "16");
+    expect(screen.queryByLabelText("Unknown")).toBeNull();
+  });
+
+  it("can stand beside its name out of the accessibility tree, keeping its title", () => {
+    render(<Avatar decorative size="sm" user={deleted} />);
+
+    const circle = screen.getByTitle("Deleted user");
+    expect(circle).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("is still the skeleton while loading", () => {
+    render(<Avatar loading user={deleted} />);
+
+    expect(screen.getByLabelText("Loading user")).not.toHaveClass("avatar-deleted");
+  });
+
+  it("leaves a person merely called «Deleted user» their own circle", () => {
+    render(<Avatar user={{ id: anna.id, displayName: "Deleted user" }} />);
+
+    const circle = screen.getByLabelText("Deleted user");
+    expect(circle).not.toHaveClass("avatar-deleted");
+    expect(circle.textContent).toBe("DU");
+    expect(circle).toHaveStyle({ backgroundColor: avatarColor(anna.id) });
+  });
+});
