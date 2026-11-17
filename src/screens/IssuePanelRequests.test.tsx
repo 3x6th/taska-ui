@@ -227,6 +227,8 @@ describe("the issue panel's request budget against the REST implementation", () 
 
   beforeEach(() => {
     window.localStorage.setItem("taska.accessToken", "valid-access");
+    // The board's Done window as a first visit has it, «2 weeks» (TAS-532).
+    window.localStorage.removeItem("taska.boardDoneWindow");
     requested = [];
     sent = [];
     issue = { ...seededIssue };
@@ -327,37 +329,52 @@ describe("the issue panel's request budget against the REST implementation", () 
     expect(await within(panel).findByRole("button", { name: "Start progress, move to In Progress" })).toBeVisible();
   });
 
-  it("opens a panel with three requests in one round: the issue, the comments and the work log", async () => {
-    const queryClient = renderBoard();
+  // Under the board's Done window «All» the link picker reads the very board
+  // entry the board holds for its `Y`; under «2 weeks», the default, it reads
+  // the board without the window once its form mounts (DESIGN.md §5.4,
+  // TAS-532) — after the round, and the only board read the panel makes.
+  it.each([
+    ["«All»", "all", []],
+    ["«2 weeks»", "2w", [`/api/v1/projects/${PROJECT}/board`]],
+  ])(
+    "opens a panel with three requests in one round under %s: the issue, the comments and the work log",
+    async (_window, doneWindow, linkPicker) => {
+      window.localStorage.setItem("taska.boardDoneWindow", doneWindow);
+      const queryClient = renderBoard();
 
-    // The board, settled: its card is drawn and nothing is in flight.
-    const card = await screen.findByRole("button", { name: /TAS-102/ });
-    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
-    const beforeOpen = requested.length;
+      // The board, settled: its card is drawn and nothing is in flight.
+      const card = await screen.findByRole("button", { name: /TAS-102/ });
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+      const beforeOpen = requested.length;
 
-    fireEvent.click(card);
+      fireEvent.click(card);
 
-    // One round: all three have left before any of them has answered — the
-    // click's own render starts them, and nothing waits on the issue read.
-    const expected = [
-      `/api/v1/issues/${ISSUE}`,
-      `/api/v1/projects/${PROJECT}/issues/${ISSUE}/comments`,
-      `/api/v1/projects/${PROJECT}/issues/${ISSUE}/worklogs`,
-    ].sort();
-    expect(requested.slice(beforeOpen).map((url) => url.split("?")[0]).sort()).toEqual(expected);
+      // One round: all three have left before any of them has answered — the
+      // click's own render starts them, and nothing waits on the issue read.
+      const expected = [
+        `/api/v1/issues/${ISSUE}`,
+        `/api/v1/projects/${PROJECT}/issues/${ISSUE}/comments`,
+        `/api/v1/projects/${PROJECT}/issues/${ISSUE}/worklogs`,
+      ].sort();
+      expect(requested.slice(beforeOpen).map((url) => url.split("?")[0]).sort()).toEqual(expected);
 
-    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
-    expect(await within(panel).findByText("No comments yet")).toBeVisible();
-    expect(within(panel).getByText("No one is watching this issue yet")).toBeVisible();
-    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+      const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
+      expect(await within(panel).findByText("No comments yet")).toBeVisible();
+      expect(within(panel).getByText("No one is watching this issue yet")).toBeVisible();
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0));
 
-    expect(within(panel).getByText("No work logged yet")).toBeVisible();
-    const opened = requested.slice(beforeOpen).map((url) => url.split("?")[0]);
-    expect(opened.sort()).toEqual(expected);
-    // The panel's chips and pickers read the dictionaries the board already
-    // holds: opening an issue costs no `GET /meta` (TAS-173).
-    expect(opened).not.toContain("/api/v1/meta");
-  });
+      expect(within(panel).getByText("No work logged yet")).toBeVisible();
+      const opened = requested.slice(beforeOpen).map((url) => url.split("?")[0]);
+      expect(opened.sort()).toEqual([...expected, ...linkPicker].sort());
+      // The window's read has no cut: the picker's record is the whole board.
+      for (const url of requested.slice(beforeOpen).filter((item) => item.includes("/board"))) {
+        expect(url).not.toContain("doneSince");
+      }
+      // The panel's chips and pickers read the dictionaries the board already
+      // holds: opening an issue costs no `GET /meta` (TAS-173).
+      expect(opened).not.toContain("/api/v1/meta");
+    },
+  );
 
   /**
    * A worklog write moves the issue's version on the server (backend PR #178),
