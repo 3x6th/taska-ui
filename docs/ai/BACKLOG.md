@@ -1198,7 +1198,9 @@ time.
 - **A 12-member project strands the assignee row's trailing divider** at a row
   edge once `.assignee-row` wraps within itself: a hairline at x=417 of a 440px
   bar, or leading a row at x=12 at 390. The seed has four members, so this needs
-  a wider mock to see.
+  a wider mock to see. Same case since TAS-532: at 820 (iPad Air portrait) the
+  divider before the Done window ends row 1 at x=693 and the group opens row 2
+  (art-director, 2026-11-17) — fix bar-wide, not per divider.
 - **`.board-topbar` at ≤820 uses `padding: 10px 12px`**, and `10` is not on
   §2.4's scale. One value, pre-existing, unrelated to this change beyond having
   been measured next to it.
