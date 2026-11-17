@@ -3966,7 +3966,9 @@ describe("the Done window (TAS-532)", () => {
     const firstCut = boardParams()[0].doneSince;
 
     holdColumnPages(true);
-    fireEvent.click(within(done()).getByRole("button", { name: "Show more Done issues" }));
+    const pressed = within(done()).getByRole("button", { name: "Show more Done issues" });
+    pressed.focus();
+    fireEvent.click(pressed);
     await waitFor(() => expect(columnPageCalls()).toHaveLength(1));
 
     // The window moves on: the re-read cuts at now - 2.5 h and holds two cards.
@@ -3981,6 +3983,43 @@ describe("the Done window (TAS-532)", () => {
     await waitFor(() => expect(within(done()).queryByRole("button", { name: "Show more Done issues" })).toBeNull());
     expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]);
     expect(columnPageCalls()).toHaveLength(1);
+    // The button went with the re-read, under the focus that pressed it: the
+    // dropped page hands focus to the column's last card, not to <body>.
+    expect(document.activeElement).toBe(within(done()).getByRole("button", { name: /TAS-212/ }));
+  });
+
+  it("clears the column's in-flight state when it drops a page cut under an earlier doneSince", async () => {
+    seedBoardCap(2);
+    seedExtraIssues(
+      [1, 2, 3, 4, 5].map((n) => ({
+        id: `issue-d${n}`,
+        issueKey: `TAS-21${n}`,
+        summary: `Closed ${n} hours ago`,
+        status: "DONE",
+        createdAt: `2026-08-0${n}T09:00:00Z`,
+        updatedAt: iso(now - n * 60 * 60 * 1000),
+      })),
+    );
+    const queryClient = renderBoard();
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]));
+    const firstCut = boardParams()[0].doneSince;
+
+    holdColumnPages(true);
+    fireEvent.click(within(done()).getByRole("button", { name: "Show more Done issues" }));
+    await waitFor(() => expect(columnPageCalls()).toHaveLength(1));
+
+    // The re-read cuts at now - 3.5 h: three cards in the window, two drawn.
+    vi.spyOn(Date, "now").mockReturnValue(now + 14 * DAY - 210 * 60 * 1000);
+    await queryClient.invalidateQueries({ queryKey: ["board"] });
+    await waitFor(() => expect(boardParams().at(-1)!.doneSince).not.toBe(firstCut));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+
+    releaseColumnPages();
+
+    await waitFor(() => expect(columnPageCalls()).toHaveLength(1));
+    const more = await within(done()).findByRole("button", { name: "Show more Done issues" });
+    await waitFor(() => expect(more).not.toHaveAttribute("aria-disabled"));
+    expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]);
   });
 
   /** Drags `card` onto the Done column; the rectangles are ours. */

@@ -1772,8 +1772,11 @@ export interface TaskaApi {
    * What the Java does that the yml does not say, and every implementation
    * reproduces:
    *
-   * - **All or nothing.** Any part failing fails the whole response; there is no
-   *   degraded context.
+   * - **All or nothing, except `workflows`.** Any other part failing fails the
+   *   whole response; but since backend TAS-383 (develop `e35e143e`,
+   *   `ProjectServiceImpl.loadProjectWorkflows`) a type whose workflow read
+   *   failed — any error, not only NOT_FOUND — is left out and the context
+   *   still answers 200 (docs/ai/API-DIVERGENCE.md; fix is backend TAS-533).
    * - **A non-member is refused with 403, a `GLOBAL_ADMIN` included; a
    *   missing project is 404.**
    *   At head `a1bfe19` the code intends 200 with empty members and labels (its
@@ -1798,8 +1801,8 @@ export interface TaskaApi {
    * - **The registry, in its order** (backend #212, #226): `issueTypes` is
    *   the project's issue types by `sortOrder`, then `code`, read through
    *   `toProjectIssueTypes` (src/api/issueTypes.ts) and never re-sorted; the
-   *   first is the default. `workflows` holds one entry per registry type, in
-   *   no fixed order; an entry with no type at all (`null`) is dropped.
+   *   first is the default. `workflows` holds one entry per registry type whose
+   *   workflow read succeeded (see the first point), in no fixed order; an entry with no type at all (`null`) is dropped.
    * - Statuses and transitions are ordered by `sortOrder` and carry no
    *   timestamps; labels carry only `id`, `name` and `color`, unordered;
    *   members come by `userId`, and a name auth-service could not supply
@@ -2041,7 +2044,10 @@ export interface TaskaApi {
    * Enrichment no longer fails silently (backend TAS-392, `BoardServiceImpl`):
    * a failed label lookup answers 503 "Board labels unavailable" and a failed
    * profile lookup 503 "Board profiles unavailable", on the board read and on
-   * the column page alike — never a 200 with empty `labels` or null names.
+   * the column page alike. A failed lookup is never a 200; an assignee the
+   * profile answer lacks still arrives with `displayName: null`, and a label id
+   * the project does not have is left out (`BoardServiceImpl.enrichIssue`;
+   * `BoardUserDto.displayName` is nullable in the yml).
    *
    * Access: a missing project is 404 "Project not found", then a reader who is
    * not a member is 403 "Access denied"; an archived project is read like any

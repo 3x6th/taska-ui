@@ -479,8 +479,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // issue type of the project's registry, and the registry itself (TAS-417).
   // It replaced seven requests — the project,
   // the project again for the role, the members, three workflows and the
-  // labels — and it is all or nothing on the server, so every part below is
-  // answered, or none is.
+  // labels — and on the server every part below is answered or the whole read
+  // fails, except `workflows`: since backend TAS-383 a type whose workflow
+  // read failed is left out of a 200 (docs/ai/API-DIVERGENCE.md, backend
+  // TAS-533), so a type missing from them is not proof of «no workflow».
   const contextQuery = useQuery({
     queryKey: projectContextKey(projectId),
     enabled: Boolean(projectId),
@@ -804,6 +806,14 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           const { [key]: _done, ...rest } = current;
           return rest;
         });
+        // The re-read may have taken the button off (the newer entry has no
+        // more) under the focus that pressed it: the apply path's fallback,
+        // the column's last card.
+        const kept = latest.columns.find((item) => item.statusKey === status.statusKey)?.issues.at(-1)?.id;
+        const root = boardRef.current;
+        if (kept && root && focusLost()) {
+          findDeleteFocusTarget(root, { card: kept })?.focus({ preventScroll: true });
+        }
         return;
       }
       const before = new Set(latest ? boardCards(latest).map((issue) => issue.id) : []);
