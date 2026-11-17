@@ -4039,6 +4039,33 @@ describe("the Done window (TAS-532)", () => {
     expect(doneKeys()).toEqual(["TAS-202", "TAS-201"]);
   });
 
+  // A write invalidates the picker's record; under «2 weeks» no board observer
+  // re-reads it, so the next panel to mount must (a stale copy was kept for
+  // good by `refetchOnMount: false`).
+  it("offers an issue created after the first panel closed, from a fresh read without the cut", async () => {
+    seedExtraIssues([{ id: "issue-second", issueKey: "TAS-103", summary: "Second", createdAt: "2026-08-02T09:00:00Z" }]);
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    const first = within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+    const firstPicker = await first.findByRole("combobox", { name: "Issue" });
+    await waitFor(() => expect(within(firstPicker).getByRole("option", { name: /TAS-103/ })).toBeInTheDocument());
+    const allReads = () => boardParams().filter((params) => params.doneSince === undefined).length;
+    const readsBefore = allReads();
+    fireEvent.click(first.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "TAS-102 issue" })).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    const form = within(await screen.findByRole("dialog", { name: "New issue" }));
+    fireEvent.change(form.getByLabelText("Summary"), { target: { value: "Made after the panel" } });
+    fireEvent.click(form.getByRole("button", { name: "Create issue" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Made after the panel/ })).toBeVisible());
+
+    fireEvent.click(screen.getByRole("button", { name: /TAS-103/ }));
+    const second = within(await screen.findByRole("dialog", { name: "TAS-103 issue" }));
+    const picker = await second.findByRole("combobox", { name: "Issue" });
+    await waitFor(() => expect(within(picker).getByRole("option", { name: /Made after the panel/ })).toBeInTheDocument());
+    expect(allReads()).toBeGreaterThan(readsBefore);
+  });
+
   it("reads no board without the cut for a reader the link form is not shown to", async () => {
     setMembership("VIEWER");
     seedDone(now);

@@ -4999,13 +4999,17 @@ function IssueLinksSection({
   // registry no longer holds, or of another project; a link row resolves to
   // the server's own `target` or to its id.
   //
-  // `refetchOnMount: false`: opening a panel past `staleTime` must not read the
-  // whole board again for a picker (release-reviewer, TAS-202). This observer
-  // takes whatever board the screen holds; the screen's own read, the reader's
-  // writes and the focus policy are what keep it current.
+  // `refetchOnMount` reads only an entry a write has invalidated: opening a
+  // panel past `staleTime` must not read the whole board again for a picker
+  // (release-reviewer, TAS-202), but under «2 weeks» nothing on the board
+  // observes this record (§5.4, TAS-532), so a write only invalidates it and
+  // the next panel would show the stale copy for good. Under «All» the board's
+  // own observer re-reads it and the entry is no longer invalidated by then.
+  // Otherwise this takes whatever board the screen holds; the screen's own
+  // read, the reader's writes and the focus policy keep it current.
   const projectIssuesQuery = useQuery({
     ...boardQueryOptions(projectId, LINK_PICKER_VIEW),
-    refetchOnMount: false,
+    refetchOnMount: (query) => query.state.isInvalidated,
     enabled: canEdit,
   });
   const issues = useMemo(() => (projectIssuesQuery.data ? boardCards(projectIssuesQuery.data) : []), [projectIssuesQuery.data]);
