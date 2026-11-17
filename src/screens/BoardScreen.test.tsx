@@ -3946,6 +3946,43 @@ describe("the Done window (TAS-532)", () => {
     expect(within(done()).queryByText(/Show more/)).toBeNull();
   });
 
+  // §4.9 «Перечитывание» (TAS-532): a page cut under the drawn read's doneSince
+  // that lands after a re-read under a later one is the older window's answer;
+  // its totalCount and hasMore must not sit on the newer entry.
+  it("drops a Show more page that was cut under an earlier doneSince than the entry now holds", async () => {
+    seedBoardCap(2);
+    seedExtraIssues(
+      [1, 2, 3, 4].map((n) => ({
+        id: `issue-d${n}`,
+        issueKey: `TAS-21${n}`,
+        summary: `Closed ${n} hours ago`,
+        status: "DONE",
+        createdAt: `2026-08-0${n}T09:00:00Z`,
+        updatedAt: iso(now - n * 60 * 60 * 1000),
+      })),
+    );
+    const queryClient = renderBoard();
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]));
+    const firstCut = boardParams()[0].doneSince;
+
+    holdColumnPages(true);
+    fireEvent.click(within(done()).getByRole("button", { name: "Show more Done issues" }));
+    await waitFor(() => expect(columnPageCalls()).toHaveLength(1));
+
+    // The window moves on: the re-read cuts at now - 2.5 h and holds two cards.
+    vi.spyOn(Date, "now").mockReturnValue(now + 14 * DAY - 150 * 60 * 1000);
+    await queryClient.invalidateQueries({ queryKey: ["board"] });
+    await waitFor(() => expect(boardParams().at(-1)!.doneSince).not.toBe(firstCut));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]);
+
+    releaseColumnPages();
+
+    await waitFor(() => expect(within(done()).queryByRole("button", { name: "Show more Done issues" })).toBeNull());
+    expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]);
+    expect(columnPageCalls()).toHaveLength(1);
+  });
+
   /** Drags `card` onto the Done column; the rectangles are ours. */
   async function dropOnDone(card: HTMLElement, midway?: () => Promise<void>) {
     const rect = (left: number, width: number) =>

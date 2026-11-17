@@ -1963,8 +1963,9 @@ export interface TaskaApi {
    * caller who is not a `GLOBAL_ADMIN` and belongs to no project is refused
    * 403 `PERMISSION_DENIED` "Project membership is required" with
    * `details.reason` `PROJECT_MEMBERSHIP_REQUIRED` — in the yml since backend
-   * TAS-444 (develop `d886b031`) — or 503 "Project membership service is
-   * unavailable" when the check cannot be made, which the yml does not list.
+   * TAS-444 (develop `d886b031`) — or 503 `UNAVAILABLE` "Project membership
+   * service is unavailable" when the check cannot be made, which the yml lists
+   * as well (develop `e35e143e`).
    * Nothing in the UI reaches it today: the one caller is the members dialog's
    * add form, which only a project admin sees, and a project admin is a member.
    *
@@ -2037,9 +2038,10 @@ export interface TaskaApi {
    * a card with it. `doneSince` cuts done statuses by `updatedAt` (see
    * `BoardParams`).
    *
-   * Enrichment fails silently on the server (backend A2): a label read that
-   * fails sends every card's `labels` as `[]`, and a profile read that fails
-   * sends every `assignee.displayName` as `null`, with a 200 either way.
+   * Enrichment no longer fails silently (backend TAS-392, `BoardServiceImpl`):
+   * a failed label lookup answers 503 "Board labels unavailable" and a failed
+   * profile lookup 503 "Board profiles unavailable", on the board read and on
+   * the column page alike — never a 200 with empty `labels` or null names.
    *
    * Access: a missing project is 404 "Project not found", then a reader who is
    * not a member is 403 "Access denied"; an archived project is read like any

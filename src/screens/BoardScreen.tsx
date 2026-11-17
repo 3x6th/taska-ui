@@ -793,7 +793,19 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         status.statusKey,
         boardColumnPageParams(filters, drawn.doneSince, cursor),
       );
-      const latest = queryClient.getQueryData<Board>(readKey);
+      const latest = queryClient.getQueryData<BoardRead>(readKey);
+      // A background re-read can land while the page is in flight, under a
+      // later `doneSince`; this page was cut under the drawn read's. Applied,
+      // its `totalCount`/`hasMore` would sit on the newer entry, so it is
+      // dropped — the re-read has already restored the expanded depth
+      // (`withColumnTails`; §4.9 «Перечитывание», TAS-532).
+      if (latest && latest.doneSince !== drawn.doneSince) {
+        setColumnMore((current) => {
+          const { [key]: _done, ...rest } = current;
+          return rest;
+        });
+        return;
+      }
       const before = new Set(latest ? boardCards(latest).map((issue) => issue.id) : []);
       queryClient.setQueryData<Board>(readKey, (current) => (current ? withColumnPage(current, page) : current));
       // The first new card, or — when the page brought none and the foot goes
@@ -1091,8 +1103,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     // the workflow read failed or has simply not answered yet.
     if (!workflow) {
       // Two different refusals. A context that answered without this issue's
-      // type is a project that no longer allows it (TAS-251) — an old issue of
-      // a type taken away — and "could not be loaded" would be false there.
+      // type has either a project with no workflow for it (TAS-251) or a
+      // workflow read that failed (backend TAS-383) — the response cannot tell
+      // them apart (API-DIVERGENCE «The project context drops a type whose
+      // workflow read failed»), so the wording here is the pre-TAS-383 one.
       setDragNotice(
         workflows
           ? `${issue.issueKey} was not moved: this project has no workflow for ${typeWord} issues.`
@@ -3454,8 +3468,10 @@ function IssuePanel({
           ) : workflowUnknown ? (
             <span className="transition-note">The workflow could not be loaded, so no move is offered.</span>
           ) : workflows && !workflow ? (
-            // The context answered without this issue's type: the project no
-            // longer allows it (TAS-251). Not a failure, and not "nowhere to go".
+            // The context answered without this issue's type: a project with
+            // no workflow for it (TAS-251) or a workflow read that failed
+            // (backend TAS-383) — the UI cannot tell which (API-DIVERGENCE
+            // «The project context drops a type whose workflow read failed»).
             <span className="transition-note">
               This project has no workflow for {typeWord} issues, so no move is offered.
             </span>
