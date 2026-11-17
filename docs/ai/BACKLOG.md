@@ -4665,6 +4665,21 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
 - **Viewer link rows with no `target`** show the raw id when no `all` record is
   cached; they could fall back to the board's windowed records. Needs the server
   to omit `target` first, so it is theoretical (release-reviewer).
+- **Every empty-column line is `--fg-3` on `--surface-2` (2.76:1 light)** — now
+  also the windowed «No issues updated in the last 2 weeks», the first empty
+  line that states a fact. Fix all at once with `.empty-column { color:
+  var(--fg-2) }` (6.38 / 7.03); «Not loaded» stays apart by its solid border and
+  words. Never colour the one line alone (art-director, §7 TAS-257 entry).
+- **`.segmented button.is-active` uses the elevation `--shadow`**, not §4.2's
+  tight segment shadow; in dark it reaches the filter bar's bottom border under
+  the Done window (38 → 33). Product-wide: Priority, Appearance, Done window;
+  §2.6/§4.2 first needs a dark value for the tight shadow (art-director).
+- **No test pins «no picker re-read just because `staleTime` passed»** —
+  `refetchOnMount: true` passes all 341 board/panel tests. A BoardScreen test
+  that moves `Date.now` 21 s and expects 0 full-board reads (release-reviewer).
+- **A failed background re-read also sets `isInvalidated`**, so while the board
+  read fails each panel mount re-reads the `all` record once (plus the retry).
+  Accepted; §5.4's wording could add «or its last read failed» (release-reviewer).
 
 ### Left by TAS-512 review (company plan and usage, build review of `994ec25`, 2026-11-05)
 
