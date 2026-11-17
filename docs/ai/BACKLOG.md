@@ -4684,7 +4684,7 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
   refusal are false when the context dropped the type because its workflow read
   failed (backend TAS-383; API-DIVERGENCE «The project context drops a type…»).
   A wording true in both cases, e.g. «This project sent no workflow for …», is
-  art-director's call; the real fix is backend A1 on TAS-383 (api-contract-guard).
+  art-director's call; the real fix is backend [TAS-533](https://jira.ozero.dev/browse/TAS-533) (A1, api-contract-guard).
 - **The link picker could read `GET /issues/search?projectId=…`** instead of a
   whole unwindowed board: the route exists, `query` is optional, results come
   `createdAt` desc up to 100 with the type's look and `statusKey`. Drops the

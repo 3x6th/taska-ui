@@ -533,10 +533,11 @@ Same rule as above: "Closed by" is settled, the rest is live.
   move is offered.», and a drop is refused with «…this project has no workflow for {type}
   issues.» — true for a missing workflow, false for a failed read, and without a request id.
   **Compensation: none.** A wording true in both cases is a BACKLOG item for art-director.
-- **Removal:** backend ask A1, a comment on [TAS-383](https://jira.ozero.dev/browse/TAS-383)
-  (2026-11-17): either a list of the type codes whose workflow could not be read on the context
-  answer, or an omission only on NOT_FOUND and a failed read otherwise —
-  `BoardServiceImpl.resolveWorkflows` already tells the two apart.
+- **Removal:** [TAS-533](https://jira.ozero.dev/browse/TAS-533) (filed 2026-11-17 from ask A1,
+  first a comment on TAS-383): either an omission only on NOT_FOUND and a failed context
+  otherwise (project-service only), or a `workflowsUnavailable` list of type codes on the context
+  answer (proto, project-service, gateway mapper and DTO) — `BoardServiceImpl.resolveWorkflows`
+  already tells the two apart.
 
 ### Closed by TAS-532 (2026-11-17): Issue-type and workflow refusals the client branches on that the yml does not name
 
