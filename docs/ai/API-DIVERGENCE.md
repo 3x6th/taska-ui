@@ -767,6 +767,9 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `api-contract-guard`; the Java wins), and what each implementation does:
   - All or nothing: any part failing fails the response. The board therefore
     has one banner for it, where it had three (project, role, workflow).
+    **Except `workflows` since backend TAS-383** (develop `e35e143e`): a type
+    whose workflow read fails is left out and the context still answers 200 —
+    see «The project context drops a type whose workflow read failed» (TAS-532).
   - **A non-member of any global role is `403`, and a missing project is
     `404`. This is the designed rule, not an accident of the code**: the owner
     decided it on 2026-10-16 ([TAS-255](https://jira.ozero.dev/browse/TAS-255)),
@@ -2079,7 +2082,7 @@ Everything below is the entry as it stood, in the past tense.
   carries the same reason since TAS-464. The 503 when project-service is unreachable is in the
   yml since develop `e35e143e` (TAS-532). Still not in the yml: the hidden unconfirmed sign-up
   accounts below («Возвращает ACTIVE, INVITED и
-  временно LOCKED» does not say it). The Observed line is history for the 403.
+  временно LOCKED» does not say it). The Observed line is history for the 403 and the 503.
 
 - **Endpoint:** `GET /api/v1/users`.
 - **Observed (Java, `9fcf0253`):** `UserDirectoryService.search` runs
