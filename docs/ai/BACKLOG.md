@@ -4656,8 +4656,8 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
 - **Backend: getBoard's 400 for an out-of-range `doneSince` names the wrong
   parameter** — "pageSizePerColumn must be between 1 and 200" (gateway
   `BoardServiceImpl`, read by frontend-builder). The mock repeats the gateway's
-  words (`BOARD_READ_REFUSAL_MESSAGE`); the UI never sends such a date. A
-  one-line ask on TAS-525 when the next board ask goes in, not a story.
+  words (`BOARD_READ_REFUSAL_MESSAGE`); the UI never sends such a date. Asked as
+  A2 in a comment on TAS-525 (2026-11-17), not a story.
 - **Under «2 weeks» a writer's open panel re-reads up to three boards per
   write** (the filtered and unfiltered windowed records and the picker's `all`),
   against two before (release-reviewer). Bounded by the panel being open. A
@@ -4680,6 +4680,20 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
 - **A failed background re-read also sets `isInvalidated`**, so while the board
   read fails each panel mount re-reads the `all` record once (plus the retry).
   Accepted; §5.4's wording could add «or its last read failed» (release-reviewer).
+- **«This project has no workflow for {type} issues»** (panel) and the drop
+  refusal are false when the context dropped the type because its workflow read
+  failed (backend TAS-383; API-DIVERGENCE «The project context drops a type…»).
+  A wording true in both cases, e.g. «This project sent no workflow for …», is
+  art-director's call; the real fix is backend A1 on TAS-383 (api-contract-guard).
+- **The link picker could read `GET /issues/search?projectId=…`** instead of a
+  whole unwindowed board: the route exists, `query` is optional, results come
+  `createdAt` desc up to 100 with the type's look and `statusKey`. Drops the
+  extra `all` read under «2 weeks». A DESIGN change for a later story; «no query
+  typed» is read in the docs only (api-contract-guard N1).
+- **`Y` costs a second board read whenever a filter is on** — up to 200 cards a
+  column for one number. Backend shape if wanted: `unfilteredTotalCount` on the
+  board answer under the same `includeDone`/`doneSince`, counted in the same
+  statement as issue-service's `totals` CTE (api-contract-guard A3; not filed).
 
 ### Left by TAS-512 review (company plan and usage, build review of `994ec25`, 2026-11-05)
 
