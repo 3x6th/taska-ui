@@ -4658,6 +4658,13 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
   `BoardServiceImpl`, read by frontend-builder). The mock repeats the gateway's
   words (`BOARD_READ_REFUSAL_MESSAGE`); the UI never sends such a date. A
   one-line ask on TAS-525 when the next board ask goes in, not a story.
+- **Under «2 weeks» a writer's open panel re-reads up to three boards per
+  write** (the filtered and unfiltered windowed records and the picker's `all`),
+  against two before (release-reviewer). Bounded by the panel being open. A
+  server-side link search for the picker would drop the `all` read altogether.
+- **Viewer link rows with no `target`** show the raw id when no `all` record is
+  cached; they could fall back to the board's windowed records. Needs the server
+  to omit `target` first, so it is theoretical (release-reviewer).
 
 ### Left by TAS-512 review (company plan and usage, build review of `994ec25`, 2026-11-05)
 

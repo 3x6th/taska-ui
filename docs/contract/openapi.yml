@@ -10,6 +10,7 @@
 #
 # Endpoints on open backend pull requests are NOT here, because they are not the
 # contract yet. They are extracted under docs/contract/pending/ - see the README
+# there for what that directory is and is not.
 openapi: 3.0.3
 info:
   title: Taska API Gateway Contract
