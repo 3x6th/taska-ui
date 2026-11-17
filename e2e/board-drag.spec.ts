@@ -409,8 +409,11 @@ test.describe("a board this account may only read", () => {
     await expect(card).not.toHaveAttribute("aria-disabled");
     // Not on the page at all for a VIEWER (§5.7, TAS-236; e2e/viewer-controls.spec.ts).
     await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
-    // And the empty column stops asking for a card it would not accept.
-    await expect(column(page, "Done").getByText("No issues")).toBeVisible();
+    // And the empty column stops asking for a card it would not accept — a
+    // plain one says there are none; a done one under the Done window «2
+    // weeks», the default, says what the window kept (§4.9, TAS-532).
+    await expect(column(page, "Triage").getByText("No issues", { exact: true })).toBeVisible();
+    await expect(column(page, "Done").getByText("No issues updated in the last 2 weeks", { exact: true })).toBeVisible();
     await expect(page.getByText("Drop issues here")).toHaveCount(0);
   });
 

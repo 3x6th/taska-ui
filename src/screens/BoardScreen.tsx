@@ -85,13 +85,18 @@ import { focusLost, tabbables } from "../lib/focusTrap";
 import { personFor, type NamedBy, type Person } from "../lib/people";
 import {
   BOARD_PAGE_SIZE_PER_COLUMN,
+  LINK_PICKER_VIEW,
   NO_BOARD_FILTERS,
   boardColumnPageParams,
   boardKey,
   boardQueryOptions,
   boardReadKey,
   type BoardFilters,
+  type BoardRead,
+  type BoardView,
 } from "../lib/boardQuery";
+import { rememberBoardDoneWindow, storedBoardDoneWindow, type BoardDoneWindow } from "../lib/readerPrefs";
+import { isDoneCategory } from "../api/boardOrder";
 import {
   boardCards,
   boardHasMore,
@@ -418,6 +423,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const [typeFilter, setTypeFilter] = useState<IssueTypeFilter>(null);
   const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>("ALL");
   const [labelFilter, setLabelFilter] = useState<LabelFilter>("ALL");
+  // The Done window (TAS-532, §4.13): a view, not a filter — read from the
+  // reader pref here, synchronously, so the very first board read is already
+  // under it; «Clear» leaves it alone.
+  const [doneWindow, setDoneWindow] = useState<BoardDoneWindow>(storedBoardDoneWindow);
+  const doneLabelId = useId();
   const [managingLabels, setManagingLabels] = useState(false);
   const [managingMembers, setManagingMembers] = useState(false);
   const [editingProject, setEditingProject] = useState(false);
@@ -494,6 +504,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     }),
     [typeFilter, assigneeFilter, labelFilter, settledQuery],
   );
+  /** The filters and the Done window — what one board read is keyed on (§6). */
+  const view = useMemo<BoardView>(() => ({ ...filters, doneWindow }), [filters, doneWindow]);
   // The board's issues in one read since TAS-202 (backend #205, TAS-213), in
   // parallel with the context: the columns, the cards in them and the cards
   // outside their own type's workflow, each cut at 200 with its true count
@@ -501,21 +513,31 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // already drawn until it answers (`keepPreviousData`, §5.4); one already read
   // and fresh, and "Clear", ask nothing. The context still brings the name, the
   // role, the people, the labels and the workflows the moves are resolved
-  // against; the columns are the board's.
+  // against; the columns are the board's. The Done window is in the key too
+  // (TAS-532): a new window is one read the same way, and a window read and
+  // fresh asks nothing.
   const boardQuery = useQuery({
-    ...boardQueryOptions(projectId, filters),
+    ...boardQueryOptions(projectId, view),
     enabled: Boolean(projectId),
     placeholderData: keepPreviousData,
   });
-  // The board without filters, held by its own observer whatever the filters
-  // are: its sum is `Y`, and the link picker offers its cards (§5.4). The same
-  // entry as `boardQuery` when nothing is filtered, so it costs no request
-  // then; while filtered, a write re-reads it beside the filtered one.
-  const wholeBoardQuery = useQuery({ ...boardQueryOptions(projectId, NO_BOARD_FILTERS), enabled: Boolean(projectId) });
-  // The board drawn is an earlier answer while the read under new filters is
-  // out — the typing pause included (§5.4): the cards do not lift, and a drop
-  // made in it is not sent.
+  // The board without filters under the same Done window, held by its own
+  // observer whatever the filters are: its sum is `Y` (§5.4). The same entry
+  // as `boardQuery` when nothing is filtered, so it costs no request then;
+  // while filtered, a write re-reads it beside the filtered one. Under «All» it
+  // is the link picker's record too (`LINK_PICKER_VIEW`).
+  const wholeBoardQuery = useQuery({
+    ...boardQueryOptions(projectId, { ...NO_BOARD_FILTERS, doneWindow }),
+    enabled: Boolean(projectId),
+  });
+  // The board drawn is an earlier answer while the read under new filters or
+  // a new Done window is out — the typing pause included (§5.4): the cards do
+  // not lift, and a drop made in it is not sent.
   const awaitingFilter = typedQuery !== settledQuery || boardQuery.isPlaceholderData;
+  // Which window the board drawn was read under: the read in flight changes
+  // the window when this is not the one chosen (§5.4's second refusal line).
+  const drawnWindow: BoardDoneWindow | undefined = boardQuery.data?.doneWindow;
+  const awaitingWindow = boardQuery.isPlaceholderData && drawnWindow !== undefined && drawnWindow !== doneWindow;
   const meQuery = useQuery({
     queryKey: ["me"],
     queryFn: () => taskaApi.getCurrentUser(),
@@ -671,16 +693,19 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       // Captured, not read again in `onError`: react-query hands a pending
       // mutation the options of the *latest* render, and the rollback must land
       // on the boards this snapshot came from — every board read of the
-      // project in the cache, one per combination of filters (TAS-392).
+      // project in the cache, one per combination of filters and Done window
+      // (TAS-392, TAS-532).
       const key = boardKey(projectId);
       await queryClient.cancelQueries({ queryKey: key });
       const previousBoards = queryClient.getQueriesData<Board>({ queryKey: key });
       // The card goes where the server will put it (§5.3, art-director's B1):
-      // into the target column at the place `compareBoardIssues` gives it, so
-      // the re-read after a successful move does not reorder it — and not at
-      // all into a column it would sort past the end of (§4.9), the counts
-      // moving by one either way. No version: nothing optimistic may invent
-      // one — the answer brings the real one.
+      // into a done column first — the move is its newest change, and it is
+      // drawn even where the column has more (TAS-525, TAS-532); into any
+      // other at the place `createdAt`, `id` gives it, so the re-read after a
+      // successful move does not reorder it — and not at all into a column it
+      // would sort past the end of (§4.9). The counts move by one either way.
+      // No version: nothing optimistic may invent one — the answer brings the
+      // real one.
       const stamp = new Date().toISOString();
       queryClient.setQueriesData<Board>({ queryKey: key }, (current) =>
         current ? moveCardOnBoard(current, movedIssueId, nextStatus, stamp) : current,
@@ -730,15 +755,16 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   }, [issueId]);
 
   /**
-   * «Show more» on a column cut at its page (§4.9, backend TAS-430): one read
-   * of the column's next page per press — the cursor of the last card drawn,
-   * the filters the drawn board was read with, `includeDone`, 200 — appended
-   * to that board read in the column's order without repeats
-   * (`withColumnPage`). A re-read of the board reads what was appended again,
-   * to the same depth (`withColumnTails`, in the board query). Per column and
-   * per combination of filters: in
-   * flight, a second press does nothing; a refusal stays in the column until
-   * the next press of the same button.
+   * «Show more» on a column cut at its page (§4.9, backend TAS-430, TAS-525):
+   * one read of the column's next page per press — the cursor of the last card
+   * drawn in the column's own kind (`afterUpdatedAt` in a done column,
+   * `afterCreatedAt` elsewhere), the filters and the very `doneSince` the
+   * drawn board was read with, `includeDone`, 200 — appended to that board
+   * read in the column's order without repeats (`withColumnPage`). A re-read
+   * of the board reads what was appended again, to the same depth
+   * (`withColumnTails`, in the board query). Per column and per combination of
+   * filters and Done window: in flight, a second press does nothing; a refusal
+   * stays in the column until the next press of the same button.
    *
    * While the board drawn is an earlier answer under new filters (§5.4) the
    * button is in flight too: its cursor and filters would belong to two
@@ -748,21 +774,25 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const columnMoreOut = useRef(new Set<string>());
   /** The card focus goes to once a page has drawn (§4.9: the first new one). */
   const moreFocus = useRef<string | null>(null);
-  const moreKey = (statusKey: string) => JSON.stringify([filters, statusKey]);
+  const moreKey = (statusKey: string) => JSON.stringify([view, statusKey]);
   const showMore = async (status: ColumnStatus) => {
     const key = moreKey(status.statusKey);
     if (awaitingFilter || columnMoreOut.current.has(key)) return;
-    const readKey = boardReadKey(projectId, filters);
-    const drawn = queryClient.getQueryData<Board>(readKey);
+    const readKey = boardReadKey(projectId, view);
+    const drawn = queryClient.getQueryData<BoardRead>(readKey);
     const column = drawn?.columns.find((item) => item.statusKey === status.statusKey);
     const cursor = column ? columnCursor(column) : null;
-    if (!column || !cursor) return;
+    if (!drawn || !column || !cursor) return;
     columnMoreOut.current.add(key);
     setColumnMore((current) => ({ ...current, [key]: { inFlight: true, error: null } }));
     // Emptied on the press, so the same refusal twice over is said twice (§4.9).
     setBoardStatus("");
     try {
-      const page = await taskaApi.getBoardColumnPage(projectId, status.statusKey, boardColumnPageParams(filters, cursor));
+      const page = await taskaApi.getBoardColumnPage(
+        projectId,
+        status.statusKey,
+        boardColumnPageParams(filters, drawn.doneSince, cursor),
+      );
       const latest = queryClient.getQueryData<Board>(readKey);
       const before = new Set(latest ? boardCards(latest).map((issue) => issue.id) : []);
       queryClient.setQueryData<Board>(readKey, (current) => (current ? withColumnPage(current, page) : current));
@@ -1037,11 +1067,17 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       setActiveIssueId(null);
       return;
     }
-    // A drag that began before the filter changed and ends while the board is
-    // still updating (§5.4): the card stays, nothing is sent — there was no
-    // request, so no request id — and the reader is told to move it again.
+    // A drag that began before the filter or the Done window changed and ends
+    // while the board is still updating (§5.4): the card stays, nothing is
+    // sent — there was no request, so no request id — and the reader is told
+    // to move it again. The window is no filter, so its line does not call it
+    // one (TAS-532).
     if (awaitingFilter) {
-      setDragNotice(`${issue.issueKey} was not moved: the board was still updating for the new filter. Move it again.`);
+      setDragNotice(
+        awaitingWindow
+          ? `${issue.issueKey} was not moved: the board was still updating. Move it again.`
+          : `${issue.issueKey} was not moved: the board was still updating for the new filter. Move it again.`,
+      );
       setActiveIssueId(null);
       return;
     }
@@ -1364,6 +1400,42 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             Clear
           </button>
         ) : null}
+        {/* The Done window (§4.13, TAS-532; backend TAS-525): after «Clear»,
+            which does not reset it — before it, «✕ Clear» read as the window's
+            own reset. Segments rather than a select: two values, both in
+            view, one press. A read, so for every role, on an archived
+            project, with a failed context or board, and whatever columns the
+            board has; never disabled. No accent: it is a view, not a filter.
+            Named «Done issues» by its visible label and a hidden word; a
+            press on the chosen one does nothing, as in Appearance (§5.9). */}
+        <span className="divider" />
+        <div className="filter-done">
+          {/* The space is the visible text's, not the hidden word's: a name
+              built from the children trims each one, and "Doneissues" is
+              what a leading space inside the hidden span came out as. As the
+              last thing on its line before an out-of-flow box, it takes no
+              width. */}
+          <span className="filter-label" id={doneLabelId}>
+            Done <span className="visually-hidden">issues</span>
+          </span>
+          <div aria-labelledby={doneLabelId} className="segmented compact" role="group">
+            {DONE_WINDOW_OPTIONS.map((option) => (
+              <button
+                aria-pressed={doneWindow === option.value}
+                className={doneWindow === option.value ? "is-active" : ""}
+                key={option.value}
+                onClick={() => {
+                  if (doneWindow === option.value) return;
+                  setDoneWindow(option.value);
+                  rememberBoardDoneWindow(option.value);
+                }}
+                type="button"
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
         {/* Three states again, and for the same reason as the cards on the
             projects screen: "0 of 0" from a request that has not answered is a
             claim about the project, not a count. Unknown first — a retry of a
@@ -1500,6 +1572,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                   hasMore={columnsByKey.get(status.statusKey)?.hasMore ?? null}
                   issuesUnknown={issuesUnknown}
                   awaitingFilter={awaitingFilter}
+                  doneWindowed={drawnWindow === "2w"}
                   userById={userById}
                   canEdit={canEdit}
                   canCreate={canCreate}
@@ -1734,6 +1807,12 @@ function boardColumnCounts(boardColumns: number, outsideShown: boolean): CSSProp
 /** What a column is drawn from: a board column's status, or a predicted one (§4.9). */
 type ColumnStatus = Pick<BoardColumnData, "statusKey" | "name" | "category" | "sortOrder">;
 
+/** The Done window's segments (§4.13, TAS-532), in the bar's order; each one's name is its visible text (WCAG 2.5.3). */
+const DONE_WINDOW_OPTIONS: readonly { value: BoardDoneWindow; label: string }[] = [
+  { value: "2w", label: "2 weeks" },
+  { value: "all", label: "All" },
+];
+
 /**
  * The delete's 404: the issue is not there any more — deleted elsewhere in
  * the meantime — which is the outcome the reader asked for, so it takes the
@@ -1772,6 +1851,7 @@ function BoardColumn({
   hasMore,
   issuesUnknown,
   awaitingFilter,
+  doneWindowed,
   userById,
   canEdit,
   canCreate,
@@ -1793,6 +1873,8 @@ function BoardColumn({
   issuesUnknown: boolean;
   /** An earlier answer is drawn while the read under new filters is out: the cards do not lift (§5.4). */
   awaitingFilter: boolean;
+  /** The board drawn was read under the Done window «2 weeks» (§4.13): an empty done column says so (§4.9). */
+  doneWindowed: boolean;
   userById: ReadonlyMap<string, Person>;
   /** The project's issue-type registry, which names and draws each card's type (§4.6). */
   registry: IssueTypeRegistry;
@@ -1867,15 +1949,24 @@ function BoardColumn({
             total={totalCount}
           />
         ) : null}
-        {/* Three different empty columns. A column whose contents are unknown
+        {/* Four different empty columns. A column whose contents are unknown
             must not invite a card, and the dashed frame §5.6 gives the empty
             state is exactly that invitation; a reader who cannot drop one must
             not be told to either (§5.7) — the same promise the card itself has
-            stopped making. */}
+            stopped making. And a done column read under «2 weeks» is empty of
+            what the window kept, not of issues (§4.9, TAS-532): it says so to
+            every role, and stays a drop target for a writer. "Updated", since
+            the server cuts by `updatedAt`, whatever the column is called. */}
         {issuesUnknown ? (
           <div className="empty-column is-unknown">Not loaded</div>
         ) : issues.length === 0 && hasMore !== true ? (
-          <div className="empty-column">{canEdit ? "Drop issues here" : "No issues"}</div>
+          <div className="empty-column">
+            {doneWindowed && isDoneCategory(status.category)
+              ? "No issues updated in the last 2 weeks"
+              : canEdit
+                ? "Drop issues here"
+                : "No issues"}
+          </div>
         ) : null}
       </div>
     </section>
@@ -4895,20 +4986,28 @@ function IssueLinksSection({
   const [localError, setLocalError] = useState<string | null>(null);
 
   // The board's own read behind the panel (TAS-202): the entry with no filter
-  // in it (TAS-392), so the bar's filter does not narrow what an issue may be
-  // linked to. It costs nothing: the board keeps that entry read. It is cut at
-  // 200 a status, so an issue missing from it may be past a cut — the picker
-  // says so — or of a type the registry no longer holds, or of another
-  // project; a link row resolves to the server's own `target` or to its id.
+  // and no Done window in it (TAS-392, TAS-532; `LINK_PICKER_VIEW`), so
+  // neither the bar's filter nor its window narrows what an issue may be
+  // linked to — under «2 weeks» the server's counts are already after the
+  // cut, so a line saying what was cut could not be built (§5.4). Under «All»
+  // it costs nothing: the board keeps that entry read for its `Y`. Under «2
+  // weeks» it is a read of its own, made when the link form mounts — a writer
+  // on a live project — and not for a reader who has no picker; such a
+  // reader's rows resolve from the server's own `target`, or from this entry
+  // if the board read it already. It is cut at 200 a status, so an issue
+  // missing from it may be past a cut — the picker says so — or of a type the
+  // registry no longer holds, or of another project; a link row resolves to
+  // the server's own `target` or to its id.
   //
   // `refetchOnMount: false`: opening a panel past `staleTime` must not read the
   // whole board again for a picker (release-reviewer, TAS-202). This observer
   // takes whatever board the screen holds; the screen's own read, the reader's
   // writes and the focus policy are what keep it current.
-  // The board without filters (§5.4): the board's filter does not narrow what
-  // an issue may be linked to. Its columns are cut at 200 (TAS-392), so an
-  // issue past one is not offered, and the line under the picker says so.
-  const projectIssuesQuery = useQuery({ ...boardQueryOptions(projectId, NO_BOARD_FILTERS), refetchOnMount: false });
+  const projectIssuesQuery = useQuery({
+    ...boardQueryOptions(projectId, LINK_PICKER_VIEW),
+    refetchOnMount: false,
+    enabled: canEdit,
+  });
   const issues = useMemo(() => (projectIssuesQuery.data ? boardCards(projectIssuesQuery.data) : []), [projectIssuesQuery.data]);
   const pickerCut = projectIssuesQuery.data ? boardHasMore(projectIssuesQuery.data) : false;
 

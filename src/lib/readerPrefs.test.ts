@@ -3,10 +3,14 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialTheme, THEME_STORAGE_KEY } from "../hooks/useTheme";
 import {
+  BOARD_DONE_WINDOW_KEY,
   boardColumnsPreference,
   currentPreference,
   issueDetailsPreference,
+  normalizeBoardDoneWindow,
+  rememberBoardDoneWindow,
   setPreference,
+  storedBoardDoneWindow,
   storedPreference,
   subscribePreferences,
 } from "./readerPrefs";
@@ -95,6 +99,41 @@ describe("the reader's appearance preferences", () => {
 });
 
 /**
+ * The board's Done window (TAS-532, DESIGN.md §4.13): a reader pref on the
+ * same storage rules, read by the board when it sets up its state, and not on
+ * `<html>` at all.
+ */
+describe("the board's Done window", () => {
+  it("is «2 weeks» by default and for a value it does not know, and reads a stored «All»", () => {
+    expect(BOARD_DONE_WINDOW_KEY).toBe("taska.boardDoneWindow");
+    expect(storedBoardDoneWindow()).toBe("2w");
+    window.localStorage.setItem("taska.boardDoneWindow", "all");
+    expect(storedBoardDoneWindow()).toBe("all");
+    for (const unknown of ["4w", "ALL", "", "2 weeks"]) {
+      window.localStorage.setItem("taska.boardDoneWindow", unknown);
+      expect(storedBoardDoneWindow()).toBe("2w");
+    }
+    expect(normalizeBoardDoneWindow(undefined)).toBe("2w");
+    expect(normalizeBoardDoneWindow("all")).toBe("all");
+  });
+
+  it("remembers a choice, and is not mirrored on <html>", () => {
+    rememberBoardDoneWindow("all");
+    expect(window.localStorage.getItem("taska.boardDoneWindow")).toBe("all");
+    expect(storedBoardDoneWindow()).toBe("all");
+    rememberBoardDoneWindow("2w");
+    expect(window.localStorage.getItem("taska.boardDoneWindow")).toBe("2w");
+    expect(Object.keys(root.dataset)).toEqual([]);
+  });
+
+  it("survives storage that throws: «2 weeks» on read, and a write that costs only the remembering", () => {
+    refuseStorage();
+    expect(storedBoardDoneWindow()).toBe("2w");
+    expect(() => rememberBoardDoneWindow("all")).not.toThrow();
+  });
+});
+
+/**
  * The inline script in index.html applies all three before the first paint
  * (ruling 2, TAS-380). It cannot import the modules above, so it repeats their
  * keys and defaults; this runs it, as the browser would, against every case
@@ -144,6 +183,14 @@ describe("the inline script in index.html", () => {
     runScript();
     expect(root.dataset.theme).toBe("dark");
     expect(initialTheme()).toBe("dark");
+  });
+
+  // §4.13: the Done window is read by the board itself, so no CSS waits on it.
+  it("leaves the board's Done window alone", () => {
+    window.localStorage.setItem("taska.boardDoneWindow", "all");
+    runScript();
+    expect(inline[0]).not.toContain("boardDoneWindow");
+    expect(Object.keys(root.dataset).sort()).toEqual(["boardColumns", "issueDetails", "theme"]);
   });
 
   it("still sets every attribute when storage throws", () => {

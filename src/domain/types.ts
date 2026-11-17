@@ -1170,8 +1170,9 @@ export interface BoardColumn {
    */
   issues: BoardIssue[];
   /**
-   * Every issue of the column that matches the read's filters, before the page
-   * was cut — the count pill's number (DESIGN.md §4.9). `null` when the answer
+   * Every issue of the column that matches the read's filters — and, in a done
+   * status, its `doneSince` (backend TAS-525) — before the page was cut: the
+   * count pill's number (DESIGN.md §4.9). `null` when the answer
    * did not state it as a whole number: then the pill says `Unknown`, never the
    * length of `issues`.
    */
@@ -1186,9 +1187,11 @@ export interface BoardColumn {
 
 /**
  * `GET /projects/{projectId}/board/columns/{statusKey}/issues` —
- * `BoardColumnPageResponseDto` (backend TAS-430, develop `cbd3f0af`): the next
- * page of one board column, in the column's own order (`createdAt`, then
- * `id`), after an exclusive cursor — the board's «Show more» (DESIGN.md §4.9).
+ * `BoardColumnPageResponseDto` (backend TAS-430, TAS-525, develop `e35e143e`):
+ * the next page of one board column, in the column's own order — `updatedAt`,
+ * then `id`, both descending, for a column of category `DONE`; `createdAt`,
+ * then `id`, ascending, for any other — after an exclusive cursor of the same
+ * kind — the board's «Show more» (DESIGN.md §4.9).
  *
  * `totalCount` counts the whole column under the read's filters, whatever the
  * cursor; `hasMore` says whether issues lie past the last one of this page.
