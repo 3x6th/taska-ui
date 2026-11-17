@@ -822,7 +822,7 @@ export interface CreatedProjectIssueType extends ProjectIssueType {
  * the project again for the role, the members, a workflow per issue type and
  * the labels).
  *
- * All or nothing except `workflows`: a members, labels or project part that
+ * All or nothing except `workflows`: any other part that
  * fails fails the whole response, but since backend TAS-383 (develop
  * `e35e143e`, `ProjectServiceImpl.loadProjectWorkflows`) a type whose workflow
  * read failed, for any reason, is left out and the context still answers 200

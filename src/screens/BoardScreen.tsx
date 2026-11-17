@@ -812,7 +812,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         const kept = latest.columns.find((item) => item.statusKey === status.statusKey)?.issues.at(-1)?.id;
         const root = boardRef.current;
         if (kept && root && focusLost()) {
-          findDeleteFocusTarget(root, { card: kept })?.focus({ preventScroll: true });
+          const fallback = findDeleteFocusTarget(root, { card: kept });
+          fallback?.focus({ preventScroll: true });
+          fallback?.scrollIntoView({ block: "nearest" });
         }
         return;
       }
