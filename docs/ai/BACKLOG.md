@@ -4651,6 +4651,14 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
 - **The «3 used · 1 allowed» projects line on Northwind and Globex** is the mock's platform-bypass fixture, not a UI
   state; revisit when A46 says whether a bypass always sets OVER_QUOTA.
 
+### Left by TAS-532 build (the Done window, backend TAS-525 at develop `e35e143e`, 2026-11-17)
+
+- **Backend: getBoard's 400 for an out-of-range `doneSince` names the wrong
+  parameter** — "pageSizePerColumn must be between 1 and 200" (gateway
+  `BoardServiceImpl`, read by frontend-builder). The mock repeats the gateway's
+  words (`BOARD_READ_REFUSAL_MESSAGE`); the UI never sends such a date. A
+  one-line ask on TAS-525 when the next board ask goes in, not a story.
+
 ### Left by TAS-512 review (company plan and usage, build review of `994ec25`, 2026-11-05)
 
 Non-blocking notes of the three roles (`docs/ai/reviews/TAS-512/`, git-ignored); the blockers and the cheap notes went
