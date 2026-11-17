@@ -6587,7 +6587,17 @@ nothing but `BACKLOG.md` for now.
   their answer does not describe the types that moved.
 - **What is still owed here:** nothing.
 
-### A workflow with no status or no visible transition makes the project context 404
+### Closed by TAS-532 (2026-11-17): A workflow with no status or no visible transition makes the project context 404
+
+- **Closed:** backend [TAS-383](https://jira.ozero.dev/browse/TAS-383), PR #272
+  (merged 2026-11-09, on the stand with develop `e35e143e` since 2026-11-12).
+  `WorkflowCreationValidator` now requires statuses, a `TODO` status and a visible
+  transition; empty workflow lists are read without NOT_FOUND; a type whose
+  workflow cannot be read is left out of `workflows` and the context still answers
+  200 (`openapi.yml` at `e35e143e`, `getProjectContext`). Read in the PR and the
+  contract, not measured. The UI already takes a type with no entry in `workflows`:
+  `workflowFor` answers `undefined` and the type list comes from the registry, not
+  from `workflows`. The copy-only create stays as the default.
 
 - **Endpoints:** `POST /api/v1/projects/{projectId}/workflows`, and through it
   `GET /api/v1/projects/{projectId}/context` (#208 at `9a04e99`, merged unchanged as
