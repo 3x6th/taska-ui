@@ -4694,6 +4694,17 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
   column for one number. Backend shape if wanted: `unfilteredTotalCount` on the
   board answer under the same `includeDone`/`doneSince`, counted in the same
   statement as issue-service's `totals` CTE (api-contract-guard A3; not filed).
+- **Focus after a dropped «Show more» page can still reach `<body>`** (low): the
+  fallback runs when the page lands, not when the button leaves; between the
+  re-read's render and the page, and in a few-ms race where TanStack notifies
+  React after the page lands, focus sits on `<body>`. Fix: the focused-card
+  hand-off also remembers a focused `.list-more-button` and its column and moves
+  to the last card when the button is gone (release-reviewer L1, jsdom probe only).
+- **DESIGN §4.9 «Перечитывание» does not describe the dropped page** — proposal
+  for art-director: a «Show more» page cut under an earlier `doneSince` is not
+  added, the column stays as the re-read sent it, the button can be pressed
+  again, and focus that lost the button goes to the column's last card
+  (release-reviewer N1).
 
 ### Left by TAS-512 review (company plan and usage, build review of `994ec25`, 2026-11-05)
 
