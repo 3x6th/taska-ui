@@ -4745,3 +4745,34 @@ into the fix round.
 - **Scroll-to-submit ignores where focus is**: Enter in Summary at a refusal scrolls the focused field out of the modal
   body (scrollTop 65 at 1440×810, 381 at 320×568) — §4.40 says only when focus stays on the submit; scroll only when
   the submit has focus (release-reviewer wave 2, low 2).
+
+### Left by TAS-467 (the way from Create account to the invitation token form, 2026-11-20)
+
+- **Back from /invite lands on /login's Sign in tab, not Create account**, focus on `<body>`, the 500 ms
+  entrance replays: tabs are not in the address (existing for every tab). Later: write the tab into /login's
+  history entry before the push and treat a history return as a continuation of the card (art-director N1).
+- **At ≤390 the §7 ring of «enter your invitation token» crosses the first line's descenders** and touches
+  «or» and the full stop — a 2px ring at offset 2 on an inline 11.5/1.45 link. Accepted; no §7 ring exception;
+  decide together with «create an access token» if ever fixed (art-director N2).
+- **The token field's hint says «Open the link in your invitation email — it fills this in.»** — the wrong
+  instruction for someone who came from Create account because the link would not open; the field already
+  takes a whole pasted link (§4.27). A §4.27 copy change, e.g. «Paste the link from your invitation email, or
+  just its token.» (art-director N3).
+- **Comments still say the stand has sign-up off**: `src/screens/LoginScreen.tsx` (doc comment «the stand
+  today»), `src/screens/LoginScreen.test.tsx` header («the stand's answer»), `src/api/TaskaApi.ts` (dated
+  2026-10-27, true as history). The stand answered `{"signupEnabled":true,"providers":[]}` on 2026-11-20
+  (`7dad4ba6-a978-44e8-a339-6671b997ddb8`); TAS-467 fixed only the e2e and mock-fixture comments it touched
+  (frontend-builder).
+- **`SettingsCompanySection.test.tsx` «the 200 keeps the modal in flight…» flaked once under load** in the
+  TAS-467 gate (2026-11-20, an art-director run beside it): `routeState` was `null` at line 585. 36/36 three
+  times alone, 3192/3192 in the full unit re-run. Watch for a repeat.
+- **Three TAS-467 paths no test pins** (release-reviewer N2): the held-link guard in LoginScreen's in-place
+  `enterToken` arrival branch (runs only in the unit harness — both route trees mount the screen fresh on
+  /invite; removing it fails nothing), the link on the companies (B2B) e2e server (checked by hand), and
+  `.auth-hint-link`'s `nowrap`. One unit case (held link + arrival without remount → New password) and one
+  companies case close the first two.
+- **The hint link drops `from`** (release-reviewer N3): sent to /login by an expired session → «enter your
+  invitation token» → Sign in on /invite lands on `/projects`, not the remembered page. Unlikely; activation
+  drops `from` the same way. Fix: pass `from` into `SignupPanel` and carry it in the Link's state.
+- **Name and Email typed on Create account are lost when the link is taken** — the screen remounts on /invite
+  and Back remounts /login (release-reviewer residual). Same root as «Back lands on Sign in» above.
