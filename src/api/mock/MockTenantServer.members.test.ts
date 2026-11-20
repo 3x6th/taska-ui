@@ -120,8 +120,8 @@ describe("the fixtures (§7)", () => {
       // TAS-514: nor how the server picks a company's invoices' method.
       expect(tenant).not.toHaveProperty("invoiceMethod");
     }
-    // v8 since TAS-514's fresh seed (each invoice's snapshots, Cyberdyne's wire fixtures, receipts and refunds).
-    expect(JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}").v).toBe(8);
+    // v9 since TAS-516's fresh seed (payment facts, paid periods and disputes; Soylent Corp).
+    expect(JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}").v).toBe(9);
   });
 
   it("keeps TAS-500's directory: Northwind's ACTIVE people are Anna, Sofia and Tom", async () => {

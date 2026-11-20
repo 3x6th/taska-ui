@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import type { PaymentState } from "./billingText";
+import type { ChainStep } from "./wireText";
 
 /*
  * What Company › Billing's list, its invoice and the never-opened card share
@@ -26,6 +27,34 @@ export function PaymentStateBlock({ state, factId, after }: { state: PaymentStat
         </p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * A row's dated line (TAS-516, art-director B9, N1): a segment with a date is
+ * kept whole, so it never breaks inside «Requested Oct 12»; a segment without
+ * one — the method, «Taska is checking whether it went through» — wraps as text.
+ * The « · » ends the segment before it, so a line never starts with it.
+ */
+export function StepChain({ steps }: { steps: readonly ChainStep[] }) {
+  return (
+    <>
+      {steps.map((step, index) => (
+        <Fragment key={index}>
+          {index > 0 ? " " : null}
+          <span className={step.day !== null ? "company-step is-dated" : "company-step"}>
+            {step.word}
+            {step.day !== null && step.iso !== null ? (
+              <>
+                {" "}
+                <time dateTime={step.iso}>{step.day}</time>
+              </>
+            ) : null}
+            {index < steps.length - 1 ? " ·" : null}
+          </span>
+        </Fragment>
+      ))}
+    </>
   );
 }
 

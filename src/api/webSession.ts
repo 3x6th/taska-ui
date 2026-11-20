@@ -23,6 +23,7 @@ import {
   toInvoiceDetail,
   toInvoicePage,
   toPlanChange,
+  toDisputePage,
   toRefundPage,
   type AutopayConsentResult,
   type ChangePlanInput,
@@ -34,6 +35,7 @@ import {
   type InvoicePage,
   type PlanChange,
   type RedirectPolicy,
+  type DisputePage,
   type RefundPage,
   type ReturnTarget,
 } from "./billing";
@@ -253,6 +255,8 @@ export interface B2bTransport {
   getInvoiceDocument(bearer: string | null, tenantId: string, invoiceId: string, signal: AbortSignal): Promise<DocumentAnswer>;
   /** `GET /tenants/{tenantId}/billing/refunds?cursor&limit` — 200 `RefundPage`. */
   listRefunds(bearer: string | null, tenantId: string, params: ListCompanyPageParams, signal: AbortSignal): Promise<unknown>;
+  /** `GET /tenants/{tenantId}/billing/disputes?cursor&limit` — 200 `DisputePage` (TAS-516), the owner's. */
+  listDisputes(bearer: string | null, tenantId: string, params: ListCompanyPageParams, signal: AbortSignal): Promise<unknown>;
   /** `GET /tenants/{tenantId}/capabilities` — 200 `Capabilities`. */
   getTenantCapabilities(bearer: string | null, tenantId: string, signal: AbortSignal): Promise<unknown>;
 
@@ -1250,6 +1254,19 @@ export class WebSessionClient {
       await this.inCompany(tenantId, (bearer, signal) => this.transport.listRefunds(bearer, tenantId, params, signal)),
     );
     for (const refund of page.items) ofCompany(refund, tenantId);
+    return page;
+  }
+
+  /**
+   * The owner's disputes (TAS-516): control plane — never refused by a
+   * restriction; a body with no `items` array is no answer
+   * (`UnreadableAnswerError`), one naming another company a failed read.
+   */
+  async listDisputes(tenantId: string, params: ListCompanyPageParams = {}): Promise<DisputePage> {
+    const page = toDisputePage(
+      await this.inCompany(tenantId, (bearer, signal) => this.transport.listDisputes(bearer, tenantId, params, signal)),
+    );
+    for (const dispute of page.items) ofCompany(dispute, tenantId);
     return page;
   }
 

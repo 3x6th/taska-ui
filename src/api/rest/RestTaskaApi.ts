@@ -136,6 +136,7 @@ import type {
   InvoiceDocument,
   InvoicePage,
   PlanChange,
+  DisputePage,
   RefundPage,
   ReturnTarget,
 } from "../billing";
@@ -1642,6 +1643,10 @@ export class RestTaskaApi implements TaskaApi {
     return this.companies("listRefunds").listRefunds(tenantId, params);
   }
 
+  async listDisputes(tenantId: string, params?: ListCompanyPageParams): Promise<DisputePage> {
+    return this.companies("listDisputes").listDisputes(tenantId, params);
+  }
+
   async getTenantCapabilities(tenantId: string): Promise<CompanyDurations> {
     return this.companies("getTenantCapabilities").getTenantCapabilities(tenantId);
   }
@@ -1846,6 +1851,8 @@ export class RestTaskaApi implements TaskaApi {
       getInvoiceDocument: (bearer, tenantId, invoiceId, signal) =>
         this.transmitDocument(`${tenantPath(tenantId)}/billing/invoices/${this.segment(invoiceId)}/document`, bearer, signal),
       listRefunds: (bearer, tenantId, params, signal) => send(`${tenantPath(tenantId)}/billing/refunds${page(params)}`, {}, bearer, signal),
+      // TAS-516: disputes, a read like any.
+      listDisputes: (bearer, tenantId, params, signal) => send(`${tenantPath(tenantId)}/billing/disputes${page(params)}`, {}, bearer, signal),
       getTenantCapabilities: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/capabilities`, {}, bearer, signal),
       // TAS-515. `If-Match` is `Subscription.version` for all four, never the
       // mandate's; the bodies field by field in the blueprint's order, so a

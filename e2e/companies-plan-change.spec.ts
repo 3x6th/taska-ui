@@ -1,9 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
-import { B2B, COMPANY, INVOICE, LONG_NAME, companyPath, inCompany, openCompanyZone, setHooks } from "./companiesFixtures";
+import { B2B, COMPANY, INVOICE, LONG_NAME, MOCK_SERVER_KEY, companyPath, inCompany, openCompanyZone, setHooks } from "./companiesFixtures";
 
 /*
  * A plan change, its renewal and automatic payments in the companies build
- * (TAS-515) against the third e2e server's mock (`taska.mockServer.v8`). The
+ * (TAS-515) against the third e2e server's mock (`MOCK_SERVER_KEY`). The
  * story's acceptance: paid → Free at once, with the paid period gone; paid →
  * cheaper paid only after its payment, with a new month; Free refused through
  * the real path; a dearer plan scheduled with its invoice; a scheduled change
@@ -28,12 +28,13 @@ const dialog = (page: Page) => page.getByRole("dialog", { name: "Change plan" })
 /** The mock server's own record, from the shared storage. */
 const server = (page: Page) =>
   page.evaluate(
-    () =>
-      JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as {
+    (key) =>
+      JSON.parse(window.localStorage.getItem(key) ?? "{}") as {
         tenants: Array<{ id: string; subscription: { planVersionId: string; paidThrough?: string; version: string } }>;
         invoices: Array<{ id: string; tenantId: string; number: string; purpose: string; state: string }>;
         billingReceipts: Record<string, unknown>;
       },
+    MOCK_SERVER_KEY,
   );
 const subscriptionOf = async (page: Page, tenantId: string) => (await server(page)).tenants.find((tenant) => tenant.id === tenantId)?.subscription;
 
@@ -284,7 +285,9 @@ test("Turn off asks first, then the group says Off — and nothing anywhere turn
   await band.getByRole("button", { name: "Turn off", exact: true }).click();
   await expect(page.getByRole("heading", { level: 2, name: "Automatic payments" })).toBeFocused();
   await expect(said(page)).toHaveText("Automatic payments are off for Umbrella.");
-  await expect(group).toContainText("OffYou pay Umbrella’s invoices here yourself. This version of Taska can’t turn automatic payments on.");
+  await expect(group).toContainText(
+    "OffYou pay Umbrella’s invoices here yourself. Automatic payments stay off until you set them up, which this version of Taska can’t do yet.",
+  );
   await expect(page.getByRole("button", { name: /Turn on/ })).toHaveCount(0);
   await expect(page.getByText(/Turn on/)).toHaveCount(0);
 

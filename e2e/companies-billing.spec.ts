@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { B2B, COMPANY, INVOICE, companyPath, companyRow, inCompany, openCompanyZone, setHooks, signIn } from "./companiesFixtures";
+import { B2B, COMPANY, INVOICE, MOCK_SERVER_KEY, companyPath, companyRow, inCompany, openCompanyZone, setHooks, signIn } from "./companiesFixtures";
 
 /*
  * Hosted checkout and the confirmed payment status in the companies build
@@ -22,10 +22,13 @@ const mockPage = (page: Page) => page.getByRole("heading", { level: 1, name: "Te
 
 /** The mock server's checkouts of an invoice — its own record, read from the shared storage. */
 const checkoutsOf = (page: Page, invoiceId: string) =>
-  page.evaluate((id) => {
-    const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { checkouts?: Array<{ invoiceId: string }> };
-    return (state.checkouts ?? []).filter((checkout) => checkout.invoiceId === id).length;
-  }, invoiceId);
+  page.evaluate(
+    ({ id, key }) => {
+      const state = JSON.parse(window.localStorage.getItem(key) ?? "{}") as { checkouts?: Array<{ invoiceId: string }> };
+      return (state.checkouts ?? []).filter((checkout) => checkout.invoiceId === id).length;
+    },
+    { id: invoiceId, key: MOCK_SERVER_KEY },
+  );
 
 /** This browser's attempt records — `taska.checkout.*` in the shared storage. */
 const attemptsOf = (page: Page) =>
@@ -37,13 +40,16 @@ const attemptsOf = (page: Page) =>
 
 /** How many keys of `createCheckout` reached the mock server — its durable receipts. */
 const checkoutKeysSent = (page: Page) =>
-  page.evaluate(() => Object.keys((JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { checkoutReceipts?: object }).checkoutReceipts ?? {}).length);
+  page.evaluate((key) => Object.keys((JSON.parse(window.localStorage.getItem(key) ?? "{}") as { checkoutReceipts?: object }).checkoutReceipts ?? {}).length, MOCK_SERVER_KEY);
 
 const invoiceStateOf = (page: Page, invoiceId: string) =>
-  page.evaluate((id) => {
-    const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { invoices?: Array<{ id: string; state: string }> };
-    return state.invoices?.find((invoice) => invoice.id === id)?.state ?? null;
-  }, invoiceId);
+  page.evaluate(
+    ({ id, key }) => {
+      const state = JSON.parse(window.localStorage.getItem(key) ?? "{}") as { invoices?: Array<{ id: string; state: string }> };
+      return state.invoices?.find((invoice) => invoice.id === id)?.state ?? null;
+    },
+    { id: invoiceId, key: MOCK_SERVER_KEY },
+  );
 
 /** Tom in Umbrella, on Billing, with `hooks` set; the renewal's Pay pressed and the stand-in page open. */
 async function payRenewal(page: Page, hooks: Record<string, unknown> = {}) {

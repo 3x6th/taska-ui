@@ -11,19 +11,22 @@ import { stateLines, stillWorksText } from "./companyGeneralText";
  * switched off by it (api-contract-guard B6). Nothing is drawn when there is
  * nothing to say. Since TAS-513 the owner's «Its paid period has ended.» line
  * ends with a link — not a button — to Billing, where it is paid (art-director
- * B2c): §5.8's standalone link, «See Plan»'s recipe.
+ * B2c): §5.8's standalone link, «See Plan»'s recipe. Since TAS-516 (art-director
+ * B13) the owner's dispute line earns it too — at most one per block, on the
+ * first line that does, in §4.39's order.
  */
 export function CompanyStateBlock({ restrictions, owner }: { restrictions: readonly string[]; owner: boolean }) {
   const lines = stateLines(restrictions, owner);
   const works = stillWorksText(restrictions, owner);
   if (lines.length === 0 && works === null) return null;
+  const billingLinkOn = owner ? (lines.find((line) => line.code === "PAYMENT_DISPUTE" || line.code === "PAYMENT_EXPIRED")?.code ?? null) : null;
   return (
     <div className="company-general-states">
       {lines.map((line) => (
         <p className="company-general-state" key={line.code}>
           <span className="company-general-state-fact">{line.fact}</span>
           {line.explanation ? ` ${line.explanation}` : null}
-          {owner && line.code === "PAYMENT_EXPIRED" ? (
+          {line.code === billingLinkOn ? (
             <>
               {" "}
               <Link className="admin-note-link company-state-billing-link" to={BILLING_SECTION.path}>

@@ -74,16 +74,16 @@ export function stateLines(restrictions: readonly string[], owner: boolean): Sta
           code,
           fact: "A payment is disputed.",
           explanation: owner
-            ? "Until it’s settled, nothing in it can be changed and no automatic payments are taken."
-            : "Until it’s settled, nothing in it can be changed.",
+            ? "Nothing in it can be changed, and no automatic payments are taken."
+            : "Nothing in it can be changed.",
         };
       case "PAYMENT_EXPIRED":
         return {
           code,
           fact: "Its paid period has ended.",
           explanation: owner
-            ? "Nothing in it can be changed until you renew it. There’s no grace period, and it doesn’t move to a free plan on its own."
-            : "Nothing in it can be changed until its owner renews it.",
+            ? "Nothing in it can be changed until it’s paid for again or its plan is changed. There’s no grace period, and it doesn’t move to a free plan on its own."
+            : "Nothing in it can be changed until its owner pays for it again or changes its plan.",
         };
       case "OVER_QUOTA":
         // Which limit is not said: the server does not say it (ask A46; art-director N2).
