@@ -479,10 +479,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // issue type of the project's registry, and the registry itself (TAS-417).
   // It replaced seven requests — the project,
   // the project again for the role, the members, three workflows and the
-  // labels — and on the server every part below is answered or the whole read
-  // fails, except `workflows`: since backend TAS-383 a type whose workflow
-  // read failed is left out of a 200 (docs/ai/API-DIVERGENCE.md, backend
-  // TAS-533), so a type missing from them is not proof of «no workflow».
+  // labels — and on the server every part below, `workflows` included since
+  // backend TAS-533, is answered or the whole read fails; a type missing from
+  // `workflows` has no workflow (NOT_FOUND).
   const contextQuery = useQuery({
     queryKey: projectContextKey(projectId),
     enabled: Boolean(projectId),
@@ -1115,10 +1114,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     // the workflow read failed or has simply not answered yet.
     if (!workflow) {
       // Two different refusals. A context that answered without this issue's
-      // type has either a project with no workflow for it (TAS-251) or a
-      // workflow read that failed (backend TAS-383) — the response cannot tell
-      // them apart (API-DIVERGENCE «The project context drops a type whose
-      // workflow read failed»), so the wording here is the pre-TAS-383 one.
+      // type has a project with no workflow for it (TAS-251); since backend
+      // TAS-533 a failed workflow read fails the context instead, so the
+      // «no workflow» wording is true.
       setDragNotice(
         workflows
           ? `${issue.issueKey} was not moved: this project has no workflow for ${typeWord} issues.`
@@ -3481,9 +3479,8 @@ function IssuePanel({
             <span className="transition-note">The workflow could not be loaded, so no move is offered.</span>
           ) : workflows && !workflow ? (
             // The context answered without this issue's type: a project with
-            // no workflow for it (TAS-251) or a workflow read that failed
-            // (backend TAS-383) — the UI cannot tell which (API-DIVERGENCE
-            // «The project context drops a type whose workflow read failed»).
+            // no workflow for it (TAS-251); a failed read fails the context
+            // since backend TAS-533.
             <span className="transition-note">
               This project has no workflow for {typeWord} issues, so no move is offered.
             </span>

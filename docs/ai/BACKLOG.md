@@ -4680,11 +4680,13 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
 - **A failed background re-read also sets `isInvalidated`**, so while the board
   read fails each panel mount re-reads the `all` record once (plus the retry).
   Accepted; §5.4's wording could add «or its last read failed» (release-reviewer).
-- **«This project has no workflow for {type} issues»** (panel) and the drop
+- ~~**«This project has no workflow for {type} issues»** (panel) and the drop
   refusal are false when the context dropped the type because its workflow read
   failed (backend TAS-383; API-DIVERGENCE «The project context drops a type…»).
   A wording true in both cases, e.g. «This project sent no workflow for …», is
-  art-director's call; the real fix is backend [TAS-533](https://jira.ozero.dev/browse/TAS-533) (A1, api-contract-guard).
+  art-director's call; the real fix is backend [TAS-533](https://jira.ozero.dev/browse/TAS-533) (A1, api-contract-guard).~~
+  **Closed by TAS-540** (2026-11-20): TAS-533 merged (`d6eb264`) — a failed read fails the
+  context, so the wording is true and stays.
 - **The link picker could read `GET /issues/search?projectId=…`** instead of a
   whole unwindowed board: the route exists, `query` is optional, results come
   `createdAt` desc up to 100 with the type's look and `statusKey`. Drops the
@@ -4705,6 +4707,22 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
   added, the column stays as the re-read sent it, the button can be pressed
   again, and focus that lost the button goes to the column's last card
   (release-reviewer N1).
+
+### Left by TAS-540 (catch-up to backend develop `a0499412`, 2026-11-20)
+
+- **Restore an archived project** — `POST /projects/{id}/restore` (TAS-341) works only in the native
+  tenant profile; the stand is classic and would answer 501. When the stand runs native (TAS-537):
+  a Restore action for ADMIN on the archived board's line, the Edit dialog's «Taska cannot restore
+  it.» reworded, `Project.version` typed with the mock seeding `"0"` and bumping it on `PATCH` and
+  archive, and archive sending `If-Match` + `Idempotency-Key` (required there, 428 without) and
+  keeping `version` from its answer (API-DIVERGENCE «Project restore and the archive preconditions
+  exist only in the native tenant profile»; api-contract-guard).
+- **Token probe for the classic restore answer** — `POST /projects/{random uuid}/restore` with
+  `If-Match: "0"` and a UUID `Idempotency-Key`: classic 501, native 404. Read in Java only.
+- **`ApiError.reasons` comment is false** (`RestTaskaApi.ts` ~1027-1030, «empty for every answer the
+  stand serves»): since TAS-316 classic fills `reasons` from `details.reason`
+  (`GatewayErrorHandler`). Every reader is behind `VITE_TASKA_TENANTS` — the companies session's
+  line (api-contract-guard, non-blocking 1).
 
 ### Left by TAS-512 review (company plan and usage, build review of `994ec25`, 2026-11-05)
 

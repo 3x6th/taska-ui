@@ -1749,7 +1749,11 @@ export interface TaskaApi {
    *   "Project ADMIN role is required". This route never answers
    *   `PROJECT_ARCHIVED`.
    * - **Afterwards the project leaves `GET /projects`** (and `/project-stats`)
-   *   for every caller, and nothing lists it or restores it. It stays
+   *   for every caller, and nothing lists it. `POST /projects/{id}/restore`
+   *   (backend TAS-341, develop `a0499412`) restores one only in the native
+   *   tenant profile; on the stand's classic profile it is not implemented, so
+   *   this client offers no restore (API-DIVERGENCE «Project restore and the
+   *   archive preconditions exist only in the native tenant profile»). It stays
    *   **readable** — `GET /projects/{id}`, the context, issues, the board,
    *   by-key, comments, watchers, work log, attachments — and **every write
    *   refuses** with 400 `FAILED_PRECONDITION`, "Project is archived",
@@ -1772,11 +1776,10 @@ export interface TaskaApi {
    * What the Java does that the yml does not say, and every implementation
    * reproduces:
    *
-   * - **All or nothing, except `workflows`.** Any other part failing fails the
-   *   whole response; but since backend TAS-383 (develop `e35e143e`,
-   *   `ProjectServiceImpl.loadProjectWorkflows`) a type whose workflow read
-   *   failed — any error, not only NOT_FOUND — is left out and the context
-   *   still answers 200 (docs/ai/API-DIVERGENCE.md; fix is backend TAS-533).
+   * - **All or nothing.** Any part failing fails the whole response with its
+   *   own status; a type is omitted from `workflows` only on NOT_FOUND since
+   *   backend TAS-533 (develop `d6eb264`, `ProjectServiceImpl.loadProjectWorkflows`).
+   *   The yml's description still says otherwise; the Java wins.
    * - **A non-member is refused with 403, a `GLOBAL_ADMIN` included; a
    *   missing project is 404.**
    *   At head `a1bfe19` the code intends 200 with empty members and labels (its
