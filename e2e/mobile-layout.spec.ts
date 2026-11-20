@@ -116,13 +116,17 @@ test.describe("phone portrait", () => {
 // 821-882px is not a phone width — it is the band between the old 820px
 // breakpoint that used to hide `.topbar-spacer` and the point the filtered
 // bar stops fitting on one row (883px with "Clear" showing, measured on
-// `.filterbar` in styles.css). The unfiltered bar never wraps above 820, so
-// this band only ever shows up with a filter active. Nothing in the "phone
-// portrait" describe above can see it: that block only runs on the "mobile"
-// project, whose viewport is 390px wide. This describe runs on one non-mobile
-// project instead and sets its own viewport widths, the mirror image of how
-// the block above picks its one project.
-test.describe("filter bar wrap band, 821-882px", () => {
+// `.filterbar` in styles.css). The unfiltered bar never wrapped above 820, so
+// this band only ever showed up with a filter active. Since the Done window
+// (TAS-532, §4.13: 171px more bar) it is wider and the unfiltered bar has one
+// too: Taska Platform as its ADMIN, four members, holds one row from 929px
+// unfiltered and from 1011px with a type or a label filter (measured on the
+// mock 2026-11-17). Nothing in the "phone portrait" describe above can see
+// it: that block only runs on the "mobile" project, whose viewport is 390px
+// wide. This describe runs on one non-mobile project instead and sets its own
+// viewport widths, the mirror image of how the block above picks its one
+// project.
+test.describe("filter bar wrap band, 821-1010px", () => {
   async function measureBar(page: Page) {
     const bar = page.locator(".filterbar");
     const counter = page.locator(".counter");
@@ -144,7 +148,7 @@ test.describe("filter bar wrap band, 821-882px", () => {
     };
   }
 
-  test("the counter stays flush right and the bar never scrolls sideways, 830-940px, filtered or not", async (
+  test("the counter stays flush right and the bar never scrolls sideways, 830-1040px, filtered or not", async (
     { page },
     testInfo,
   ) => {
@@ -166,7 +170,7 @@ test.describe("filter bar wrap band, 821-882px", () => {
     const typeFilter = page.getByRole("combobox", { name: "Type" });
     const clearButton = page.getByRole("button", { name: /Clear/ });
 
-    for (const width of [830, 880, 940]) {
+    for (const width of [830, 880, 940, 1040]) {
       await page.setViewportSize({ width, height: 900 });
 
       const unfiltered = await measureBar(page);
@@ -195,12 +199,12 @@ test.describe("filter bar wrap band, 821-882px", () => {
         `${width}px filtered: counter sits ${filtered.rightGap.toFixed(1)}px from the bar's content right edge`,
       ).toBeLessThanOrEqual(20);
 
-      // 940 is comfortably past both wrap points (791 / 883), filtered and
-      // not, so §2.7's 46 is a hard floor here rather than a "some row wraps
-      // and it grows" case.
-      if (width === 940) {
-        expect(unfiltered.height, "940px unfiltered: the bar is not one row of §2.7's floor").toBe(46);
-        expect(filtered.height, "940px filtered: the bar is not one row of §2.7's floor").toBe(46);
+      // 1040 is comfortably past both wrap points (929 / 1011, with the Done
+      // window), filtered and not, so §2.7's 46 is a hard floor here rather
+      // than a "some row wraps and it grows" case.
+      if (width === 1040) {
+        expect(unfiltered.height, "1040px unfiltered: the bar is not one row of §2.7's floor").toBe(46);
+        expect(filtered.height, "1040px filtered: the bar is not one row of §2.7's floor").toBe(46);
       }
 
       await typeFilter.selectOption("");

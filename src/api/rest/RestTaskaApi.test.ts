@@ -2698,6 +2698,7 @@ describe("RestTaskaApi board", () => {
       priority: "HIGH",
       query: "Board",
       pageSizePerColumn: 200,
+      doneSince: "2026-11-03T09:30:00.000Z",
     });
 
     const url = new URL(String(fetchStub.mock.calls[0][0]), "http://localhost");
@@ -2709,7 +2710,11 @@ describe("RestTaskaApi board", () => {
       priority: "HIGH",
       query: "Board",
       pageSizePerColumn: "200",
+      // Backend TAS-525: as given — the board screen's Done window «2 weeks».
+      doneSince: "2026-11-03T09:30:00.000Z",
     });
+    // Encoded on the wire: the `:` of an instant is escaped by URLSearchParams.
+    expect(String(fetchStub.mock.calls[0][0])).toContain("&doneSince=2026-11-03T09%3A30%3A00.000Z");
 
     // `false` is the same request as saying nothing. `query` goes as given —
     // the board screen trims it and never sends a blank one; the gateway
@@ -2864,6 +2869,39 @@ describe("RestTaskaApi board", () => {
       unplacedIssues: [],
       unplacedTotalCount: null,
       unplacedHasMore: null,
+    });
+  });
+
+  // Backend TAS-525: a done column continues after `afterUpdatedAt`, with the
+  // board's `doneSince`; both as given.
+  it("asks for a done column's page after an updatedAt cursor, with the board's doneSince", async () => {
+    const fetchStub = stubFetch({ statusKey: "DONE", issues: [], totalCount: 0, hasMore: false });
+
+    await new RestTaskaApi().getBoardColumnPage("project-1", "DONE", {
+      afterUpdatedAt: "2026-11-16T10:00:00Z",
+      afterId: "7a1b2c3d-0000-4000-8000-000000000101",
+      includeDone: true,
+      pageSize: 200,
+      doneSince: "2026-11-03T09:30:00.000Z",
+    });
+
+    expect(fetchStub.mock.calls[0][0]).toBe(
+      "/api/v1/projects/project-1/board/columns/DONE/issues?afterUpdatedAt=2026-11-16T10%3A00%3A00Z&afterId=7a1b2c3d-0000-4000-8000-000000000101&includeDone=true&pageSize=200&doneSince=2026-11-03T09%3A30%3A00.000Z",
+    );
+
+    // Both instants together go as given too: refusing them is the gateway's
+    // controller's, in its words (`BOARD_CURSOR_PAIR_MESSAGE`).
+    vi.unstubAllGlobals();
+    const both = stubFetch({ statusKey: "DONE", issues: [], totalCount: 0, hasMore: false });
+    await new RestTaskaApi().getBoardColumnPage("project-1", "DONE", {
+      afterCreatedAt: "2026-01-01T00:00:00Z",
+      afterUpdatedAt: "2026-11-16T10:00:00Z",
+      afterId: "7a1b2c3d-0000-4000-8000-000000000101",
+    });
+    expect(Object.fromEntries(new URL(String(both.mock.calls[0][0]), "http://localhost").searchParams)).toEqual({
+      afterCreatedAt: "2026-01-01T00:00:00Z",
+      afterUpdatedAt: "2026-11-16T10:00:00Z",
+      afterId: "7a1b2c3d-0000-4000-8000-000000000101",
     });
   });
 
