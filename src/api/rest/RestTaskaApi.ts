@@ -1982,7 +1982,12 @@ export class RestTaskaApi implements TaskaApi {
 
   /**
    * `DELETE /projects/{projectId}` — see `TaskaApi.archiveProject`. No body:
-   * the route takes none. The answer is the archived project as stored, passed
+   * the route takes none. No `If-Match` and no `Idempotency-Key` either — both
+   * are optional on the stand's classic profile, which does not compare them (a
+   * malformed one is still refused 400 by the gateway), and required only in
+   * the native tenant profile (API-DIVERGENCE «Project restore
+   * and the archive preconditions exist only in the native tenant profile»).
+   * The answer is the archived project as stored, passed
    * through as the reads pass theirs, `currentUserRole: "ADMIN"` included —
    * the caller decides what to keep from it, and the edit dialog keeps only
    * `archivedAt`.

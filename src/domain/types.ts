@@ -822,11 +822,10 @@ export interface CreatedProjectIssueType extends ProjectIssueType {
  * the project again for the role, the members, a workflow per issue type and
  * the labels).
  *
- * All or nothing except `workflows`: any other part that
- * fails fails the whole response, but since backend TAS-383 (develop
- * `e35e143e`, `ProjectServiceImpl.loadProjectWorkflows`) a type whose workflow
- * read failed, for any reason, is left out and the context still answers 200
- * (docs/ai/API-DIVERGENCE.md; removal is backend TAS-533). A non-member is refused with 403 — a
+ * All or nothing, `workflows` included since backend TAS-533 (develop
+ * `d6eb264`): any part that fails fails the whole response with its own
+ * status, and a type is left out of `workflows` only when its workflow is
+ * NOT_FOUND. A non-member is refused with 403 — a
  * `GLOBAL_ADMIN` included — and a missing project is 404.
  * At head `a1bfe19` the code intends 200 with empty members and labels (its
  * TODO says so), but the labels leg's denial arrives from issue-service as a
@@ -862,10 +861,9 @@ export interface ProjectContext {
   issueTypes: ProjectIssueType[];
   /**
    * Keyed by issue type: one entry per type of the registry (backend #226),
-   * its own binding or the shared default — except a type whose workflow read
-   * failed on the server, which since backend TAS-383 is left out of a 200
-   * (docs/ai/API-DIVERGENCE.md; fix is backend TAS-533). So a type that is not
-   * here is not proof that the project offers none. Keyed by the code as
+   * its own binding or the shared default — except a type whose workflow is
+   * NOT_FOUND, which is left out. A failed read fails the whole context
+   * (backend TAS-533), so a type that is not here *is* «no workflow». Keyed by the code as
    * sent, a type this build
    * has no name for included (TAS-173); only an entry with no type at all (the
    * wire's `null`) is dropped by the API layer. Read through `workflowFor`

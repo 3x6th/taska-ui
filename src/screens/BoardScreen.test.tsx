@@ -703,9 +703,10 @@ const {
     // The board's one frame read since TAS-251, composed from the same state
     // the five separate reads below were. All or nothing: a failure or a hold
     // of any part is a failure or a hold of the whole, so each knob these tests
-    // turn turns the one read. `workflowFailure` models a failed context, not
-    // a failed per-type workflow read, which the server answers with a 200
-    // without the type (covered by the "no workflow for task issues" tests).
+    // turn turns the one read. The server now fails the whole context on a
+    // failed per-type workflow read (TAS-533), so `workflowFailure` models
+    // exactly that; a type with no workflow (NOT_FOUND) is the 200-without-the-
+    // type case covered by the "no workflow for task issues" tests.
     getProjectContext: async (projectId: string) => {
       state.membersReads += 1;
       if (state.projectHeld || state.membershipHeld || state.membersHeld) return new Promise(() => {});
@@ -3012,7 +3013,7 @@ describe("a board that could not read its workflow", () => {
 
     const alerts = await screen.findAllByRole("alert", undefined, AFTER_RETRY);
     // One banner since TAS-251: the workflow knob models a failed context
-    // read (not a per-type workflow read, which the server answers with a 200).
+    // read, which is what a failed per-type workflow read does since TAS-533.
     expect(alerts.some((alert) => /labels and workflow are missing/i.test(alert.textContent ?? ""))).toBe(true);
     expect(screen.getByRole("button", { name: /Copy request id 0b41d8a2-77c4-4a1f/ })).toBeVisible();
 
