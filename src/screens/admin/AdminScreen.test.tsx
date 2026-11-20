@@ -827,15 +827,23 @@ describe("/admin sections under construction", () => {
   });
 
   // The section body is replaced under a keyboard that stayed in the rail, and
-  // a screen reader is told nothing at all unless focus moves (§7).
-  it("moves focus to the heading of the section it navigated to", async () => {
+  // a screen reader is told nothing at all unless focus moves (§7). A pointer
+  // or a tap moves none: the ring would circle a heading only tapped (§5.9).
+  it("moves focus to the heading of the section the keyboard navigated to, and not after a pointer click", async () => {
     renderAdmin("/admin/data/auth/users");
     const rail = await screen.findByRole("navigation", { name: "Administration" });
 
-    fireEvent.click(within(rail).getByRole("link", { name: "Audit" }));
+    const audit = within(rail).getByRole("link", { name: "Audit" });
+    audit.focus();
+    fireEvent.click(audit, { detail: 1 });
+    expect(await screen.findByRole("heading", { level: 1, name: /Administration.*Audit/ })).not.toHaveFocus();
 
-    const heading = await screen.findByRole("heading", { level: 1, name: /Administration.*Audit/ });
-    expect(heading).toHaveFocus();
+    // Enter on a link is a keydown, then a click with no click count.
+    const users = within(rail).getByRole("link", { name: "Users" });
+    users.focus();
+    fireEvent.keyDown(users, { key: "Enter" });
+    fireEvent.click(users, { detail: 0 });
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Administration.*Users/ })).toHaveFocus());
   });
 });
 
