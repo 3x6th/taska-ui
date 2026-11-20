@@ -4379,6 +4379,10 @@ Round 1 on `e08eb4a`: release-reviewer REQUEST CHANGES (docs only), api-contract
 - **The steps fail on the stand until the backend accepts real clients** — not a frontend defect, the intended flow per «No compensations»: Claude's automatic registration and ChatGPT's CIMD are refused ([TAS-466](https://jira.ozero.dev/browse/TAS-466) and its comment); Cursor's DCR with its two documented redirects answers 201 (probe, client «Cursor») but no real Cursor run yet; `cursor://` would be refused. Today claude.ai is connected through a manually registered public client. Re-run all three from the guide once TAS-466 lands.
 - **«via MCP» on the stand** (was under *Left by TAS-412*): `VITE_TASKA_MCP_URL` is set (2026-11-02) and claude.ai's MCP `whoami` answers with `token_kind: OAUTH`; the claude.ai grant is `read`, so no MCP write has been made yet — the mark still needs one write through a write-scoped client.
 
+### Left by TAS-414 touch focus (focus without the ring after a pointer, 2026-11-20)
+
+- **Other programmatic `h1` focus sites are not on the §7 «Программный фокус после указателя» rule yet** (art-director, not measured): the `.notfound-title` fallback, `.auth-title`, and the in-place outcomes of §4.37 and §4.38 still call `focus()` without `focusVisible`, so WebKit probably rings them after a tap or a mouse press the way `SectionArea` did before TAS-414. Measure in WebKit, then pass `focusVisible: false` after a pointer where it rings.
+
 ### Left by TAS-464 (the frontend for backend TAS-440, TAS-443 and TAS-444, develop `af7ab57e`, 2026-11-02)
 
 - **Two reasons are still only in the Java** (yml at `af7ab57e`): `ISSUE_TYPE_TARGET_INVALID` (400, `IssueTypeDeletionTransactions`) and `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT` (400, `WorkflowBindingTransactions`). The client branches on both — `isIssueTypeTargetInvalid` re-reads the registry and restarts the step, `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT_REASON` in Workflows — so it depends on reasons the contract does not state (API-DIVERGENCE «contract silent»); in the backend ask [TAS-465](https://jira.ozero.dev/browse/TAS-465), with the `/users` 503 and the create's binding reasons.
