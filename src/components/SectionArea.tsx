@@ -1,6 +1,6 @@
 import { ArrowLeft, type LucideIcon } from "lucide-react";
 import { useEffect, useId, useRef, type ReactNode } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 
 /** One section of an area: what the rail links to and the heading names. */
 export interface AreaSection {
@@ -11,30 +11,18 @@ export interface AreaSection {
 }
 
 /**
- * A named group of sections under the area's own (TAS-502, DESIGN.md §5.9
- * «Сборка B2B — группа «Company»»): behind a divider, under its label — a
- * `role="group"` named by it, the label visually hidden below 900 where the
- * rail is a strip.
- */
-export interface AreaSectionGroup {
-  id: string;
-  label: string;
-  sections: readonly AreaSection[];
-}
-
-/**
  * An area with sections rather than a screen (DESIGN.md §5.8): the rail on the
  * left, the section's heading, and the section's own body under it. Written
  * once for `/admin` and `/settings` (TAS-380, art-director's ruling 3) — the
  * rail, its exit and the heading are one recipe, and two copies of it are how
- * the second area's rail would come to drift from the first's.
+ * the second area's rail would come to drift from the first's. The B2B
+ * build's `/company` (TAS-522, §5.10) is the third.
  *
  * It stays inside the app shell (§5.1): the caller draws the top bar above it.
  */
 export function SectionArea({
   name,
   sections,
-  groups = [],
   current,
   aside,
   className,
@@ -43,8 +31,6 @@ export function SectionArea({
   /** The area's own name: the rail's `aria-label` and the crumb in the heading. */
   name: string;
   sections: readonly AreaSection[];
-  /** Groups of sections after the area's own, each behind a divider under its label. */
-  groups?: readonly AreaSectionGroup[];
   /** The section the router is showing. */
   current: AreaSection;
   /** Beside the heading, on its baseline — the admin's `read-only` marker. */
@@ -54,13 +40,14 @@ export function SectionArea({
   children: ReactNode;
 }) {
   const headingId = useId();
-  const groupId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const railRef = useRef<HTMLElement>(null);
   const lastSectionId = useRef<string | null>(null);
+  const location = useLocation();
+  const focusHeading = (location.state as { focusHeading?: unknown } | null)?.focusHeading === true;
   // Whether the last press anywhere in the page was a pointer's or a key's: it
   // decides only whether the heading's ring is drawn, never whether the
-  // heading takes focus (the effect below). Anywhere in the page, not only
+  // heading takes focus (the effects below). Anywhere in the page, not only
   // inside the area, because a section change can start outside it — the top
   // bar's profile menu leads to «Settings» and «Administration» from any
   // section — and a press there that the area never saw would leave the last
@@ -125,23 +112,40 @@ export function SectionArea({
     headingRef.current?.focus({ focusVisible: !lastInputWasPointer.current });
   }, [current]);
 
+  useEffect(() => {
+    // An arrival that asks for the heading (`state.focusHeading`): «Manage
+    // company» in the switcher (§4.34) or, below 768, in the profile menu
+    // (§4.16, §5.10), as «All companies» puts it on the picker's. The popover
+    // it came from has closed and taken focus with it, so without this focus
+    // would fall to <body>. Per navigation rather than per mount, so it holds
+    // when the area is already on screen — even on the very section the link
+    // lands on, where no section changes. Plain `focus()`, not the tracker's
+    // `focusVisible`: the tracker attaches only after the area mounts, so a
+    // press made before the area existed is never seen, and the ring is left to
+    // the browser, which draws none after a click in Chrome and Firefox.
+    if (focusHeading) headingRef.current?.focus();
+  }, [location.key, focusHeading]);
+
   return (
     <div className={className ? `area ${className}` : "area"}>
       <nav aria-label={name} className="area-rail" ref={railRef}>
-        <RailLinks sections={sections} />
-        {groups.map((group) => (
-          <div
-            aria-labelledby={`${groupId}-${group.id}`}
-            className="area-rail-group"
-            key={group.id}
-            role="group"
-          >
-            <p className="area-rail-group-label" id={`${groupId}-${group.id}`}>
-              {group.label}
-            </p>
-            <RailLinks sections={group.sections} />
-          </div>
-        ))}
+        <ul>
+          {sections.map((item) => {
+            const Icon = item.icon;
+            return (
+              <li key={item.id}>
+                {/* NavLink rather than Link: it states `aria-current="page"`
+                    from the match itself, so the rail cannot claim a section
+                    the router is not showing. Prefix matching is what keeps
+                    Data marked while a table is open. */}
+                <NavLink className="area-rail-link" to={item.path}>
+                  <Icon aria-hidden="true" size={15} />
+                  {item.label}
+                </NavLink>
+              </li>
+            );
+          })}
+        </ul>
         {/* The way out of the area belongs to the area, not to whichever
             section happens to be open (§5.8). */}
         <div className="area-rail-foot">
@@ -161,8 +165,8 @@ export function SectionArea({
               announced as the bare section name. The crumb is text, not a link,
               because the area's own address only redirects into a section.
 
-              tabIndex -1 so the effect above can put focus here, with or
-              without the ring as it decides; it is not in the tab order. */}
+              tabIndex -1 so the effects above can put focus here, with or
+              without the ring as they decide; it is not in the tab order. */}
           <h1 className="area-section-title" id={headingId} ref={headingRef} tabIndex={-1}>
             <span className="area-crumb">
               {name}
@@ -175,27 +179,5 @@ export function SectionArea({
         {children}
       </section>
     </div>
-  );
-}
-
-function RailLinks({ sections }: { sections: readonly AreaSection[] }) {
-  return (
-    <ul>
-      {sections.map((item) => {
-        const Icon = item.icon;
-        return (
-          <li key={item.id}>
-            {/* NavLink rather than Link: it states `aria-current="page"`
-                from the match itself, so the rail cannot claim a section
-                the router is not showing. Prefix matching is what keeps
-                Data marked while a table is open. */}
-            <NavLink className="area-rail-link" to={item.path}>
-              <Icon aria-hidden="true" size={15} />
-              {item.label}
-            </NavLink>
-          </li>
-        );
-      })}
-    </ul>
   );
 }

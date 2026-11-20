@@ -25,9 +25,9 @@ import { CompanySetupScreen } from "../screens/CompanySetupScreen";
 import { NotFoundScreen } from "../screens/NotFoundScreen";
 import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
 import type { CompaniesRouteState } from "../screens/CompaniesScreen";
-import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey } from "../screens/settings/companyGeneral";
-import { COMPANY_QUOTAS_KEY } from "../screens/settings/companyMembersQuery";
-import { COMPANY_ENTITLEMENT_KEY, refreshAfterRefusal, type CompanyMutationMeta } from "../screens/settings/companyPlan";
+import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey } from "../screens/company/companyGeneral";
+import { COMPANY_QUOTAS_KEY } from "../screens/company/companyMembersQuery";
+import { COMPANY_ENTITLEMENT_KEY, refreshAfterRefusal, type CompanyMutationMeta } from "../screens/company/companyPlan";
 
 /*
  * The company session of a tab (TAS-500): the address names a company, this
@@ -46,12 +46,17 @@ import { COMPANY_ENTITLEMENT_KEY, refreshAfterRefusal, type CompanyMutationMeta 
  * A paused or blocked company whose content a read found closed (TAS-504,
  * api-contract-guard B2, §4.35) keeps its session and its cache: §4.35's
  * statement replaces only the content routes — Projects, a board, an issue,
- * `/browse/…` — and never Settings, where its owner can resume it. A `Tenant`
+ * `/browse/…` — and never Settings or the Company zone (TAS-522, §5.10), whose
+ * General is where its owner can resume it. A `Tenant`
  * answer without the pause or the block, or a content read that answers,
  * lifts the mark (`onWorkspaceRestricted`).
  */
 
-/** The routes of a company's project content (§4.35), as the router inside the prefix sees them. */
+/**
+ * The routes of a company's project content (§4.35), as the router inside the
+ * prefix sees them. An allow-list on purpose: a route not named here — the
+ * Company zone among them (§5.10) — is never replaced by the statement.
+ */
 const isContentRoute = (pathname: string) =>
   pathname === "/projects" || pathname.startsWith("/projects/") || pathname.startsWith("/browse/");
 

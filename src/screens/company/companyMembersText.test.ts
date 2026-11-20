@@ -19,7 +19,7 @@ import {
 } from "./companyMembersText";
 
 /*
- * Every sentence of Settings › Members (DESIGN.md §4.38, TAS-502) — the seat
+ * Every sentence of Company › Members (DESIGN.md §4.38, TAS-502) — the seat
  * line from the server's numbers, the strips' true sentences with the
  * invitations phrase, and the refusal table by Problem.code.
  */

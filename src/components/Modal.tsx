@@ -31,7 +31,7 @@ interface ModalProps {
   titleRef?: Ref<HTMLHeadingElement>;
   /**
    * The same dialog, drawn again by a new context of the page it belongs to —
-   * Settings › General's transfer, still in flight across the company's
+   * Company › General's transfer, still in flight across the company's
    * re-entry (TAS-504, §4.11, §4.39): it is not opening, so neither its panel
    * nor its scrim enters again.
    */

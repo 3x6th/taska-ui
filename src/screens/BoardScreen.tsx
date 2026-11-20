@@ -16,7 +16,7 @@ import { useCompanyMarker, useCompanyName } from "../hooks/useCompanies";
 import { useAccountQueryClient, useCompanyAddress } from "../lib/companyAddress";
 import { companyWriteRefusalText, quotaRefusalText, writeRefusalText } from "../lib/companyRestrictions";
 import { CompanyMarkerWord } from "../components/CompanyMarkerWord";
-import { refreshAfterRefusal } from "./settings/companyPlan";
+import { refreshAfterRefusal } from "./company/companyPlan";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Shapes, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
 import {
   useEffect,

@@ -5,9 +5,8 @@ import { SectionArea } from "../../components/SectionArea";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import { TopBar } from "../../components/TopBar";
 import type { Theme } from "../../hooks/useTheme";
-import { useCompanyAddress } from "../../lib/companyAddress";
 import type { ScreenProps } from "../App";
-import { companySettingsGroup, settingsSectionForPath, settingsSections, type SettingsOutletContext } from "./sections";
+import { settingsSectionForPath, settingsSections, type SettingsOutletContext } from "./sections";
 
 interface SettingsScreenProps extends ScreenProps {
   setTheme: (theme: Theme) => void;
@@ -29,11 +28,9 @@ export function SettingsScreen({ theme, toggleTheme, setTheme, onLogout, logoutP
     queryKey: ["me"],
     queryFn: () => taskaApi.getCurrentUser(),
   });
-  // The B2B build adds the «Company» group (TAS-502, §5.9), for every role.
-  const groups = useCompanyAddress() !== null ? [companySettingsGroup] : [];
   // `/settings` itself renders for the single tick before its index route
   // redirects into My profile; the heading names that section meanwhile.
-  const section = settingsSectionForPath(location.pathname, groups) ?? settingsSections[0];
+  const section = settingsSectionForPath(location.pathname) ?? settingsSections[0];
 
   return (
     <main className="page-shell">
@@ -44,7 +41,7 @@ export function SettingsScreen({ theme, toggleTheme, setTheme, onLogout, logoutP
         loggingOut={logoutPending}
         onLogout={onLogout}
       />
-      <SectionArea className="settings-area" current={section} groups={groups} name="Settings" sections={settingsSections}>
+      <SectionArea className="settings-area" current={section} name="Settings" sections={settingsSections}>
         <Outlet context={{ theme, setTheme } satisfies SettingsOutletContext} />
       </SectionArea>
     </main>

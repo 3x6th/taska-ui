@@ -21,7 +21,7 @@ import { useUnanswered } from "../hooks/useUnanswered";
 import { PROJECT_STATS_KEY, projectStatsQueryOptions } from "../lib/boardQuery";
 import { companyWriteRefusalText } from "../lib/companyRestrictions";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
-import { QUOTA_WRITE_META } from "./settings/companyPlan";
+import { QUOTA_WRITE_META } from "./company/companyPlan";
 import type { ScreenProps } from "./App";
 
 export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {

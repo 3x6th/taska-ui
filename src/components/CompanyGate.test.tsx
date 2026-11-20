@@ -8,9 +8,9 @@ import { ForeignCompanyAnswerError } from "../api/tenants";
 import { useCompanyMarker } from "../hooks/useCompanies";
 import { useMutation } from "../hooks/useMutation";
 import { createQueryClient } from "../lib/queryClient";
-import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey, companyTenantOptions } from "../screens/settings/companyGeneral";
-import { COMPANY_QUOTAS_KEY, retryUnanswered } from "../screens/settings/companyMembersQuery";
-import { COMPANY_ENTITLEMENT_KEY, QUOTA_WRITE_META } from "../screens/settings/companyPlan";
+import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey, companyTenantOptions } from "../screens/company/companyGeneral";
+import { COMPANY_QUOTAS_KEY, retryUnanswered } from "../screens/company/companyMembersQuery";
+import { COMPANY_ENTITLEMENT_KEY, QUOTA_WRITE_META } from "../screens/company/companyPlan";
 import { companiesHarness } from "../test/companiesHarness";
 import { CompanyGate } from "./CompanyGate";
 

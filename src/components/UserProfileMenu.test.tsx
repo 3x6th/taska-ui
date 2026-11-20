@@ -431,6 +431,8 @@ describe("UserProfileMenu", () => {
       }
       // The photo controls left with TAS-380; nothing else did.
       expect(screen.queryByRole("button", { name: /photo/ })).not.toBeInTheDocument();
+      // The companies build's «Manage company» (TAS-522) is not this build's, at any width.
+      expect(screen.queryByRole("link", { name: "Manage company" })).not.toBeInTheDocument();
     });
 
     it.each(["/settings", "/settings/profile", "/settings/appearance"])("says it is the current page on %s", (path) => {

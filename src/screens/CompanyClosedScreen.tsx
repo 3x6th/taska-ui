@@ -21,8 +21,9 @@ import { COMPANIES_ROUTE, closedCompanyReason, closedCompanyWords } from "../lib
  * Since TAS-504 it is also the paused or blocked company's statement on its
  * content routes (the session kept, api-contract-guard B2): to its owner —
  * `owner`, the list row's `ownerId` — the pause's and the block's rows say so,
- * and the way on is the company's settings, where Resume is, with «Choose a
- * company» beside it; no «Log out» — it is one step away in the profile menu.
+ * and the way on is «Manage company», the Company zone's General (TAS-522,
+ * §5.10), where Resume is, with «Choose a company» beside it; no «Log out» —
+ * it is one step away in the profile menu.
  */
 export function CompanyClosedScreen({
   name,
@@ -63,8 +64,11 @@ export function CompanyClosedScreen({
         ) : null}
         {ownersRow ? (
           <div className="issue-key-actions">
-            <Link className="primary-button notfound-action" to="/settings/company">
-              Open company settings
+            {/* The same word and the same arrival as the switcher's entry
+                (§4.34): this screen goes with the click, so the zone's heading
+                takes the focus rather than <body>. */}
+            <Link className="primary-button notfound-action" state={{ focusHeading: true }} to="/company/general">
+              Manage company
             </Link>
             <AddressLink className="secondary-button company-closed-secondary" path={COMPANIES_ROUTE} state={{ focusHeading: true }}>
               Choose a company

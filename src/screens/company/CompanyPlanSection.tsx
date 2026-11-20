@@ -40,7 +40,7 @@ import {
 import { CompanyStateBlock } from "./CompanyStateBlock";
 
 /**
- * Settings › Plan (TAS-512, DESIGN.md §4.40) — the B2B build only: the plan
+ * Company › Plan (TAS-512, DESIGN.md §4.40, §5.10) — the B2B build only: the plan
  * the tab's company is on, what it uses, its restrictions, and for its owner
  * the money. Every role sees it; the page only reads.
  *
@@ -62,7 +62,7 @@ import { CompanyStateBlock } from "./CompanyStateBlock";
  *   refused write (both in `CompanyGate`), and once at the owner's
  *   paid-through or announced date, again 60 s later. No poll.
  */
-export function SettingsPlanSection() {
+export function CompanyPlanSection() {
   const address = useCompanyAddress();
   if (address?.companyId == null) return null;
   return <CompanyPlan companyId={address.companyId} />;

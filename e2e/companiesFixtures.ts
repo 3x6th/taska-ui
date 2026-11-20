@@ -89,6 +89,35 @@ export async function switchCompany(page: Page, name: string, isMobile: boolean)
   await companyRow(page, new RegExp(`^${name}`)).click();
 }
 
+/** A section of the Company zone (TAS-522, DESIGN.md §5.10), in its rail's order. */
+export type ZoneSection = "General" | "Members" | "Plan";
+
+const zonePath = (section: ZoneSection) => `/company/${section.toLowerCase()}`;
+
+/**
+ * Opens a section of the tab's company's zone (TAS-522, DESIGN.md §5.10) the
+ * way a reader does at this width: «Manage company» — the switcher's at 768
+ * and wider, the profile menu's below, where the bar has no switcher (§4.16) —
+ * which lands on General with focus on its heading, then the zone's rail.
+ * Both are router links, so nothing is reloaded on the way.
+ */
+export async function openCompanyZone(page: Page, companyId: string, section: ZoneSection = "General") {
+  if ((page.viewportSize()?.width ?? 0) >= 768) {
+    await page.locator(".company-switcher-trigger").click();
+    await page.getByRole("dialog", { name: "Companies" }).getByRole("link", { name: "Manage company" }).click();
+  } else {
+    await page.getByRole("button", { name: /Open profile/ }).click();
+    await page.getByRole("dialog", { name: "Current user profile" }).getByRole("link", { name: "Manage company" }).click();
+  }
+  await expect(page).toHaveURL(companyPath(companyId, "/company/general"));
+  await expect(page.getByRole("heading", { level: 1, name: /General/ })).toBeFocused();
+  const rail = page.getByRole("navigation", { name: "Company" });
+  await expect(rail.getByRole("link")).toHaveText(["General", "Members", "Plan", "Back to projects"]);
+  if (section !== "General") await rail.getByRole("link", { name: section }).click();
+  await expect(page).toHaveURL(companyPath(companyId, zonePath(section)));
+  await expect(rail.getByRole("link", { name: section })).toHaveAttribute("aria-current", "page");
+}
+
 /** Writes the companies mock's test hooks into the shared storage (src/api/mock/MockTenantServer.ts). */
 export async function setHooks(page: Page, hooks: Record<string, unknown> | null) {
   await page.evaluate((value) => {

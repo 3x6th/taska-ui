@@ -5,7 +5,7 @@ import { formatWait } from "../authText";
 import { formatDeadline } from "../companySetupText";
 
 /*
- * The words of Settings › Members (TAS-502, DESIGN.md §4.38) as pure values,
+ * The words of Company › Members (TAS-502, DESIGN.md §4.38) as pure values,
  * so every sentence is pinned by a unit test. The UI says «company», «Admin»,
  * «Member», «Owner» — never «tenant», «team» or «workspace» (§4.33). A
  * sentence names the company by the reader's list, else «this company».

@@ -5,7 +5,7 @@ import { formatWait } from "../authText";
 import { formatDeadline } from "../companySetupText";
 
 /*
- * The words of Settings › General (TAS-504, DESIGN.md §4.39) as pure values,
+ * The words of Company › General (TAS-504, DESIGN.md §4.39) as pure values,
  * so every sentence is pinned by a unit test. The UI says «company», «owner»,
  * «Transfer ownership» — never «tenant», «workspace» or «team» (§4.33). A
  * sentence names the company by `getTenant`, else the reader's list, else

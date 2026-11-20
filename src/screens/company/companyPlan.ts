@@ -8,7 +8,7 @@ import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey } from "./companyGeneral";
 import { COMPANY_QUOTAS_KEY, retryUnanswered } from "./companyMembersQuery";
 
 /*
- * Settings › Plan (TAS-512, DESIGN.md §4.40) — its reads and when they are
+ * Company › Plan (TAS-512, DESIGN.md §4.40) — its reads and when they are
  * read again, on the company session's own query client (so the keys carry
  * no company except `["tenant", companyId]`, TAS-501's). The page reads five
  * things in parallel for the owner and four for everybody else

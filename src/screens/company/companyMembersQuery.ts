@@ -5,7 +5,7 @@ import { ForeignCompanyAnswerError } from "../../api/tenants";
 import { isIndefinite } from "./companyMembers";
 
 /*
- * Settings › Members' three reads (TAS-502, api-contract-guard §4, §8), on
+ * Company › Members' three reads (TAS-502, api-contract-guard §4, §8), on
  * the company session's own query client — so the keys carry no company: a
  * company is a client of its own, and nothing cached under one session is
  * read under another (DESIGN.md §6).
