@@ -2017,7 +2017,12 @@ export class RestTaskaApi implements TaskaApi {
 
   /**
    * `DELETE /projects/{projectId}` — see `TaskaApi.archiveProject`. No body:
-   * the route takes none. The answer is the archived project as stored, passed
+   * the route takes none. No `If-Match` and no `Idempotency-Key` either — both
+   * are optional on the stand's classic profile, which does not compare them (a
+   * malformed one is still refused 400 by the gateway), and required only in
+   * the native tenant profile (API-DIVERGENCE «Project restore
+   * and the archive preconditions exist only in the native tenant profile»).
+   * The answer is the archived project as stored, passed
    * through as the reads pass theirs, `currentUserRole: "ADMIN"` included —
    * the caller decides what to keep from it, and the edit dialog keeps only
    * `archivedAt`.
@@ -2279,7 +2284,9 @@ export class RestTaskaApi implements TaskaApi {
    * set, `includeDone` only when `true` — `false` is the server's default, so
    * sending it would add a parameter that never changes an answer — and `query`
    * only when it is not blank, because the contract's `minLength: 1` refuses
-   * an empty one. The board screen sends `includeDone=true` and nothing else.
+   * an empty one. `doneSince` (backend TAS-525) only when given, as given: the
+   * board screen sends it under the Done window «2 weeks» and not under «All»
+   * (DESIGN.md §4.13), and absent is the server's "no cut".
    */
   async getBoard(projectId: string, params: BoardParams = {}): Promise<Board> {
     const search = new URLSearchParams();
@@ -2292,6 +2299,7 @@ export class RestTaskaApi implements TaskaApi {
     // mock does. The board screen never sends a blank one.
     if (params.query !== undefined) search.set("query", params.query);
     if (params.pageSizePerColumn !== undefined) search.set("pageSizePerColumn", String(params.pageSizePerColumn));
+    if (params.doneSince !== undefined) search.set("doneSince", params.doneSince);
     const response = await this.request<RestBoardResponse>(
       `/projects/${this.segment(projectId)}/board${this.query(search)}`,
     );
@@ -2300,14 +2308,17 @@ export class RestTaskaApi implements TaskaApi {
 
   /**
    * `GET /projects/{projectId}/board/columns/{statusKey}/issues` (backend
-   * TAS-430). The cursor first, then the filters by the board read's own rule —
-   * each only when it says something, `includeDone` only when `true`, `query`
-   * as given — then the page size. Half a cursor is sent as given: refusing it
-   * is the server's, in its words.
+   * TAS-430, TAS-525). The cursor first — `afterCreatedAt` or
+   * `afterUpdatedAt`, whichever is given, then `afterId` — then the filters by
+   * the board read's own rule — each only when it says something,
+   * `includeDone` only when `true`, `query` as given — then the page size and
+   * `doneSince`. A cursor that is half, double or of the other category's kind
+   * is sent as given: refusing it is the server's, in its words.
    */
   async getBoardColumnPage(projectId: string, statusKey: string, params: BoardColumnPageParams = {}): Promise<BoardColumnPage> {
     const search = new URLSearchParams();
     if (params.afterCreatedAt !== undefined) search.set("afterCreatedAt", params.afterCreatedAt);
+    if (params.afterUpdatedAt !== undefined) search.set("afterUpdatedAt", params.afterUpdatedAt);
     if (params.afterId !== undefined) search.set("afterId", params.afterId);
     if (params.issueType) search.set("issueType", params.issueType);
     if (params.assigneeId) search.set("assigneeId", params.assigneeId);
@@ -2316,6 +2327,7 @@ export class RestTaskaApi implements TaskaApi {
     if (params.priority) search.set("priority", params.priority);
     if (params.query !== undefined) search.set("query", params.query);
     if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
+    if (params.doneSince !== undefined) search.set("doneSince", params.doneSince);
     const response = await this.request<RestBoardColumnPage>(
       `/projects/${this.segment(projectId)}/board/columns/${this.segment(statusKey)}/issues${this.query(search)}`,
     );

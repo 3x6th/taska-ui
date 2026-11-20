@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef } from "react";
+import { Link } from "react-router-dom";
 import { apiErrorFacts, isDisplayNameInvalid, isSignupDisabled } from "../api/errors";
 import { ErrorNote } from "../components/ErrorNote";
 import { ProviderChoices } from "../components/ProviderChoices";
+import type { LoginRedirectState } from "../components/RequireSession";
 import type { OAuthProvider } from "../domain/types";
 import { retryAfterSeconds } from "./admin/users";
 import { NAME_HINT, SIGNUP_CLOSED_TEXT, formatCountdown, tooManyAttemptsText } from "./authText";
@@ -146,7 +148,22 @@ export function SignupPanel({
           {request.isPending ? "Sending" : "Continue"}
         </button>
         {request.isError ? <SignupFailure error={request.error} key={request.submittedAt} /> : null}
-        <p className="auth-hint">Invited by your team? Use the link in your invitation email instead.</p>
+        {/* With sign-up open `/login` has no Accept invite tab (§4.31), so the
+            token's form is one link away (TAS-467): a push, so Back returns
+            here, and the router's own href, so the hash build gets `#/invite`.
+            The quiet link of Settings › Connected apps' note, kept whole on
+            its line; `enterToken` puts focus in the token field on arrival. */}
+        <p className="auth-hint">
+          Invited by your team? Use the link in your invitation email, or{" "}
+          <Link
+            className="admin-note-link auth-hint-link"
+            state={{ enterToken: true } satisfies LoginRedirectState}
+            to="/invite"
+          >
+            enter your invitation token
+          </Link>
+          .
+        </p>
       </form>
       <ProviderChoices onStart={onProviderStart} providers={providers} returnTo={returnTo} tab="signup" />
     </>

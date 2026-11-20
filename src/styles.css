@@ -638,6 +638,28 @@ input::-webkit-calendar-picker-indicator {
   text-align: center;
 }
 
+/* «enter your invitation token» under Create account (TAS-467): the shared
+   quiet link (`.admin-note-link`), kept whole. Free to wrap, it broke inside
+   itself at 1440 — «enter» ending one line, the rest starting the next, the
+   ring in two pieces; whole, the hint is two lines at every width. The target
+   is 28 tall (§1's floor), though the text is 15: a zone that grows downward
+   only, 2px above the line and 11px below, 133.8×28 at every width. ±14.5
+   would cover the hint's first line above it; 44 would reach the «or» divider
+   19.7px below. 44 on touch widths is an open §7 shortfall. */
+.auth-hint-link {
+  position: relative;
+  white-space: nowrap;
+}
+
+.auth-hint-link::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -2px;
+  bottom: -11px;
+}
+
 /* What a field expects, under it and tied to it with `aria-describedby` — on
    the login card the password policy and where a token comes from (§4.27), in
    the invitation dialog what the address and the name are for (§5.8). Not
@@ -6940,8 +6962,9 @@ h1 {
 
 /* The shared quiet-link recipe: `--fg-2` underlined text that turns accent on
    hover, with a rounded accent focus ring. Used by the admin notes, the Members
-   modal (`ProjectMembersModal.tsx`), and the Settings Connected apps guide (the
-   help links and the access-token link). */
+   modal (`ProjectMembersModal.tsx`), the Settings Connected apps guide (the
+   help links and the access-token link), and Create account's way to the
+   invitation token (`SignupPanel.tsx`, TAS-467). */
 .admin-placeholder-link,
 .admin-note-link,
 .admin-audit-actor-filter {
@@ -7646,6 +7669,40 @@ h1 {
   flex: none;
   align-items: center;
   gap: 14px;
+}
+
+/* §4.13 «Окно Done» (TAS-532, art-director 2026-11-17): the label and the
+   segments as one unwrappable group, laid out like `.filter-select` — a wrap
+   moves it whole and it stays 28 high. The trough is §4.2's at its tight end
+   (padding 2, gap 2, radius 8) around `.segmented.compact`'s 24 buttons, so
+   it stands 28: the height of the avatars and «Clear» in the same bar, where
+   26 under the select's height would have left a 22 button. No accent
+   anywhere — the window is a view, not a filter (§2.1). */
+.filter-done {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+}
+
+.filter-done .segmented {
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+}
+
+/* Every button its own width, `padding: 0 11` from the base rule. Its hit area
+   is the trough's full 28 (`inset: -2px 0`, §1's floor), and what is drawn
+   does not change. */
+.filter-done .segmented button {
+  position: relative;
+  flex: none;
+}
+
+.filter-done .segmented button::before {
+  position: absolute;
+  inset: -2px 0;
+  content: "";
 }
 
 /* An admin's names are up to 50 characters (§4.30): the select is capped at

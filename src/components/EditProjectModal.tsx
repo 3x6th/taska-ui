@@ -481,6 +481,10 @@ export function EditProjectModal({
               className="member-confirm project-archive-confirm"
               id={archiveConfirmId}
             >
+              {/* True on the stand's classic profile; restore exists only in the
+                  native tenant profile (API-DIVERGENCE «Project restore and the
+                  archive preconditions exist only in the native tenant
+                  profile»), and the sentence changes when a restore is offered. */}
               <p className="member-confirm-sentence" id={`${archiveConfirmId}-sentence`}>
                 {project.projectKey} will be archived for everyone. Taska cannot restore it.
               </p>
