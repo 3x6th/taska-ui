@@ -9,7 +9,13 @@ import {
   encodeMockOAuthCode,
 } from "./mockAuthFixtures";
 import type { UpdateIssueInput } from "../TaskaApi";
-import { DIRECTORY_QUERY_REFUSAL_MESSAGE } from "../TaskaApi";
+import {
+  BOARD_CURSOR_CATEGORY_MESSAGE,
+  BOARD_CURSOR_PAIR_MESSAGE,
+  BOARD_CURSOR_REFUSAL_MESSAGE,
+  BOARD_READ_REFUSAL_MESSAGE,
+  DIRECTORY_QUERY_REFUSAL_MESSAGE,
+} from "../TaskaApi";
 import type { Board, BoardIssue, Issue, NotificationType, Project, ProjectIssueType } from "../../domain/types";
 import {
   ATTACHMENT_MAX_SIZE_BYTES,
@@ -23,7 +29,7 @@ import {
   avatarTypeRefusalMessage,
 } from "../avatars";
 import { IssueVersionConflictError, apiErrorFacts } from "../errors";
-import { compareBoardIssues } from "../boardOrder";
+import { compareByCreatedAt, compareByUpdatedAt } from "../boardOrder";
 import { datesOutOfOrderServerMessage } from "../issuePatch";
 import { ObjectStoreError } from "../objectStore";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
@@ -1709,18 +1715,130 @@ describe("MockTaskaApi", () => {
       expect(cardsOf(board).map((issue) => issue.issueKey).sort()).toEqual([...bugs].sort());
     });
 
-    it("orders a column oldest first, then by id, whatever the type (backend TAS-392)", async () => {
+    it("orders a column oldest first, then by id, whatever the type — and a DONE one by its last change (backend TAS-392, TAS-525)", async () => {
       const board = await api.getBoard(project.id, { includeDone: true });
 
       for (const column of board.columns) {
-        const sorted = [...column.issues].sort(
-          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || (a.id < b.id ? -1 : 1),
-        );
+        const sorted =
+          column.category === "DONE"
+            ? [...column.issues].sort(
+                (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || (a.id < b.id ? 1 : -1),
+              )
+            : [...column.issues].sort(
+                (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || (a.id < b.id ? -1 : 1),
+              );
         expect(column.issues.map((issue) => issue.id)).toEqual(sorted.map((issue) => issue.id));
       }
       // The seed's To Do holds all three types, so the order is not vacuous.
       const todo = board.columns.find((column) => column.statusKey === "TODO")!;
       expect(new Set(todo.issues.map((issue) => issue.issueType)).size).toBeGreaterThan(1);
+      // Infra and Ops' Done was made week 1 first and touched week 205 first:
+      // its order is the reverse of its creation.
+      const ops = (await api.listProjects()).find((item) => item.projectKey === "OPS")!;
+      const done = (await api.getBoard(ops.id, { includeDone: true, pageSizePerColumn: 200 })).columns.find(
+        (column) => column.statusKey === "DONE",
+      )!;
+      expect(done.issues.slice(0, 2).map((issue) => issue.issueKey)).toEqual(["OPS-1204", "OPS-1203"]);
+      expect(done.issues.at(-1)?.issueKey).toBe("OPS-1005");
+    });
+
+    it("orders a column by the category the merged column takes, the first registry type's for a shared key", () => {
+      // TASK files SHIP under DONE and is read first, so the column is a done
+      // one and runs by the last change; BUG's SHIP is an IN_PROGRESS status,
+      // and its issue still sits in that column in that order.
+      const types = [
+        { issueType: "TASK", statuses: [status("SHIP", "DONE", 10)] },
+        { issueType: "BUG", statuses: [status("SHIP", "IN_PROGRESS", 10)] },
+      ];
+      const board = buildMockBoard(
+        project.id,
+        types,
+        [
+          card({ id: "made-first", issueType: "TASK", statusKey: "SHIP", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-03-01T00:00:00Z" }),
+          card({ id: "bug-touched-last", issueType: "BUG", statusKey: "SHIP", createdAt: "2026-02-01T00:00:00Z", updatedAt: "2026-05-01T00:00:00Z" }),
+          card({ id: "made-last", issueType: "TASK", statusKey: "SHIP", createdAt: "2026-04-01T00:00:00Z", updatedAt: "2026-04-01T00:00:00Z" }),
+          card({ id: "tie-a", issueType: "TASK", statusKey: "SHIP", updatedAt: "2026-01-15T00:00:00Z" }),
+          card({ id: "tie-b", issueType: "TASK", statusKey: "SHIP", updatedAt: "2026-01-15T00:00:00Z" }),
+        ],
+        { includeDone: true },
+      );
+      expect(board.columns[0]).toMatchObject({ statusKey: "SHIP", category: "DONE" });
+      expect(board.columns[0].issues.map((issue) => issue.id)).toEqual([
+        "bug-touched-last",
+        "made-last",
+        "made-first",
+        "tie-b",
+        "tie-a",
+      ]);
+    });
+
+    /**
+     * `doneSince` (backend TAS-525): issue-service keeps an issue in a status
+     * its **own** type's workflow files under DONE only when `updatedAt` is at
+     * or after it, before the cap and the counts; nothing else is cut.
+     */
+    it("cuts done statuses of each issue's own workflow at doneSince, before the cap and the counts", () => {
+      const types = [
+        { issueType: "TASK", statuses: [status("TODO", "TODO", 10), status("SHIP", "DONE", 30)] },
+        // BUG's SHIP is no done status: its issue there is never cut.
+        { issueType: "BUG", statuses: [status("TODO", "TODO", 10), status("SHIP", "IN_PROGRESS", 30)] },
+      ];
+      const issues = [
+        card({ id: "old-todo", issueType: "TASK", statusKey: "TODO", updatedAt: "2026-01-01T00:00:00Z" }),
+        card({ id: "old-done", issueType: "TASK", statusKey: "SHIP", updatedAt: "2026-10-31T23:59:59Z" }),
+        card({ id: "at-the-cut", issueType: "TASK", statusKey: "SHIP", updatedAt: "2026-11-01T03:00:00+03:00" }),
+        card({ id: "new-done", issueType: "TASK", statusKey: "SHIP", updatedAt: "2026-11-10T00:00:00Z" }),
+        card({ id: "old-bug", issueType: "BUG", statusKey: "SHIP", updatedAt: "2026-01-01T00:00:00Z" }),
+        // Outside its workflow, however old: unplaced is never cut.
+        card({ id: "stray", issueType: "TASK", statusKey: "LOST", updatedAt: "2026-01-01T00:00:00Z" }),
+      ];
+      const cut = buildMockBoard(project.id, types, issues, {
+        includeDone: true,
+        doneSince: "2026-11-01T00:00:00Z",
+        pageSizePerColumn: 1,
+      });
+      const ship = cut.columns.find((column) => column.statusKey === "SHIP")!;
+      expect(ship).toMatchObject({ totalCount: 3, hasMore: true });
+      expect(ship.issues.map((issue) => issue.id)).toEqual(["new-done"]);
+      expect(cut.columns.find((column) => column.statusKey === "TODO")).toMatchObject({ totalCount: 1 });
+      expect(cut).toMatchObject({ unplacedTotalCount: 1 });
+
+      const whole = buildMockBoard(project.id, types, issues, { includeDone: true, pageSizePerColumn: 200 });
+      expect(whole.columns.find((column) => column.statusKey === "SHIP")!.issues.map((issue) => issue.id)).toEqual([
+        "new-done",
+        "at-the-cut",
+        "old-done",
+        "old-bug",
+      ]);
+    });
+
+    it("reads the board under doneSince, and refuses one that is not an instant or out of the years it takes", async () => {
+      const ops = (await api.listProjects()).find((item) => item.projectKey === "OPS")!;
+      const recent = await api.getBoard(ops.id, {
+        includeDone: true,
+        pageSizePerColumn: 200,
+        doneSince: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),
+      });
+      // The 205 weekly checks are inside two weeks; the three drills are not.
+      expect(recent.columns.find((column) => column.statusKey === "DONE")).toMatchObject({ totalCount: 205, hasMore: true });
+      const all = await api.getBoard(ops.id, { includeDone: true, pageSizePerColumn: 200 });
+      const done = all.columns.find((column) => column.statusKey === "DONE")!;
+      expect(done).toMatchObject({ totalCount: 208, hasMore: true });
+      // The To Do column is not cut, whatever its age.
+      expect(recent.columns.find((column) => column.statusKey === "TODO")?.totalCount).toBe(
+        all.columns.find((column) => column.statusKey === "TODO")?.totalCount,
+      );
+
+      await expect(api.getBoard(ops.id, { doneSince: "last week" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Invalid request parameters",
+      });
+      // The service's own check, in its words — before the access check.
+      await expect(api.getBoard("11111111-2222-4333-8444-555555555555", { doneSince: "+010000-01-01T00:00:00Z" })).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+        message: BOARD_READ_REFUSAL_MESSAGE,
+      });
+      expect(BOARD_READ_REFUSAL_MESSAGE).toBe("pageSizePerColumn must be between 1 and 200");
     });
 
     it("joins in the assignee's name and face and the labels' names and colours", async () => {
@@ -1924,43 +2042,69 @@ describe("MockTaskaApi", () => {
     describe("a column's page", () => {
       const opsProject = async () => (await api.listProjects()).find((item) => item.projectKey === "OPS")!;
 
-      it("continues the column after an exclusive cursor in the board's order, counting the whole column", async () => {
+      it("continues a done column after an exclusive updatedAt cursor in its order, counting the whole column", async () => {
         const ops = await opsProject();
-        const board = await api.getBoard(ops.id, { includeDone: true, pageSizePerColumn: 200 });
+        const doneSince = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+        const board = await api.getBoard(ops.id, { includeDone: true, pageSizePerColumn: 200, doneSince });
         const done = board.columns.find((column) => column.statusKey === "DONE")!;
         expect(done).toMatchObject({ totalCount: 205, hasMore: true });
         const last = done.issues.at(-1)!;
 
         const page = await api.getBoardColumnPage(ops.id, "DONE", {
-          afterCreatedAt: last.createdAt,
+          afterUpdatedAt: last.updatedAt,
+          afterId: last.id,
+          includeDone: true,
+          pageSize: 200,
+          doneSince,
+        });
+
+        // Under the same doneSince: the five checks left, none of the drills.
+        expect(page).toMatchObject({ statusKey: "DONE", totalCount: 205, hasMore: false });
+        expect(page.issues.map((issue) => issue.issueKey)).toEqual(["OPS-1004", "OPS-1003", "OPS-1002", "OPS-1001", "OPS-1000"]);
+        const all = [...done.issues, ...page.issues];
+        expect(new Set(all.map((issue) => issue.id)).size).toBe(205);
+        expect([...all].sort(compareByUpdatedAt)).toEqual(all);
+        // Without it, the drills follow, still in the column's order.
+        const rest = await api.getBoardColumnPage(ops.id, "DONE", {
+          afterUpdatedAt: last.updatedAt,
           afterId: last.id,
           includeDone: true,
           pageSize: 200,
         });
-
-        expect(page).toMatchObject({ statusKey: "DONE", totalCount: 205, hasMore: false });
-        expect(page.issues).toHaveLength(5);
-        const all = [...done.issues, ...page.issues];
-        expect(new Set(all.map((issue) => issue.id)).size).toBe(205);
-        expect([...all].sort(compareBoardIssues)).toEqual(all);
+        expect(rest).toMatchObject({ totalCount: 208, hasMore: false });
+        expect(rest.issues.slice(5).map((issue) => issue.issueKey)).toEqual(["OPS-6", "OPS-5", "OPS-4"]);
         // The same cards the board draws, field for field.
         const first = (await api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, pageSize: 1 })).issues[0];
         expect(first).toEqual(done.issues[0]);
       });
 
+      it("continues any other column after an exclusive createdAt cursor, oldest first", async () => {
+        const todo = (await api.getBoard(project.id, { includeDone: true })).columns.find((column) => column.statusKey === "TODO")!;
+        expect(todo.issues.length).toBeGreaterThan(2);
+        const page = await api.getBoardColumnPage(project.id, "TODO", {
+          afterCreatedAt: todo.issues[0].createdAt,
+          afterId: todo.issues[0].id,
+          includeDone: true,
+        });
+        expect(page.issues).toEqual(todo.issues.slice(1));
+        expect([...page.issues].sort(compareByCreatedAt)).toEqual(page.issues);
+      });
+
       it("cuts at the page size, 50 when none is given, and says whether more follow", async () => {
         const ops = await opsProject();
+        // No `doneSince`: the 205 weekly checks and the three drills.
         const fifty = await api.getBoardColumnPage(ops.id, "DONE", { includeDone: true });
-        expect(fifty).toMatchObject({ totalCount: 205, hasMore: true });
+        expect(fifty).toMatchObject({ totalCount: 208, hasMore: true });
         expect(fifty.issues).toHaveLength(50);
         const two = await api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, pageSize: 2 });
+        expect(two.issues.map((issue) => issue.issueKey)).toEqual(["OPS-1204", "OPS-1203"]);
         const next = await api.getBoardColumnPage(ops.id, "DONE", {
           includeDone: true,
           pageSize: 2,
-          afterCreatedAt: two.issues[1].createdAt,
+          afterUpdatedAt: two.issues[1].updatedAt,
           afterId: two.issues[1].id,
         });
-        expect(next.issues.map((issue) => issue.issueKey)).toEqual(["OPS-1002", "OPS-1003"]);
+        expect(next.issues.map((issue) => issue.issueKey)).toEqual(["OPS-1202", "OPS-1201"]);
         expect(next.hasMore).toBe(true);
       });
 
@@ -1970,6 +2114,14 @@ describe("MockTaskaApi", () => {
         await expect(
           api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, query: "week 1", pageSize: 200 }),
         ).resolves.toMatchObject({ totalCount: 111, hasMore: false });
+        // And `doneSince`, as on the board: the drills are older than two weeks.
+        const twoWeeks = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+        await expect(
+          api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, query: "restore drill", doneSince: twoWeeks }),
+        ).resolves.toEqual({ statusKey: "DONE", issues: [], totalCount: 0, hasMore: false });
+        await expect(
+          api.getBoardColumnPage(ops.id, "DONE", { includeDone: true, query: "restore drill" }),
+        ).resolves.toMatchObject({ totalCount: 3 });
         // Without `includeDone`, a DONE-category status of the issue's own workflow is left out.
         await expect(api.getBoardColumnPage(ops.id, "DONE", { pageSize: 200 })).resolves.toEqual({
           statusKey: "DONE",
@@ -2015,42 +2167,47 @@ describe("MockTaskaApi", () => {
         await expect(api.getBoardColumnPage(ops.id, "DONE")).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
       });
 
-      it("refuses what the gateway's binding refuses, half a cursor in the controller's words, and a project not the reader's", async () => {
+      it("refuses what the gateway's binding refuses, a cursor that is not afterId with one instant in the controller's words, and a project not the reader's", async () => {
         const ops = await opsProject();
+        const id = "7a1b2c3d-0000-4000-8000-000000000101";
         const binding = { code: "INVALID_ARGUMENT", message: "Invalid request parameters" };
         for (const params of [
           { pageSize: 0 },
           { pageSize: 201 },
           { pageSize: 1.5 },
           { query: "" },
-          { afterCreatedAt: "yesterday", afterId: "7a1b2c3d-0000-4000-8000-000000000101" },
+          { afterCreatedAt: "yesterday", afterId: id },
+          { afterUpdatedAt: "yesterday", afterId: id },
+          { doneSince: "last week" },
           { afterCreatedAt: "2026-01-05T08:00:00Z", afterId: "issue-1" },
         ]) {
           await expect(api.getBoardColumnPage(ops.id, "DONE", params)).rejects.toMatchObject(binding);
         }
         // The gateway's controller (`BoardController`): a `ResponseStatusException`,
         // which `GatewayErrorHandler` names by its HTTP status — before access.
-        const half = { code: "BAD_REQUEST", message: "afterCreatedAt and afterId must be supplied together" };
-        await expect(api.getBoardColumnPage(ops.id, "DONE", { afterCreatedAt: "2026-01-05T08:00:00Z" })).rejects.toMatchObject(
-          half,
-        );
-        await expect(
-          api.getBoardColumnPage(ops.id, "DONE", { afterId: "7a1b2c3d-0000-4000-8000-000000000101" }),
-        ).rejects.toMatchObject(half);
-        await expect(
-          api.getBoardColumnPage("no-such-project", "DONE", { afterId: "7a1b2c3d-0000-4000-8000-000000000101" }),
-        ).rejects.toMatchObject(half);
+        const pair = { code: "BAD_REQUEST", message: "Supply afterId with exactly one of afterCreatedAt/afterUpdatedAt" };
+        expect(BOARD_CURSOR_PAIR_MESSAGE).toBe(pair.message);
+        for (const params of [
+          { afterCreatedAt: "2026-01-05T08:00:00Z" },
+          { afterUpdatedAt: "2026-01-05T08:00:00Z" },
+          { afterId: id },
+          { afterCreatedAt: "2026-01-05T08:00:00Z", afterUpdatedAt: "2026-01-05T08:00:00Z", afterId: id },
+        ]) {
+          await expect(api.getBoardColumnPage(ops.id, "DONE", params)).rejects.toMatchObject(pair);
+        }
+        await expect(api.getBoardColumnPage("no-such-project", "DONE", { afterId: id })).rejects.toMatchObject(pair);
         // The service's own checks, also `BAD_REQUEST`, also before access.
-        const service = {
-          code: "BAD_REQUEST",
-          message: "Invalid board cursor or pageSize (1..200); both cursor fields are required",
-        };
+        const service = { code: "BAD_REQUEST", message: "Invalid board cursor, date or pageSize (1..200)" };
+        expect(BOARD_CURSOR_REFUSAL_MESSAGE).toBe(service.message);
         await expect(api.getBoardColumnPage("no-such-project", " ")).rejects.toMatchObject(service);
         await expect(
-          api.getBoardColumnPage(ops.id, "DONE", {
-            afterCreatedAt: "+010000-01-01T00:00:00Z",
-            afterId: "7a1b2c3d-0000-4000-8000-000000000101",
-          }),
+          api.getBoardColumnPage(ops.id, "DONE", { afterUpdatedAt: "+010000-01-01T00:00:00Z", afterId: id }),
+        ).rejects.toMatchObject(service);
+        await expect(
+          api.getBoardColumnPage("no-such-project", "TODO", { afterCreatedAt: "+010000-01-01T00:00:00Z", afterId: id }),
+        ).rejects.toMatchObject(service);
+        await expect(
+          api.getBoardColumnPage("no-such-project", "DONE", { doneSince: "+010000-01-01T00:00:00Z" }),
         ).rejects.toMatchObject(service);
         await expect(api.getBoardColumnPage("no-such-project", "DONE")).rejects.toMatchObject({ code: "NOT_FOUND" });
         await api.login({ email: "priya@example.com", password: "anything" });
@@ -2058,6 +2215,40 @@ describe("MockTaskaApi", () => {
           code: "PERMISSION_DENIED",
           message: "Access denied",
         });
+      });
+
+      // Backend TAS-525: the cursor of the other category's kind — what the
+      // board's «Show more» sent to a done column before TAS-532 — after the
+      // access check, and only for a status that is a merged column.
+      it("refuses a cursor of the other category's kind for the column, after the access check", async () => {
+        const ops = await opsProject();
+        const id = "7a1b2c3d-0000-4000-8000-000000000101";
+        const kind = { code: "BAD_REQUEST", message: "Use afterUpdatedAt/afterId for DONE and afterCreatedAt/afterId otherwise" };
+        expect(BOARD_CURSOR_CATEGORY_MESSAGE).toBe(kind.message);
+        await expect(
+          api.getBoardColumnPage(ops.id, "DONE", { afterCreatedAt: "2026-01-05T08:00:00Z", afterId: id, includeDone: true }),
+        ).rejects.toMatchObject(kind);
+        await expect(
+          api.getBoardColumnPage(ops.id, "TODO", { afterUpdatedAt: "2026-01-05T08:00:00Z", afterId: id, includeDone: true }),
+        ).rejects.toMatchObject(kind);
+        // Before the trigger's 503: no issue is read for it.
+        await api.updateProject(ops.id, { description: `CI/CD ${MOCK_PROJECT_TRIGGERS.columnPagesRefused}` });
+        await expect(
+          api.getBoardColumnPage(ops.id, "DONE", { afterCreatedAt: "2026-01-05T08:00:00Z", afterId: id }),
+        ).rejects.toMatchObject(kind);
+        // A status no merged column has, and a type the registry lacks: an empty page, not a refusal.
+        const empty = { issues: [], totalCount: 0, hasMore: false };
+        await expect(
+          api.getBoardColumnPage(ops.id, "NOPE", { afterCreatedAt: "2026-01-05T08:00:00Z", afterId: id }),
+        ).resolves.toMatchObject(empty);
+        await expect(
+          api.getBoardColumnPage(ops.id, "DONE", { afterCreatedAt: "2026-01-05T08:00:00Z", afterId: id, issueType: "STORY" }),
+        ).resolves.toMatchObject(empty);
+        // After access: a reader who is not on the project is told that first.
+        await api.login({ email: "priya@example.com", password: "anything" });
+        await expect(
+          api.getBoardColumnPage(ops.id, "DONE", { afterCreatedAt: "2026-01-05T08:00:00Z", afterId: id }),
+        ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
       });
     });
   });
