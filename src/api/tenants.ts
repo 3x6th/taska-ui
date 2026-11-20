@@ -157,6 +157,13 @@ export type PlanPeriod = (typeof PLAN_PERIODS)[number] | (string & {});
 export const PLAN_STATES = ["DRAFT", "PUBLISHED", "RETIRED"] as const;
 export type PlanState = (typeof PLAN_STATES)[number] | (string & {});
 
+/**
+ * `PlanVersion.kind` (required since develop `43d6c89d`, TAS-501 A16): what
+ * decides whether a plan is the free one — never its price.
+ */
+export const PLAN_KINDS = ["FREE", "PAID"] as const;
+export type PlanKind = (typeof PLAN_KINDS)[number] | (string & {});
+
 /** `Money.currency`. */
 export const CURRENCIES = ["EUR", "USD"] as const;
 export type Currency = (typeof CURRENCIES)[number] | (string & {});
@@ -191,6 +198,12 @@ export interface QuotaLimit {
  */
 export interface PlanVersion {
   id: string;
+  /**
+   * `FREE` or `PAID`, read as an open string: a value this build does not
+   * know, or none, is **not** free — its price is drawn (api-contract-guard
+   * TAS-513 §0).
+   */
+  kind: PlanKind | null;
   code: string | null;
   name: string | null;
   version: string | null;
@@ -274,6 +287,7 @@ export function toPlanVersion(wire: unknown): PlanVersion | null {
   if (id === null) return null;
   return {
     id,
+    kind: text(row.kind),
     code: text(row.code),
     name: text(row.name),
     version: text(row.version),

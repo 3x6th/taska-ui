@@ -28,6 +28,8 @@ import type { CompaniesRouteState } from "../screens/CompaniesScreen";
 import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey } from "../screens/company/companyGeneral";
 import { COMPANY_QUOTAS_KEY } from "../screens/company/companyMembersQuery";
 import { COMPANY_ENTITLEMENT_KEY, refreshAfterRefusal, type CompanyMutationMeta } from "../screens/company/companyPlan";
+import { closeCreationAttempts } from "../api/checkoutAttempt";
+import { notifyAttempts } from "../screens/company/companyBilling";
 
 /*
  * The company session of a tab (TAS-500): the address names a company, this
@@ -211,6 +213,19 @@ export function CompanyGate({
     setEntry({ status: "entering" });
     setAttempt((value) => value + 1);
   }, [rowLifecycle, entry.status]);
+
+  // TAS-513 (release-reviewer B1): entered, and no longer never-opened — the
+  // creation's payment is spent, whether this tab saw it settle or not: its
+  // CREATION attempts go, so no later page reads one as still «confirming».
+  const enteredOpen = entry.status === "open" && rowLifecycle !== null && !isNeverOpened(rowLifecycle);
+  useEffect(() => {
+    if (!enteredOpen) return;
+    try {
+      if (closeCreationAttempts(window.localStorage, companyId)) notifyAttempts();
+    } catch {
+      // A storage that refuses kept nothing to close.
+    }
+  }, [enteredOpen, companyId]);
 
   // One client per company session (§6): the one made while the session was
   // being made is that session's; a re-selected session — a new id for the

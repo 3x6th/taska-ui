@@ -111,7 +111,7 @@ export function stillWorksText(restrictions: readonly string[], owner: boolean):
   if (!restrictions.some((code) => FINANCIAL_RESTRICTIONS.includes(code))) return null;
   if (restrictions.some((code) => code === "PLATFORM_BLOCK" || code === "OWNER_PAUSE" || !isKnownRestrictionCode(code))) return null;
   return owner
-    ? "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t take payments or change plans yet."
+    ? "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t change plans yet."
     : "Everything in it can still be read, admins can still remove members and revoke invitations, and you can still leave it.";
 }
 

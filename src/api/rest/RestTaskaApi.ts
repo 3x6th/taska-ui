@@ -126,6 +126,7 @@ import type {
   QuotaSnapshot,
 } from "../tenantMembers";
 import { WebSessionClient, type B2bTransport, type LockManagerLike } from "../webSession";
+import type { Checkout, Invoice, InvoicePage, ReturnTarget } from "../billing";
 import type {
   AccessToken,
   AccessTokenList,
@@ -1600,6 +1601,29 @@ export class RestTaskaApi implements TaskaApi {
     return this.companies("getEntitlement").getEntitlement(tenantId);
   }
 
+  /*
+   * TAS-513: the company's invoices and their hosted checkout, by the session
+   * layer with the tab's company session, for that company only. Today's
+   * build: no request. The page address only ever lives inside
+   * `CheckoutRedirect`, and only an `https:` one is kept.
+   */
+
+  async listInvoices(tenantId: string, params?: ListCompanyPageParams): Promise<InvoicePage> {
+    return this.companies("listInvoices").listInvoices(tenantId, params);
+  }
+
+  async getInvoice(tenantId: string, invoiceId: string): Promise<Invoice> {
+    return this.companies("getInvoice").getInvoice(tenantId, invoiceId);
+  }
+
+  async createCheckout(tenantId: string, invoiceId: string, returnTarget: ReturnTarget, idempotencyKey: string): Promise<Checkout> {
+    return this.companies("createCheckout").createCheckout(tenantId, invoiceId, returnTarget, idempotencyKey);
+  }
+
+  async getCheckout(tenantId: string, checkoutId: string): Promise<Checkout> {
+    return this.companies("getCheckout").getCheckout(tenantId, checkoutId);
+  }
+
   /** The session layer, or the refusal today's build gives a company operation — without a request. */
   private companies(operation: string): WebSessionClient {
     if (this.web === null) throw new TenancyUnavailableError(operation);
@@ -1752,6 +1776,20 @@ export class RestTaskaApi implements TaskaApi {
       getSubscription: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/subscription`, {}, bearer, signal),
       // TAS-512.
       getEntitlement: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/entitlement`, {}, bearer, signal),
+      // TAS-513. The checkout body is the two fields exactly, in the
+      // blueprint's order, so a retry with the same key sends the same bytes.
+      listInvoices: (bearer, tenantId, params, signal) =>
+        send(`${tenantPath(tenantId)}/billing/invoices${page(params)}`, {}, bearer, signal),
+      getInvoice: (bearer, tenantId, invoiceId, signal) =>
+        send(`${tenantPath(tenantId)}/billing/invoices/${this.segment(invoiceId)}`, {}, bearer, signal),
+      createCheckout: (bearer, tenantId, invoiceId, returnTarget, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/billing/invoices/${this.segment(invoiceId)}/checkout`,
+          { method: "POST", body: { returnTarget, confirmed: true }, headers: key(idempotencyKey) },
+          bearer,
+        ),
+      getCheckout: (bearer, tenantId, checkoutId, signal) =>
+        send(`${tenantPath(tenantId)}/billing/checkout/${this.segment(checkoutId)}`, {}, bearer, signal),
     };
   }
 

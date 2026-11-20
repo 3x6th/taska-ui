@@ -136,6 +136,11 @@ function fakeTransport() {
       tenantId, version: "3", planVersionId: "plan-free", coveragePeriodId: "period-1", validFrom: "2026-05-01T09:00:00Z", validUntil: "2026-12-07T09:00:00Z",
       restrictions: [], limits: [{ kind: "TASK_LIFETIME", limit: "50", unlimited: false }], features: ["projects.basic"], issuedAt: "2026-11-05T10:00:00Z",
     })),
+    // TAS-513.
+    listInvoices: vi.fn<B2bTransport["listInvoices"]>(async () => ({ items: [] })),
+    getInvoice: vi.fn<B2bTransport["getInvoice"]>(async (_bearer, tenantId, invoiceId) => ({ id: invoiceId, tenantId, state: "OPEN" })),
+    createCheckout: vi.fn<B2bTransport["createCheckout"]>(async (_bearer, _tenantId, invoiceId) => ({ id: "checkout-1", invoiceId, state: "CREATED" })),
+    getCheckout: vi.fn<B2bTransport["getCheckout"]>(async (_bearer, _tenantId, checkoutId) => ({ id: checkoutId, invoiceId: "invoice-1", state: "PENDING" })),
   };
 }
 

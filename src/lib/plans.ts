@@ -7,7 +7,8 @@ import { isEnglishName } from "./enumLabel";
  * functions: which plans are offered and in what order, and how a price and
  * its limits read. Money is formatted from the string of minor units — never
  * through a float — and a plan's `code` is never compared with anything: the
- * one question asked of a plan is whether its price is zero.
+ * one question asked of a plan is whether its `kind` is `FREE` (TAS-501 A16,
+ * re-pinned in TAS-513 — the price never decides it).
  */
 
 /** The catalogue, on the account's query client: it is public and outlives every company session. */
@@ -18,8 +19,11 @@ export const plansQueryOptions = (api: Pick<TaskaApi, "listBillingPlans">) => ({
   queryFn: () => readAllPlans((params) => api.listBillingPlans(params)),
 });
 
-/** Whether a plan costs nothing — the free plan of DESIGN.md §4.36. Unreadable money is not free. */
-export const isFreePlan = (plan: PlanVersion) => plan.price !== null && /^0+$/.test(plan.price.amountMinor);
+/**
+ * Whether a plan is the free plan of DESIGN.md §4.36: its `kind` is `FREE`.
+ * A kind this build does not know, or none, is not free — and its price is drawn.
+ */
+export const isFreePlan = (plan: PlanVersion) => plan.kind === "FREE";
 
 /** The price in the plan's smallest common unit, for ordering: `amountMinor · 10^(18 − exponent)`. */
 const priceKey = (money: Money | null): bigint | null =>
@@ -80,7 +84,7 @@ export function formatMoney(money: Money): string {
 /**
  * The price on a plan's first line (§4.36): «€20 a month» for `CALENDAR_MONTH`,
  * «€20» for `NONE`; a period this build does not know is printed as its code
- * after the amount. Zero — `null`: nothing is drawn. Unreadable money — `null`.
+ * after the amount. The free plan — `null`: nothing is drawn. Unreadable money — `null`.
  */
 export function planPriceText(plan: PlanVersion): string | null {
   if (plan.price === null || isFreePlan(plan)) return null;
