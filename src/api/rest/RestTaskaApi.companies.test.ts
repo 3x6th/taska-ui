@@ -336,7 +336,7 @@ function creationGateway(extra?: (sent: Sent) => Response | undefined) {
     const answer = extra?.(request);
     if (answer) return answer;
     const path = request.url.replace(/^\/api\/v1/, "");
-    if (path.startsWith("/billing/plans")) return json(200, { items: [{ id: "plan-free", name: "Free", price: { amountMinor: "0", currency: "EUR", exponent: 2 }, period: "NONE", limits: [], capabilities: [], state: "PUBLISHED", code: "free", version: "1" }] });
+    if (path.startsWith("/billing/plans")) return json(200, { items: [{ id: "plan-free", kind: "FREE", name: "Free", price: { amountMinor: "0", currency: "EUR", exponent: 2 }, period: "NONE", limits: [], capabilities: [], state: "PUBLISHED", code: "free", version: "1" }] });
     if (path === "/tenants" && request.method === "POST") {
       return json(202, {
         tenant: pendingTenant,

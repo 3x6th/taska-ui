@@ -42,6 +42,7 @@ vi.mock("../api/client", () => ({ taskaApi: fakeApi }));
 
 const plan = (id: string, name: string, amountMinor: string, state = "PUBLISHED") => ({
   id,
+  kind: amountMinor === "0" ? "FREE" : "PAID",
   code: name.toLowerCase(),
   version: "1",
   name,

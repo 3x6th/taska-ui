@@ -485,9 +485,10 @@ export function isAccountLocked(error: unknown): boolean {
 
 /**
  * The blueprint's `ErrorCode` (TAS-500, `docs/contract/b2b/b2b-openapi.yaml` at
- * develop `758f8fc6`): the `code` of a `Problem`. Disjoint from the gRPC names
- * the gateway's legacy envelope carries (`NOT_FOUND`, `PERMISSION_DENIED`, …),
- * so a code is one or the other and never both.
+ * develop `a0499412`, the same list as the gateway contract's
+ * `CapabilityDenialCode` there): the `code` of a `Problem`. Disjoint from the
+ * gRPC names the gateway's legacy envelope carries (`NOT_FOUND`,
+ * `PERMISSION_DENIED`, …), so a code is one or the other and never both.
  */
 export const B2B_ERROR_CODES = [
   "AUTHENTICATION_REQUIRED",

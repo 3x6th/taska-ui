@@ -3,7 +3,7 @@ import { refusalCode } from "./errors";
 /**
  * A company's members, its invitations and its seats (TAS-502) — the
  * blueprint's `Membership`, `Invitation` and `QuotaSnapshot`
- * (`docs/contract/b2b/b2b-openapi.yaml` at develop `758f8fc6`), none of which
+ * (`docs/contract/b2b/b2b-openapi.yaml` at develop `a0499412`), none of which
  * the stand serves: every route answers the static-resource 404
  * (docs/ai/API-DIVERGENCE.md «TAS-502»). Reached only in the B2B build.
  *

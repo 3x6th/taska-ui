@@ -6,6 +6,7 @@ import { formatBytes, formatMoney, isFreePlan, limitText, offeredPlans, planLimi
 
 const plan = (overrides: Partial<PlanVersion> = {}): PlanVersion => ({
   id: "p",
+  kind: "PAID",
   code: "team",
   name: "Team",
   version: "1",
@@ -36,10 +37,15 @@ describe("the price", () => {
     expect(planPriceText(plan({ price: null }))).toBeNull();
   });
 
-  it("is zero for the free plan only — unreadable money is not free", () => {
-    expect(isFreePlan(plan({ price: { amountMinor: "0", currency: "EUR", exponent: 2 } }))).toBe(true);
+  it("the free plan is the one whose kind is FREE — never decided by its price, and a plan without a kind is not free", () => {
+    const zero = { amountMinor: "0", currency: "EUR", exponent: 2 };
+    expect(isFreePlan(plan({ kind: "FREE", price: zero }))).toBe(true);
+    expect(isFreePlan(plan({ kind: "FREE" }))).toBe(true);
+    expect(isFreePlan(plan({ kind: "FREE", price: null }))).toBe(true);
     expect(isFreePlan(plan())).toBe(false);
-    expect(isFreePlan(plan({ price: null }))).toBe(false);
+    expect(isFreePlan(plan({ price: zero }))).toBe(false);
+    expect(isFreePlan(plan({ kind: null, price: zero }))).toBe(false);
+    expect(isFreePlan(plan({ kind: "TRIAL", price: zero }))).toBe(false);
   });
 });
 
@@ -84,7 +90,7 @@ describe("the plans offered", () => {
       plan({ id: "team", name: "Team" }),
       plan({ id: "old", name: "Team", state: "RETIRED", price: { amountMinor: "1500", currency: "EUR", exponent: 2 } }),
       plan({ id: "draft", name: "Next", state: "DRAFT" }),
-      plan({ id: "free", name: "Free", price: { amountMinor: "0", currency: "EUR", exponent: 2 } }),
+      plan({ id: "free", name: "Free", kind: "FREE", price: { amountMinor: "0", currency: "EUR", exponent: 2 } }),
       plan({ id: "agency", name: "Agency" }),
       plan({ id: "broken", name: "Broken", price: null }),
     ];

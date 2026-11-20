@@ -1,8 +1,14 @@
 /**
  * Companies — the blueprint's tenants (TAS-500, `docs/contract/b2b/b2b-openapi.yaml`
- * at develop `758f8fc6`, `Tenant` and `TenantPage`). None of this is on the
- * gateway yet; every route behind it answers the static-resource 404 on the
- * stand, and it is only reached in the B2B build (`src/lib/tenancy.ts`).
+ * at develop `a0499412`, `Tenant` and `TenantPage`), reached only in the B2B
+ * build (`src/lib/tenancy.ts`).
+ *
+ * `listTenants`, `getTenant`, `renameTenant`, `pauseTenant`, `resumeTenant`,
+ * `setPlatformBlock` and `getTenantCapabilities` are in the gateway contract at
+ * develop `a0499412`. On the stand they answer 503 `UNAVAILABLE` until
+ * tenant-service and the trusted RPC context are deployed (the three reads
+ * measured 2026-11-20; the writes not probed). Every other companies route is
+ * the static-resource 404.
  *
  * The UI says "company"; the code keeps the contract's "tenant" so a reader can
  * find each name in the yaml.
@@ -42,11 +48,14 @@ export const isKnownRestrictionCode = (value: unknown): value is KnownRestrictio
 
 /**
  * One company as `GET /tenants` lists it. **Nothing here says whether the reader
- * may enter it**: the blueprint's `Tenant` carries no membership of the caller
- * and no rule maps lifecycle or restrictions to the answer of
- * `createTenantSession` (api-contract-guard B4, ask A1/A2). `lifecycle` and
+ * may enter it**: no rule maps lifecycle or restrictions to the answer of
+ * `createTenantSession` (api-contract-guard B4, ask A2). `lifecycle` and
  * `restrictions` are for a state line and an order only; entering always asks
  * the server. `ownerId` equal to the reader may draw "Owner" — display only.
+ *
+ * The gateway's `Tenant` carries the caller's `membership` on the list and on a
+ * member's `getTenant`, and not on an administrative read or on a mutation's
+ * answer. This build does not read it.
  *
  * Every field the schema requires is still read as optional: a field that is
  * not what the schema promises is `null` (or dropped from `restrictions`)
@@ -55,7 +64,7 @@ export const isKnownRestrictionCode = (value: unknown): value is KnownRestrictio
  */
 export interface Tenant {
   id: string;
-  /** 1–120 characters by the schema; `null` when the answer carried none. */
+  /** 1–128 code points on the wire — more than a request's 120 only for a name stored before that rule; `null` when absent. */
   name: string | null;
   ownerId: string | null;
   lifecycle: TenantLifecycle | null;
@@ -142,12 +151,17 @@ export async function readAllTenants(list: (params: ListTenantsParams) => Promis
 
 /*
  * The blueprint's creation routes (`docs/contract/b2b/b2b-openapi.yaml` at
- * develop `758f8fc6`: `listBillingPlans`, `createTenant`, `getTenant`,
- * `getTenantOperation`, `cancelTenantCreation`), none of which the stand serves
- * (docs/ai/API-DIVERGENCE.md «TAS-501»). Every enum is read as a known value or
- * the server's own string (TAS-173); money stays a string of minor units — no
- * float ever holds a price (contracts §1, `Money`).
+ * develop `a0499412`: `listBillingPlans`, `createTenant`, `getTenant`,
+ * `getTenantOperation`, `cancelTenantCreation`). Only `getTenant` is in the
+ * gateway contract (the top of this file); the other four are the
+ * static-resource 404 (docs/ai/API-DIVERGENCE.md «TAS-501»). Every enum is read
+ * as a known value or the server's own string (TAS-173); money stays a string
+ * of minor units — no float ever holds a price (contracts §1, `Money`).
  */
+
+/** `PlanVersion.kind` — which plan is the free one, never its price (contracts.md, A16). */
+export const PLAN_KINDS = ["FREE", "PAID"] as const;
+export type PlanKind = (typeof PLAN_KINDS)[number] | (string & {});
 
 /** `PlanVersion.period`. */
 export const PLAN_PERIODS = ["CALENDAR_MONTH", "NONE"] as const;
@@ -191,6 +205,8 @@ export interface QuotaLimit {
  */
 export interface PlanVersion {
   id: string;
+  /** `FREE`, `PAID` or the server's own string; `null` when absent — and then the plan is not the free one. */
+  kind: PlanKind | null;
   code: string | null;
   name: string | null;
   version: string | null;
@@ -274,6 +290,7 @@ export function toPlanVersion(wire: unknown): PlanVersion | null {
   if (id === null) return null;
   return {
     id,
+    kind: text(row.kind),
     code: text(row.code),
     name: text(row.name),
     version: text(row.version),
@@ -460,9 +477,10 @@ export function ofCompany<T extends { tenantId: string | null }>(answer: T, tena
 /* -------------------------------------------------------- the company's name */
 
 /**
- * `CreateTenantRequest.name`'s and `RenameTenantRequest.name`'s `maxLength` —
- * the blueprint's 120 (develop allows 128, ask A13). One rule for creating and
- * renaming (TAS-504, ask A38).
+ * `TenantName`'s `maxLength`: a name is sent with 1–120 code points, on creating
+ * and on renaming (gateway `RenameTenantRequestDto` at develop `a0499412`,
+ * `TenantRegistryService.validateName`). A name read back may be up to 128.
+ * One rule for creating and renaming (TAS-504, ask A38).
  */
 export const TENANT_NAME_MAX = 120;
 

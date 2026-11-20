@@ -1607,10 +1607,10 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
-   * The blueprint's five session routes (`docs/contract/b2b/b2b-openapi.yaml`
-   * at develop `758f8fc6`), sent bare: the session layer chooses each one's
-   * credential and decides what a refusal means, and the answers are narrowed
-   * there, once for both implementations.
+   * The blueprint's routes (`docs/contract/b2b/b2b-openapi.yaml` at develop
+   * `a0499412`; which of them the gateway has: src/api/tenants.ts), sent bare:
+   * the session layer chooses each one's credential and decides what a refusal
+   * means, and the answers are narrowed there, once for both implementations.
    */
   private b2bTransport(): B2bTransport {
     const send = async (path: string, options: RequestOptions, bearer: string | null, signal?: AbortSignal) =>

@@ -116,6 +116,10 @@ describe("the pause and resume table (§4.39)", () => {
     expect(words(refusal(403, "READ_ONLY", ["PAYMENT_DISPUTE"])).text).toBe("A payment for Hooli is disputed, so it was not paused.");
     expect(words(refusal(403, "READ_ONLY")).text).toBe("Hooli can’t be paused right now.");
     expect(words(refusal(403, "CAPABILITY_DISABLED")).text).toBe("Pausing companies isn’t available right now.");
+    // Develop's refusal under a block or a dispute (`TenantRestrictionService`) reads as READ_ONLY with the same reason.
+    expect(words(refusal(403, "CAPABILITY_DISABLED", ["PLATFORM_BLOCK"]))).toEqual({ text: "Taska has blocked Hooli, so it was not paused.", words: null });
+    expect(words(refusal(403, "CAPABILITY_DISABLED", ["PAYMENT_DISPUTE"])).text).toBe("A payment for Hooli is disputed, so it was not paused.");
+    expect(words(refusal(403, "CAPABILITY_DISABLED", ["SOMETHING_NEW"])).text).toBe("Hooli can’t be paused right now.");
     expect(words(refusal(403, "OWNER_REQUIRED")).text).toBe("Only the owner of Hooli can pause it.");
     expect(words(refusal(412, "VERSION_CONFLICT")).text).toBe("Hooli changed while you were deciding, so it was not paused. Check it and try again.");
     expect(words(refusal(429, "RATE_LIMITED")).text).toBe("Too many attempts. Try again in a few minutes.");
@@ -127,11 +131,16 @@ describe("the pause and resume table (§4.39)", () => {
     expect(words(refusal(400, "NEW_CODE")).words).toBe("server words");
   });
 
-  it("resume — never refused by a flag, so CAPABILITY_DISABLED has no row of its own", () => {
+  it("resume — never refused by a flag, so CAPABILITY_DISABLED without reasons has no row of its own", () => {
     const words = (error: unknown) => zoneRefusalWords("resume", error, null);
     expect(words(refusal(403, "READ_ONLY", ["PLATFORM_BLOCK", "OWNER_PAUSE"])).text).toBe(
       "Taska has blocked this company, so it can’t be resumed until Taska lifts the block.",
     );
+    expect(words(refusal(403, "CAPABILITY_DISABLED", ["PLATFORM_BLOCK"]))).toEqual({
+      text: "Taska has blocked this company, so it can’t be resumed until Taska lifts the block.",
+      words: null,
+    });
+    expect(words(refusal(403, "CAPABILITY_DISABLED", ["PAYMENT_DISPUTE"])).text).toBe("A payment for this company is disputed, so it can’t be resumed.");
     expect(words(refusal(403, "READ_ONLY", ["PAYMENT_DISPUTE"])).text).toBe("A payment for this company is disputed, so it can’t be resumed.");
     expect(words(refusal(403, "READ_ONLY")).text).toBe("This company can’t be resumed right now.");
     expect(words(refusal(403, "OWNER_REQUIRED")).text).toBe("Only the owner of this company can resume it.");
