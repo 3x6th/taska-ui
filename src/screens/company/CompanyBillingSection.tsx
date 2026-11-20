@@ -49,7 +49,9 @@ import {
   primaryPayable,
   statusWord,
 } from "./billingText";
-import { closeAttempt, companyInvoicesOptions, unresolved, useBillingReader, useCheckoutAttempts, usePayInvoice } from "./companyBilling";
+import { closeAttempt, companyInvoicesOptions, companyRefundsOptions, unresolved, useBillingReader, useCheckoutAttempts, usePayInvoice } from "./companyBilling";
+import { RefundsGroup } from "./WireParts";
+import { REFUNDS_READ_FAILED, listedRefunds } from "./wireText";
 import { apiErrorFacts } from "../../api/errors";
 
 /**
@@ -62,6 +64,10 @@ import { apiErrorFacts } from "../../api/errors";
  * TAS-515 (art-director B8, the orchestrator's decision 1): the «Automatic
  * payments» group above the invoices, from `getSubscription` read beside the
  * list — its state, and «Turn off» only; nothing here turns them on (A67).
+ *
+ * TAS-514 (art-director B11, decision 6): «Refunds» under the invoices, from
+ * `listRefunds` (all pages) read beside them — shown only when there is one,
+ * never tied to an invoice (A81).
  */
 export function CompanyBillingSection() {
   const address = useCompanyAddress();
@@ -73,13 +79,15 @@ interface Failure {
   error: unknown;
   at: number;
 }
-type BillingRead = "subscription" | "invoices";
+type BillingRead = "subscription" | "invoices" | "refunds";
 
 function CompanyBilling({ companyId }: { companyId: string }) {
   const reader = useBillingReader(companyId);
   const invoices = useQuery({ ...companyInvoicesOptions(companyId), enabled: reader.owner });
   // The owner's only, beside the list (guard §7: +1 read, depth 2).
   const subscription = useQuery({ ...companySubscriptionOptions(companyId), enabled: reader.owner });
+  // TAS-514: the refunds, beside them (guard §8: +1 read, depth 2).
+  const refunds = useQuery({ ...companyRefundsOptions(companyId), enabled: reader.owner });
   const [said, setSaid] = useState<{ text: string; seq: number } | null>(null);
   const say = useCallback((text: string) => setSaid((current) => ({ text, seq: (current?.seq ?? 0) + 1 })), []);
   const attempts = useCheckoutAttempts(reader.meId, companyId);
@@ -122,7 +130,7 @@ function CompanyBilling({ companyId }: { companyId: string }) {
   // the group never pushes the list down once it has drawn (B8).
   const settled = (query: { isSuccess: boolean; isError: boolean }) => query.isSuccess || query.isError;
   const [opened, setOpened] = useState(false);
-  if (!opened && settled(invoices) && settled(subscription)) setOpened(true);
+  if (!opened && settled(invoices) && settled(subscription) && settled(refunds)) setOpened(true);
 
   if (!reader.known) return <BillingLoading />;
   if (!reader.owner) {
@@ -142,13 +150,16 @@ function CompanyBilling({ companyId }: { companyId: string }) {
     retrying !== null ? (retrying[name] ?? null) : query.isError && query.data === undefined ? { error: query.error, at: query.errorUpdatedAt } : null;
   const subscriptionFailure = failureOf("subscription", subscription);
   const failure = failureOf("invoices", invoices);
-  const firstFailure: BillingRead | null = subscriptionFailure !== null ? "subscription" : failure !== null ? "invoices" : null;
+  const refundsFailure = failureOf("refunds", refunds);
+  const firstFailure: BillingRead | null =
+    subscriptionFailure !== null ? "subscription" : failure !== null ? "invoices" : refundsFailure !== null ? "refunds" : null;
   const retry = () => {
     if (retrying !== null) return;
     const failed = (
       [
         ["subscription", subscription, subscriptionFailure],
         ["invoices", invoices, failure],
+        ["refunds", refunds, refundsFailure],
       ] as const
     ).filter(([, , shown]) => shown !== null);
     if (failed.length === 0) return;
@@ -272,6 +283,16 @@ function CompanyBilling({ companyId }: { companyId: string }) {
               </ul>
             )}
           </section>
+        )}
+        {refundsFailure !== null ? (
+          <div className="company-plan-failure company-billing-failure">
+            <ErrorNote key={refundsFailure.at} requestId={apiErrorFacts(refundsFailure.error).requestId}>
+              {REFUNDS_READ_FAILED}
+            </ErrorNote>
+            {firstFailure === "refunds" ? tryAgain : null}
+          </div>
+        ) : (
+          <RefundsGroup refunds={listedRefunds(refunds.data ?? [])} />
         )}
         {/* One persistent region, a node per sentence (§5.6). */}
         <div className="visually-hidden" role="status">

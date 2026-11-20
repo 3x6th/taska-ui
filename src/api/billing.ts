@@ -36,10 +36,25 @@ export type CheckoutState = (typeof CHECKOUT_STATES)[number] | (string & {});
 export type ReturnTarget = "BILLING" | "CREATION";
 
 /**
- * One `Invoice`, narrowed (api-contract-guard §1): `buyer`, `seller`, `lines`,
- * `fxQuote` and `wireInstructions` are **never read** — financial details stay
- * out of the cache; lines and documents are TAS-514. The object has no field
- * for any of them, so no screen can reach one.
+ * A wire invoice's bank details (`WireInstructions`, TAS-514, api-contract-guard
+ * §2): all five as the server sent them — verbatim, no case change, no IBAN
+ * check, never derived from another field — or none at all. Held in memory for
+ * the page that draws them and never logged.
+ */
+export interface WireInstructions {
+  beneficiaryName: string;
+  iban: string;
+  bic: string;
+  bankName: string;
+  reference: string;
+}
+
+/**
+ * One `Invoice` as the list carries it (api-contract-guard §1, TAS-514 §2): the
+ * facts the screens draw and, on a wire invoice in euros, its bank details —
+ * `wireInstructions`, the setup card's source. `buyer`, `seller`, `lines` and
+ * `fxQuote` are **not** on this shape: they are the detail's
+ * (`InvoiceDetail`, `getInvoice`), so a list row never carries a snapshot.
  */
 export interface Invoice {
   id: string;
@@ -58,6 +73,73 @@ export interface Invoice {
   /** The entity version, a decimal string. */
   version: string | null;
   replacesInvoiceId: string | null;
+  /** Only on a WIRE invoice in EUR, and only with all five details present (§2); otherwise `null`. */
+  wireInstructions: WireInstructions | null;
+}
+
+/** `BillingAddress`, every part optional: an absent one is skipped where it is drawn. */
+export interface BillingAddress {
+  /** ISO 3166-1 alpha-2, as sent. */
+  country: string | null;
+  postalCode: string | null;
+  city: string | null;
+  line1: string | null;
+  line2: string | null;
+}
+
+/** `BuyerDetails` as the invoice was issued with it — a snapshot, never merged with the company's current data. */
+export interface BuyerSnapshot {
+  /** BUSINESS, CONSUMER, or the server's own string — never printed. */
+  kind: string | null;
+  name: string | null;
+  email: string | null;
+  address: BillingAddress | null;
+  taxId: string | null;
+}
+
+/** `SellerSnapshot`, as the invoice was issued with it. */
+export interface SellerSnapshot {
+  legalName: string | null;
+  registrationId: string | null;
+  taxId: string | null;
+  address: BillingAddress | null;
+}
+
+/** `TaxLine` without `rate` — its meaning («21» or «0.21») is not settled, so it is not kept (A84). */
+export interface TaxLine {
+  label: string | null;
+  amount: Money | null;
+}
+
+/** `InvoiceLine` as sent: nothing recomputed and nothing checked (§2). */
+export interface InvoiceLine {
+  description: string | null;
+  quantity: number | null;
+  net: Money | null;
+  taxes: TaxLine[];
+  total: Money | null;
+}
+
+/** `FxQuote`'s facts — the rate verbatim; no converted figure is ever derived from it (§2). */
+export interface FxQuoteFacts {
+  baseCurrency: string | null;
+  quoteCurrency: string | null;
+  rate: string | null;
+  source: string | null;
+  observedAt: string | null;
+}
+
+/**
+ * `getInvoice`'s answer (TAS-514 §1, §2): the list's `Invoice` and the
+ * invoice's own snapshots — the buyer and the seller as they were at issuance,
+ * its lines and its FX quote. Never the coverage period (not on the wire, A82).
+ */
+export interface InvoiceDetail extends Invoice {
+  buyer: BuyerSnapshot | null;
+  seller: SellerSnapshot | null;
+  /** `null` when the answer carried no list of lines. */
+  lines: InvoiceLine[] | null;
+  fxQuote: FxQuoteFacts | null;
 }
 
 /** `InvoicePage`, as sent: `nextCursor` absent at the end. */
@@ -123,12 +205,34 @@ const instant = (value: unknown): string | null => {
   return at === null || Number.isNaN(Date.parse(at)) ? null : at;
 };
 
+const objectOf = (value: unknown): Record<string, unknown> | null =>
+  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+/**
+ * `wireInstructions` (§2): kept only on a WIRE invoice whose total is in EUR,
+ * and only when all five are non-empty strings — otherwise none of them, never
+ * a part of the set. Verbatim: no trim, no case change, no IBAN check.
+ */
+function toWireInstructions(wire: unknown, paymentMethod: string | null, total: Money | null): WireInstructions | null {
+  const row = objectOf(wire);
+  if (row === null || paymentMethod !== "WIRE" || total?.currency !== "EUR") return null;
+  const beneficiaryName = text(row.beneficiaryName);
+  const iban = text(row.iban);
+  const bic = text(row.bic);
+  const bankName = text(row.bankName);
+  const reference = text(row.reference);
+  if (beneficiaryName === null || iban === null || bic === null || bankName === null || reference === null) return null;
+  return { beneficiaryName, iban, bic, bankName, reference };
+}
+
 /** One wire `Invoice`, or `null` for a row without a usable `id`. */
 export function toInvoice(wire: unknown): Invoice | null {
   if (typeof wire !== "object" || wire === null) return null;
   const row = wire as Record<string, unknown>;
   const id = text(row.id);
   if (id === null) return null;
+  const total = toMoney(row.total);
+  const paymentMethod = text(row.paymentMethod);
   return {
     id,
     tenantId: text(row.tenantId),
@@ -136,15 +240,81 @@ export function toInvoice(wire: unknown): Invoice | null {
     purpose: text(row.purpose),
     state: text(row.state),
     planVersionId: text(row.planVersionId),
-    total: toMoney(row.total),
+    total,
     allocated: toMoney(row.allocated),
     remaining: toMoney(row.remaining),
     matchedUnallocated: toMoney(row.matchedUnallocated),
     issuedAt: instant(row.issuedAt),
     dueAt: instant(row.dueAt),
-    paymentMethod: text(row.paymentMethod),
+    paymentMethod,
     version: typeof row.version === "string" && DECIMAL.test(row.version) ? row.version : null,
     replacesInvoiceId: text(row.replacesInvoiceId),
+    wireInstructions: toWireInstructions(row.wireInstructions, paymentMethod, total),
+  };
+}
+
+function toAddress(wire: unknown): BillingAddress | null {
+  const row = objectOf(wire);
+  if (row === null) return null;
+  return {
+    country: text(row.country),
+    postalCode: text(row.postalCode),
+    city: text(row.city),
+    line1: text(row.line1),
+    line2: text(row.line2),
+  };
+}
+
+function toBuyer(wire: unknown): BuyerSnapshot | null {
+  const row = objectOf(wire);
+  if (row === null) return null;
+  return { kind: text(row.kind), name: text(row.name), email: text(row.email), address: toAddress(row.address), taxId: text(row.taxId) };
+}
+
+function toSeller(wire: unknown): SellerSnapshot | null {
+  const row = objectOf(wire);
+  if (row === null) return null;
+  return { legalName: text(row.legalName), registrationId: text(row.registrationId), taxId: text(row.taxId), address: toAddress(row.address) };
+}
+
+function toLine(wire: unknown): InvoiceLine | null {
+  const row = objectOf(wire);
+  if (row === null) return null;
+  const quantity = typeof row.quantity === "number" && Number.isInteger(row.quantity) && row.quantity >= 1 ? row.quantity : null;
+  const taxes = Array.isArray(row.taxes)
+    ? row.taxes
+        .map((tax): TaxLine | null => {
+          const item = objectOf(tax);
+          return item === null ? null : { label: text(item.label), amount: toMoney(item.amount) };
+        })
+        .filter((tax): tax is TaxLine => tax !== null)
+    : [];
+  return { description: text(row.description), quantity, net: toMoney(row.net), taxes, total: toMoney(row.total) };
+}
+
+function toFxQuote(wire: unknown): FxQuoteFacts | null {
+  const row = objectOf(wire);
+  if (row === null) return null;
+  return {
+    baseCurrency: text(row.baseCurrency),
+    quoteCurrency: text(row.quoteCurrency),
+    rate: text(row.rate),
+    source: text(row.source),
+    observedAt: instant(row.observedAt),
+  };
+}
+
+/** `getInvoice`'s answer (§2): the list's fields and the snapshots, each as sent; `null` without a usable `id`. */
+export function toInvoiceDetail(wire: unknown): InvoiceDetail | null {
+  const invoice = toInvoice(wire);
+  if (invoice === null) return null;
+  const row = wire as Record<string, unknown>;
+  return {
+    ...invoice,
+    buyer: toBuyer(row.buyer),
+    seller: toSeller(row.seller),
+    lines: Array.isArray(row.lines) ? row.lines.map(toLine).filter((line): line is InvoiceLine => line !== null) : null,
+    fxQuote: toFxQuote(row.fxQuote),
   };
 }
 
@@ -268,20 +438,197 @@ export function toAutopayConsentResult(wire: unknown): AutopayConsentResult | nu
   return { state: text((wire as Record<string, unknown>).state) };
 }
 
-/** The largest page `listInvoices` serves (`Limit.maximum`). */
+/** The largest page `listInvoices` and `listRefunds` serve (`Limit.maximum`). */
 export const INVOICE_PAGE_MAX = 100;
 
-/** Every invoice, all pages, as `readAllTenants` reads the company list — a repeated cursor ends it. */
-export async function readAllInvoices(list: (params: { cursor?: string; limit?: number }) => Promise<InvoicePage>): Promise<Invoice[]> {
-  const invoices: Invoice[] = [];
+/** Every item of a keyset list, all pages, as `readAllTenants` reads the company list — a repeated cursor ends it. */
+async function readAllPages<T>(list: (params: { cursor?: string; limit?: number }) => Promise<{ items: T[]; nextCursor: string | null }>): Promise<T[]> {
+  const items: T[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < 50; page += 1) {
     const answer = await list(cursor === undefined ? { limit: INVOICE_PAGE_MAX } : { cursor, limit: INVOICE_PAGE_MAX });
-    invoices.push(...answer.items);
+    items.push(...answer.items);
     if (answer.nextCursor === null || seen.has(answer.nextCursor)) break;
     seen.add(answer.nextCursor);
     cursor = answer.nextCursor;
   }
-  return invoices;
+  return items;
+}
+
+/** Every invoice, all pages. */
+export const readAllInvoices = (list: (params: { cursor?: string; limit?: number }) => Promise<InvoicePage>): Promise<Invoice[]> => readAllPages(list);
+
+/* ------------------------------------------- refunds, durations, the document (TAS-514) */
+
+/*
+ * The blueprint's `listRefunds`, `getTenantCapabilities` and
+ * `downloadInvoiceDocument` (`b2b-openapi.yaml` at develop `43d6c89d`), none of
+ * them on the stand (docs/ai/API-DIVERGENCE.md «TAS-514»). api-contract-guard's
+ * pre-build ruling §1 with its addendum and the orchestrator's decision 6: every
+ * field optional, every enum open. **A refund is never tied to an invoice** —
+ * the contract has no `Refund.invoiceId` (A81) — and the operator's own fields
+ * stay out, but for `sendDueAt` and `decidedAt`.
+ */
+
+/** `Refund.state`. */
+export const REFUND_STATES = ["REQUESTED", "APPROVED", "SUBMITTING", "UNKNOWN", "CONFIRMED", "FAILED", "REJECTED"] as const;
+export type RefundState = (typeof REFUND_STATES)[number] | (string & {});
+
+/** `RefundReasonCode`. */
+export const REFUND_REASONS = [
+  "EXCESS",
+  "LATE_FIRST_PAYMENT",
+  "CLOSED_CREATION",
+  "INCOMPLETE_BANK_PAYMENT",
+  "DUPLICATE_PAYMENT",
+  "BILLING_ERROR",
+  "SERVICE_FAILURE",
+  "MANDATORY",
+] as const;
+export type RefundReason = (typeof REFUND_REASONS)[number] | (string & {});
+
+/** `Refund.kind`. */
+export type RefundKind = "SUBSCRIPTION_FULL" | "UNALLOCATED_RETURN" | (string & {});
+
+/**
+ * One `Refund`, narrowed (decision 6): no `paymentId` (an admin-only fact), no
+ * `version` (no owner write), none of the operator's evidence, calendar and
+ * SLA fields — but `sendDueAt` («Taska aims to send it by», only where a
+ * screen may say it) and `decidedAt`.
+ */
+export interface Refund {
+  id: string;
+  tenantId: string | null;
+  kind: RefundKind | null;
+  state: RefundState | null;
+  amount: Money | null;
+  reasonCode: RefundReason | null;
+  sourceMethod: PaymentMethod | null;
+  requestedAt: string | null;
+  confirmedAt: string | null;
+  feeBearer: string | null;
+  sendDueAt: string | null;
+  decidedAt: string | null;
+}
+
+/** `RefundPage`, as sent: `nextCursor` absent at the end. */
+export interface RefundPage {
+  items: Refund[];
+  nextCursor: string | null;
+}
+
+/** One wire `Refund`, or `null` for a row without a usable `id`. */
+export function toRefund(wire: unknown): Refund | null {
+  const row = objectOf(wire);
+  if (row === null) return null;
+  const id = text(row.id);
+  if (id === null) return null;
+  return {
+    id,
+    tenantId: text(row.tenantId),
+    kind: text(row.kind),
+    state: text(row.state),
+    amount: toMoney(row.amount),
+    reasonCode: text(row.reasonCode),
+    sourceMethod: text(row.sourceMethod),
+    requestedAt: instant(row.requestedAt),
+    confirmedAt: instant(row.confirmedAt),
+    feeBearer: text(row.feeBearer),
+    sendDueAt: instant(row.sendDueAt),
+    decidedAt: instant(row.decidedAt),
+  };
+}
+
+/** `RefundPage` in the server's order — the screen orders it. */
+export function toRefundPage(wire: unknown): RefundPage {
+  const page = objectOf(wire) ?? {};
+  const items = Array.isArray(page.items) ? page.items.map(toRefund).filter((refund): refund is Refund => refund !== null) : [];
+  return { items, nextCursor: text(page.nextCursor) };
+}
+
+/** Every refund, all pages. */
+export const readAllRefunds = (list: (params: { cursor?: string; limit?: number }) => Promise<RefundPage>): Promise<Refund[]> => readAllPages(list);
+
+/** `WIRE_RECONCILIATION_TARGET_SECONDS`'s bounds (develop `0003-platform-flags.sql`). */
+export const WIRE_RECONCILIATION_TARGET_MAX_S = 31_536_000;
+
+/**
+ * `Capabilities`, durations only (guard §1, Q3): the company, when the answer
+ * stops being current, and the one duration a screen says — the wire
+ * reconciliation target, an integer 1..31 536 000 seconds, else `null`. Never
+ * `items`, and **no default**: without it a sentence says no number.
+ */
+export interface CompanyDurations {
+  tenantId: string | null;
+  wireReconciliationTargetSeconds: number | null;
+  expiresAt: string | null;
+}
+
+/** A wire `Capabilities`, or `null` for a body that is not an object. */
+export function toCompanyDurations(wire: unknown): CompanyDurations | null {
+  const row = objectOf(wire);
+  if (row === null) return null;
+  const durations = objectOf(row.durationsSeconds);
+  const target = durations?.WIRE_RECONCILIATION_TARGET_SECONDS;
+  return {
+    tenantId: text(row.tenantId),
+    wireReconciliationTargetSeconds:
+      typeof target === "number" && Number.isInteger(target) && target >= 1 && target <= WIRE_RECONCILIATION_TARGET_MAX_S ? target : null,
+    expiresAt: instant(row.expiresAt),
+  };
+}
+
+/**
+ * What the document route answered, before it is accepted (the session layer
+ * decides): its `Content-Type`, its `Content-Disposition` when the browser
+ * lets it be read (the gateway does not expose it to CORS, A79), and the bytes.
+ */
+export interface DocumentAnswer {
+  contentType: string | null;
+  disposition: string | null;
+  body: Blob;
+}
+
+/**
+ * An invoice's PDF (TAS-514 §3, decision 5): the bytes, only ever handed to
+ * `saveBlob` — never cached, stored or opened on this origin — and a file name
+ * from a readable `Content-Disposition`, sanitised, or `null`.
+ */
+export interface InvoiceDocument {
+  blob: Blob;
+  fileName: string | null;
+}
+
+/** `application/pdf`, with or without parameters — nothing else is a document (§3). */
+export const isPdfType = (contentType: string | null) => contentType !== null && /^\s*application\/pdf\s*(;.*)?$/i.test(contentType);
+
+const UNSAFE_IN_FILE_NAME = /[\p{Cc}<>:"/\\|?*]/gu;
+
+/**
+ * The file name a `Content-Disposition` names, sanitised to a base name ending
+ * `.pdf` (decision 5): `filename*` (RFC 5987) before `filename`, the last path
+ * segment only, no control or reserved character, no leading dot, at most 120
+ * characters. `null` when none is readable or what is left does not end `.pdf`.
+ */
+export function documentFileName(disposition: string | null): string | null {
+  if (disposition === null) return null;
+  let raw: string | null = null;
+  const extended = /filename\*\s*=\s*([^']*)'[^']*'([^;]+)/i.exec(disposition);
+  if (extended) {
+    try {
+      raw = decodeURIComponent(extended[2].trim());
+    } catch {
+      raw = null;
+    }
+  }
+  if (raw === null) {
+    const plain = /filename\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^;]+))/i.exec(disposition);
+    raw = plain ? (plain[1] !== undefined ? plain[1].replace(/\\(.)/g, "$1") : plain[2].trim()) : null;
+  }
+  if (raw === null) return null;
+  const base = raw.split(/[/\\]/).pop() ?? "";
+  const name = base.replace(UNSAFE_IN_FILE_NAME, "").trim().replace(/^\.+/, "").trim();
+  if (name.length > 120 || !/^.+\.pdf$/i.test(name)) return null;
+  return name;
 }

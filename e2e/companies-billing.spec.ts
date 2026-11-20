@@ -23,7 +23,7 @@ const mockPage = (page: Page) => page.getByRole("heading", { level: 1, name: "Te
 /** The mock server's checkouts of an invoice — its own record, read from the shared storage. */
 const checkoutsOf = (page: Page, invoiceId: string) =>
   page.evaluate((id) => {
-    const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v7") ?? "{}") as { checkouts?: Array<{ invoiceId: string }> };
+    const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { checkouts?: Array<{ invoiceId: string }> };
     return (state.checkouts ?? []).filter((checkout) => checkout.invoiceId === id).length;
   }, invoiceId);
 
@@ -37,11 +37,11 @@ const attemptsOf = (page: Page) =>
 
 /** How many keys of `createCheckout` reached the mock server — its durable receipts. */
 const checkoutKeysSent = (page: Page) =>
-  page.evaluate(() => Object.keys((JSON.parse(window.localStorage.getItem("taska.mockServer.v7") ?? "{}") as { checkoutReceipts?: object }).checkoutReceipts ?? {}).length);
+  page.evaluate(() => Object.keys((JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { checkoutReceipts?: object }).checkoutReceipts ?? {}).length);
 
 const invoiceStateOf = (page: Page, invoiceId: string) =>
   page.evaluate((id) => {
-    const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v7") ?? "{}") as { invoices?: Array<{ id: string; state: string }> };
+    const state = JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as { invoices?: Array<{ id: string; state: string }> };
     return state.invoices?.find((invoice) => invoice.id === id)?.state ?? null;
   }, invoiceId);
 

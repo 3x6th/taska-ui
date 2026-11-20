@@ -236,7 +236,7 @@ describe("version and idempotency (§2)", () => {
     // Replayed before the version is checked (SPC 68-81): the old If-Match is the right one.
     const again = await api.changeSubscriptionPlan(UM, to(MOCK_PLAN_IDS.starter), before, sent);
     expect(again).toEqual(first);
-    expect(stateOf(local).invoices.filter((invoice) => invoice.purpose === "PLAN_CHANGE")).toHaveLength(1);
+    expect(stateOf(local).invoices.filter((invoice) => invoice.tenantId === UM && invoice.purpose === "PLAN_CHANGE")).toHaveLength(1);
     expect(facts(await caught(api.changeSubscriptionPlan(UM, to(MOCK_PLAN_IDS.business), before, sent)))).toMatchObject({ status: 409, code: "IDEMPOTENCY_CONFLICT" });
     // The same body with the version read again is another request on develop: the hash covers it.
     expect(facts(await caught(api.changeSubscriptionPlan(UM, to(MOCK_PLAN_IDS.starter), await version(), sent)))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
@@ -252,7 +252,7 @@ describe("version and idempotency (§2)", () => {
     await expect(api.changeSubscriptionPlan(UM, to(MOCK_PLAN_IDS.starter), before, sent)).rejects.toThrow();
     const retried = await api.changeSubscriptionPlan(UM, to(MOCK_PLAN_IDS.starter), before, sent);
     expect(retried.effect).toBe("AFTER_PAYMENT");
-    expect(stateOf(local).invoices.filter((invoice) => invoice.purpose === "PLAN_CHANGE")).toHaveLength(1);
+    expect(stateOf(local).invoices.filter((invoice) => invoice.tenantId === UM && invoice.purpose === "PLAN_CHANGE")).toHaveLength(1);
   });
 
   it("refuseNext and delayMs take the four operations", async () => {

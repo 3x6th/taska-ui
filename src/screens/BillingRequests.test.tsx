@@ -17,11 +17,13 @@ import { CompanyPlanSection } from "./company/CompanyPlanSection";
  * build, which sends none of these.
  *
  * The guard's table: the list `getTenant ∥ me → listInvoices ∥ getSubscription`
- * (TAS-515: the «Automatic payments» group, +1 read at the same depth); the invoice
- * `getTenant ∥ me → getInvoice`, with `listInvoices` only for an EXPIRED or
- * VOID one (F3); the card `getTenant → listInvoices` (F4, F7) — no `getInvoice`
- * without a payment out. The catalogue (`GET /billing/plans`, public) names the
- * invoice's plan.
+ * (TAS-515: the «Automatic payments» group, +1 read at the same depth; TAS-514:
+ * `listRefunds`, +1 at it too); the invoice `getTenant ∥ me → getInvoice`, with
+ * `listInvoices` only for an EXPIRED or VOID one (F3) and — TAS-514 —
+ * `getTenantCapabilities` only for an open wire one; the card
+ * `getTenant → listInvoices ∥ listRefunds` (F4, F7; TAS-514 decision 7) — no
+ * `getInvoice` without a payment out. The catalogue (`GET /billing/plans`,
+ * public) names the invoice's plan.
  */
 
 const ANNA = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
@@ -46,7 +48,7 @@ vi.mock("../api/client", async () => {
 });
 
 const EUR = (amountMinor: string) => ({ amountMinor, currency: "EUR", exponent: 2 });
-const server = { invoiceState: "OPEN", tenantId: NORTHWIND, lifecycle: "ACTIVE", purpose: null as string | null };
+const server = { invoiceState: "OPEN", tenantId: NORTHWIND, lifecycle: "ACTIVE", purpose: null as string | null, method: "PSP" };
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const session = (sessionId: string, tag: string, tenantId?: string) => ({
@@ -71,7 +73,10 @@ const invoice = () => ({
   remaining: EUR("2000"),
   issuedAt: "2026-11-10T09:00:00Z",
   dueAt: "2099-01-02T09:00:00Z",
-  paymentMethod: "PSP",
+  paymentMethod: server.method,
+  ...(server.method === "WIRE"
+    ? { wireInstructions: { beneficiaryName: "Taska Mock S.L. (test only)", iban: "XX00MOCK0000000000000000", bic: "MOCKESM0XXX", bankName: "Mock Bank", reference: "TASKA-TSK-2026-01008" } }
+    : {}),
   version: "1",
   matchedUnallocated: EUR("0"),
 });
@@ -111,6 +116,10 @@ function stubGateway() {
         if (path.startsWith("/billing/plans")) return json(200, { items: [] });
         if (path.startsWith(`/tenants/${server.tenantId}/billing/invoices?`)) return json(200, { items: [invoice()] });
         if (path === `/tenants/${server.tenantId}/billing/invoices/${INVOICE}`) return json(200, invoice());
+        if (path.startsWith(`/tenants/${server.tenantId}/billing/refunds?`)) return json(200, { items: [] });
+        if (path === `/tenants/${server.tenantId}/capabilities`) {
+          return json(200, { tenantId: server.tenantId, durationsSeconds: { WIRE_RECONCILIATION_TARGET_SECONDS: 86400 } });
+        }
         if (path === `/tenants/${server.tenantId}/billing/entitlement`) {
           return json(200, { tenantId: server.tenantId, version: "2", planVersionId: "plan-team", limits: [{ kind: "TASK_LIFETIME", unlimited: true }] });
         }
@@ -139,11 +148,12 @@ const one = (entries: typeof log, route: string) => {
   return found[0];
 };
 
-async function enter(tenantId: string, lifecycle: string, invoiceState = "OPEN", purpose: string | null = null) {
+async function enter(tenantId: string, lifecycle: string, invoiceState = "OPEN", purpose: string | null = null, method = "PSP") {
   server.tenantId = tenantId;
   server.lifecycle = lifecycle;
   server.invoiceState = invoiceState;
   server.purpose = purpose;
+  server.method = method;
   if (!taskaApi.hasSession()) await taskaApi.signIn({ email: "anna@example.com", password: "x" });
   await taskaApi.enterCompany(tenantId);
   return log.length;
@@ -160,9 +170,11 @@ const invoicesRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/in
 const invoiceRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/invoices/${INVOICE}`;
 const subscriptionRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/subscription`;
 const entitlementRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/entitlement`;
+const refundsRoute = (tenantId: string) => `GET /tenants/${tenantId}/billing/refunds?limit=100`;
+const capabilitiesRoute = (tenantId: string) => `GET /tenants/${tenantId}/capabilities`;
 
 describe("the request budget of Billing and the never-opened card (F9)", () => {
-  it("the list: getTenant ∥ me, then listInvoices ∥ getSubscription — and nothing else of the company's", async () => {
+  it("the list: getTenant ∥ me, then listInvoices ∥ getSubscription ∥ listRefunds — and nothing else of the company's", async () => {
     const from = await enter(NORTHWIND, "ACTIVE");
     const { wrapper } = companiesHarness({ companyId: NORTHWIND, path: "/company/billing" });
     const view = render(<CompanyBillingSection />, { wrapper });
@@ -170,9 +182,11 @@ describe("the request budget of Billing and the never-opened card (F9)", () => {
     await screen.findByRole("heading", { name: "Automatic payments" });
     const routes = sent(from);
     expect(routes.map((entry) => entry.route).sort()).toEqual(
-      ["GET /users/me", invoicesRoute(NORTHWIND), subscriptionRoute(NORTHWIND), tenantRoute(NORTHWIND)].sort(),
+      ["GET /users/me", invoicesRoute(NORTHWIND), refundsRoute(NORTHWIND), subscriptionRoute(NORTHWIND), tenantRoute(NORTHWIND)].sort(),
     );
-    for (const route of [invoicesRoute(NORTHWIND), subscriptionRoute(NORTHWIND)]) {
+    // TAS-514: beside the list, at its depth — never after it.
+    expect(one(routes, refundsRoute(NORTHWIND)).started).toBeLessThan(one(routes, invoicesRoute(NORTHWIND)).answered);
+    for (const route of [invoicesRoute(NORTHWIND), subscriptionRoute(NORTHWIND), refundsRoute(NORTHWIND)]) {
       const read = one(routes, route);
       expect(read.started).toBeGreaterThan(one(routes, tenantRoute(NORTHWIND)).answered);
       expect(read.started).toBeGreaterThan(one(routes, "GET /users/me").answered);
@@ -256,7 +270,7 @@ describe("the request budget of Billing and the never-opened card (F9)", () => {
     view.unmount();
   });
 
-  it("the never-opened card: getTenant, then listInvoices — no getInvoice without a payment out", async () => {
+  it("the never-opened card: getTenant, then listInvoices ∥ listRefunds — no getInvoice without a payment out", async () => {
     const from = await enter(STARK, "AWAITING_PAYMENT");
     const { wrapper } = companiesHarness({ companyId: STARK, path: "/projects" });
     const view = render(
@@ -264,9 +278,45 @@ describe("the request budget of Billing and the never-opened card (F9)", () => {
       { wrapper },
     );
     await screen.findByRole("button", { name: "Pay €20.00" });
+    await waitFor(() => expect(sent(from).map((entry) => entry.route)).toContain(refundsRoute(STARK)));
     const routes = sent(from);
-    expect(routes.map((entry) => entry.route).sort()).toEqual(["GET /users/me", invoicesRoute(STARK), tenantRoute(STARK)].sort());
+    expect(routes.map((entry) => entry.route).sort()).toEqual(["GET /users/me", invoicesRoute(STARK), refundsRoute(STARK), tenantRoute(STARK)].sort());
     expect(one(routes, invoicesRoute(STARK)).started).toBeGreaterThan(one(routes, tenantRoute(STARK)).answered);
+    expect(one(routes, refundsRoute(STARK)).started).toBeLessThan(one(routes, invoicesRoute(STARK)).answered);
+    view.unmount();
+  });
+
+  it("TAS-514: an open wire invoice adds the capabilities, after it — and a wire card the same, from its list row", async () => {
+    let from = await enter(NORTHWIND, "ACTIVE", "OPEN", null, "WIRE");
+    const { wrapper } = companiesHarness({ companyId: NORTHWIND, path: `/company/billing/${INVOICE}` });
+    let view = render(
+      <Routes>
+        <Route path="/company/billing/:invoiceId" element={<CompanyInvoiceSection />} />
+      </Routes>,
+      { wrapper },
+    );
+    await screen.findByRole("heading", { name: "Bank transfer" });
+    await screen.findByText(/within 24 hours of the money arriving/);
+    let routes = sent(from);
+    expect(routes.map((entry) => entry.route).filter((route) => !route.startsWith("GET /billing/plans")).sort()).toEqual(
+      ["GET /users/me", capabilitiesRoute(NORTHWIND), invoiceRoute(NORTHWIND), tenantRoute(NORTHWIND)].sort(),
+    );
+    expect(one(routes, capabilitiesRoute(NORTHWIND)).started).toBeGreaterThan(one(routes, invoiceRoute(NORTHWIND)).answered);
+    view.unmount();
+
+    from = await enter(STARK, "AWAITING_PAYMENT", "OPEN", null, "WIRE");
+    const card = companiesHarness({ companyId: STARK, path: "/projects" });
+    view = render(
+      <CompanySetupScreen companyId={STARK} onOpened={() => {}} pending={null} row={null} session="open" theme="light" toggleTheme={() => {}} />,
+      { wrapper: card.wrapper },
+    );
+    await screen.findByRole("heading", { name: "Bank transfer" });
+    await screen.findByText(/within 24 hours of the money arriving/);
+    routes = sent(from);
+    expect(routes.map((entry) => entry.route).sort()).toEqual(
+      ["GET /users/me", capabilitiesRoute(STARK), invoicesRoute(STARK), refundsRoute(STARK), tenantRoute(STARK)].sort(),
+    );
+    expect(screen.queryByRole("button", { name: /^Pay/ })).toBeNull();
     view.unmount();
   });
 });

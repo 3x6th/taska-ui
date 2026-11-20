@@ -3,7 +3,7 @@ import { B2B, COMPANY, INVOICE, LONG_NAME, companyPath, inCompany, openCompanyZo
 
 /*
  * A plan change, its renewal and automatic payments in the companies build
- * (TAS-515) against the third e2e server's mock (`taska.mockServer.v7`). The
+ * (TAS-515) against the third e2e server's mock (`taska.mockServer.v8`). The
  * story's acceptance: paid → Free at once, with the paid period gone; paid →
  * cheaper paid only after its payment, with a new month; Free refused through
  * the real path; a dearer plan scheduled with its invoice; a scheduled change
@@ -29,7 +29,7 @@ const dialog = (page: Page) => page.getByRole("dialog", { name: "Change plan" })
 const server = (page: Page) =>
   page.evaluate(
     () =>
-      JSON.parse(window.localStorage.getItem("taska.mockServer.v7") ?? "{}") as {
+      JSON.parse(window.localStorage.getItem("taska.mockServer.v8") ?? "{}") as {
         tenants: Array<{ id: string; subscription: { planVersionId: string; paidThrough?: string; version: string } }>;
         invoices: Array<{ id: string; tenantId: string; number: string; purpose: string; state: string }>;
         billingReceipts: Record<string, unknown>;

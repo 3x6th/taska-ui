@@ -38,6 +38,7 @@ const invoice = (overrides: Partial<Invoice> = {}): Invoice => ({
   paymentMethod: "PSP",
   version: "1",
   replacesInvoiceId: null,
+  wireInstructions: null,
   ...overrides,
 });
 const checkout = (state: string): Checkout => ({ id: "co", invoiceId: "inv-1", state, expiresAt: null, redirect: null });

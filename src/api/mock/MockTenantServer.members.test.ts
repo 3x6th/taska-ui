@@ -117,9 +117,11 @@ describe("the fixtures (§7)", () => {
       // TAS-512: nor the entitlement's version or the quota bookkeeping.
       expect(tenant).not.toHaveProperty("entitlementVersion");
       expect(tenant).not.toHaveProperty("quotaBreach");
+      // TAS-514: nor how the server picks a company's invoices' method.
+      expect(tenant).not.toHaveProperty("invoiceMethod");
     }
-    // v7 since TAS-515's fresh seed (no announced change on Umbrella; the subscription commands' receipts).
-    expect(JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}").v).toBe(7);
+    // v8 since TAS-514's fresh seed (each invoice's snapshots, Cyberdyne's wire fixtures, receipts and refunds).
+    expect(JSON.parse(local.getItem(MOCK_SERVER_KEY) ?? "{}").v).toBe(8);
   });
 
   it("keeps TAS-500's directory: Northwind's ACTIVE people are Anna, Sofia and Tom", async () => {

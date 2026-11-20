@@ -18,6 +18,11 @@ export const INVOICE = {
   umbrellaRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e08",
   umbrellaInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e02",
   starkInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e06",
+  // TAS-514: Cyberdyne Systems' — the late first invoice, its paid replacement, the VOID plan change in dollars, the open renewal.
+  cyberdyneLateInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e09",
+  cyberdyneInitial: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0a",
+  cyberdynePlanChange: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0b",
+  cyberdyneRenewal: "4b8e2a1c-6d3f-4e5a-9b7c-1a2b3c4d5e0c",
 } as const;
 
 export const COMPANY = {
@@ -31,6 +36,8 @@ export const COMPANY = {
   // TAS-501: Tom's creations — awaiting its first payment, and cancelled.
   stark: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b08",
   wayne: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b09",
+  // TAS-514: Tom's company that pays by bank transfer; Priya is its admin, not its owner.
+  cyberdyne: "0b6f3c1e-4a2d-4e8b-9c7f-1d2e3f4a5b0b",
 } as const;
 
 export const LONG_NAME =

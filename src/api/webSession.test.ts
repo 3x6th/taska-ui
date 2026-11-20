@@ -141,6 +141,13 @@ function fakeTransport() {
     getInvoice: vi.fn<B2bTransport["getInvoice"]>(async (_bearer, tenantId, invoiceId) => ({ id: invoiceId, tenantId, state: "OPEN" })),
     createCheckout: vi.fn<B2bTransport["createCheckout"]>(async (_bearer, _tenantId, invoiceId) => ({ id: "checkout-1", invoiceId, state: "CREATED" })),
     getCheckout: vi.fn<B2bTransport["getCheckout"]>(async (_bearer, _tenantId, checkoutId) => ({ id: checkoutId, invoiceId: "invoice-1", state: "PENDING" })),
+    getInvoiceDocument: vi.fn<B2bTransport["getInvoiceDocument"]>(async () => ({
+      contentType: "application/pdf",
+      disposition: null,
+      body: new Blob(["%PDF-1.4"], { type: "application/pdf" }),
+    })),
+    listRefunds: vi.fn<B2bTransport["listRefunds"]>(async () => ({ items: [] })),
+    getTenantCapabilities: vi.fn<B2bTransport["getTenantCapabilities"]>(async (_bearer, tenantId) => ({ tenantId, durationsSeconds: {} })),
     // TAS-515.
     changeSubscriptionPlan: vi.fn<B2bTransport["changeSubscriptionPlan"]>(async (_bearer, tenantId) => ({
       subscription: { tenantId, planVersionId: "plan-team", version: "3", renewalCancelled: false, autopayState: "DISABLED" },
