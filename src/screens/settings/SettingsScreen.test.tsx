@@ -16,6 +16,7 @@ const { fakeApi, state } = vi.hoisted(() => {
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
+    onAccountChanged: () => () => {},
     getNotificationPreferences: async () => ({
       emailEnabled: true,
       telegramEnabled: false,

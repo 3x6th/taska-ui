@@ -35,8 +35,11 @@ describe("the company in the address (DESIGN.md §5.1)", () => {
     expect(splitCompanyRoute("/c/%E0%A4%A/x")).toBeNull();
   });
 
-  it("knows the four routes outside every company, and what an address without one would open", () => {
+  it("knows the routes outside every company, and what an address without one would open", () => {
     for (const path of ["/login", "/invite?token=x", "/auth/callback", "/companies"]) expect(isOutsideCompanies(path)).toBe(true);
+    // TAS-527: the two pages of a password reset.
+    for (const path of ["/forgot-password", "/reset-password", "/reset-password?token=x"]) expect(isOutsideCompanies(path)).toBe(true);
+    expect(inCompanyRest("/reset-password")).toBeNull();
     for (const path of ["/projects", "/c/x/login", "/loginx"]) expect(isOutsideCompanies(path)).toBe(false);
     expect(inCompanyRest("/")).toBe("/projects");
     expect(inCompanyRest("/projects/p/issues/i")).toBe("/projects/p/issues/i");

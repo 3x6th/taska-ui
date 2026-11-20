@@ -19,6 +19,12 @@ export interface LoginRedirectState {
    */
   activated?: boolean;
   /**
+   * True when a password reset was just completed (TAS-527): the server ended
+   * every session of the account and this browser's with it, so the form says
+   * the password is reset and waits for the email — read once, like `activated`.
+   */
+  recovered?: boolean;
+  /**
    * A provider sign-in that did not finish (DESIGN.md §4.31): the refusal the
    * callback met, with its request id, carried to the form that draws it —
    * read once, then taken out of the history entry like `activated`.

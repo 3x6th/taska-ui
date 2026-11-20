@@ -2,6 +2,7 @@ import { createContext, useContext, useState, type ReactNode } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import type { Theme } from "../hooks/useTheme";
 import { COMPANIES_ROUTE, CREATE_COMPANY_ROUTE, isContinuedShell } from "../lib/companies";
+import { FORGOT_PASSWORD_ROUTE, RESET_PASSWORD_ROUTE } from "../lib/recoveryLink";
 import { TaskaLogo } from "./TaskaLogo";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -80,19 +81,27 @@ function AuthShellBox({
 }
 
 /**
- * The one frame `/login`, `/companies` and `/companies/new` share in the
- * companies build — a layout route, so moving between them keeps the card
- * mounted and only its contents change. Its entrance is decided by the route
- * it opened on: the sign-in card's 500 ms on `/login`, the token's on the
- * other two (§3, B6) — and none when it continues a card just left across the
- * company prefix (TAS-501).
+ * The routes whose card enters on the token, `tk-pop var(--dur-enter)` (§3):
+ * the picker and «Create a company» (TAS-500, TAS-501), and the two pages of a
+ * password reset (TAS-527, art-director B3) — never the sign-in card's 500 ms.
+ */
+const APP_ENTRANCE_ROUTES: readonly string[] = [COMPANIES_ROUTE, CREATE_COMPANY_ROUTE, FORGOT_PASSWORD_ROUTE, RESET_PASSWORD_ROUTE];
+
+/**
+ * The one frame `/login`, `/companies`, `/companies/new` and, since TAS-527,
+ * `/forgot-password` and `/reset-password` share in the companies build — a
+ * layout route, so moving between them keeps the card mounted and only its
+ * contents change. Its entrance is decided by the route it opened on: the
+ * sign-in card's 500 ms on `/login`, the token's on the others (§3, B6) — and
+ * none when it continues a card just left across the company prefix
+ * (TAS-501).
  */
 export function AuthShellFrame({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }) {
   const location = useLocation();
   const [entrance] = useState<AuthShellEntrance>(() =>
     isContinuedShell(location.state)
       ? "none"
-      : location.pathname === COMPANIES_ROUTE || location.pathname === CREATE_COMPANY_ROUTE
+      : APP_ENTRANCE_ROUTES.includes(location.pathname)
         ? "app"
         : "login",
   );

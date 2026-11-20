@@ -65,6 +65,7 @@ import {
   B2B_TENANCY,
   LEGACY_TENANCY,
 } from "../TaskaApi";
+import type { DeliveryAcknowledgement, EmailChangeChallenge } from "../accountCredentials";
 import { attachmentRefusal } from "../attachments";
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES, avatarRefusal } from "../avatars";
@@ -1600,6 +1601,37 @@ export class RestTaskaApi implements TaskaApi {
     return this.companies("getEntitlement").getEntitlement(tenantId);
   }
 
+  /*
+   * The account's own credentials (TAS-527): the session layer picks each
+   * one's credential — none for the two recovery routes, the account session
+   * with `proof` for the three commands — and narrows the answers. Today's
+   * build: no request, and `onAccountChanged` never fires.
+   */
+
+  async requestPasswordRecovery(email: string, idempotencyKey: string): Promise<DeliveryAcknowledgement> {
+    return this.companies("requestPasswordRecovery").requestPasswordRecovery(email, idempotencyKey);
+  }
+
+  async completePasswordRecovery(token: string, newPassword: string, idempotencyKey: string): Promise<void> {
+    return this.companies("completePasswordRecovery").completePasswordRecovery(token, newPassword, idempotencyKey);
+  }
+
+  async changeAccountPassword(currentPassword: string, newPassword: string, idempotencyKey: string): Promise<void> {
+    return this.companies("changeAccountPassword").changeAccountPassword(currentPassword, newPassword, idempotencyKey);
+  }
+
+  async requestAccountEmailChange(newEmail: string, currentPassword: string | null, idempotencyKey: string): Promise<EmailChangeChallenge> {
+    return this.companies("requestAccountEmailChange").requestAccountEmailChange(newEmail, currentPassword, idempotencyKey);
+  }
+
+  async confirmAccountEmailChange(challengeId: string, code: string, idempotencyKey: string): Promise<void> {
+    return this.companies("confirmAccountEmailChange").confirmAccountEmailChange(challengeId, code, idempotencyKey);
+  }
+
+  onAccountChanged(listener: () => void): () => void {
+    return this.web ? this.web.onAccountChanged(listener) : () => {};
+  }
+
   /** The session layer, or the refusal today's build gives a company operation — without a request. */
   private companies(operation: string): WebSessionClient {
     if (this.web === null) throw new TenancyUnavailableError(operation);
@@ -1752,6 +1784,47 @@ export class RestTaskaApi implements TaskaApi {
       getSubscription: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/subscription`, {}, bearer, signal),
       // TAS-512.
       getEntitlement: (bearer, tenantId, signal) => send(`${tenantPath(tenantId)}/billing/entitlement`, {}, bearer, signal),
+      // TAS-527. Bodies rebuilt field by field in the blueprint's order, so a
+      // retry with the same key sends the same bytes; the optional
+      // `currentPassword` left out rather than sent empty. The two recovery
+      // routes go with no bearer (`security: []`).
+      requestPasswordRecovery: (body, idempotencyKey) =>
+        send("/auth/password-recovery", { method: "POST", body: { email: body.email }, headers: key(idempotencyKey) }, null),
+      completePasswordRecovery: async (body, idempotencyKey) => {
+        await send(
+          "/auth/password-recovery/complete",
+          { method: "POST", body: { token: body.token, newPassword: body.newPassword }, headers: key(idempotencyKey) },
+          null,
+        );
+      },
+      changeAccountPassword: async (bearer, body, idempotencyKey) => {
+        await send(
+          "/account/password",
+          {
+            method: "PUT",
+            body: { currentPassword: body.currentPassword, newPassword: body.newPassword },
+            headers: key(idempotencyKey),
+          },
+          bearer,
+        );
+      },
+      requestAccountEmailChange: (bearer, body, idempotencyKey) =>
+        send(
+          "/account/email-changes",
+          {
+            method: "POST",
+            body: body.currentPassword === undefined ? { newEmail: body.newEmail } : { newEmail: body.newEmail, currentPassword: body.currentPassword },
+            headers: key(idempotencyKey),
+          },
+          bearer,
+        ),
+      confirmAccountEmailChange: async (bearer, body, idempotencyKey) => {
+        await send(
+          "/account/email-changes/confirm",
+          { method: "POST", body: { challengeId: body.challengeId, code: body.code }, headers: key(idempotencyKey) },
+          bearer,
+        );
+      },
     };
   }
 

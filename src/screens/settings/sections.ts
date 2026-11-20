@@ -1,4 +1,4 @@
-import { Building2, Gauge, KeyRound, Link2, Palette, UserRound, Users } from "lucide-react";
+import { Building2, Gauge, KeyRound, Link2, LockKeyhole, Palette, UserRound, Users } from "lucide-react";
 import type { AreaSection, AreaSectionGroup } from "../../components/SectionArea";
 import type { Theme } from "../../hooks/useTheme";
 
@@ -13,6 +13,19 @@ export const settingsSections: readonly AreaSection[] = [
   { id: "connected-apps", label: "Connected apps", path: "/settings/connected-apps", icon: Link2 },
   { id: "appearance", label: "Appearance", path: "/settings/appearance", icon: Palette },
 ];
+
+/**
+ * The B2B build's «Account» (TAS-527, art-director B1): the email and the
+ * password that sign the reader in to every company — a personal section,
+ * second in the rail after My profile, for every role, never in «Company».
+ * Without the flag it is not drawn and its route does not exist.
+ */
+export const accountSettingsSection: AreaSection = { id: "account", label: "Account", path: "/settings/account", icon: LockKeyhole };
+
+/** The personal sections of the build: today's, or the B2B build's with «Account» second. */
+export function personalSettingsSections(companies: boolean): readonly AreaSection[] {
+  return companies ? [settingsSections[0], accountSettingsSection, ...settingsSections.slice(1)] : settingsSections;
+}
 
 /**
  * The B2B build's «Company» group (TAS-502, DESIGN.md §5.9): sections about the
@@ -35,8 +48,9 @@ export const companySettingsGroup: AreaSectionGroup = {
 export function settingsSectionForPath(
   pathname: string,
   groups: readonly AreaSectionGroup[] = [],
+  sections: readonly AreaSection[] = settingsSections,
 ): AreaSection | undefined {
-  return [...settingsSections, ...groups.flatMap((group) => group.sections)].find(
+  return [...sections, ...groups.flatMap((group) => group.sections)].find(
     (section) => pathname === section.path || pathname.startsWith(`${section.path}/`),
   );
 }

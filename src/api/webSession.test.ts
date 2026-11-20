@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MemoryStorage } from "../test/memoryStorage";
-import { WorkspaceClosedError, refusalReasons } from "./errors";
+import { WorkspaceClosedError, apiErrorFacts, refusalReasons } from "./errors";
 import { LAST_COMPANY_KEY } from "../lib/lastCompany";
 import {
   LEGACY_ACCESS_TOKEN_KEY,
@@ -15,6 +15,7 @@ import {
 } from "./webSession";
 import type { WorkspaceClosedEvent, WorkspaceLeftEvent, WorkspacePendingEvent, WorkspaceRestrictedEvent } from "./TaskaApi";
 import { TENANT_CREATION_KEY } from "./tenantCreation";
+import { ACCOUNT_REVISION_KEY, MalformedAnswerError, wasAnswered } from "./accountCredentials";
 
 /*
  * The companies build's session layer (TAS-500) against a scripted transport.
@@ -136,6 +137,14 @@ function fakeTransport() {
       tenantId, version: "3", planVersionId: "plan-free", coveragePeriodId: "period-1", validFrom: "2026-05-01T09:00:00Z", validUntil: "2026-12-07T09:00:00Z",
       restrictions: [], limits: [{ kind: "TASK_LIFETIME", limit: "50", unlimited: false }], features: ["projects.basic"], issuedAt: "2026-11-05T10:00:00Z",
     })),
+    // TAS-527.
+    requestPasswordRecovery: vi.fn<B2bTransport["requestPasswordRecovery"]>(async () => ({ accepted: true, retryAfterSeconds: 60 })),
+    completePasswordRecovery: vi.fn<B2bTransport["completePasswordRecovery"]>(async () => undefined),
+    changeAccountPassword: vi.fn<B2bTransport["changeAccountPassword"]>(async () => undefined),
+    requestAccountEmailChange: vi.fn<B2bTransport["requestAccountEmailChange"]>(async () => ({
+      challengeId: "challenge-1", purpose: "CHANGE_EMAIL", expiresAt: "2026-11-11T10:10:00Z", delivery: "EMAIL", maskedDestination: "a•••@example.com",
+    })),
+    confirmAccountEmailChange: vi.fn<B2bTransport["confirmAccountEmailChange"]>(async () => undefined),
   };
 }
 
@@ -1470,5 +1479,192 @@ describe("the company's name, owner and pause (TAS-504, api-contract-guard §1)"
     expect(closed).toEqual([]);
     expect(restricted).toEqual([]);
     expect(client.currentWorkspace()?.tenantSessionId).toBe("ts-1");
+  });
+});
+
+/* ------------------------------------ the account's own credentials (TAS-527) */
+
+describe("the account's credentials: credentials, bodies, proof and the cross-tab signal (TAS-527)", () => {
+  async function inNorthwind(events: EventTarget | null = null) {
+    const local = new MemoryStorage();
+    signedIn(local);
+    const tab = openTab({ local, events });
+    await tab.client.enterCompany(NORTHWIND);
+    return { ...tab, local };
+  }
+
+  it("the two recovery routes go with no credential, the bodies exactly, and a 401 there renews nothing", async () => {
+    const { client, transport } = await inNorthwind();
+    await expect(client.requestPasswordRecovery("anna@example.com", "key-r")).resolves.toEqual({ retryAfterSeconds: 60 });
+    expect(transport.requestPasswordRecovery).toHaveBeenCalledWith({ email: "anna@example.com" }, "key-r");
+    await client.completePasswordRecovery("t".repeat(43), "a long new password", "key-c");
+    expect(transport.completePasswordRecovery).toHaveBeenCalledWith({ token: "t".repeat(43), newPassword: "a long new password" }, "key-c");
+    expect(Object.keys(transport.completePasswordRecovery.mock.calls[0][0])).toEqual(["token", "newPassword"]);
+
+    const dead = refusal(401, "AUTHENTICATION_REQUIRED");
+    transport.completePasswordRecovery.mockRejectedValueOnce(dead);
+    await expect(client.completePasswordRecovery("t".repeat(43), "a long new password", "key-d")).rejects.toBe(dead);
+    expect(transport.refreshWebSession).not.toHaveBeenCalled();
+    expect(client.hasSession()).toBe(true);
+    expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+  });
+
+  it("every 202 is the acknowledgement; only a whole wait ≥ 0 is read (enumeration safety, B4)", async () => {
+    const { client, transport } = await inNorthwind();
+    for (const [body, wait] of [
+      [{ accepted: true, retryAfterSeconds: 0 }, 0],
+      [{ accepted: true, retryAfterSeconds: 12.5 }, null],
+      [{ accepted: true }, null],
+      [{ accepted: false, retryAfterSeconds: 30, sent: true }, 30],
+      [undefined, null],
+    ] as const) {
+      transport.requestPasswordRecovery.mockResolvedValueOnce(body);
+      await expect(client.requestPasswordRecovery("x@example.com", "k")).resolves.toEqual({ retryAfterSeconds: wait });
+    }
+  });
+
+  it("from inside a company the three commands send WEB_GLOBAL, never the company's, with the caller's key and the bodies exactly", async () => {
+    const { client, transport } = await inNorthwind();
+    await client.changeAccountPassword("old one", "a long new password", "key-p");
+    expect(transport.changeAccountPassword).toHaveBeenCalledWith("g0-access", { currentPassword: "old one", newPassword: "a long new password" }, "key-p");
+    const challenge = await client.requestAccountEmailChange("new@example.com", "old one", "key-e");
+    expect(transport.requestAccountEmailChange).toHaveBeenCalledWith("g0-access", { newEmail: "new@example.com", currentPassword: "old one" }, "key-e");
+    expect(Object.keys(transport.requestAccountEmailChange.mock.calls[0][1])).toEqual(["newEmail", "currentPassword"]);
+    expect(challenge).toEqual({ challengeId: "challenge-1", expiresAt: "2026-11-11T10:10:00Z", delivery: "EMAIL", maskedDestination: "a•••@example.com" });
+    // `currentPassword: null` is left out, not sent.
+    await client.requestAccountEmailChange("new@example.com", null, "key-f");
+    expect(transport.requestAccountEmailChange.mock.calls[1][1]).toEqual({ newEmail: "new@example.com" });
+    await client.confirmAccountEmailChange("challenge-1", "12345678", "key-g");
+    expect(transport.confirmAccountEmailChange).toHaveBeenCalledWith("g0-access", { challengeId: "challenge-1", code: "12345678" }, "key-g");
+    expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+  });
+
+  it("a challenge for another purpose, or without an id, is refused as malformed; a strange delivery is kept as sent", async () => {
+    const { client, transport } = await inNorthwind();
+    transport.requestAccountEmailChange.mockResolvedValueOnce({ challengeId: "c", purpose: "DELETE_ACCOUNT", expiresAt: "2026-11-11T10:10:00Z", delivery: "EMAIL", maskedDestination: "m" });
+    await expect(client.requestAccountEmailChange("new@example.com", "p", "k1")).rejects.toBeInstanceOf(MalformedAnswerError);
+    transport.requestAccountEmailChange.mockResolvedValueOnce({ purpose: "CHANGE_EMAIL" });
+    const malformed = await client.requestAccountEmailChange("new@example.com", "p", "k2").catch((error: unknown) => error);
+    expect(malformed).toBeInstanceOf(MalformedAnswerError);
+    // Answered, with nothing of anybody's server in it: no status, code, id or words.
+    expect(wasAnswered(malformed)).toBe(true);
+    expect(apiErrorFacts(malformed)).toEqual({ message: null, requestId: null, status: null, code: null, details: null });
+    transport.requestAccountEmailChange.mockResolvedValueOnce({ challengeId: "c", purpose: "CHANGE_EMAIL", expiresAt: "soon", delivery: "PIGEON" });
+    await expect(client.requestAccountEmailChange("new@example.com", "p", "k3")).resolves.toEqual({
+      challengeId: "c",
+      expiresAt: null,
+      delivery: "PIGEON",
+      maskedDestination: null,
+    });
+  });
+
+  it("proof: a 401 that survives a successful rotation is the command's own refusal — the retry's, as it came, nobody signed out (F3)", async () => {
+    const { client, transport, local } = await inNorthwind();
+    const expired = vi.fn();
+    client.onSessionExpired(expired);
+    // The first may be an expired access token's; the retry's is the command's own, and its id is the one to show.
+    const first = Object.assign(refusal(401, "AUTHENTICATION_REQUIRED"), { requestId: "rid-expired-token" });
+    const second = Object.assign(refusal(401, "AUTHENTICATION_REQUIRED"), { requestId: "rid-the-command" });
+    transport.changeAccountPassword.mockRejectedValueOnce(first).mockRejectedValueOnce(second);
+    await expect(client.changeAccountPassword("typo", "a long new password", "key-1")).rejects.toBe(second);
+    // Rotated once, sent twice with the same key and body, and the account lives on.
+    expect(transport.refreshWebSession).toHaveBeenCalledTimes(1);
+    expect(transport.changeAccountPassword.mock.calls).toEqual([
+      ["g0-access", { currentPassword: "typo", newPassword: "a long new password" }, "key-1"],
+      ["g1-access", { currentPassword: "typo", newPassword: "a long new password" }, "key-1"],
+    ]);
+    expect(expired).not.toHaveBeenCalled();
+    expect(client.hasSession()).toBe(true);
+    expect(stored(local, WEB_SESSION_KEY)).toEqual(accountRecord("g1"));
+    expect(client.currentWorkspace()?.tenantId).toBe(NORTHWIND);
+  });
+
+  it("without proof the same 401 still ends the account — the rule `proof` is the exception to", async () => {
+    const { client, transport } = await inNorthwind();
+    const expired = vi.fn();
+    client.onSessionExpired(expired);
+    transport.createTenant
+      .mockRejectedValueOnce(refusal(401, "AUTHENTICATION_REQUIRED"))
+      .mockRejectedValueOnce(refusal(401, "AUTHENTICATION_REQUIRED"));
+    await expect(client.createTenant({ name: "Acme", planVersionId: "plan-free" }, "key-x")).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(expired).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refused rotation is the account dying, with proof too: every tab signs out, and the command is WorkspaceClosedError", async () => {
+    const { client, transport } = await inNorthwind();
+    const expired = vi.fn();
+    client.onSessionExpired(expired);
+    transport.confirmAccountEmailChange.mockRejectedValueOnce(refusal(401, "AUTHENTICATION_REQUIRED"));
+    transport.refreshWebSession.mockRejectedValueOnce(refusal(401, "TOKEN_REVOKED"));
+    await expect(client.confirmAccountEmailChange("c", "12345678", "key-2")).rejects.toBeInstanceOf(WorkspaceClosedError);
+    expect(expired).toHaveBeenCalledTimes(1);
+    expect(client.hasSession()).toBe(false);
+  });
+
+  it("no answer at all is passed on as it came, with nothing renewed (a retry sends the same key)", async () => {
+    const { client, transport } = await inNorthwind();
+    const lost = new TypeError("Failed to fetch");
+    transport.requestAccountEmailChange.mockRejectedValueOnce(lost);
+    await expect(client.requestAccountEmailChange("new@example.com", "p", "key-3")).rejects.toBe(lost);
+    expect(transport.refreshWebSession).not.toHaveBeenCalled();
+  });
+
+  it("a 204 writes the data-free signal and tells this tab; another tab of the same account is told by `storage`", async () => {
+    const local = new MemoryStorage();
+    signedIn(local);
+    const locks = createLocalLockManager();
+    const eventsB = new EventTarget();
+    const transport = fakeTransport();
+    const a = openTab({ local, locks, transport });
+    const b = openTab({ local, locks, transport, events: eventsB });
+    await a.client.enterCompany(NORTHWIND);
+    await b.client.enterCompany(GLOBEX);
+    const heardA = vi.fn();
+    const heardB = vi.fn();
+    a.client.onAccountChanged(heardA);
+    b.client.onAccountChanged(heardB);
+
+    await a.client.confirmAccountEmailChange("challenge-1", "12345678", "key-4");
+    expect(heardA).toHaveBeenCalledTimes(1);
+    const signal = local.getItem(ACCOUNT_REVISION_KEY);
+    const parsed = JSON.parse(signal ?? "null") as Record<string, unknown>;
+    // A nonce and the account's id — never the address, the password, the code or any answer.
+    expect(Object.keys(parsed).sort()).toEqual(["nonce", "userId"]);
+    expect(parsed.userId).toBe(USER);
+    expect(signal).not.toContain("12345678");
+    expect(signal).not.toContain("challenge-1");
+
+    eventsB.dispatchEvent(new StorageEvent("storage", { key: ACCOUNT_REVISION_KEY, newValue: signal }));
+    expect(heardB).toHaveBeenCalledTimes(1);
+    // Another account's signal, and one that is not a signal, are nothing to this tab.
+    eventsB.dispatchEvent(new StorageEvent("storage", { key: ACCOUNT_REVISION_KEY, newValue: JSON.stringify({ nonce: "n", userId: "someone-else" }) }));
+    eventsB.dispatchEvent(new StorageEvent("storage", { key: ACCOUNT_REVISION_KEY, newValue: "not json" }));
+    expect(heardB).toHaveBeenCalledTimes(1);
+    // Nothing else moved: B keeps its company and its session.
+    expect(b.client.currentWorkspace()?.tenantId).toBe(GLOBEX);
+
+    await a.client.changeAccountPassword("p", "a long new password", "key-5");
+    expect(heardA).toHaveBeenCalledTimes(2);
+  });
+
+  it("a refused command writes no signal and tells nobody", async () => {
+    const { client, transport, local } = await inNorthwind();
+    const heard = vi.fn();
+    client.onAccountChanged(heard);
+    transport.changeAccountPassword.mockRejectedValueOnce(refusal(400, "VALIDATION_FAILED"));
+    await expect(client.changeAccountPassword("p", "short", "key-6")).rejects.toMatchObject({ status: 400 });
+    expect(local.getItem(ACCOUNT_REVISION_KEY)).toBeNull();
+    expect(heard).not.toHaveBeenCalled();
+  });
+
+  it("an answer that lands after signing out is WorkspaceClosedError", async () => {
+    const { client, transport } = await inNorthwind();
+    const held = gate<undefined>();
+    transport.confirmAccountEmailChange.mockReturnValueOnce(held.promise);
+    const asked = client.confirmAccountEmailChange("c", "12345678", "key-7");
+    await vi.waitFor(() => expect(transport.confirmAccountEmailChange).toHaveBeenCalledTimes(1));
+    await client.signOut();
+    held.resolve(undefined);
+    await expect(asked).rejects.toBeInstanceOf(WorkspaceClosedError);
   });
 });

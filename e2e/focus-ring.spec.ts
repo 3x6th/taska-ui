@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { B2B, COMPANY, companyPath, inCompany } from "./companiesFixtures";
 
 /**
  * One focus ring for the whole product (DESIGN.md §4.1, §7; TAS-299).
@@ -664,6 +665,49 @@ for (const theme of ["light", "dark"] as Theme[]) {
       await page.keyboard.press("Enter");
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await expectFocusBack(page, create, { ring: true });
+    });
+
+    test("the companies build: the sign-in card's reset pages and Settings › Account (TAS-527)", async ({ page }) => {
+      await page.goto(`${B2B}/login`);
+      await expect(page.getByRole("link", { name: "Forgot your password?" })).toBeVisible();
+      await walkBoth(page, "B2B /login, Sign in with the reset link");
+
+      await page.getByRole("link", { name: "Forgot your password?" }).click();
+      await expect(page.getByRole("heading", { name: "Reset your password" })).toBeVisible();
+      await walkBoth(page, "/forgot-password");
+      await page.getByLabel("Email").fill("anna@example.com");
+      await page.getByRole("button", { name: "Send reset link" }).click();
+      await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+      await walkBoth(page, "/forgot-password, Check your email");
+
+      const link = await page.evaluate(() => {
+        const box = JSON.parse(window.localStorage.getItem("taska.mockMailbox.v1") ?? "[]") as Array<{ link?: string }>;
+        return box.at(-1)?.link ?? "";
+      });
+      await page.goto(link);
+      await expect(page.getByLabel("New password")).toBeVisible();
+      await walkBoth(page, "/reset-password with a link");
+      await page.reload();
+      await expect(page.getByRole("link", { name: "Request a new link" })).toBeVisible();
+      await walkBoth(page, "/reset-password without a link");
+
+      await inCompany(page, "Northwind", COMPANY.northwind);
+      await page.goto(companyPath(COMPANY.northwind, "/settings/account"));
+      await expect(page.locator(".settings-account-email")).toBeVisible();
+      await walkBoth(page, "Settings › Account");
+      await pressOpen(page, page.getByRole("button", { name: "Change email" }));
+      await expect(page.getByLabel("New email")).toBeFocused();
+      await walkBoth(page, "Settings › Account, Change email");
+      await page.getByLabel("New email").fill("anna.new@example.com");
+      await page.getByLabel("Current password", { exact: true }).fill("anything");
+      await page.getByLabel("Current password", { exact: true }).press("Enter");
+      await expect(page.getByLabel("Code")).toBeFocused();
+      await walkBoth(page, "Settings › Account, the code step");
+      await page.keyboard.press("Escape");
+      await expectFocusBack(page, page.getByRole("button", { name: "Change email" }), { ring: true });
+      await pressOpen(page, page.getByRole("button", { name: "Change password" }));
+      await expect(page.getByLabel("Current password", { exact: true })).toBeFocused();
+      await walkBoth(page, "Settings › Account, Change password");
     });
 
     test("a key that resolves to nothing, and a page that is not there", async ({ page }) => {

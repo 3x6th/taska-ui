@@ -52,6 +52,8 @@ const { fakeApi, state } = vi.hoisted(() => {
   const api = {
     enterCompany: () => new Promise(() => {}),
     onWorkspaceClosed: () => () => {},
+    // TAS-527.
+    onAccountChanged: () => () => {},
     onWorkspaceLeft: () => () => {},
     onWorkspaceRestricted: () => () => {},
     onWorkspacePending: () => () => {},

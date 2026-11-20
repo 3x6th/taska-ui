@@ -645,6 +645,7 @@ describe("a refused invitation reads the seats once (TAS-512, api-contract-guard
       // The company gate around the section, as the app has it: its session never needs to settle here.
       enterCompany: () => new Promise(() => {}),
       onWorkspaceClosed: () => () => {},
+      onAccountChanged: () => () => {},
       onWorkspaceLeft: () => () => {},
       onWorkspaceRestricted: () => () => {},
       onWorkspacePending: () => () => {},

@@ -21,6 +21,8 @@ const { fakeApi, expireSession, signIn, signOut, metaReads, breakNotFound, notFo
 
   const api = {
     hasSession: () => state.signedIn,
+    // TAS-527: today's build never says the account changed.
+    onAccountChanged: () => () => {},
     onSessionExpired: (listener: () => void) => {
       listeners.add(listener);
       return () => {
