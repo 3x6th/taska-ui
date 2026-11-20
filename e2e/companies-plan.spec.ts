@@ -19,11 +19,14 @@ const planPath = (companyId: string) => companyPath(companyId, "/company/plan");
 /**
  * Opens Company › Plan as a reader does — third in the zone's rail, after
  * General and Members: «Manage company» (the switcher's, or the profile menu's
- * on a phone) and the rail (TAS-522). Moving from General to Plan puts focus
- * on the heading.
+ * on a phone) lands on General (TAS-522), then the rail's Plan with the
+ * keyboard, as a keyboard reader does: a rail link hands focus to the new
+ * heading whatever the input (§5.9).
  */
 async function openPlan(page: Page, companyId: string) {
-  await openCompanyZone(page, companyId, "Plan");
+  await openCompanyZone(page, companyId);
+  await page.getByRole("navigation", { name: "Company" }).getByRole("link", { name: "Plan" }).focus();
+  await page.keyboard.press("Enter");
   await expect(page).toHaveURL(planPath(companyId));
   await expect(page.getByRole("heading", { level: 1, name: /Plan/ })).toBeFocused();
   await expect(page.getByText(/^The plan /)).toBeVisible();
