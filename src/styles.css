@@ -7286,6 +7286,40 @@ h1 {
   gap: 14px;
 }
 
+/* §4.13 «Окно Done» (TAS-532, art-director 2026-11-17): the label and the
+   segments as one unwrappable group, laid out like `.filter-select` — a wrap
+   moves it whole and it stays 28 high. The trough is §4.2's at its tight end
+   (padding 2, gap 2, radius 8) around `.segmented.compact`'s 24 buttons, so
+   it stands 28: the height of the avatars and «Clear» in the same bar, where
+   26 under the select's height would have left a 22 button. No accent
+   anywhere — the window is a view, not a filter (§2.1). */
+.filter-done {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+}
+
+.filter-done .segmented {
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+}
+
+/* Every button its own width, `padding: 0 11` from the base rule. Its hit area
+   is the trough's full 28 (`inset: -2px 0`, §1's floor), and what is drawn
+   does not change. */
+.filter-done .segmented button {
+  position: relative;
+  flex: none;
+}
+
+.filter-done .segmented button::before {
+  position: absolute;
+  inset: -2px 0;
+  content: "";
+}
+
 /* An admin's names are up to 50 characters (§4.30): the select is capped at
    120 and ellipsizes inside, where the label picker's is 148. */
 .filter-select.filter-type select {

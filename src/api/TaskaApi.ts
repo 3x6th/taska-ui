@@ -285,6 +285,17 @@ export interface ListIssuesParams {
  * The board screen sends its four filters to the server (TAS-392, DESIGN.md
  * §5.4): a filter over a capped column on the client would lie about the
  * counts.
+ *
+ * `doneSince` (backend TAS-525, develop `e35e143e`), an instant: an issue whose
+ * status **its own type's** workflow files under `DONE` is kept only when its
+ * `updatedAt` is at or after it (issue-service's `boardFilter`, keyed on each
+ * type's own done keys, like `includeDone`); other statuses and the unplaced
+ * bucket are not cut, and `totalCount`/`hasMore` count after the cut. Not sent,
+ * nothing is cut. The board screen sends it under its Done window «2 weeks» —
+ * the read's moment less 14×24 h, once per read — and not under «All»
+ * (DESIGN.md §4.13). Not an instant is the binding's 400 `INVALID_ARGUMENT`;
+ * an instant outside years 1–9999 is the service's 400 `BAD_REQUEST`
+ * (`BOARD_READ_REFUSAL_MESSAGE`).
  */
 export interface BoardParams {
   issueType?: IssueTypeCode;
@@ -294,55 +305,93 @@ export interface BoardParams {
   priority?: IssuePriorityCode;
   query?: string;
   pageSizePerColumn?: number;
+  doneSince?: string;
 }
 
 /**
+ * The board service's refusal of what the binding let through on
+ * `GET /projects/{projectId}/board` (`BoardServiceImpl.getBoard` at backend
+ * `e35e143e`): 400 `BAD_REQUEST`, named for the page size — which the binding
+ * has already held to 1–200 — and said as well for a `doneSince` outside years
+ * 1–9999, the one value that reaches it. In the service's words, before the
+ * access check. The mock answers it in the same words.
+ */
+export const BOARD_READ_REFUSAL_MESSAGE = "pageSizePerColumn must be between 1 and 200";
+
+/**
  * Everything `GET /projects/{projectId}/board/columns/{statusKey}/issues` takes
- * (backend TAS-430, develop `cbd3f0af`): the board read's six filters, meant to
- * be sent exactly as the board was read so the page continues the same column,
- * an exclusive cursor and a page size.
+ * (backend TAS-430, cursor by category since TAS-525, develop `e35e143e`): the
+ * board read's seven filters — `doneSince` among them — meant to be sent
+ * exactly as the board was read so the page continues the same column, an
+ * exclusive cursor and a page size.
  *
- * - `afterCreatedAt` and `afterId` are the last drawn card's `createdAt` and
- *   `id`, **both or neither**: one without the other is refused by the
- *   gateway's controller (`BoardController.listBoardColumnIssues`, a
+ * - **The cursor is the column's order** (DESIGN.md §4.9, §5.3): for a column
+ *   the board answer files under category `DONE`, `afterUpdatedAt` and
+ *   `afterId` — the last drawn card's `updatedAt` and `id`, the column running
+ *   `updatedAt` desc, `id` desc; for every other column `afterCreatedAt` and
+ *   `afterId`, the column running `createdAt` asc, `id` asc. The category is
+ *   the merged column's, by key — for a key two types share, the first
+ *   registry type's — while `doneSince` still cuts by each issue's own
+ *   workflow. No cursor is the column's first page.
+ * - `afterId` goes with **exactly one** of the two instants. Both, or either
+ *   without `afterId`, or `afterId` alone is refused by the gateway's
+ *   controller (`BoardController.listBoardColumnIssues`, a
  *   `ResponseStatusException` the `GatewayErrorHandler` names by its HTTP
- *   status) — 400 `BAD_REQUEST` "afterCreatedAt and afterId must be supplied
- *   together". Neither is the column's first page. The cursor is exclusive, so
- *   the card it names is not repeated; an issue created before it since the
- *   board was read appears only when the board is read again.
+ *   status) — 400 `BAD_REQUEST` (`BOARD_CURSOR_PAIR_MESSAGE`). A cursor of the
+ *   other category's kind — `afterCreatedAt` on a done column, `afterUpdatedAt`
+ *   on any other — is the service's 400 `BAD_REQUEST`
+ *   (`BOARD_CURSOR_CATEGORY_MESSAGE`), after the access check, and only for a
+ *   status that is a column of the board read. The cursor is exclusive, so the
+ *   card it names is not repeated; an issue created — or, in a done column,
+ *   changed — before it since the board was read appears only when the board
+ *   is read again.
  * - `pageSize` 1–200, 50 when not sent; «Show more» sends 200, a re-read the
- *   depth it reads again. Outside the range, a cursor that is not an instant
- *   or an id that is not a UUID, or an empty `query` is the gateway's bean
+ *   depth it reads again. Outside the range, an instant that is not one or an
+ *   id that is not a UUID, or an empty `query` is the gateway's bean
  *   validation (400 `INVALID_ARGUMENT` "Invalid request parameters").
  * - What the binding lets through and the service refuses — a blank status
- *   key, an instant outside years 1–9999 — is 400 `BAD_REQUEST` in the
- *   service's words (`BOARD_CURSOR_REFUSAL_MESSAGE`), before the access check.
+ *   key, any of the three instants outside years 1–9999 — is 400
+ *   `BAD_REQUEST` in the service's words (`BOARD_CURSOR_REFUSAL_MESSAGE`),
+ *   before the access check.
  * - `includeDone` as on the board: the board screen always sends `true`, and
  *   `false` and `undefined` are the same request.
  */
 export interface BoardColumnPageParams extends Omit<BoardParams, "pageSizePerColumn"> {
   afterCreatedAt?: string;
+  afterUpdatedAt?: string;
   afterId?: string;
   pageSize?: number;
 }
 
 /**
- * The gateway controller's refusal of half a cursor on the column page
- * (`BoardController.listBoardColumnIssues` at backend `cbd3f0af`): 400, code
+ * The gateway controller's refusal of a cursor that is not `afterId` with
+ * exactly one of `afterCreatedAt`/`afterUpdatedAt` on the column page
+ * (`BoardController.listBoardColumnIssues` at backend `e35e143e`): 400, code
  * `BAD_REQUEST` — a `ResponseStatusException`, which `GatewayErrorHandler`
  * names by its HTTP status. Checked after sign-in, before anything else of the
  * request. The mock answers it in the same words.
  */
-export const BOARD_CURSOR_PAIR_MESSAGE = "afterCreatedAt and afterId must be supplied together";
+export const BOARD_CURSOR_PAIR_MESSAGE = "Supply afterId with exactly one of afterCreatedAt/afterUpdatedAt";
 
 /**
  * The column page service's own refusal (`BoardServiceImpl.listBoardColumnIssues`,
- * backend `cbd3f0af`) of what the gateway's binding let through — a blank
- * status key, a cursor instant outside years 1–9999 — in its words: 400,
- * `BAD_REQUEST`, as above. The mock answers it in the same words.
+ * backend `e35e143e`) of what the gateway's binding let through — a blank
+ * status key, a cursor instant or `doneSince` outside years 1–9999 — in its
+ * words: 400, `BAD_REQUEST`, as above, before the access check. The mock
+ * answers it in the same words.
  */
-export const BOARD_CURSOR_REFUSAL_MESSAGE =
-  "Invalid board cursor or pageSize (1..200); both cursor fields are required";
+export const BOARD_CURSOR_REFUSAL_MESSAGE = "Invalid board cursor, date or pageSize (1..200)";
+
+/**
+ * The column page service's refusal of a cursor of the other category's kind
+ * (`BoardServiceImpl.listBoardColumnIssues`, backend TAS-525 at `e35e143e`):
+ * `afterCreatedAt` on a column whose merged status is of category `DONE`, or
+ * `afterUpdatedAt` on any other — 400 `BAD_REQUEST`, after the access check and
+ * only for a status the board's merged columns hold (an unknown one is an empty
+ * page). The board's «Show more» sent `afterCreatedAt` to a done column until
+ * TAS-532 and met exactly this. The mock answers it in the same words.
+ */
+export const BOARD_CURSOR_CATEGORY_MESSAGE = "Use afterUpdatedAt/afterId for DONE and afterCreatedAt/afterId otherwise";
 
 /**
  * The shortest `query` `GET /issues/search` will answer — **three**, the
@@ -1803,8 +1852,11 @@ export interface TaskaApi {
    * What the Java does that the yml does not say, and every implementation
    * reproduces:
    *
-   * - **All or nothing.** Any part failing fails the whole response; there is no
-   *   degraded context.
+   * - **All or nothing, except `workflows`.** Any other part failing fails the
+   *   whole response; but since backend TAS-383 (develop `e35e143e`,
+   *   `ProjectServiceImpl.loadProjectWorkflows`) a type whose workflow read
+   *   failed — any error, not only NOT_FOUND — is left out and the context
+   *   still answers 200 (docs/ai/API-DIVERGENCE.md; fix is backend TAS-533).
    * - **A non-member is refused with 403, a `GLOBAL_ADMIN` included; a
    *   missing project is 404.**
    *   At head `a1bfe19` the code intends 200 with empty members and labels (its
@@ -1829,8 +1881,8 @@ export interface TaskaApi {
    * - **The registry, in its order** (backend #212, #226): `issueTypes` is
    *   the project's issue types by `sortOrder`, then `code`, read through
    *   `toProjectIssueTypes` (src/api/issueTypes.ts) and never re-sorted; the
-   *   first is the default. `workflows` holds one entry per registry type, in
-   *   no fixed order; an entry with no type at all (`null`) is dropped.
+   *   first is the default. `workflows` holds one entry per registry type whose
+   *   workflow read succeeded (see the first point), in no fixed order; an entry with no type at all (`null`) is dropped.
    * - Statuses and transitions are ordered by `sortOrder` and carry no
    *   timestamps; labels carry only `id`, `name` and `color`, unordered;
    *   members come by `userId`, and a name auth-service could not supply
@@ -1994,8 +2046,9 @@ export interface TaskaApi {
    * caller who is not a `GLOBAL_ADMIN` and belongs to no project is refused
    * 403 `PERMISSION_DENIED` "Project membership is required" with
    * `details.reason` `PROJECT_MEMBERSHIP_REQUIRED` — in the yml since backend
-   * TAS-444 (develop `d886b031`) — or 503 "Project membership service is
-   * unavailable" when the check cannot be made, which the yml does not list.
+   * TAS-444 (develop `d886b031`) — or 503 `UNAVAILABLE` "Project membership
+   * service is unavailable" when the check cannot be made, which the yml lists
+   * as well (develop `e35e143e`).
    * Nothing in the UI reaches it today: the one caller is the members dialog's
    * add form, which only a project admin sees, and a project admin is a member.
    *
@@ -2055,17 +2108,26 @@ export interface TaskaApi {
    * its filters rather than narrowing a cut column itself. A column continues
    * in its own order through `getBoardColumnPage` (backend TAS-430); the
    * unplaced bucket has no continuation. Bean validation comes before
-   * anything: a page size outside 1–200, or an empty `query`, is 400
-   * `INVALID_ARGUMENT`.
+   * anything: a page size outside 1–200, a `doneSince` that is not an
+   * instant, or an empty `query`, is 400 `INVALID_ARGUMENT`; a `doneSince`
+   * outside years 1–9999 is the service's 400 (`BOARD_READ_REFUSAL_MESSAGE`).
    *
-   * Order inside a column and in `unplacedIssues`, as the contract states it
-   * since backend TAS-392: `createdAt` ascending, then `id`, whatever the type.
-   * `compareBoardIssues` (src/api/boardOrder.ts) is that order; the mock sorts
-   * with it and the board's optimistic move places a card with it.
+   * Order inside a column, as the contract states it since backend TAS-525:
+   * a column of category `DONE` — the merged column's category, the first
+   * registry type's for a shared key — `updatedAt` descending, then `id`
+   * descending; every other column and `unplacedIssues` `createdAt` ascending,
+   * then `id`, whatever the type. `boardIssueOrder` (src/api/boardOrder.ts) is
+   * that order; the mock sorts with it and the board's optimistic move places
+   * a card with it. `doneSince` cuts done statuses by `updatedAt` (see
+   * `BoardParams`).
    *
-   * Enrichment fails silently on the server (backend A2): a label read that
-   * fails sends every card's `labels` as `[]`, and a profile read that fails
-   * sends every `assignee.displayName` as `null`, with a 200 either way.
+   * Enrichment no longer fails silently (backend TAS-392, `BoardServiceImpl`):
+   * a failed label lookup answers 503 "Board labels unavailable" and a failed
+   * profile lookup 503 "Board profiles unavailable", on the board read and on
+   * the column page alike. A failed lookup is never a 200; an assignee the
+   * profile answer lacks still arrives with `displayName: null`, and a label id
+   * the project does not have is left out (`BoardServiceImpl.enrichIssue`;
+   * `BoardUserDto.displayName` is nullable in the yml).
    *
    * Access: a missing project is 404 "Project not found", then a reader who is
    * not a member is 403 "Access denied"; an archived project is read like any
@@ -2074,10 +2136,12 @@ export interface TaskaApi {
   getBoard(projectId: string, params?: BoardParams): Promise<Board>;
   /**
    * `GET /projects/{projectId}/board/columns/{statusKey}/issues` (backend
-   * TAS-430, develop `cbd3f0af`) — the board's «Show more» (DESIGN.md §4.9):
-   * the column's issues after the cursor, in the board's own order (`createdAt`
-   * ascending, then `id`, `DONE` columns included), each a `BoardIssue` drawn
-   * as the board draws it. See `BoardColumnPageParams` for the parameters.
+   * TAS-430, TAS-525, develop `e35e143e`) — the board's «Show more» (DESIGN.md
+   * §4.9): the column's issues after the cursor, in the board's own order for
+   * that column (a `DONE` column `updatedAt` then `id`, both descending; any
+   * other `createdAt` then `id`, ascending), each a `BoardIssue` drawn as the
+   * board draws it. See `BoardColumnPageParams` for the parameters — the
+   * cursor's kind follows the column's category.
    *
    * Only issues whose **own type's** workflow holds `statusKey` are in it —
    * never the issues «Outside their workflow» shows, which have no

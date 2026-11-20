@@ -604,8 +604,13 @@ const {
    * by `sortOrder`; an issue in a status its own type's workflow lacks goes to
    * the group; an issue of a type the registry does not hold is not read at
    * all; the filters applied first. The board and a column's page both cut it.
+   *
+   * Since backend TAS-525: `doneSince` drops an issue in a status its own
+   * type's workflow files under DONE when its `updatedAt` is before it, and a
+   * column of category DONE runs `updatedAt` then `id`, both descending; the
+   * others keep the order they are seeded in, which is by creation.
    */
-  const wholeBoard = (params: Pick<BoardParams, "issueType" | "assigneeId" | "labelId" | "query">) => {
+  const wholeBoard = (params: Pick<BoardParams, "issueType" | "assigneeId" | "labelId" | "query" | "doneSince">) => {
     const types = params.issueType !== undefined ? [params.issueType] : [...state.issueTypes];
     // The filters, applied by the server before the cap (TAS-392).
     const needle = params.query?.toLowerCase();
@@ -643,10 +648,23 @@ const {
           : null,
         labels: issue.labels ?? [],
       };
-      const own = statusesOf(String(issue.issueType)).some((status) => status.statusKey === issue.status);
-      const column = own ? columns.find((item) => item.statusKey === issue.status) : undefined;
+      const ownStatus = statusesOf(String(issue.issueType)).find((status) => status.statusKey === issue.status);
+      if (
+        ownStatus?.category === "DONE" &&
+        params.doneSince !== undefined &&
+        !(Date.parse(String(issue.updatedAt)) >= Date.parse(params.doneSince))
+      ) {
+        continue;
+      }
+      const column = ownStatus ? columns.find((item) => item.statusKey === issue.status) : undefined;
       if (column) column.issues.push(card);
       else unplacedIssues.push(card);
+    }
+    for (const column of columns) {
+      if (column.category !== "DONE") continue;
+      (column.issues as { id: string; updatedAt: string }[]).sort(
+        (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+      );
     }
     return { columns, unplacedIssues };
   };
@@ -683,9 +701,11 @@ const {
     // ProjectWorkflowsModal.test.tsx's; here it only has to open.
     listProjectWorkflows: async () => ({ mainWorkflowId: null, items: [] }),
     // The board's one frame read since TAS-251, composed from the same state
-    // the five separate reads below were. All or nothing, as on the server: a
-    // failure or a hold of any part is a failure or a hold of the whole, so
-    // each knob these tests turn now turns the one read.
+    // the five separate reads below were. All or nothing: a failure or a hold
+    // of any part is a failure or a hold of the whole, so each knob these tests
+    // turn turns the one read. `workflowFailure` models a failed context, not
+    // a failed per-type workflow read, which the server answers with a 200
+    // without the type (covered by the "no workflow for task issues" tests).
     getProjectContext: async (projectId: string) => {
       state.membersReads += 1;
       if (state.projectHeld || state.membershipHeld || state.membersHeld) return new Promise(() => {});
@@ -771,20 +791,36 @@ const {
         throw failure;
       }
       const column = wholeBoard(params).columns.find((item) => item.statusKey === statusKey);
-      const all = (column?.issues ?? []) as { id: string; createdAt: string }[];
+      const all = (column?.issues ?? []) as { id: string; createdAt: string; updatedAt: string }[];
+      // The cursor of the column's own kind (backend TAS-525): `afterUpdatedAt`
+      // for a DONE column, `afterCreatedAt` for any other, and the other kind
+      // refused the way the gateway refuses it.
+      const done = column?.category === "DONE";
+      if (column && params.afterId !== undefined && done !== (params.afterUpdatedAt !== undefined)) {
+        throw Object.assign(new Error("Use afterUpdatedAt/afterId for DONE and afterCreatedAt/afterId otherwise"), {
+          status: 400,
+          code: "BAD_REQUEST",
+        });
+      }
       const after =
-        params.afterCreatedAt !== undefined && params.afterId !== undefined
-          ? all.filter(
-              (issue) =>
-                issue.createdAt > params.afterCreatedAt! || (issue.createdAt === params.afterCreatedAt && issue.id > params.afterId!),
-            )
-          : all;
+        params.afterId === undefined
+          ? all
+          : done
+            ? all.filter(
+                (issue) =>
+                  issue.updatedAt < params.afterUpdatedAt! || (issue.updatedAt === params.afterUpdatedAt && issue.id < params.afterId!),
+              )
+            : all.filter(
+                (issue) =>
+                  issue.createdAt > params.afterCreatedAt! || (issue.createdAt === params.afterCreatedAt && issue.id > params.afterId!),
+              );
       const size = state.boardCap ?? params.pageSize ?? 50;
       return { statusKey, issues: after.slice(0, size), totalCount: all.length, hasMore: after.length > size };
     },
     // The board's drop move. Held, it settles when the test says so; landed, it
     // moves the issue to the status the transition leads to, the way the next
-    // board read would find it on a server.
+    // board read would find it on a server — `updatedAt` with it, which is what
+    // a done column is ordered and cut by (backend TAS-525).
     transitionIssue: async (_projectId: string, issueId: string, transitionId: string, expectedVersion?: number) => {
       state.transitionCalls.push({ issueId, transitionId, expectedVersion });
       if (state.transitionConflictNext) {
@@ -804,7 +840,9 @@ const {
       const workflow = contextWorkflow("TASK");
       const to = workflow.transitions.find((item) => item.id === transitionId)?.toStatusId;
       const target = workflow.statuses.find((item) => item.id === to);
-      if (target) state.edits[issueId] = { ...state.edits[issueId], status: target.statusKey };
+      if (target) {
+        state.edits[issueId] = { ...state.edits[issueId], status: target.statusKey, updatedAt: new Date(Date.now()).toISOString() };
+      }
       return panelIssue(PROJECT_ID, issueId);
     },
     // Both of these move the board the next read answers, the way a server would.
@@ -1538,6 +1576,9 @@ function Whereabouts() {
     </span>
   );
 }
+
+/** A `doneSince` as the board sends it: an ISO instant to the millisecond (TAS-532). */
+const AN_INSTANT = expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
 
 function renderBoard(initialPath = `/projects/${PROJECT_ID}/board`) {
   // `staleTime` is the app's own (src/main.tsx) rather than react-query's
@@ -2448,7 +2489,8 @@ describe("the board's filters", () => {
     expect(screen.getByRole("button", { name: /TAS-102/ })).toBeVisible();
 
     await waitFor(() => expect(boardParams().at(-1)).toMatchObject({ query: "deployed" }));
-    expect(boardParams().at(-1)).toEqual({ includeDone: true, pageSizePerColumn: 200, query: "deployed" });
+    // And the Done window's cut, «2 weeks» by default (TAS-532).
+    expect(boardParams().at(-1)).toEqual({ includeDone: true, pageSizePerColumn: 200, query: "deployed", doneSince: AN_INSTANT });
     await waitFor(() => expect(columnsArea()).not.toHaveAttribute("aria-busy"));
     expect(screen.getByText("1 of 1")).toBeVisible();
 
@@ -2498,6 +2540,7 @@ describe("the board's filters", () => {
       issueType: "BUG",
       assigneeId: "user-tom",
       labelId: "label-ui",
+      doneSince: AN_INSTANT,
     });
     expect(screen.getByRole("button", { name: /TAS-103/ })).toBeVisible();
     expect(screen.queryByRole("button", { name: /TAS-104/ })).not.toBeInTheDocument();
@@ -2968,8 +3011,8 @@ describe("a board that could not read its workflow", () => {
     renderBoard();
 
     const alerts = await screen.findAllByRole("alert", undefined, AFTER_RETRY);
-    // One banner since TAS-251: the workflow is a part of the context read, and
-    // a part failing fails the whole of it on the server.
+    // One banner since TAS-251: the workflow knob models a failed context
+    // read (not a per-type workflow read, which the server answers with a 200).
     expect(alerts.some((alert) => /labels and workflow are missing/i.test(alert.textContent ?? ""))).toBe(true);
     expect(screen.getByRole("button", { name: /Copy request id 0b41d8a2-77c4-4a1f/ })).toBeVisible();
 
@@ -3469,10 +3512,18 @@ describe("Show more on a board column (backend TAS-430)", () => {
     fireEvent.click(more());
 
     await waitFor(() => expect(cards()).toHaveLength(4));
+    // To Do is no done column: the creation cursor — and the board read's own
+    // `doneSince`, the very one it sent (TAS-532).
     expect(columnPageCalls()).toEqual([
       {
         statusKey: "TODO",
-        params: { afterCreatedAt: "2026-08-02T09:00:00Z", afterId: "issue-2", includeDone: true, pageSize: 200 },
+        params: {
+          afterCreatedAt: "2026-08-02T09:00:00Z",
+          afterId: "issue-2",
+          includeDone: true,
+          pageSize: 200,
+          doneSince: boardParams().at(-1)!.doneSince,
+        },
       },
     ]);
     expect(cards().map((card) => card.getAttribute("data-issue-id"))).toEqual(["issue-1", "issue-2", "issue-3", "issue-4"]);
@@ -3509,6 +3560,7 @@ describe("Show more on a board column (backend TAS-430)", () => {
       includeDone: true,
       query: "TAS-10",
       pageSize: 200,
+      doneSince: boardParams().at(-1)!.doneSince,
     });
     await waitFor(() => expect(cards()).toHaveLength(4));
   });
@@ -3580,7 +3632,14 @@ describe("Show more on a board column (backend TAS-430)", () => {
     expect(columnPageCalls()).toHaveLength(2);
     expect(columnPageCalls()[1]).toEqual({
       statusKey: "TODO",
-      params: { afterCreatedAt: "2026-08-02T09:00:00Z", afterId: "issue-2", includeDone: true, pageSize: 2 },
+      params: {
+        afterCreatedAt: "2026-08-02T09:00:00Z",
+        afterId: "issue-2",
+        includeDone: true,
+        pageSize: 2,
+        // The re-read's own cut, the one its board read sent (§4.9, TAS-532).
+        doneSince: boardParams().at(-1)!.doneSince,
+      },
     });
   });
 
@@ -3698,6 +3757,401 @@ describe("Show more on a board column (backend TAS-430)", () => {
     const foot = await waitFor(() => group.querySelector(".issue-list > .list-more") as HTMLElement);
     expect(foot).toHaveTextContent("1 of 2 shown. Filter to find the rest.");
     expect(within(foot).queryByRole("button")).toBeNull();
+  });
+});
+
+/**
+ * The Done window (TAS-532; DESIGN.md §4.13, §4.9, §5.3, §5.4; backend
+ * TAS-525): «2 weeks» by default — `doneSince` the read's moment less 14×24 h —
+ * or «All»; a view the reader keeps, not a filter «Clear» resets; a done
+ * column ordered, continued and filled by its last change.
+ */
+describe("the Done window (TAS-532)", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const workflow = {
+    statuses: [
+      { id: "s-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+      { id: "s-done", statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30 },
+    ],
+    transitions: [{ id: "t-close", fromStatusId: "s-todo", toStatusId: "s-done", name: "Close", sortOrder: 10 }],
+  };
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const done = () => screen.getByRole("region", { name: "Done column" });
+  /** The keys of the cards Done draws, top to bottom. */
+  const doneKeys = () =>
+    within(done())
+      .queryAllByRole("button", { name: /^TAS-\d+/ })
+      .map((card) => /TAS-\d+/.exec(card.textContent ?? "")![0]);
+  const windowButton = (name: "2 weeks" | "All") =>
+    within(screen.getByRole("group", { name: "Done issues" })).getByRole("button", { name });
+  /** Two done issues inside two weeks — the later change first in the column — and one long before. */
+  const seedDone = (now: number) =>
+    seedExtraIssues([
+      { id: "issue-recent", issueKey: "TAS-201", summary: "Closed yesterday", status: "DONE", createdAt: "2026-08-03T09:00:00Z", updatedAt: iso(now - DAY) },
+      { id: "issue-today", issueKey: "TAS-202", summary: "Closed today", status: "DONE", createdAt: "2026-08-02T09:00:00Z", updatedAt: iso(now - 60_000) },
+      { id: "issue-old", issueKey: "TAS-203", summary: "Closed in August", status: "DONE", createdAt: "2026-07-01T09:00:00Z", updatedAt: "2026-08-05T09:00:00Z" },
+    ]);
+  let now: number;
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+    seedContextWorkflowParts(workflow);
+    now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    // dnd-kit's capturing click listener after a drop (see the drop tests).
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  });
+
+  it("reads «2 weeks» by default, «All» in one read without the cut, and goes back without one", async () => {
+    seedDone(now);
+    renderBoard();
+
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-202", "TAS-201"]));
+    expect(boardParams()).toEqual([{ includeDone: true, pageSizePerColumn: 200, doneSince: iso(now - 14 * DAY) }]);
+    expect(windowButton("2 weeks")).toHaveAttribute("aria-pressed", "true");
+    expect(windowButton("All")).toHaveAttribute("aria-pressed", "false");
+    expect(done().querySelector(".column-head .count-pill")).toHaveTextContent("2");
+    expect(screen.getByText("3 of 3")).toBeVisible();
+    // A view, not a filter: nothing to clear.
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
+
+    fireEvent.click(windowButton("All"));
+
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-202", "TAS-201", "TAS-203"]));
+    expect(boardParams().slice(1)).toEqual([{ includeDone: true, pageSizePerColumn: 200 }]);
+    expect(windowButton("All")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("4 of 4")).toBeVisible();
+    expect(window.localStorage.getItem("taska.boardDoneWindow")).toBe("all");
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
+
+    // A window already read and fresh: one frame, no read.
+    fireEvent.click(windowButton("2 weeks"));
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-202", "TAS-201"]));
+    expect(boardReads()).toBe(2);
+    expect(window.localStorage.getItem("taska.boardDoneWindow")).toBe("2w");
+    // The chosen one, pressed again, does nothing.
+    fireEvent.click(windowButton("2 weeks"));
+    expect(boardReads()).toBe(2);
+  });
+
+  it("reads a remembered «All» on the very first read, and only once", async () => {
+    window.localStorage.setItem("taska.boardDoneWindow", "all");
+    seedDone(now);
+    renderBoard();
+
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-202", "TAS-201", "TAS-203"]));
+    expect(boardParams()).toEqual([{ includeDone: true, pageSizePerColumn: 200 }]);
+    expect(windowButton("All")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("is left alone by «Clear», and X and Y count under the same window", async () => {
+    seedDone(now);
+    renderBoard();
+    await waitFor(() => expect(screen.getByText("3 of 3")).toBeVisible());
+    fireEvent.click(windowButton("All"));
+    await waitFor(() => expect(screen.getByText("4 of 4")).toBeVisible());
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Type" }), { target: { value: "BUG" } });
+    await waitFor(() => expect(screen.getByText("0 of 4")).toBeVisible());
+    // The window under a filter: Y is the board without filters under it.
+    fireEvent.click(windowButton("2 weeks"));
+    await waitFor(() => expect(screen.getByText("0 of 3")).toBeVisible());
+    fireEvent.click(windowButton("All"));
+    await waitFor(() => expect(screen.getByText("0 of 4")).toBeVisible());
+
+    // Back to the board without filters under «All», read already: no request.
+    const reads = boardReads();
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(screen.getByText("4 of 4")).toBeVisible());
+    expect(windowButton("All")).toHaveAttribute("aria-pressed", "true");
+    expect(boardReads()).toBe(reads);
+  });
+
+  it.each([
+    ["a VIEWER", "VIEWER" as const, null],
+    ["an ADMIN on an archived project", "ADMIN" as const, "2026-10-20T10:00:00Z"],
+  ])("stands in the bar for %s, after «Clear» and before the count, and is never switched off", async (_who, role, archivedAt) => {
+    setMembership(role);
+    seedArchivedAt(archivedAt);
+    renderBoard();
+    await screen.findByRole("button", { name: /TAS-102/ });
+
+    const group = screen.getByRole("group", { name: "Done issues" });
+    const buttons = within(group).getAllByRole("button");
+    expect(buttons.map((button) => button.textContent)).toEqual(["2 weeks", "All"]);
+    for (const button of buttons) {
+      expect(button).toBeEnabled();
+      expect(button).not.toHaveAttribute("aria-disabled");
+      // The name is the visible text (WCAG 2.5.3).
+      expect(button).not.toHaveAttribute("title");
+      expect(button).not.toHaveAttribute("aria-label");
+    }
+    const bar = [...(document.querySelector(".filterbar") as HTMLElement).children];
+    const at = bar.indexOf(group.closest(".filter-done") as Element);
+    expect(bar[at + 1]).toHaveClass("counter");
+    expect(bar[at - 1]).toHaveClass("divider");
+    fireEvent.click(windowButton("All"));
+    await waitFor(() => expect(windowButton("All")).toHaveAttribute("aria-pressed", "true"));
+  });
+
+  it.each([
+    ["a writer", "ADMIN" as const, "Drop issues here"],
+    ["a VIEWER", "VIEWER" as const, "No issues"],
+  ])("says an empty done column is empty of the last two weeks to %s, and the usual words under «All»", async (_who, role, usual) => {
+    setMembership(role);
+    renderBoard();
+    await waitFor(() => expect(within(done()).getByText("No issues updated in the last 2 weeks")).toBeVisible());
+
+    fireEvent.click(windowButton("All"));
+    await waitFor(() => expect(within(done()).getByText(usual)).toBeVisible());
+    expect(within(done()).queryByText("No issues updated in the last 2 weeks")).toBeNull();
+  });
+
+  // §4.9 «Колонка продолжается в своём порядке» (backend TAS-525): the cursor
+  // of a done column is its last card's `updatedAt` — `afterCreatedAt` there
+  // is the gateway's 400 — and the page carries the board read's own cut.
+  it("continues a done column after the last card's updatedAt, under the board read's doneSince", async () => {
+    seedBoardCap(2);
+    seedExtraIssues(
+      [1, 2, 3, 4].map((n) => ({
+        id: `issue-d${n}`,
+        issueKey: `TAS-21${n}`,
+        summary: `Closed ${n} hours ago`,
+        status: "DONE",
+        createdAt: `2026-08-0${n}T09:00:00Z`,
+        updatedAt: iso(now - n * 60 * 60 * 1000),
+      })),
+    );
+    renderBoard();
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]));
+
+    fireEvent.click(within(done()).getByRole("button", { name: "Show more Done issues" }));
+
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-211", "TAS-212", "TAS-213", "TAS-214"]));
+    expect(columnPageCalls()).toEqual([
+      {
+        statusKey: "DONE",
+        params: {
+          afterUpdatedAt: iso(now - 2 * 60 * 60 * 1000),
+          afterId: "issue-d2",
+          includeDone: true,
+          pageSize: 200,
+          doneSince: boardParams()[0].doneSince,
+        },
+      },
+    ]);
+    expect(within(done()).queryByText(/Show more/)).toBeNull();
+  });
+
+  // §4.9 «Перечитывание» (TAS-532): a page cut under the drawn read's doneSince
+  // that lands after a re-read under a later one is the older window's answer;
+  // its totalCount and hasMore must not sit on the newer entry.
+  it("drops a Show more page that was cut under an earlier doneSince than the entry now holds", async () => {
+    seedBoardCap(2);
+    seedExtraIssues(
+      [1, 2, 3, 4].map((n) => ({
+        id: `issue-d${n}`,
+        issueKey: `TAS-21${n}`,
+        summary: `Closed ${n} hours ago`,
+        status: "DONE",
+        createdAt: `2026-08-0${n}T09:00:00Z`,
+        updatedAt: iso(now - n * 60 * 60 * 1000),
+      })),
+    );
+    const queryClient = renderBoard();
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]));
+    const firstCut = boardParams()[0].doneSince;
+
+    holdColumnPages(true);
+    const pressed = within(done()).getByRole("button", { name: "Show more Done issues" });
+    pressed.focus();
+    fireEvent.click(pressed);
+    await waitFor(() => expect(columnPageCalls()).toHaveLength(1));
+
+    // The window moves on: the re-read cuts at now - 2.5 h and holds two cards.
+    vi.spyOn(Date, "now").mockReturnValue(now + 14 * DAY - 150 * 60 * 1000);
+    await queryClient.invalidateQueries({ queryKey: ["board"] });
+    await waitFor(() => expect(boardParams().at(-1)!.doneSince).not.toBe(firstCut));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]);
+
+    releaseColumnPages();
+
+    await waitFor(() => expect(within(done()).queryByRole("button", { name: "Show more Done issues" })).toBeNull());
+    expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]);
+    expect(columnPageCalls()).toHaveLength(1);
+    // The button went with the re-read, under the focus that pressed it: the
+    // dropped page hands focus to the column's last card, not to <body>.
+    expect(document.activeElement).toBe(within(done()).getByRole("button", { name: /TAS-212/ }));
+  });
+
+  it("clears the column's in-flight state when it drops a page cut under an earlier doneSince", async () => {
+    seedBoardCap(2);
+    seedExtraIssues(
+      [1, 2, 3, 4, 5].map((n) => ({
+        id: `issue-d${n}`,
+        issueKey: `TAS-21${n}`,
+        summary: `Closed ${n} hours ago`,
+        status: "DONE",
+        createdAt: `2026-08-0${n}T09:00:00Z`,
+        updatedAt: iso(now - n * 60 * 60 * 1000),
+      })),
+    );
+    const queryClient = renderBoard();
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]));
+    const firstCut = boardParams()[0].doneSince;
+
+    holdColumnPages(true);
+    fireEvent.click(within(done()).getByRole("button", { name: "Show more Done issues" }));
+    await waitFor(() => expect(columnPageCalls()).toHaveLength(1));
+
+    // The re-read cuts at now - 3.5 h: three cards in the window, two drawn.
+    vi.spyOn(Date, "now").mockReturnValue(now + 14 * DAY - 210 * 60 * 1000);
+    await queryClient.invalidateQueries({ queryKey: ["board"] });
+    await waitFor(() => expect(boardParams().at(-1)!.doneSince).not.toBe(firstCut));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+
+    releaseColumnPages();
+
+    await waitFor(() => expect(columnPageCalls()).toHaveLength(1));
+    const more = await within(done()).findByRole("button", { name: "Show more Done issues" });
+    await waitFor(() => expect(more).not.toHaveAttribute("aria-disabled"));
+    expect(doneKeys()).toEqual(["TAS-211", "TAS-212"]);
+  });
+
+  /** Drags `card` onto the Done column; the rectangles are ours. */
+  async function dropOnDone(card: HTMLElement, midway?: () => Promise<void>) {
+    const rect = (left: number, width: number) =>
+      ({ x: left, y: 0, left, top: 0, right: left + width, bottom: 600, width, height: 600, toJSON: () => ({}) }) as DOMRect;
+    const columns: Record<string, DOMRect> = { TODO: rect(0, 250), DONE: rect(300, 250) };
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      if (this === card || this.matches(".drag-overlay-card") || this.firstElementChild?.matches(".drag-overlay-card")) {
+        return rect(10, 100);
+      }
+      const key = this.getAttribute("data-status-key");
+      return key !== null && Object.hasOwn(columns, key) ? columns[key] : rect(0, 0);
+    });
+    fireEvent.mouseDown(card, { button: 0, clientX: 60, clientY: 30 });
+    fireEvent.mouseMove(document, { clientX: 80, clientY: 30 });
+    await waitFor(() => expect(document.querySelector(".drag-overlay-card")).not.toBeNull());
+    await midway?.();
+    fireEvent.mouseMove(document, { clientX: 420, clientY: 30 });
+    await waitFor(() => expect(done()).toHaveClass("is-over"));
+    fireEvent.mouseUp(document, { clientX: 420, clientY: 30 });
+  }
+
+  // §5.3 (TAS-532): the move is the done column's newest change — first, and
+  // drawn though the column has more than it drew — and the re-read agrees.
+  it("puts a card moved into a done column first, drawn in a column with more, and first after the re-read", async () => {
+    seedBoardCap(2);
+    seedExtraIssues([
+      { id: "issue-today", issueKey: "TAS-202", summary: "Closed today", status: "DONE", updatedAt: iso(now - 60_000) },
+      { id: "issue-recent", issueKey: "TAS-201", summary: "Closed yesterday", status: "DONE", updatedAt: iso(now - DAY) },
+      { id: "issue-before", issueKey: "TAS-204", summary: "Closed two days ago", status: "DONE", updatedAt: iso(now - 2 * DAY) },
+    ]);
+    holdTransition(true);
+    const queryClient = renderBoard();
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-202", "TAS-201"]));
+    expect(within(done()).getByText("2 of 3 shown")).toBeVisible();
+
+    await dropOnDone(await screen.findByRole("button", { name: /TAS-102/ }));
+
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-102", "TAS-202", "TAS-201"]));
+    expect(done().querySelector(".column-head .count-pill")).toHaveTextContent("4");
+    const reads = boardReads();
+    vi.spyOn(Date, "now").mockReturnValue(now + 1000);
+    settleTransition();
+
+    await waitFor(() => expect(boardReads()).toBeGreaterThan(reads));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    // First by the server's own order now; the tail re-read after it is this
+    // fixture's page, which is its cap of 2 whatever `pageSize` asks.
+    expect(doneKeys()).toEqual(["TAS-102", "TAS-202", "TAS-201", "TAS-204"]);
+    expect(columnPageCalls().at(-1)?.params).toMatchObject({ afterUpdatedAt: iso(now - 60_000), afterId: "issue-today" });
+  });
+
+  // §5.4: a drop made while the read under a new window is out is not sent,
+  // and its line does not call the window a filter. dnd-kit stops every
+  // click's propagation while a drag is on (a capturing listener on the
+  // document), so no press reaches the window mid-drag in the browser; the
+  // click is let through here to stand for whatever else changes the window
+  // under a drag — the line is the board's guard, not a path a reader takes.
+  it("does not send a drop made while the board is being read under a new window, and says so", async () => {
+    seedDone(now);
+    renderBoard();
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-202", "TAS-201"]));
+    const card = await screen.findByRole("button", { name: /TAS-102/ });
+
+    await dropOnDone(card, async () => {
+      holdBoard(true);
+      const through = vi.spyOn(Event.prototype, "stopPropagation").mockImplementation(() => {});
+      fireEvent.click(windowButton("All"));
+      through.mockRestore();
+      await waitFor(() => expect(document.querySelector(".columns-area")).toHaveAttribute("aria-busy", "true"));
+    });
+
+    const notices = await screen.findByRole("region", { name: "Board problems" });
+    expect(within(notices).getByText("TAS-102 was not moved: the board was still updating. Move it again.")).toBeVisible();
+    expect(transitionCalls()).toEqual([]);
+    releaseBoard();
+    await waitFor(() => expect(doneKeys()).toEqual(["TAS-202", "TAS-201", "TAS-203"]));
+  });
+
+  // §5.4: the link picker's record is the board without filters and without
+  // the window — read when the link form mounts — so a done issue the board
+  // does not draw under «2 weeks» can still be linked; a reader without the
+  // form reads nothing for it.
+  it("offers a done issue outside the window in the link picker, from a read without the cut", async () => {
+    seedDone(now);
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    const panel = within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+    const picker = await panel.findByRole("combobox", { name: "Issue" });
+
+    await waitFor(() => expect(within(picker).getByRole("option", { name: /TAS-203/ })).toBeInTheDocument());
+    expect(boardParams()).toContainEqual({ includeDone: true, pageSizePerColumn: 200 });
+    expect(doneKeys()).toEqual(["TAS-202", "TAS-201"]);
+  });
+
+  // A write invalidates the picker's record; under «2 weeks» no board observer
+  // re-reads it, so the next panel to mount must (a stale copy was kept for
+  // good by `refetchOnMount: false`).
+  it("offers an issue created after the first panel closed, from a fresh read without the cut", async () => {
+    seedExtraIssues([{ id: "issue-second", issueKey: "TAS-103", summary: "Second", createdAt: "2026-08-02T09:00:00Z" }]);
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    const first = within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+    const firstPicker = await first.findByRole("combobox", { name: "Issue" });
+    await waitFor(() => expect(within(firstPicker).getByRole("option", { name: /TAS-103/ })).toBeInTheDocument());
+    const allReads = () => boardParams().filter((params) => params.doneSince === undefined).length;
+    const readsBefore = allReads();
+    fireEvent.click(first.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "TAS-102 issue" })).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    const form = within(await screen.findByRole("dialog", { name: "New issue" }));
+    fireEvent.change(form.getByLabelText("Summary"), { target: { value: "Made after the panel" } });
+    fireEvent.click(form.getByRole("button", { name: "Create issue" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Made after the panel/ })).toBeVisible());
+
+    fireEvent.click(screen.getByRole("button", { name: /TAS-103/ }));
+    const second = within(await screen.findByRole("dialog", { name: "TAS-103 issue" }));
+    const picker = await second.findByRole("combobox", { name: "Issue" });
+    await waitFor(() => expect(within(picker).getByRole("option", { name: /Made after the panel/ })).toBeInTheDocument());
+    expect(allReads()).toBeGreaterThan(readsBefore);
+  });
+
+  it("reads no board without the cut for a reader the link form is not shown to", async () => {
+    setMembership("VIEWER");
+    seedDone(now);
+    const queryClient = renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    await screen.findByRole("dialog", { name: "TAS-102 issue" });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(boardParams().length).toBeGreaterThan(0);
+    expect(boardParams().every((params) => params.doneSince !== undefined)).toBe(true);
   });
 });
 
