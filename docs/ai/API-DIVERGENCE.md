@@ -2182,8 +2182,8 @@ Everything below is the entry as it stood, in the past tense.
 
 ### TAS-537: seven company routes are in the gateway contract (develop `a0499412`) and unreachable on the stand
 
-- **Endpoints** (develop's `api-gateway/src/main/resources/static/openapi.yml` at `a0499412`; the vendored snapshot is
-  still `e35e143e` — its refresh belongs to the catch-up pass): `GET /api/v1/tenants` (listTenants, TAS-338),
+- **Endpoints** (develop's `api-gateway/src/main/resources/static/openapi.yml` at `a0499412`, vendored at that commit
+  since TAS-540): `GET /api/v1/tenants` (listTenants, TAS-338),
   `GET` / `PATCH /api/v1/tenants/{tenantId}` (getTenant, renameTenant, TAS-338, TAS-333), `PUT` / `DELETE …/pause`
   (pauseTenant, resumeTenant, TAS-480), `PUT /api/v1/admin/tenants/{tenantId}/platform-block` (setPlatformBlock,
   TAS-480), `GET …/capabilities` (getTenantCapabilities, TAS-497). Every other route of the blueprint is still absent:
@@ -2652,7 +2652,7 @@ Everything below is the entry as it stood, in the past tense.
   lifecycle, then the receipt, then restrictions and the pause flag, then the version); transfer keeps TAS-502's order
   after the shared owner check; a transfer on FREE or without coverage and to a non-ACTIVE
   recipient → 409 `INVALID_STATE`; pause-paused and resume-unpaused → 200 no-op; resume under a platform block refused
-  per the access matrix; a transfer replay after success → 403 `OWNER_REQUIRED` (contracts.md:89); the
+  (403 `CAPABILITY_DISABLED` with `PLATFORM_BLOCK` since TAS-537, as develop answers); a transfer replay after success → 403 `OWNER_REQUIRED` (contracts.md:89); the
   `platformBlock`, `ownerPauseEnabled`, `ownershipTransferEnabled` hooks; paid periods expire by the lifecycle clock
   (`PAYMENT_EXPIRED`, never lifted by resume, D131); a paid period of 30 days starts on the first or late payment
   confirmation hook (the blueprint has a calendar month with an anchor day), with the anchor day from its end; Hooli's

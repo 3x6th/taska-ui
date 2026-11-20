@@ -3583,9 +3583,9 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 
 | Код | Пауза | Снятие |
 | --- | --- | --- |
-| `READ_ONLY` с `PLATFORM_BLOCK` | «Taska has blocked {Company}, so it was not paused.» | «Taska has blocked {Company}, so it can’t be resumed until Taska lifts the block.» |
-| `READ_ONLY` с другой причиной | оборот §4.35 + «, so it was not paused.»; без знакомой — «{Company} can’t be paused right now.» | оборот + «, so it can’t be resumed.»; без знакомой — «{Company} can’t be resumed right now.» |
-| `CAPABILITY_DISABLED` | «Pausing companies isn’t available right now.» (D93, D94) | — |
+| `READ_ONLY` или `CAPABILITY_DISABLED` с `PLATFORM_BLOCK` (второе — ответ develop, TAS-537) | «Taska has blocked {Company}, so it was not paused.» | «Taska has blocked {Company}, so it can’t be resumed until Taska lifts the block.» |
+| `READ_ONLY` или `CAPABILITY_DISABLED` с другой причиной | оборот §4.35 + «, so it was not paused.»; без знакомой — «{Company} can’t be paused right now.» | оборот + «, so it can’t be resumed.»; без знакомой — «{Company} can’t be resumed right now.» |
+| `CAPABILITY_DISABLED` без `reasons` | «Pausing companies isn’t available right now.» (D93, D94) | — |
 | `OWNER_REQUIRED` | «Only the owner of {Company} can pause it.» | «Only the owner of {Company} can resume it.» |
 | 412 | «{Company} changed while you were deciding, so it was not paused. Check it and try again.» | «{Company} changed elsewhere, so it was not resumed. Check it and try again.» |
 | 429 | «Too many attempts. Try again in {wait}.» (§4.31) | то же |

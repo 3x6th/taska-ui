@@ -4836,12 +4836,12 @@ The pre-build pass and the asks reconciliation (`docs/ai/reviews/TAS-537/`, git-
   blueprint's `READ_ONLY` shape (develop's shape is covered in `companyGeneralText.test.ts`).
 - **Ask numbering:** two different asks carry «A17» (TAS-310 comment 14150, creation rate limit; TAS-312 comment 14154,
   the one the record means); A28 and A105 exist only in branch docs (TAS-524, TAS-527), never in Jira; A117–A119 were
-  never used. `docs/ai/B2B-ASKS.md` lists them; new asks continue from A131.
+  never used. `docs/ai/B2B-ASKS.md` lists them; new asks continue from A133.
 - **When the B2B PRs reach main** (release-reviewer, merge review): the TAS-513 stack carries stale «To Do» ledger rows
   for TAS-527/528/529/530 that #138–#140 carry newer versions of elsewhere in the table — git may keep both; DESIGN.md
   §4.41 is used by both TAS-513 (Billing) and TAS-524 (Activity), and §4.42 by TAS-527 — renumber on the meeting.
-- **DESIGN.md §4.39's table names only `READ_ONLY` for the block and dispute sentences**, while pause and resume now get
-  them for `CAPABILITY_DISABLED` with that reason too (develop's shape, TAS-537); the rule above the table already covers
-  it — align the table on art-director's word (api-contract-guard build review). A132 would remove the branch.
+- ~~**DESIGN.md §4.39's table names only `READ_ONLY` for the block and dispute sentences**~~ — aligned in TAS-537 under
+  the rule above the table (`READ_ONLY` or `CAPABILITY_DISABLED` with non-empty reasons → the reason's phrase); art-director
+  to confirm at its next pass over §4.39. A132 would remove the branch.
 - **If the catalogue's REST (TAS-536) ships without `PlanVersion.kind`, no plan is free** — no default, every plan with
   the paid note: the switch-on probe checks `kind` on the wire (api-contract-guard build review).

@@ -1,7 +1,7 @@
 # Backend asks from the companies (B2B) frontend — where each one stands
 
 The companies build (TAS-500 and on) ran ahead of the backend and put its questions to the backend as numbered
-comments on backend stories in Jira: **A1 … A130**. This file is the reconciliation of those asks against backend
+comments on backend stories in Jira: **A1 … A132**. This file is the reconciliation of those asks against backend
 develop **`a0499412`** (2026-11-18), made for [TAS-537](https://jira.ozero.dev/browse/TAS-537) on 2026-11-20. The
 divergence record (`docs/ai/API-DIVERGENCE.md`, entries «TAS-500» … «TAS-537») says what each open ask still costs
 the UI; this file says where each ask stands.
