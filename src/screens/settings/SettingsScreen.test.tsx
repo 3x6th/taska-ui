@@ -136,14 +136,86 @@ describe("the Settings area", () => {
     expect(await screen.findByRole("group", { name: "Issue details" })).toBeVisible();
   });
 
-  it("moves focus to the heading when the section changes, and not on arrival", async () => {
-    renderAt("/settings/profile");
-    const heading = await screen.findByRole("heading", { level: 1 });
-    expect(heading).not.toHaveFocus();
+  // The body is replaced beside whatever the reader pressed, and a screen
+  // reader is told nothing unless focus moves — so it moves whatever the input
+  // (§7). Only the ring depends on the input: placed by script, focus matches
+  // `:focus-visible` in WebKit even after a tap, so a pointer asks for none.
+  // jsdom draws no ring; what is asked for is what can be checked here.
+  it("moves focus to the heading on every section change but arrival, asking for the ring only after a key", async () => {
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    const headingFocus = () => focus.mock.calls.filter((_, index) => (focus.mock.contexts[index] as Element).localName === "h1");
+    try {
+      renderAt("/settings/profile");
+      const heading = await screen.findByRole("heading", { level: 1, name: /Settings.*My profile/ });
+      expect(heading).not.toHaveFocus();
+      expect(headingFocus()).toEqual([]);
 
-    fireEvent.click(screen.getByRole("link", { name: "Appearance" }));
+      const appearance = screen.getByRole("link", { name: "Appearance" });
+      fireEvent.pointerDown(appearance);
+      fireEvent.click(appearance);
 
-    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Appearance/ })).toHaveFocus());
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Appearance/ })).toHaveFocus());
+      expect(headingFocus()).toEqual([[{ focusVisible: false }]]);
+
+      // Enter on a link is a keydown, then a click; the link holds focus first,
+      // so focus landing on the heading is a move rather than a leftover.
+      focus.mockClear();
+      const tokens = screen.getByRole("link", { name: "Access tokens" });
+      tokens.focus();
+      fireEvent.keyDown(tokens, { key: "Enter" });
+      fireEvent.click(tokens);
+
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Access tokens/ })).toHaveFocus());
+      expect(headingFocus()).toEqual([[{ focusVisible: true }]]);
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
+  // A section change can start outside the area: the top bar's profile menu
+  // leads to /settings, which is My profile, from any other section. Arrived at
+  // by URL, with no press inside the area yet, the press that changes the
+  // section is in the top bar — and it still has to count as a pointer's, or
+  // the heading is rung after a click or a tap.
+  it("asks for no ring after a pointer outside the area, as from the profile menu's «Settings»", async () => {
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    const headingFocus = () => focus.mock.calls.filter((_, index) => (focus.mock.contexts[index] as Element).localName === "h1");
+    try {
+      renderAt("/settings/appearance");
+      await screen.findByRole("heading", { level: 1, name: /Settings.*Appearance/ });
+      const trigger = screen.getByRole("button", { name: /^Open profile/ });
+      await waitFor(() => expect(trigger).toBeEnabled());
+
+      fireEvent.pointerDown(trigger);
+      fireEvent.click(trigger);
+      const menu = await screen.findByRole("dialog", { name: "Current user profile" });
+      const settings = within(menu).getByRole("link", { name: "Settings" });
+      fireEvent.pointerDown(settings);
+      fireEvent.click(settings);
+
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*My profile/ })).toHaveFocus());
+      expect(headingFocus()).toEqual([[{ focusVisible: false }]]);
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
+  // A link in a section's body changes the section as the rail does. Were focus
+  // left where the link was — on <body>, once the link is gone — the next Tab
+  // would start again from the rail instead of going on to «Create token».
+  it("hands focus to the new heading after a link in a section's body, too", async () => {
+    vi.stubEnv("VITE_TASKA_MCP_URL", "https://mcp.taska.example/mcp");
+    try {
+      renderAt("/settings/connected-apps");
+      const link = await screen.findByRole("link", { name: "create an access token" });
+      link.focus();
+      fireEvent.keyDown(link, { key: "Enter" });
+      fireEvent.click(link);
+
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Access tokens/ })).toHaveFocus());
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("brings the current link into the rail's strip on arrival and on each move, at once and without taking focus (§5.8)", async () => {

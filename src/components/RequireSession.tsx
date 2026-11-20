@@ -30,6 +30,14 @@ export interface LoginRedirectState {
    * read once, then taken out of the history entry like `activated`.
    */
   providerRefusal?: ProviderRefusal;
+  /**
+   * True when the reader followed «enter your invitation token» under Create
+   * account (TAS-467): `/invite` opens with focus in the Invitation token field,
+   * where they act. Only that arrival — a direct visit and the emailed link keep
+   * their own focus — read once, then taken out of the history entry like
+   * `activated`.
+   */
+  enterToken?: boolean;
 }
 
 /** Where a signed-in user goes when nothing more specific was requested. */

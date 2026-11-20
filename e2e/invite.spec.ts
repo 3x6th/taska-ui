@@ -16,10 +16,14 @@ import { expect, test, type Page } from "@playwright/test";
 // was broken on, since its router never sees `?token=`. At base `/` since
 // TAS-426, as the site is served.
 //
-// Sign-up is off and no provider is configured here, as on the stand
-// (`GET /auth/methods` answered `{signupEnabled: false, providers: []}` on
-// 2026-10-27): `/login` then keeps its Accept invite tab, which the first case
-// goes back to. e2e/signup.spec.ts covers the card with sign-up open.
+// Sign-up is off and no provider is configured here — the stand's answer on
+// 2026-10-27 (`GET /auth/methods` → `{signupEnabled: false, providers: []}`),
+// and no longer its answer: since 2026-11-02 its sign-up is open, measured as
+// `{"signupEnabled":true,"providers":[]}` on 2026-11-20 (request
+// 7dad4ba6-a978-44e8-a339-6671b997ddb8). With sign-up off `/login` keeps its
+// Accept invite tab, which the first case goes back to. e2e/signup.spec.ts
+// covers the card with sign-up open — the stand's shape today — and the way
+// from its Create account tab to the token form here (TAS-467).
 
 const LEO_TOKEN = "Lk3vQ9xW2mTz8RbN4cYp7HfJ1sDg6EaU5oKiVwXqZrM";
 const IVY_TOKEN = "Iv7yPq2Wd9Lm4Xs8Tb1Nc6Hf3Rg5Ja0Ku2Ze7Oy9Qvw";

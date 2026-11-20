@@ -16,12 +16,18 @@ const LNG = "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c07";
 const HLP = "5a1e9c3d-7b2f-4d6a-8e0c-2f4b6d8a0c03";
 const planPath = (companyId: string) => companyPath(companyId, "/settings/plan");
 
-/** Opens Settings › Plan from the rail's «Company» group, as a reader does — third, after General and Members. */
+/**
+ * Opens Settings › Plan from the rail's «Company» group — third, after General
+ * and Members — with the keyboard, as a keyboard reader does: a rail link hands
+ * focus to the new heading whatever the input, and a group's link has to take
+ * part in that as the area's own do (§5.9).
+ */
 async function openPlan(page: Page, companyId: string) {
   await page.goto(companyPath(companyId, "/settings/profile"));
   const group = page.getByRole("navigation", { name: "Settings" }).getByRole("group", { name: "Company" });
   await expect(group.getByRole("link")).toHaveText(["General", "Members", "Plan"]);
-  await group.getByRole("link", { name: "Plan" }).click();
+  await group.getByRole("link", { name: "Plan" }).focus();
+  await page.keyboard.press("Enter");
   await expect(page).toHaveURL(planPath(companyId));
   await expect(page.getByRole("heading", { level: 1, name: /Plan/ })).toBeFocused();
   await expect(page.getByText(/^The plan /)).toBeVisible();

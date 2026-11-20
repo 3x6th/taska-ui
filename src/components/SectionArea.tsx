@@ -58,6 +58,31 @@ export function SectionArea({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const railRef = useRef<HTMLElement>(null);
   const lastSectionId = useRef<string | null>(null);
+  // Whether the last press anywhere in the page was a pointer's or a key's: it
+  // decides only whether the heading's ring is drawn, never whether the
+  // heading takes focus (the effect below). Anywhere in the page, not only
+  // inside the area, because a section change can start outside it — the top
+  // bar's profile menu leads to «Settings» and «Administration» from any
+  // section — and a press there that the area never saw would leave the last
+  // one it did see, or none, to decide.
+  const lastInputWasPointer = useRef(false);
+
+  useEffect(() => {
+    // Capture phase, so a press is counted before whatever it activates runs,
+    // and even where a handler stops it from bubbling.
+    const pointer = () => {
+      lastInputWasPointer.current = true;
+    };
+    const key = () => {
+      lastInputWasPointer.current = false;
+    };
+    document.addEventListener("pointerdown", pointer, true);
+    document.addEventListener("keydown", key, true);
+    return () => {
+      document.removeEventListener("pointerdown", pointer, true);
+      document.removeEventListener("keydown", key, true);
+    };
+  }, []);
 
   useEffect(() => {
     // Below 900 the rail is a strip that scrolls sideways, and the section
@@ -67,25 +92,37 @@ export function SectionArea({
     // an axis where the link is already in view nothing moves, and the strip
     // sits at the top of an area that does not scroll the page, so only the
     // strip does. No `behavior`, so it jumps rather than glides, with or
-    // without reduced motion; and no focus moves — the heading below takes it.
+    // without reduced motion; and no focus moves here — the effect below moves
+    // it.
     railRef.current
       ?.querySelector<HTMLElement>('[aria-current="page"]')
       ?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }, [current.id]);
 
   useEffect(() => {
-    // Moving between sections replaces the whole body while the keyboard stays
-    // wherever the rail left it, and a screen reader is told nothing at all —
-    // so focus goes to the new section's heading (§7). Deliberately *not* on
-    // every route change inside the area: choosing a table in the Data catalog
-    // also changes the URL, and yanking focus out of the list on every arrow
-    // press would make the catalog unusable from the keyboard.
+    // Moving between sections replaces the whole body, so focus goes to the
+    // new section's heading on every section change but arrival, whatever the
+    // input — from the rail or from a link in a section's body. Otherwise a
+    // screen reader is told nothing at all, and Tab after an in-body link
+    // («create an access token») would start again from the rail (§7).
+    //
+    // The ring is for the keyboard. After a pointer or a tap focus is placed
+    // with `focusVisible: false`: a focus moved by script matches
+    // `:focus-visible` in WebKit even after a press, and would ring a heading
+    // the reader only tapped. Browsers without the option — Safari < 18.4,
+    // Chrome < 145 — decide for themselves: Chrome draws no ring after a
+    // press, old Safari does, as it did before.
+    //
+    // Deliberately *not* on every route change inside the area: choosing a
+    // table in the Data catalog also changes the URL, and yanking focus out of
+    // the list on every arrow press would make the catalog unusable from the
+    // keyboard.
     const previous = lastSectionId.current;
     lastSectionId.current = current.id;
     // Not on arrival: focus that moves before the user has done anything is a
     // jump they did not ask for.
     if (previous === null || previous === current.id) return;
-    headingRef.current?.focus();
+    headingRef.current?.focus({ focusVisible: !lastInputWasPointer.current });
   }, [current]);
 
   return (
@@ -124,8 +161,8 @@ export function SectionArea({
               announced as the bare section name. The crumb is text, not a link,
               because the area's own address only redirects into a section.
 
-              tabIndex -1 so the effect above can put focus here; it is not in
-              the tab order and never takes focus from a pointer. */}
+              tabIndex -1 so the effect above can put focus here, with or
+              without the ring as it decides; it is not in the tab order. */}
           <h1 className="area-section-title" id={headingId} ref={headingRef} tabIndex={-1}>
             <span className="area-crumb">
               {name}

@@ -828,15 +828,33 @@ describe("/admin sections under construction", () => {
   });
 
   // The section body is replaced under a keyboard that stayed in the rail, and
-  // a screen reader is told nothing at all unless focus moves (§7).
-  it("moves focus to the heading of the section it navigated to", async () => {
-    renderAdmin("/admin/data/auth/users");
-    const rail = await screen.findByRole("navigation", { name: "Administration" });
+  // a screen reader is told nothing at all unless focus moves (§7) — so it
+  // moves after a pointer or a tap as well. Only the ring is the keyboard's: a
+  // pointer asks for none, or WebKit would circle a heading only tapped.
+  it("moves focus to the heading of the section it navigated to, asking for the ring only after a key", async () => {
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    const headingFocus = () => focus.mock.calls.filter((_, index) => (focus.mock.contexts[index] as Element).localName === "h1");
+    try {
+      renderAdmin("/admin/data/auth/users");
+      const rail = await screen.findByRole("navigation", { name: "Administration" });
 
-    fireEvent.click(within(rail).getByRole("link", { name: "Audit" }));
+      const audit = within(rail).getByRole("link", { name: "Audit" });
+      fireEvent.pointerDown(audit);
+      fireEvent.click(audit);
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Administration.*Audit/ })).toHaveFocus());
+      expect(headingFocus()).toEqual([[{ focusVisible: false }]]);
 
-    const heading = await screen.findByRole("heading", { level: 1, name: /Administration.*Audit/ });
-    expect(heading).toHaveFocus();
+      // Enter on a link is a keydown, then a click.
+      focus.mockClear();
+      const users = within(rail).getByRole("link", { name: "Users" });
+      users.focus();
+      fireEvent.keyDown(users, { key: "Enter" });
+      fireEvent.click(users);
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Administration.*Users/ })).toHaveFocus());
+      expect(headingFocus()).toEqual([[{ focusVisible: true }]]);
+    } finally {
+      focus.mockRestore();
+    }
   });
 });
 

@@ -4775,10 +4775,10 @@ export class MockTaskaStore {
    *   access to this project", whatever their global role — a `GLOBAL_ADMIN`
    *   included — and that is checked before any of the three sub-reads
    *   (members, labels, workflows) starts;
-   * - a sub-read other than `workflows` that fails fails the whole read with
-   *   its own status. On the server a type whose workflow read failed is left
-   *   out of a 200 (backend TAS-383, removal TAS-533); this mock never models
-   *   a per-type workflow failure.
+   * - a sub-read that fails — `workflows` included since backend TAS-533 —
+   *   fails the whole read with its own status; a type whose workflow is
+   *   NOT_FOUND is left out of a 200. This mock never models a failed sub-read
+   *   of one type.
    *
    * Unlike `getProject` in this store, which answers a non-member, this read
    * keeps the gateway's access rule. The third point has no counterpart here:

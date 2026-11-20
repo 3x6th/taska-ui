@@ -1,7 +1,7 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: e35e143e (develop, 2026-11-12)
-# Fetched: 2026-11-17
+# Backend commit: a0499412 (develop, 2026-11-18)
+# Fetched: 2026-11-20
 #
 # The backend repository is the single source of truth for this contract.
 # This copy exists so read-only reviewers without network access can audit
@@ -1222,11 +1222,49 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
 
+  /api/v1/projects/{projectId}/restore:
+    post:
+      x-pat-scope: write
+      operationId: restoreProject
+      summary: Восстановить архивный проект в native tenant profile
+      description: >
+        Требуются актуальные права ADMIN проекта/компании либо явный административный путь.
+        Версия и ключ обязательны. Повтор с тем же payload возвращает сохранённый ответ после
+        текущей авторизации. UUID, история и использованная квота сохраняются; новая квота не резервируется.
+        Новый ключ с текущей версией для уже восстановленного проекта не создаёт событие и не увеличивает версию.
+      tags: [project-archive]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: If-Match
+          in: header
+          required: false
+          description: Semantically required; missing returns 428 VERSION_CONFLICT, stale returns 412. Strong quoted ProjectResponseDto.version.
+          schema: {type: string}
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Semantically required canonical lowercase UUID; conflicting payload returns 409 IDEMPOTENCY_CONFLICT.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Проект восстановлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
   /api/v1/projects/{projectId}:
     delete:
       x-pat-scope: write
       operationId: archiveProject
-      summary: Архивировать проект — только ADMIN проекта, идемпотентно
+      summary: Архивировать проект — ADMIN проекта или компании, идемпотентно
       description: >
         Проект и его данные сохраняются. Архивный проект скрыт из списка проектов, но доступен
         участникам по прямой ссылке для чтения. Запись отклоняется с FAILED_PRECONDITION и
@@ -1241,6 +1279,16 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: If-Match
+          in: header
+          required: false
+          description: Required in native tenant profile; strong quoted ProjectResponseDto.version. Missing returns 428, stale returns 412 VERSION_CONFLICT.
+          schema: {type: string}
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Required in native tenant profile; canonical lowercase UUID. Replay returns the saved response after current authorization; changed payload returns 409.
+          schema: {type: string}
       responses:
         '200':
           description: Проект в архиве
@@ -5031,6 +5079,265 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
 
+  /api/v1/tenants:
+    get:
+      operationId: listTenants
+      tags: [tenant]
+      summary: List companies available to the current account
+      description: >-
+        WEB_GLOBAL account session only. Lists every company where the caller's membership is ACTIVE,
+        in any lifecycle except DELETED: PROVISIONING, AWAITING_PAYMENT, ACTIVE, AUTO_CLOSED,
+        OWNER_CANCELLED and DELETING. SUSPENDED and REMOVED memberships are not listed.
+        Order is (createdAt,id) ascending. Each item carries the caller's membership and restriction codes.
+        Available actions come from getTenantCapabilities; entering a company is decided by the tenant session.
+        Every call reads current memberships and the response is never cached.
+      x-pat-scope: session
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema: {type: string, minLength: 1, maxLength: 2048}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Current active memberships, with no shared cache.
+          headers:
+            Cache-Control:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantPageDto'
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '401': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '429': {$ref: '#/components/responses/ErrorResponse'}
+        '503': {$ref: '#/components/responses/ErrorResponse'}
+        default: {$ref: '#/components/responses/ErrorResponse'}
+
+  /api/v1/tenants/{tenantId}/pause:
+    put:
+      operationId: pauseTenant
+      tags: [tenant-restrictions]
+      x-pat-scope: write
+      summary: pauseTenant
+      description: >
+        Versioned tenant command. Requires current owner or explicit administrative authority;
+        platform-block requires administrative authority. Independent reasons and paid coverage remain unchanged.
+        Strong quoted If-Match and canonical UUID Idempotency-Key are required. Missing version returns 428,
+        stale version 412, conflicting key 409. Authorized replay returns its saved response before new business gates.
+        Resume removes only owner pause and does not charge or extend the paid period.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: {type: string}
+        - name: If-Match
+          in: header
+          required: false
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmedActionDto'
+      responses:
+        '200':
+          description: Текущее состояние компании или сохранённый ответ повтора
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    delete:
+      operationId: resumeTenant
+      tags: [tenant-restrictions]
+      x-pat-scope: write
+      summary: resumeTenant
+      description: >
+        Versioned tenant command. Requires current owner or explicit administrative authority;
+        platform-block requires administrative authority. Independent reasons and paid coverage remain unchanged.
+        Strong quoted If-Match and canonical UUID Idempotency-Key are required. Missing version returns 428,
+        stale version 412, conflicting key 409. Authorized replay returns its saved response before new business gates.
+        Resume removes only owner pause and does not charge or extend the paid period.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: {type: string}
+        - name: If-Match
+          in: header
+          required: false
+          schema: {type: string}
+      responses:
+        '200':
+          description: Текущее состояние компании или сохранённый ответ повтора
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/admin/tenants/{tenantId}/platform-block:
+    put:
+      operationId: setPlatformBlock
+      tags: [tenant-restrictions]
+      x-pat-scope: write
+      summary: setPlatformBlock
+      description: >
+        Versioned tenant command. Requires current owner or explicit administrative authority;
+        platform-block requires administrative authority. Independent reasons and paid coverage remain unchanged.
+        Strong quoted If-Match and canonical UUID Idempotency-Key are required. Missing version returns 428,
+        stale version 412, conflicting key 409. Authorized replay returns its saved response before new business gates.
+        Resume removes only owner pause and does not charge or extend the paid period.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: {type: string}
+        - name: If-Match
+          in: header
+          required: false
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRestrictionRequestDto'
+      responses:
+        '200':
+          description: Текущее состояние компании или сохранённый ответ повтора
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/tenants/{tenantId}:
+    get:
+      operationId: getTenant
+      tags: [tenant]
+      summary: Get company details
+      description: >-
+        Tenant access is checked against the current credential binding and membership.
+        A member read includes the caller's membership; an administrative read omits it. Response is never cached.
+      x-pat-scope: read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Current company details and mutation version.
+          headers:
+            Cache-Control:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantDto'
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '401': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '429': {$ref: '#/components/responses/ErrorResponse'}
+        '503': {$ref: '#/components/responses/ErrorResponse'}
+        default: {$ref: '#/components/responses/ErrorResponse'}
+    patch:
+      operationId: renameTenant
+      tags: [tenant]
+      summary: Rename a company
+      description: >-
+        Only the current owner or a trusted GLOBAL_ADMIN with a target-bound current MFA context may rename the company.
+        TENANT_ADMIN without ownership is denied. The body is closed and contains only name. Name has 1 to 120 Unicode
+        code points, no leading/trailing Java strip whitespace and no ISO control characters. Send the current Tenant.version
+        as a strong quoted If-Match. A missing If-Match returns 428 VERSION_CONFLICT.
+        The request requires a canonical lowercase UUID Idempotency-Key. After authorization, a replay
+        with the original name and If-Match returns the saved response, even if the current version has advanced.
+        Changing the name or If-Match with the same key returns 409 IDEMPOTENCY_CONFLICT.
+        For a new key, a stale If-Match returns 412 VERSION_CONFLICT. Response is never cached.
+        DELETING returns 409 INVALID_STATE for both owners and administrators. DELETED returns 404.
+      x-pat-scope: write
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        - name: If-Match
+          in: header
+          required: true
+          description: Semantically required. Missing header returns 428 VERSION_CONFLICT.
+          schema:
+            type: string
+            pattern: '^"[1-9][0-9]{0,18}"$'
+            maxLength: 21
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameTenantRequestDto'
+      responses:
+        '200':
+          description: Company after the rename. Same-name requests preserve the current version.
+          headers:
+            Cache-Control:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantDto'
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '401': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
+        '412': {$ref: '#/components/responses/ErrorResponse'}
+        '422': {$ref: '#/components/responses/ErrorResponse'}
+        '428': {$ref: '#/components/responses/ErrorResponse'}
+        '429': {$ref: '#/components/responses/ErrorResponse'}
+        '503': {$ref: '#/components/responses/ErrorResponse'}
+        default: {$ref: '#/components/responses/ErrorResponse'}
   /api/v1/tenants/{tenantId}/capabilities:
     get:
       operationId: getTenantCapabilities
@@ -5280,6 +5587,114 @@ components:
         - DEPENDENCY_UNAVAILABLE
         - POLICY_NOT_CONFIGURED
         - VALIDATION_FAILED
+    TenantLifecycle:
+      type: string
+      enum: [PROVISIONING, AWAITING_PAYMENT, ACTIVE, AUTO_CLOSED, OWNER_CANCELLED, DELETING, DELETED]
+    TenantRestrictionCode:
+      type: string
+      enum: [PAYMENT_EXPIRED, OVER_QUOTA, OWNER_PAUSE, PLATFORM_BLOCK, PAYMENT_DISPUTE, PENDING_FIRST_PAYMENT]
+    TenantCreationClosureReason:
+      type: string
+      enum: [AUTO_EXPIRED, OWNER_CANCELLED]
+    ConfirmedActionDto:
+      type: object
+      required: [confirmed]
+      properties:
+        confirmed: {type: boolean}
+
+    AdminRestrictionRequestDto:
+      type: object
+      required: [enabled, reason, confirmed]
+      properties:
+        enabled: {type: boolean}
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: Private administrative audit reason; never included in public events or errors.
+        confirmed: {type: boolean}
+
+    TenantDto:
+      type: object
+      x-class-extra-annotation: '@com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)'
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Response may include pre-existing names stored before the 120-code-point rename limit.
+        ownerId: {type: string, format: uuid}
+        lifecycle: {$ref: '#/components/schemas/TenantLifecycle'}
+        restrictions:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/TenantRestrictionCode'}
+        createdAt: {type: string, format: date-time}
+        creationDeadline: {type: string, format: date-time}
+        creationClosureReason: {$ref: '#/components/schemas/TenantCreationClosureReason'}
+        creationClosedAt: {type: string, format: date-time}
+        version:
+          type: string
+          minLength: 1
+          maxLength: 19
+          pattern: '^[1-9][0-9]{0,18}$'
+          description: Positive int64, returned as a decimal string and used by If-Match.
+        ownerVersion:
+          type: string
+          minLength: 1
+          maxLength: 19
+          pattern: '^[1-9][0-9]{0,18}$'
+        membership: {$ref: '#/components/schemas/TenantCallerMembershipDto'}
+      required: [id, name, ownerId, lifecycle, restrictions, createdAt, version, ownerVersion]
+    TenantMembershipRole:
+      type: string
+      enum: [MEMBER, TENANT_ADMIN]
+    TenantMembershipState:
+      type: string
+      enum: [ACTIVE, SUSPENDED, REMOVED]
+    TenantCallerMembershipDto:
+      type: object
+      additionalProperties: false
+      description: >-
+        The caller's own membership. Returned by listTenants and by getTenant for a member;
+        absent on administrative reads and on rename responses.
+      properties:
+        role: {$ref: '#/components/schemas/TenantMembershipRole'}
+        state: {$ref: '#/components/schemas/TenantMembershipState'}
+        isOwner: {type: boolean}
+        version:
+          type: string
+          minLength: 1
+          maxLength: 19
+          pattern: '^[1-9][0-9]{0,18}$'
+          description: Positive int64 membership version, returned as a decimal string.
+      required: [role, state, isOwner, version]
+    TenantPageDto:
+      type: object
+      x-class-extra-annotation: '@com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)'
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/TenantDto'}
+        nextCursor: {type: string, minLength: 1, maxLength: 2048}
+      required: [items]
+    TenantName:
+      type: string
+      minLength: 1
+      maxLength: 120
+      description: 1 to 120 Unicode code points. No leading or trailing Java strip whitespace or ISO control characters.
+      not:
+        pattern: '[\u0000-\u001F\u007F-\u009F]|^[\u0020\u1680\u2000-\u2006\u2008-\u200A\u2028\u2029\u205F\u3000]|[\u0020\u1680\u2000-\u2006\u2008-\u200A\u2028\u2029\u205F\u3000]$'
+    RenameTenantRequestDto:
+      type: object
+      additionalProperties: false
+      properties:
+        name: {$ref: '#/components/schemas/TenantName'}
+      required: [name]
     CapabilityRestrictionCode:
       type: string
       enum:
@@ -6806,6 +7221,10 @@ components:
     ProjectResponseDto:
       type: object
       properties:
+        version:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+          description: Current project version as decimal string; native archive/restore use a strong quoted If-Match. Existing projects start at zero.
         id:
           type: string
           description: Уникальный идентификатор проекта
@@ -6853,10 +7272,28 @@ components:
           items:
             $ref: '#/components/schemas/ProjectStatsDto'
 
+    TaskQuotaDto:
+      type: object
+      required: [used, unlimited]
+      properties:
+        used:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Lifetime-число успешных созданий задач в проекте, включая удалённые.
+        limit:
+          type: integer
+          format: int64
+          minimum: 0
+        unlimited:
+          type: boolean
+
     ProjectStatsDto:
       type: object
       required: [projectId, issueCount, memberCount, members]
       properties:
+        taskQuota:
+          $ref: '#/components/schemas/TaskQuotaDto'
         projectId:
           type: string
         issueCount:
@@ -7122,6 +7559,8 @@ components:
       type: object
       required: [ project, members, labels, workflows, issueTypes ]
       properties:
+        taskQuota:
+          $ref: '#/components/schemas/TaskQuotaDto'
         project:
           $ref: '#/components/schemas/ProjectResponseDto'
         members:
@@ -7153,11 +7592,29 @@ components:
         workflow:
           $ref: '#/components/schemas/WorkflowResponseDto'
 
+    QuotaErrorDto:
+      type: object
+      required: [kind, limit, used]
+      properties:
+        kind:
+          type: string
+          pattern: '^TASK_LIFETIME$'
+        limit:
+          type: integer
+          format: int64
+          minimum: 0
+        used:
+          type: integer
+          format: int64
+          minimum: 0
+
     RestErrorResponse:
       description: Ошибка API; details содержит необязательные машиночитаемые параметры ошибки.
       type: object
       required: [code, message]
       properties:
+        quota:
+          $ref: '#/components/schemas/QuotaErrorDto'
         code:
           type: string
         message:
