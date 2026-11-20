@@ -822,8 +822,10 @@ export interface CreatedProjectIssueType extends ProjectIssueType {
  * the project again for the role, the members, a workflow per issue type and
  * the labels).
  *
- * All or nothing: a part that fails on the server fails the whole response, so
- * there is no partial context. A non-member is refused with 403 — a
+ * All or nothing, `workflows` included since backend TAS-533 (develop
+ * `d6eb264`): any part that fails fails the whole response with its own
+ * status, and a type is left out of `workflows` only when its workflow is
+ * NOT_FOUND. A non-member is refused with 403 — a
  * `GLOBAL_ADMIN` included — and a missing project is 404.
  * At head `a1bfe19` the code intends 200 with empty members and labels (its
  * TODO says so), but the labels leg's denial arrives from issue-service as a
@@ -859,8 +861,9 @@ export interface ProjectContext {
   issueTypes: ProjectIssueType[];
   /**
    * Keyed by issue type: one entry per type of the registry (backend #226),
-   * its own binding or the shared default. A type that is not here is not a
-   * failure; it is a type this project does not offer. Keyed by the code as
+   * its own binding or the shared default — except a type whose workflow is
+   * NOT_FOUND, which is left out. A failed read fails the whole context
+   * (backend TAS-533), so a type that is not here *is* «no workflow». Keyed by the code as
    * sent, a type this build
    * has no name for included (TAS-173); only an entry with no type at all (the
    * wire's `null`) is dropped by the API layer. Read through `workflowFor`
@@ -1170,8 +1173,9 @@ export interface BoardColumn {
    */
   issues: BoardIssue[];
   /**
-   * Every issue of the column that matches the read's filters, before the page
-   * was cut — the count pill's number (DESIGN.md §4.9). `null` when the answer
+   * Every issue of the column that matches the read's filters — and, in a done
+   * status, its `doneSince` (backend TAS-525) — before the page was cut: the
+   * count pill's number (DESIGN.md §4.9). `null` when the answer
    * did not state it as a whole number: then the pill says `Unknown`, never the
    * length of `issues`.
    */
@@ -1186,9 +1190,11 @@ export interface BoardColumn {
 
 /**
  * `GET /projects/{projectId}/board/columns/{statusKey}/issues` —
- * `BoardColumnPageResponseDto` (backend TAS-430, develop `cbd3f0af`): the next
- * page of one board column, in the column's own order (`createdAt`, then
- * `id`), after an exclusive cursor — the board's «Show more» (DESIGN.md §4.9).
+ * `BoardColumnPageResponseDto` (backend TAS-430, TAS-525, develop `e35e143e`):
+ * the next page of one board column, in the column's own order — `updatedAt`,
+ * then `id`, both descending, for a column of category `DONE`; `createdAt`,
+ * then `id`, ascending, for any other — after an exclusive cursor of the same
+ * kind — the board's «Show more» (DESIGN.md §4.9).
  *
  * `totalCount` counts the whole column under the read's filters, whatever the
  * cursor; `hasMore` says whether issues lie past the last one of this page.

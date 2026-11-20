@@ -3,7 +3,9 @@
  * §5.9): where an issue opens, and where the board's columns sit on a wide
  * screen. The theme is the third, and lives in `useTheme` — the same storage
  * rules, the same `<html>` mirror, and the same inline script in `index.html`
- * that applies all three before the first paint.
+ * that applies all three before the first paint. The board's Done window
+ * (TAS-532) is stored on the same rules and kept out of the mirror — see
+ * `BoardDoneWindow` at the end of this file.
  *
  * **One place each value lives in the page: the `<html>` data attribute.** The
  * CSS reads it — the board and the panel need no React state for any of this —
@@ -108,4 +110,44 @@ export function setPreference<T extends string>(preference: ReaderPreference<T>,
   document.documentElement.dataset[preference.attribute] = next;
   writeStorage(preference.key, next);
   listeners.forEach((listener) => listener());
+}
+
+/**
+ * The board's Done window (TAS-532, DESIGN.md §4.13 «Окно Done», §6): which
+ * issues of a done column the board reads — those updated in the last two
+ * weeks (`2w`, the default) or all of them (`all`). A view, not a filter: it
+ * is what `doneSince` the board read sends, and «Clear» leaves it alone.
+ *
+ * A reader pref on the same storage rules as the three above — every access
+ * guarded, an unknown value the default — and **not** one of them in two
+ * ways. It is not mirrored on `<html>`, because no CSS reads it, and so the
+ * inline script in `index.html` does not apply it either: the board reads it
+ * synchronously when it sets up its own state, so its first read is already
+ * under the window chosen, with no second read and no swapped frame. And it
+ * has no row in Settings → Appearance: Appearance is where and how the
+ * interface stands, the window is what the board reads; the setting lives on
+ * its own control, as `taska.activityCollapsed` does (§4.26). One value for
+ * every board and every company; another tab sees a change on its next load.
+ */
+export type BoardDoneWindow = "2w" | "all";
+
+/** The `localStorage` key of the Done window. */
+export const BOARD_DONE_WINDOW_KEY = "taska.boardDoneWindow";
+
+/** The Done window's values, the default first. */
+export const BOARD_DONE_WINDOWS: readonly BoardDoneWindow[] = ["2w", "all"];
+
+/** The value if it is a Done window, `2w` otherwise — a missing one, an old build's, a hand edit. */
+export function normalizeBoardDoneWindow(value: unknown): BoardDoneWindow {
+  return (BOARD_DONE_WINDOWS as readonly unknown[]).includes(value) ? (value as BoardDoneWindow) : BOARD_DONE_WINDOWS[0];
+}
+
+/** The Done window storage remembers; `2w` when it holds none it knows or refuses to be read. */
+export function storedBoardDoneWindow(): BoardDoneWindow {
+  return normalizeBoardDoneWindow(readStorage(BOARD_DONE_WINDOW_KEY));
+}
+
+/** Remembers the Done window; a refusal costs the remembering, and the board already reads the choice. */
+export function rememberBoardDoneWindow(value: BoardDoneWindow) {
+  writeStorage(BOARD_DONE_WINDOW_KEY, normalizeBoardDoneWindow(value));
 }

@@ -55,8 +55,10 @@ import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
   ADMIN_WRITE_REASON_REQUIRED_MESSAGE,
   ADMIN_WRITE_REASON_TOO_LONG_MESSAGE,
+  BOARD_CURSOR_CATEGORY_MESSAGE,
   BOARD_CURSOR_PAIR_MESSAGE,
   BOARD_CURSOR_REFUSAL_MESSAGE,
+  BOARD_READ_REFUSAL_MESSAGE,
   DIRECTORY_QUERY_REFUSAL_MESSAGE,
   INVITE_DISPLAY_NAME_MAX_LENGTH,
   INVITE_EMAIL_MAX_LENGTH,
@@ -111,7 +113,7 @@ import {
   attachmentRefusal,
   attachmentSizeRefusalMessage,
 } from "../attachments";
-import { compareBoardIssues } from "../boardOrder";
+import { boardIssueOrder, compareByCreatedAt, isDoneCategory } from "../boardOrder";
 import { toViewLinkType } from "../linkViewTypes";
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import {
@@ -878,11 +880,23 @@ export const MOCK_PROJECT_TRIGGERS = {
 } as const;
 
 /**
- * The years `BoardServiceImpl.listBoardColumnIssues` takes a cursor instant
- * from — 0001-01-01 to 9999-12-31 UTC, in its epoch seconds, as milliseconds.
+ * The years `BoardServiceImpl` takes a board instant from (`validBoardTime` at
+ * develop `e35e143e`: a column page's cursor instants and both routes'
+ * `doneSince`) — 0001-01-01 to 9999-12-31 UTC, in its epoch seconds, as
+ * milliseconds.
  */
 const CURSOR_EARLIEST_MS = -62135596800 * 1000;
 const CURSOR_LATEST_MS = 253402300799 * 1000;
+
+/** Whether `value` is not an instant the gateway's binding parses — `Date.parse`, the mock's reading of it. */
+const unparsedInstant = (value: string | undefined) => value !== undefined && Number.isNaN(Date.parse(value));
+
+/** Whether `value` is an instant outside the years `BoardServiceImpl.validBoardTime` takes. */
+const outOfBoardYears = (value: string | undefined) => {
+  if (value === undefined) return false;
+  const instant = Date.parse(value);
+  return instant < CURSOR_EARLIEST_MS || instant > CURSOR_LATEST_MS;
+};
 
 /**
  * The payload fields a history event names people by, as issue-service reads
@@ -1280,8 +1294,6 @@ const isIssueTypePatchShape = (input: unknown): input is UpdateProjectIssueTypeI
  * issues alone. A workflow with no such status leaves out nothing, and neither
  * does a type whose workflow was not found.
  */
-const BOARD_DONE_CATEGORY = "DONE";
-
 /** One type the board was built from, and its workflow's statuses — `undefined` for a workflow not found. */
 export interface MockBoardType {
   issueType: string;
@@ -1289,25 +1301,48 @@ export interface MockBoardType {
 }
 
 /**
+ * The board's merged statuses (`BoardServiceImpl.mergeStatusesByKey` at
+ * develop `e35e143e`): every found workflow's statuses by key, the first type
+ * to state a key winning (put-if-absent, in the order of `types`), then sorted
+ * stably by `sortOrder`. Its category is the column's — the one that orders it
+ * and decides its cursor (backend TAS-525).
+ */
+function mergedBoardStatuses(types: readonly MockBoardType[]): NonNullable<MockBoardType["statuses"]>[number][] {
+  const statusByKey = new Map<string, NonNullable<MockBoardType["statuses"]>[number]>();
+  for (const { statuses } of types) {
+    for (const status of statuses ?? []) {
+      if (!statusByKey.has(status.statusKey)) statusByKey.set(status.statusKey, status);
+    }
+  }
+  return [...statusByKey.values()].sort((left, right) => left.sortOrder - right.sortOrder);
+}
+
+/**
  * The board, built the way the gateway builds it since backend #205 (TAS-213,
- * `BoardServiceImpl` at develop 562d84de):
+ * `BoardServiceImpl` at develop `e35e143e`):
  *
- * - the columns are the statuses of every type's workflow that was found,
- *   merged by key — the first type to state a key wins (put-if-absent, in the
- *   order of `types`) — then sorted stably by `sortOrder`;
+ * - the columns are `mergedBoardStatuses(types)`;
  * - `includeDone` off drops an issue whose status its **own type's** workflow
  *   files under `DONE`, and keeps every column;
+ * - `doneSince` (backend TAS-525) drops such an issue — own type's workflow,
+ *   `DONE` — when its `updatedAt` is before it, and nothing else: another
+ *   category, a done column reached only through another type's workflow, and
+ *   «Outside their workflow» are never cut (issue-service's `boardFilter`,
+ *   keyed on each type's own done keys);
  * - an issue goes into the column of its status only when its own type's
  *   workflow lists that status; otherwise — a status that is a column only
  *   because another type has it, a status nobody has, or a type whose workflow
  *   was not found — it goes into `unplacedIssues`. The inconsistent-state 500
  *   that stood here before #205 is gone from the server, and from here;
- * - a column and `unplacedIssues` are each in `compareBoardIssues` order
- *   (src/api/boardOrder.ts) — `createdAt`, then `id`, whatever the type, as
- *   the contract states it since backend TAS-392;
+ * - each column is in the order of its **merged** category,
+ *   `boardIssueOrder(column.category)` (src/api/boardOrder.ts) — a `DONE`
+ *   column `updatedAt` then `id`, both descending, any other `createdAt` then
+ *   `id` ascending — and `unplacedIssues` in `compareByCreatedAt` order,
+ *   whatever the type, as the contract states it since backend TAS-525;
  * - then the cap (TAS-392): each merged column, and `unplacedIssues` as one
  *   bucket, keeps its first `pageSizePerColumn` issues (50 when not given),
- *   with `totalCount` — every issue it held before the cut — and `hasMore`.
+ *   with `totalCount` — every issue it held before the cut, after the
+ *   `doneSince` cut — and `hasMore`.
  *
  * A module-level function rather than a method so a test can hand it workflows
  * the seeded store never holds, and a page size small enough to reach the cap.
@@ -1319,41 +1354,35 @@ export function buildMockBoard(
   projectId: string,
   types: readonly MockBoardType[],
   issues: readonly BoardIssue[],
-  params: Pick<BoardParams, "includeDone" | "pageSizePerColumn"> = {},
+  params: Pick<BoardParams, "includeDone" | "pageSizePerColumn" | "doneSince"> = {},
 ): Board {
   const pageSize = params.pageSizePerColumn ?? BOARD_DEFAULT_PAGE_SIZE;
-  const statusByKey = new Map<string, NonNullable<MockBoardType["statuses"]>[number]>();
-  for (const { statuses } of types) {
-    for (const status of statuses ?? []) {
-      if (!statusByKey.has(status.statusKey)) statusByKey.set(status.statusKey, status);
-    }
-  }
-  const columns: BoardColumn[] = [...statusByKey.values()]
-    .sort((left, right) => left.sortOrder - right.sortOrder)
-    .map((status) => ({
-      statusKey: status.statusKey,
-      name: status.name,
-      category: status.category,
-      sortOrder: status.sortOrder,
-      issues: [],
-      totalCount: 0,
-      hasMore: false,
-    }));
+  const doneSince = params.doneSince === undefined ? null : Date.parse(params.doneSince);
+  const columns: BoardColumn[] = mergedBoardStatuses(types).map((status) => ({
+    statusKey: status.statusKey,
+    name: status.name,
+    category: status.category,
+    sortOrder: status.sortOrder,
+    issues: [],
+    totalCount: 0,
+    hasMore: false,
+  }));
   const byStatusKey = new Map(columns.map((column) => [column.statusKey, column]));
   const unplacedIssues: BoardIssue[] = [];
 
-  for (const issue of [...issues].sort(compareBoardIssues)) {
+  for (const issue of issues) {
     const own = types.find((type) => type.issueType === issue.issueType)?.statuses;
-    if (
-      !params.includeDone &&
-      own?.some((status) => status.statusKey === issue.statusKey && status.category === BOARD_DONE_CATEGORY)
-    ) {
-      continue;
-    }
+    const ownDone = own?.some((status) => status.statusKey === issue.statusKey && isDoneCategory(status.category)) === true;
+    if (ownDone && !params.includeDone) continue;
+    // `updated_at >= doneSince`: an `updatedAt` that is not an instant is
+    // never at or after anything.
+    if (ownDone && doneSince !== null && !(Date.parse(issue.updatedAt) >= doneSince)) continue;
     const placed = own?.some((status) => status.statusKey === issue.statusKey) ? byStatusKey.get(issue.statusKey) : undefined;
     if (placed) placed.issues.push(issue);
     else unplacedIssues.push(issue);
   }
+  for (const column of columns) column.issues.sort(boardIssueOrder(column.category));
+  unplacedIssues.sort(compareByCreatedAt);
 
   return {
     projectId,
@@ -2343,6 +2372,14 @@ export class MockTaskaStore {
   constructor() {
     const ts = (day: number, minute: number) =>
       `2026-06-${String(day).padStart(2, "0")}T09:${String(minute).padStart(2, "0")}:00Z`;
+    // The board's Done window (TAS-532) cuts done columns at the read's moment
+    // less 14×24 h — real time, so a seed of fixed June dates would empty every
+    // done column by default. The done issues that should be in the window are
+    // stamped relative to the moment this store is built (one page load), and
+    // the ones that should not, far enough back to stay out of it. The same
+    // moment dates the seeded invitations below.
+    const seededAt = Date.now();
+    const hoursAgo = (hours: number) => new Date(seededAt - hours * 60 * 60 * 1000).toISOString();
 
     // Mark is the seed's only GLOBAL_ADMIN so both role displays can be reached
     // by signing in; everyone else, Anna included, is a plain USER.
@@ -2492,7 +2529,6 @@ export class MockTaskaStore {
         createdVia: "SIGNUP",
       },
     ];
-    const seededAt = Date.now();
     const day = 24 * 60 * 60 * 1000;
     this.inviteTokens = [
       { token: MOCK_INVITE_TOKENS.leo, userId: LEO_ID, createdAt: seededAt - 2 * day, expiresAt: seededAt - 2 * day + INVITE_TOKEN_TTL_MS, usedAt: null },
@@ -3008,18 +3044,54 @@ export class MockTaskaStore {
     ];
     // A column longer than one board page (TAS-392): Infra and Ops' Done holds
     // 205 weekly backup checks, so the board — which reads 200 a column — cuts
-    // it, counts all 205 and says so at its foot (DESIGN.md §4.9). Oldest
-    // first from Jan 5, an hour apart, with valid stamps of their own rather
-    // than the seed's minute counter; numbered from 1000 so no key begins with
-    // another seed's (OPS-3); worded to stay out of every search the e2e suite
-    // types.
+    // it, counts all 205 and says so at its foot (DESIGN.md §4.9). Created
+    // oldest first from Jan 5, an hour apart, with valid stamps of their own
+    // rather than the seed's minute counter; numbered from 1000 so no key
+    // begins with another seed's (OPS-3); worded to stay out of every search
+    // the e2e suite types.
+    //
+    // Updated the other way round (TAS-532): week 205 an hour before the seed,
+    // week 1 205 hours before it — all inside the Done window «2 weeks», and in
+    // the done column's order (`updatedAt` newest first, backend TAS-525)
+    // exactly the reverse of the creation order, so a board or a «Show more»
+    // that ordered or continued a done column by `createdAt` cannot pass: the
+    // first page is weeks 205 to 6, and the next one weeks 5 to 1.
     for (let index = 0; index < 205; index += 1) {
-      const at = new Date(Date.UTC(2026, 0, 5, 8 + index)).toISOString();
       this.issues.push({
         ...issue(OPS_PROJECT_ID, "OPS", 1000 + index, "TASK", `Nightly backup verified, week ${index + 1}`, "", "DONE", "LOW", null, ANNA_ID, 1),
-        createdAt: at,
-        updatedAt: at,
+        createdAt: new Date(Date.UTC(2026, 0, 5, 8 + index)).toISOString(),
+        updatedAt: hoursAgo(205 - index),
       });
+    }
+    // And three done issues the window «2 weeks» leaves out (TAS-532): last
+    // touched 20, 50 and 80 days before the seed, so «All» visibly adds them —
+    // Infra and Ops' Done is 205 under «2 weeks» and 208 under «All» — and a
+    // filter for "restore drill" empties the done column under «2 weeks» only.
+    // Their own stamps, as above; worded to stay out of every other search
+    // the e2e suite types.
+    for (const [number, quarter, days] of [
+      [4, "Q1", 80],
+      [5, "Q2", 50],
+      [6, "Q3", 20],
+    ] as const) {
+      this.issues.push({
+        ...issue(OPS_PROJECT_ID, "OPS", number, "TASK", `Quarterly restore drill, ${quarter}`, "", "DONE", "LOW", null, ANNA_ID, 1),
+        createdAt: new Date(Date.UTC(2026, 0, 2, 8 + number)).toISOString(),
+        updatedAt: hoursAgo(days * 24),
+      });
+    }
+    // The other boards' done issues, inside the window (TAS-532): touched two,
+    // four and five days before the seed, so a board under the default «2
+    // weeks» draws them as it did before the window existed — Taska Platform's
+    // TAS-109 still above TAS-104 — and the specs that open them from a card
+    // still find it.
+    for (const [key, hours] of [
+      ["TAS-109", 2 * 24],
+      ["WEB-14", 4 * 24],
+      ["TAS-104", 5 * 24],
+    ] as const) {
+      const done = this.issues.find((item) => item.issueKey === key);
+      if (done) done.updatedAt = hoursAgo(hours);
     }
 
     this.historyByIssue = Object.fromEntries(
@@ -4691,8 +4763,10 @@ export class MockTaskaStore {
    *   access to this project", whatever their global role — a `GLOBAL_ADMIN`
    *   included — and that is checked before any of the three sub-reads
    *   (members, labels, workflows) starts;
-   * - a sub-read that fails fails the whole read with its own status. The
-   *   context never answers a part it could not read as an empty list.
+   * - a sub-read that fails — `workflows` included since backend TAS-533 —
+   *   fails the whole read with its own status; a type whose workflow is
+   *   NOT_FOUND is left out of a 200. This mock never models a failed sub-read
+   *   of one type.
    *
    * Unlike `getProject` in this store, which answers a non-member, this read
    * keeps the gateway's access rule. The third point has no counterpart here:
@@ -5620,30 +5694,49 @@ export class MockTaskaStore {
    * []}` — after the membership check (`BoardController`, `BoardServiceImpl`
    * at backend `be5085e5`).
    *
+   * `doneSince` (backend TAS-525, `BoardServiceImpl.getBoard` at `e35e143e`):
+   * one that is not an instant is the binding's 400 `INVALID_ARGUMENT`, with
+   * the page size; one outside years 1–9999 is the service's 400 `BAD_REQUEST`
+   * (`BOARD_READ_REFUSAL_MESSAGE`) — after the controller's empty board for a
+   * type it cannot parse, before the access check. `buildMockBoard` cuts by it.
+   *
    * The cards carry what the gateway joins in since #205: the assignee's name
    * and face from the user store (`displayName: null` for an id nobody holds,
    * as the gateway leaves it), and the labels as `id`, `name`, `color`.
    */
   getBoard(projectId: string, params: BoardParams = {}): Board {
     // The gateway's bean validation, before anything else (TAS-392): a page
-    // size outside 1–200, and a `query` under the contract's `minLength: 1`.
-    // `query` is not trimmed: what the reader typed is what is matched, and the
-    // board screen sends none that is blank.
+    // size outside 1–200, a `doneSince` that is not an instant, and a `query`
+    // under the contract's `minLength: 1`. `query` is not trimmed: what the
+    // reader typed is what is matched, and the board screen sends none that is
+    // blank.
     const pageSize = params.pageSizePerColumn;
     if (
       (pageSize !== undefined && (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > BOARD_MAX_PAGE_SIZE)) ||
+      unparsedInstant(params.doneSince) ||
       params.query === ""
     ) {
       throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
     }
-    const project = this.projects.find((item) => item.id === projectId);
-    if (!project) throw new MockApiError("NOT_FOUND", "Project not found");
-    if (!this.membersByProject[projectId]?.some((member) => member.userId === this.currentUserId)) {
-      throw new MockApiError("PERMISSION_DENIED", "Access denied");
+    const empty: Board = { projectId, columns: [], unplacedIssues: [], unplacedTotalCount: 0, unplacedHasMore: false };
+    const access = () => {
+      const project = this.projects.find((item) => item.id === projectId);
+      if (!project) throw new MockApiError("NOT_FOUND", "Project not found");
+      if (!this.membersByProject[projectId]?.some((member) => member.userId === this.currentUserId)) {
+        throw new MockApiError("PERMISSION_DENIED", "Access denied");
+      }
+    };
+    // The controller's empty board for a type it cannot parse, after the
+    // registry read checks access.
+    if (params.issueType && !isIssueTypeCode(params.issueType)) {
+      access();
+      return empty;
     }
-    if (params.issueType && (!isIssueTypeCode(params.issueType) || !this.inRegistry(projectId, params.issueType))) {
-      return { projectId, columns: [], unplacedIssues: [], unplacedTotalCount: 0, unplacedHasMore: false };
-    }
+    // The service's own check of what the binding let through, before it
+    // reads anything.
+    if (outOfBoardYears(params.doneSince)) throw new MockApiError("BAD_REQUEST", BOARD_READ_REFUSAL_MESSAGE);
+    access();
+    if (params.issueType && !this.inRegistry(projectId, params.issueType)) return empty;
     const types = this.boardTypes(projectId, params.issueType);
     return buildMockBoard(projectId, types, this.boardIssues(projectId, types, params), params);
   }
@@ -5687,32 +5780,39 @@ export class MockTaskaStore {
 
   /**
    * `GET /projects/{projectId}/board/columns/{statusKey}/issues` (backend
-   * TAS-430, `BoardController` and `BoardServiceImpl.listBoardColumnIssues` at
-   * `cbd3f0af`), in the server's order:
+   * TAS-430, TAS-525; `BoardController` and `BoardServiceImpl.listBoardColumnIssues`
+   * at `e35e143e`), in the server's order:
    *
    * 1. the gateway's binding — a page size outside 1–200, an empty `query`, an
-   *    `afterCreatedAt` that is not an instant or an `afterId` that is not a
-   *    UUID: 400 `INVALID_ARGUMENT` "Invalid request parameters";
-   * 2. the controller: half a cursor, 400 `BAD_REQUEST`
-   *    (`BOARD_CURSOR_PAIR_MESSAGE`); then a type filter it cannot parse is an
-   *    empty page once the access check has passed;
-   * 3. the service: a blank status key or a cursor instant outside years
-   *    1–9999, 400 `BAD_REQUEST` (`BOARD_CURSOR_REFUSAL_MESSAGE`);
+   *    `afterCreatedAt`, `afterUpdatedAt` or `doneSince` that is not an
+   *    instant, or an `afterId` that is not a UUID: 400 `INVALID_ARGUMENT`
+   *    "Invalid request parameters";
+   * 2. the controller: anything but `afterId` with exactly one of
+   *    `afterCreatedAt`/`afterUpdatedAt` — both, either alone, `afterId` alone
+   *    — 400 `BAD_REQUEST` (`BOARD_CURSOR_PAIR_MESSAGE`); no cursor at all is
+   *    the first page. Then a type filter it cannot parse is an empty page
+   *    once the access check has passed;
+   * 3. the service: a blank status key, or a cursor instant or `doneSince`
+   *    outside years 1–9999, 400 `BAD_REQUEST` (`BOARD_CURSOR_REFUSAL_MESSAGE`);
    * 4. the board's access check (404, 403). After it nothing is refused for
-   *    being unknown: a type the registry does not hold, or a status no type's
-   *    workflow has, is an empty page.
+   *    being unknown: a type the registry does not hold, or a status that is no
+   *    merged column, is an empty page;
+   * 5. a cursor of the other category's kind for the merged column —
+   *    `afterCreatedAt` on a `DONE` column, `afterUpdatedAt` on any other —
+   *    400 `BAD_REQUEST` (`BOARD_CURSOR_CATEGORY_MESSAGE`), before any issue is
+   *    read.
    *
    * `MOCK_PROJECT_TRIGGERS.columnPagesRefused` in the project's description
-   * makes every page of it refuse once the access check has passed — 503
-   * `UNAVAILABLE` — the failure a reader alone cannot otherwise make.
+   * makes every page of it that would read issues refuse — 503 `UNAVAILABLE`,
+   * after all of the above — the failure a reader alone cannot otherwise make.
    *
    * The column is `buildMockBoard`'s, by the same rules — an issue counts only
-   * when its **own** type's workflow holds the status, and `includeDone` off
-   * drops it when that workflow files the status under `DONE` — in
-   * `compareBoardIssues` order, uncut. The page is what sorts strictly after
-   * the cursor, at most `pageSize` (50 when not given); `totalCount` is the
-   * whole column whatever the cursor, and `hasMore` whether any lies past the
-   * page.
+   * when its **own** type's workflow holds the status, `includeDone` off and
+   * `doneSince` cut it when that workflow files the status under `DONE` — in
+   * the merged column's order (`boardIssueOrder`), uncut. The page is what
+   * sorts strictly after the cursor in that order, at most `pageSize` (50 when
+   * not given); `totalCount` is the whole column whatever the cursor, after the
+   * `doneSince` cut, and `hasMore` whether any lies past the page.
    */
   getBoardColumnPage(projectId: string, statusKey: string, params: BoardColumnPageParams = {}): BoardColumnPage {
     const pageSize = params.pageSize ?? BOARD_DEFAULT_PAGE_SIZE;
@@ -5721,12 +5821,16 @@ export class MockTaskaStore {
       pageSize < 1 ||
       pageSize > BOARD_MAX_PAGE_SIZE ||
       params.query === "" ||
-      (params.afterCreatedAt !== undefined && Number.isNaN(Date.parse(params.afterCreatedAt))) ||
+      unparsedInstant(params.afterCreatedAt) ||
+      unparsedInstant(params.afterUpdatedAt) ||
+      unparsedInstant(params.doneSince) ||
       (params.afterId !== undefined && !UUID_PATTERN.test(params.afterId))
     ) {
       throw new MockApiError("INVALID_ARGUMENT", INVALID_REQUEST_PARAMETERS_MESSAGE);
     }
-    if ((params.afterCreatedAt === undefined) !== (params.afterId === undefined)) {
+    const created = params.afterCreatedAt !== undefined;
+    const updated = params.afterUpdatedAt !== undefined;
+    if ((created && updated) || (created || updated) !== (params.afterId !== undefined)) {
       throw new MockApiError("BAD_REQUEST", BOARD_CURSOR_PAIR_MESSAGE);
     }
     const empty: BoardColumnPage = { statusKey, issues: [], totalCount: 0, hasMore: false };
@@ -5742,29 +5846,45 @@ export class MockTaskaStore {
       access();
       return empty;
     }
-    const instant = params.afterCreatedAt === undefined ? null : Date.parse(params.afterCreatedAt);
-    if (statusKey.trim() === "" || (instant !== null && (instant < CURSOR_EARLIEST_MS || instant > CURSOR_LATEST_MS))) {
+    if (
+      statusKey.trim() === "" ||
+      outOfBoardYears(params.afterCreatedAt) ||
+      outOfBoardYears(params.afterUpdatedAt) ||
+      outOfBoardYears(params.doneSince)
+    ) {
       throw new MockApiError("BAD_REQUEST", BOARD_CURSOR_REFUSAL_MESSAGE);
     }
     const project = access();
+    if (params.issueType && !this.inRegistry(projectId, params.issueType)) return empty;
+    const types = this.boardTypes(projectId, params.issueType);
+    const merged = mergedBoardStatuses(types).find((status) => status.statusKey === statusKey);
+    if (!merged) return empty;
+    const done = isDoneCategory(merged.category);
+    if (params.afterId !== undefined && done !== updated) {
+      throw new MockApiError("BAD_REQUEST", BOARD_CURSOR_CATEGORY_MESSAGE);
+    }
     if (project.description?.includes(MOCK_PROJECT_TRIGGERS.columnPagesRefused)) {
       throw new MockApiError("UNAVAILABLE", "issue-service is unavailable");
     }
-    if (params.issueType && !this.inRegistry(projectId, params.issueType)) {
-      return empty;
-    }
-    const types = this.boardTypes(projectId, params.issueType);
     const board = buildMockBoard(projectId, types, this.boardIssues(projectId, types, params), {
       includeDone: params.includeDone,
+      doneSince: params.doneSince,
       pageSizePerColumn: Number.MAX_SAFE_INTEGER,
     });
     const column = board.columns.find((item) => item.statusKey === statusKey);
     if (!column) return empty;
+    const order = boardIssueOrder(column.category);
+    // The cursor as a card of the column's order: the instant it names in the
+    // field that order reads. The other field is never compared.
     const cursor =
-      params.afterCreatedAt !== undefined && params.afterId !== undefined
-        ? { createdAt: params.afterCreatedAt, id: params.afterId }
-        : null;
-    const after = cursor ? column.issues.filter((issue) => compareBoardIssues(issue, cursor) > 0) : column.issues;
+      params.afterId === undefined
+        ? null
+        : {
+            id: params.afterId,
+            createdAt: params.afterCreatedAt ?? "",
+            updatedAt: params.afterUpdatedAt ?? "",
+          };
+    const after = cursor ? column.issues.filter((issue) => order(issue, cursor) > 0) : column.issues;
     return {
       statusKey,
       issues: after.slice(0, pageSize),

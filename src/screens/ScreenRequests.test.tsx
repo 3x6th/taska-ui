@@ -209,8 +209,15 @@ function respond(path: string, search = new URLSearchParams()): unknown {
           ),
         },
         { ...statuses[1], ...counted([card(3, "STORY", "IN_PROGRESS", null)].filter(keep)) },
+        // Touched after it was made, so the cursor of a done column — its
+        // `updatedAt` (backend TAS-525) — is told from its `createdAt`.
         server.doneCut
-          ? { ...statuses[2], issues: [card(5, "TASK", "DONE", null)].filter(keep), totalCount: 2, hasMore: true }
+          ? {
+              ...statuses[2],
+              issues: [{ ...card(5, "TASK", "DONE", null), updatedAt: "2026-11-16T10:00:00Z" }].filter(keep),
+              totalCount: 2,
+              hasMore: true,
+            }
           : { ...statuses[2], ...counted([]) },
       ],
       unplacedIssues: unplaced,
@@ -262,9 +269,19 @@ describe("the request budget of /projects and the board, and of coming back to t
   /** Every request, as `METHOD /path?query` with the `/api/v1` prefix off. */
   let requested: string[];
   const realNow = Date.now;
+  /**
+   * The board's Done window «2 weeks», the default (TAS-532, §4.13): every
+   * board read sends `doneSince` — the read's moment less 14×24 h — so the
+   * clock stands still for a test, and this is that cut as the URL carries it.
+   */
+  let doneSince: string;
 
   beforeEach(() => {
     window.localStorage.setItem("taska.accessToken", "valid-access");
+    window.localStorage.removeItem("taska.boardDoneWindow");
+    const now = realNow();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    doneSince = encodeURIComponent(new Date(now - 14 * 24 * 60 * 60 * 1000).toISOString());
     requested = [];
     server.statsFails = false;
     server.doneCut = false;
@@ -403,8 +420,9 @@ describe("the request budget of /projects and the board, and of coming back to t
     expect([...requested].sort()).toEqual(
       [
         `GET /projects/${PROJECT}/context`,
-        // Pass 2b's request table (TAS-392): the page size joins the URL.
-        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
+        // Pass 2b's request table (TAS-392): the page size joins the URL; the
+        // Done window «2 weeks» its cut (TAS-532).
+        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200&doneSince=${doneSince}`,
         "GET /users/me",
         "GET /notifications",
         "GET /meta",
@@ -456,16 +474,45 @@ describe("the request budget of /projects and the board, and of coming back to t
 
     const board = `GET /projects/${PROJECT}/board`;
     expect(since(mark)).toEqual([
-      `${board}?issueType=BUG&includeDone=true&pageSizePerColumn=200`,
-      `${board}?assigneeId=${TOM}&includeDone=true&pageSizePerColumn=200`,
-      `${board}?assigneeId=${TOM}&labelId=${LABEL}&includeDone=true&pageSizePerColumn=200`,
-      `${board}?includeDone=true&query=wire&pageSizePerColumn=200`,
+      `${board}?issueType=BUG&includeDone=true&pageSizePerColumn=200&doneSince=${doneSince}`,
+      `${board}?assigneeId=${TOM}&includeDone=true&pageSizePerColumn=200&doneSince=${doneSince}`,
+      `${board}?assigneeId=${TOM}&labelId=${LABEL}&includeDone=true&pageSizePerColumn=200&doneSince=${doneSince}`,
+      `${board}?includeDone=true&query=wire&pageSizePerColumn=200&doneSince=${doneSince}`,
     ]);
+  });
+
+  // §5.4, §4.13 (TAS-532): the Done window is one read a change — the board
+  // and its `Y` are one entry without filters — and a window already read and
+  // fresh is none; «All» sends no `doneSince`. Under «All» the link picker's
+  // record is that same entry, so a panel reads nothing of the board's.
+  it("asks once for each Done window, nothing to go back to one, and nothing of the board's for a panel under «All»", async () => {
+    const queryClient = renderAt(`/projects/${PROJECT}/board`);
+    await screen.findByRole("button", { name: /TAS-101/ });
+    await settled(queryClient);
+    const mark = requested.length;
+    const windowGroup = screen.getByRole("group", { name: "Done issues" });
+
+    fireEvent.click(within(windowGroup).getByRole("button", { name: "All" }));
+    await waitFor(() => expect(within(windowGroup).getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true"));
+    await settled(queryClient);
+    fireEvent.click(within(windowGroup).getByRole("button", { name: "2 weeks" }));
+    await settled(queryClient);
+    fireEvent.click(within(windowGroup).getByRole("button", { name: "All" }));
+    await settled(queryClient);
+    expect(since(mark)).toEqual([`GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`]);
+
+    const panelMark = requested.length;
+    fireEvent.click(screen.getByRole("button", { name: /TAS-101/ }));
+    expect(await screen.findByRole("dialog", { name: "TAS-101 issue" })).toBeVisible();
+    await settled(queryClient);
+    expect(since(panelMark).filter((request) => request.includes("/board"))).toEqual([]);
   });
 
   // Backend TAS-430, §4.9: «Show more» is one read of the column's next page —
   // the cursor of the last card drawn, the board's filters, `includeDone`, 200
-  // — and nothing else; the board is not read again.
+  // — and nothing else; the board is not read again. A done column's cursor is
+  // its last card's `updatedAt` (backend TAS-525: `afterCreatedAt` there is a
+  // 400 — TAS-532), with the very `doneSince` the board read sent.
   it("reads one column page per Show more, after the last card drawn, and nothing else", async () => {
     server.doneCut = true;
     const queryClient = renderAt(`/projects/${PROJECT}/board`);
@@ -478,7 +525,7 @@ describe("the request budget of /projects and the board, and of coming back to t
     await settled(queryClient);
 
     expect(since(mark)).toEqual([
-      `GET /projects/${PROJECT}/board/columns/DONE/issues?afterCreatedAt=2026-10-20T09%3A00%3A00Z&afterId=7a1b2c3d-0000-4000-8000-000000000105&includeDone=true&pageSize=200`,
+      `GET /projects/${PROJECT}/board/columns/DONE/issues?afterUpdatedAt=2026-11-16T10%3A00%3A00Z&afterId=7a1b2c3d-0000-4000-8000-000000000105&includeDone=true&pageSize=200&doneSince=${doneSince}`,
     ]);
     expect(screen.queryByRole("button", { name: "Show more Done issues" })).toBeNull();
   });
@@ -498,8 +545,8 @@ describe("the request budget of /projects and the board, and of coming back to t
     await settled(queryClient);
 
     expect(since(mark)).toEqual([
-      `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
-      `GET /projects/${PROJECT}/board/columns/DONE/issues?afterCreatedAt=2026-10-20T09%3A00%3A00Z&afterId=7a1b2c3d-0000-4000-8000-000000000105&includeDone=true&pageSize=1`,
+      `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200&doneSince=${doneSince}`,
+      `GET /projects/${PROJECT}/board/columns/DONE/issues?afterUpdatedAt=2026-11-16T10%3A00%3A00Z&afterId=7a1b2c3d-0000-4000-8000-000000000105&includeDone=true&pageSize=1&doneSince=${doneSince}`,
     ]);
     expect(screen.getByRole("button", { name: /TAS-106/ })).toBeVisible();
   });
@@ -547,7 +594,7 @@ describe("the request budget of /projects and the board, and of coming back to t
         `PATCH /projects/${PROJECT}/workflows/${OWN_WORKFLOW}`,
         `GET /projects/${PROJECT}/workflows`,
         `GET /projects/${PROJECT}/context`,
-        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
+        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200&doneSince=${doneSince}`,
       ].sort(),
     );
   });
@@ -578,7 +625,7 @@ describe("the request budget of /projects and the board, and of coming back to t
       [
         `POST /projects/${PROJECT}/issue-types`,
         `GET /projects/${PROJECT}/context`,
-        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
+        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200&doneSince=${doneSince}`,
         `GET /projects/${PROJECT}/workflows`,
       ].sort(),
     );
@@ -610,7 +657,7 @@ describe("the request budget of /projects and the board, and of coming back to t
         `DELETE /projects/${PROJECT}/issue-types/BUG`,
         `DELETE /projects/${PROJECT}/issue-types/BUG`,
         `GET /projects/${PROJECT}/context`,
-        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
+        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200&doneSince=${doneSince}`,
       ].sort(),
     );
   });
@@ -626,7 +673,10 @@ describe("the request budget of /projects and the board, and of coming back to t
     expect(since(mark)).toEqual([]);
   });
 
-  it("opens a panel over the board for the panel's own three reads and nothing of the board's", async () => {
+  // Under the default Done window «2 weeks», the panel's link picker reads the
+  // board without filters and without the window (§5.4, TAS-532) — one read
+  // when the link form mounts, the only board read the panel makes.
+  it("opens a panel over the board for the panel's own three reads and the link picker's whole board, nothing else of the board's", async () => {
     const queryClient = renderAt(`/projects/${PROJECT}/board`);
     fireEvent.click(await screen.findByRole("button", { name: /TAS-101/ }));
     await settled(queryClient);
@@ -645,7 +695,10 @@ describe("the request budget of /projects and the board, and of coming back to t
       ].sort(),
     );
     expect(since(mark)).toEqual([]);
-    expect(requested.filter((request) => request.includes("/board"))).toHaveLength(1);
+    expect(requested.filter((request) => request.includes("/board"))).toEqual([
+      `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200&doneSince=${doneSince}`,
+      `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
+    ]);
   });
 
   it("opens a panel a minute after the board loaded for the panel's own reads, and none of the board's", async () => {
@@ -669,6 +722,9 @@ describe("the request budget of /projects and the board, and of coming back to t
         `GET /issues/${ISSUE}`,
         `GET /projects/${PROJECT}/issues/${ISSUE}/comments?page=0&pageSize=50`,
         `GET /projects/${PROJECT}/issues/${ISSUE}/worklogs?page=0&pageSize=100`,
+        // The link picker's whole board under «2 weeks» (§5.4, TAS-532): not in
+        // the cache yet, so read once when the link form mounts.
+        `GET /projects/${PROJECT}/board?includeDone=true&pageSizePerColumn=200`,
       ].sort(),
     );
   });
