@@ -1514,8 +1514,9 @@ export interface TaskaApi {
 
   /*
    * Creating a company (TAS-501), on the B2B blueprint's routes — of them only
-   * `getTenant` is in the gateway contract (src/api/tenants.ts); the other four
-   * are the static-resource 404. Today's build refuses all five without a
+   * `getTenant` is in the gateway contract (src/api/tenants.ts); of the other
+   * four `createTenant` is 405 `METHOD_NOT_ALLOWED` (the path is mapped for GET)
+   * and the rest the static-resource 404. Today's build refuses all five without a
    * request (`TenancyUnavailableError`).
    */
 

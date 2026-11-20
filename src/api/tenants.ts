@@ -8,7 +8,8 @@
  * develop `a0499412`. On the stand they answer 503 `UNAVAILABLE` until
  * tenant-service and the trusted RPC context are deployed (the three reads
  * measured 2026-11-20; the writes not probed). Every other companies route is
- * the static-resource 404.
+ * the static-resource 404, except `createTenant`: 405 `METHOD_NOT_ALLOWED`,
+ * the path being mapped for GET.
  *
  * The UI says "company"; the code keeps the contract's "tenant" so a reader can
  * find each name in the yaml.
@@ -153,7 +154,8 @@ export async function readAllTenants(list: (params: ListTenantsParams) => Promis
  * The blueprint's creation routes (`docs/contract/b2b/b2b-openapi.yaml` at
  * develop `a0499412`: `listBillingPlans`, `createTenant`, `getTenant`,
  * `getTenantOperation`, `cancelTenantCreation`). Only `getTenant` is in the
- * gateway contract (the top of this file); the other four are the
+ * gateway contract (the top of this file); of the other four `createTenant` is
+ * 405 `METHOD_NOT_ALLOWED` (the path is mapped for GET) and the rest the
  * static-resource 404 (docs/ai/API-DIVERGENCE.md «TAS-501»). Every enum is read
  * as a known value or the server's own string (TAS-173); money stays a string
  * of minor units — no float ever holds a price (contracts §1, `Money`).
