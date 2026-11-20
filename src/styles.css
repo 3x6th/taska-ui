@@ -638,6 +638,14 @@ input::-webkit-calendar-picker-indicator {
   text-align: center;
 }
 
+/* «enter your invitation token» under Create account (TAS-467): the shared
+   quiet link (`.admin-note-link`), kept whole. Free to wrap, the hint broke
+   inside it at 1440 — «enter» ending one line, the rest starting the next,
+   the ring in two pieces; whole, it is the second line at every width. */
+.auth-hint-link {
+  white-space: nowrap;
+}
+
 /* What a field expects, under it and tied to it with `aria-describedby` — on
    the login card the password policy and where a token comes from (§4.27), in
    the invitation dialog what the address and the name are for (§5.8). Not
@@ -6084,8 +6092,9 @@ h1 {
 
 /* The shared quiet-link recipe: `--fg-2` underlined text that turns accent on
    hover, with a rounded accent focus ring. Used by the admin notes, the Members
-   modal (`ProjectMembersModal.tsx`), and the Settings Connected apps guide (the
-   help links and the access-token link). */
+   modal (`ProjectMembersModal.tsx`), the Settings Connected apps guide (the
+   help links and the access-token link), and Create account's way to the
+   invitation token (`SignupPanel.tsx`, TAS-467). */
 .admin-placeholder-link,
 .admin-note-link,
 .admin-audit-actor-filter {

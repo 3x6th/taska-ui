@@ -1,10 +1,14 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 /**
  * Sign-up by email (TAS-426, DESIGN.md §4.31) against MockTaskaApi, whose
- * `GET /auth/methods` is open by default (`taska.mockAuthMethods`, unset) — the
- * opposite of the stand, which answered `{signupEnabled: false, providers: []}`
- * on 2026-10-27, and which the last cases here pin as today's card.
+ * `GET /auth/methods` is open by default (`taska.mockAuthMethods`, unset), with
+ * every provider. The stand answered `{signupEnabled: false, providers: []}` on
+ * 2026-10-27; since 2026-11-02 its sign-up is open, and on 2026-11-20 it
+ * answered `{"signupEnabled":true,"providers":[]}` (request
+ * 7dad4ba6-a978-44e8-a339-6671b997ddb8), which the cases of the way to the
+ * token form set (TAS-467). The last cases pin the card with sign-up off — the
+ * screen as it was before, unchanged.
  *
  * The link a sign-up sends is an invitation link; its preview says `SIGNUP`
  * for an account the sign-up made (the kind is the account's origin, not the
@@ -13,9 +17,18 @@ import { expect, test, type Page } from "@playwright/test";
  */
 
 const SIGNUP_TOKEN = "gQOaiiI6BL8jx1CHrQ1kzPQRAzHbAtOTZKrnl1P0EsA";
+/** Leo's invitation, `MOCK_INVITE_TOKENS` in src/api/mock/MockTaskaApi.ts, as e2e/invite.spec.ts uses it. */
+const LEO_TOKEN = "Lk3vQ9xW2mTz8RbN4cYp7HfJ1sDg6EaU5oKiVwXqZrM";
 const STRONG = "Correct-horse-1";
 const METHODS_KEY = "taska.mockAuthMethods";
 const CLOSED = { signupEnabled: false, providers: [] };
+/** The stand's `GET /auth/methods` on 2026-11-20 (request 7dad4ba6-a978-44e8-a339-6671b997ddb8). */
+const STAND = { signupEnabled: true, providers: [] };
+// The hash-routed server one port up (playwright.config.ts): the Pages shape the stand runs.
+const PORT = Number(process.env.TASKA_E2E_PORT) || 5183;
+const HASH_ROOT = `http://localhost:${PORT + 1}/`;
+const TO_TOKEN = "enter your invitation token";
+const HINT = "Invited by your team? Use the link in your invitation email, or enter your invitation token.";
 
 async function openCreateAccount(page: Page) {
   await page.goto("/login");
@@ -160,7 +173,131 @@ test("the sign-up link's words swap in place: the card does not move on a phone"
   expect(Math.abs(signup.top - invitation.top)).toBeLessThan(0.5);
 });
 
-test.describe("with sign-up off and no providers, as on the stand", () => {
+/** Tab until `target` has focus, as a keyboard reader gets there. */
+async function tabTo(page: Page, target: Locator, max = 20) {
+  for (let step = 0; step < max && !(await target.evaluate((element) => element === document.activeElement)); step += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(target).toBeFocused();
+}
+
+/**
+ * With sign-up open `/login` has no Accept invite tab (§4.31), so the token's
+ * form is reached from Create account's hint (TAS-467): a push to `/invite`,
+ * which opens on Accept invite with focus in the Invitation token field.
+ */
+test.describe("from Create account to the invitation token form", () => {
+  test("the hint's link opens /invite on Accept invite with focus in the token field, only on that arrival, and Back returns", async ({
+    page,
+  }) => {
+    await openCreateAccount(page);
+    await expect(page.locator(".auth-hint", { hasText: "Invited by your team?" })).toHaveText(HINT);
+    const link = page.getByRole("link", { name: TO_TOKEN });
+    await expect(link).toHaveAttribute("href", "/invite");
+    await link.click();
+
+    await expect(page).toHaveURL(/\/invite$/);
+    await expect(page.getByRole("tab")).toHaveText(["Sign in", "Accept invite"]);
+    await expect(page.getByRole("tab", { name: "Accept invite" })).toHaveAttribute("aria-selected", "true");
+    const token = page.getByLabel("Invitation token");
+    await expect(token).toBeVisible();
+    await expect(token).toBeFocused();
+
+    // Read once: a reload of the same entry is not that arrival again.
+    await page.reload();
+    await expect(token).toBeVisible();
+    await expect(token).not.toBeFocused();
+
+    // A push, not a replace: Back is the sign-in card again.
+    await page.goBack();
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByRole("tab")).toHaveText(["Sign in", "Create account"]);
+  });
+
+  test("on the hash-routed build as the stand answers, by keyboard alone: Tab to the link, Enter, type the token, and its preview fills the form", async ({
+    page,
+  }) => {
+    await page.addInitScript(([key, value]) => window.localStorage.setItem(key, value), [METHODS_KEY, JSON.stringify(STAND)]);
+    await page.goto(`${HASH_ROOT}#/login`);
+    // The first frame is drawn without sign-up (nothing stored yet); the answer brings Create account.
+    const createAccount = page.getByRole("tab", { name: "Create account" });
+    await expect(createAccount).toBeVisible();
+
+    await tabTo(page, page.getByRole("tab", { name: "Sign in" }));
+    await page.keyboard.press("ArrowRight");
+    await expect(createAccount).toBeFocused();
+    await expect(createAccount).toHaveAttribute("aria-selected", "true");
+
+    const link = page.getByRole("link", { name: TO_TOKEN });
+    await expect(link).toHaveAttribute("href", "#/invite");
+    await tabTo(page, link);
+    await page.keyboard.press("Enter");
+
+    await expect(page).toHaveURL(`${HASH_ROOT}#/invite`);
+    await expect(page.getByRole("tab", { name: "Accept invite" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByLabel("Invitation token")).toBeFocused();
+
+    await page.keyboard.type(LEO_TOKEN);
+    await page.keyboard.press("Enter");
+
+    // The preview answered: the caught link's form, Leo's address, focus in New password.
+    await expect(page.getByLabel("Invitation token")).toHaveCount(0);
+    await expect(page.getByLabel("Email")).toHaveValue("leo@example.com");
+    await expect(page.getByLabel("Name", { exact: true })).toHaveValue("Leo Fischer");
+    await expect(page.getByLabel("New password")).toBeFocused();
+  });
+
+  test("at 320 the two tabs stay on one row and the hint with its link stays inside the card", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "a phone width; one project is enough");
+    await page.setViewportSize({ width: 320, height: 700 });
+    await openCreateAccount(page);
+    await expect(page.getByRole("link", { name: TO_TOKEN })).toBeVisible();
+
+    // After the fonts and the card's entrance, measured in one pass.
+    const measured = await page.evaluate(async () => {
+      await document.fonts.ready;
+      await Promise.all(
+        document
+          .getAnimations()
+          .filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity)
+          .map((animation) => animation.finished),
+      );
+      const card = document.querySelector(".auth-card")!.getBoundingClientRect();
+      const tabs = [...document.querySelectorAll('[role="tab"]')].map((tab) => {
+        const { top, height } = tab.getBoundingClientRect();
+        return { top, height };
+      });
+      const hint = [...document.querySelectorAll<HTMLElement>(".auth-hint")].find((node) =>
+        node.textContent?.startsWith("Invited by your team?"),
+      )!;
+      const box = hint.getBoundingClientRect();
+      const pieces = [...hint.querySelector("a")!.getClientRects()].map(({ left, right }) => ({ left, right }));
+      return {
+        card: { left: card.left, right: card.right },
+        tabs,
+        hint: { left: box.left, right: box.right, scrollWidth: hint.scrollWidth, clientWidth: hint.clientWidth },
+        pieces,
+        pageWidth: document.documentElement.scrollWidth,
+        viewport: window.innerWidth,
+      };
+    });
+
+    expect(measured.tabs).toHaveLength(2);
+    expect(Math.abs(measured.tabs[0].top - measured.tabs[1].top)).toBeLessThan(0.5);
+    expect(Math.abs(measured.tabs[0].height - measured.tabs[1].height)).toBeLessThan(0.5);
+    expect(measured.hint.scrollWidth).toBeLessThanOrEqual(measured.hint.clientWidth);
+    expect(measured.hint.left).toBeGreaterThanOrEqual(measured.card.left);
+    expect(measured.hint.right).toBeLessThanOrEqual(measured.card.right);
+    expect(measured.pieces.length).toBeGreaterThan(0);
+    for (const piece of measured.pieces) {
+      expect(piece.left).toBeGreaterThanOrEqual(measured.hint.left - 0.5);
+      expect(piece.right).toBeLessThanOrEqual(measured.hint.right + 0.5);
+    }
+    expect(measured.pageWidth).toBeLessThanOrEqual(measured.viewport);
+  });
+});
+
+test.describe("with sign-up off and no providers", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(
       ([key, value]) => window.localStorage.setItem(key, value),
@@ -178,5 +315,8 @@ test.describe("with sign-up off and no providers, as on the stand", () => {
     await page.goto("/invite");
     await expect(page.getByRole("tab")).toHaveText(["Sign in", "Accept invite"]);
     await expect(page.getByRole("link")).toHaveCount(0);
+    // A visit of its own keeps today's focus: none is moved into the token field.
+    await expect(page.getByLabel("Invitation token")).toBeVisible();
+    await expect(page.getByLabel("Invitation token")).not.toBeFocused();
   });
 });

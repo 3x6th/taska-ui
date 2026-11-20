@@ -1147,8 +1147,15 @@ describe("LoginScreen, Create account", () => {
     expect(email).toHaveAttribute("autocomplete", "email");
     expect(email).toHaveAttribute("placeholder", "you@company.com");
     expect(screen.getByRole("button", { name: "Continue" })).toHaveAttribute("type", "submit");
-    expect(screen.getByText("Invited by your team? Use the link in your invitation email instead.")).toBeVisible();
+    // The way to the token form while `/login` has no Accept invite tab (TAS-467).
+    const toToken = screen.getByRole("link", { name: "enter your invitation token" });
+    expect(toToken.closest("p")?.textContent).toBe(
+      "Invited by your team? Use the link in your invitation email, or enter your invitation token.",
+    );
+    expect(toToken).toHaveAttribute("href", "/invite");
+    expect(toToken).toHaveClass("admin-note-link");
     expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "enter your invitation token",
       "Continue with Google",
       "Continue with GitHub",
       "Continue with Apple",
@@ -1354,6 +1361,59 @@ describe("LoginScreen, Create account", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("The sign-up request could not be sent."));
     expect(screen.getByText("Service unavailable")).toBeVisible();
     expect(screen.getByRole("button", { name: "Copy request id req-503" })).toBeVisible();
+  });
+});
+
+/**
+ * «enter your invitation token» under Create account (TAS-467): `/invite` with
+ * `enterToken` in router state puts focus in the Invitation token field — and
+ * only that arrival does. `e2e/signup.spec.ts` follows the link in the app,
+ * where `/login` and `/invite` remount the screen; `renderEntry`'s two routes
+ * do not, so the click case here goes through the arrival without a remount.
+ */
+describe("LoginScreen, from Create account to the token form", () => {
+  afterEach(() => {
+    forgetInviteToken();
+    Object.assign(previewState, { refusal: undefined, hold: false, release: () => {}, tokens: [], kind: "INVITATION" });
+  });
+
+  it("puts focus in the Invitation token field on an arrival with enterToken, and takes it out of the history entry", async () => {
+    renderEntry({ pathname: "/invite", state: { enterToken: true } });
+
+    await waitFor(() => expect(screen.getByLabelText("Invitation token")).toHaveFocus());
+    expect(screen.getByRole("tab", { name: "Accept invite" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(screen.getByTestId("where-state")).toHaveTextContent("null"));
+    expect(screen.getByLabelText("Invitation token")).toHaveFocus();
+  });
+
+  it("moves no focus on /invite without it", async () => {
+    renderEntry("/invite");
+    await waitFor(() => expect(methodsState.calls).toBe(1));
+
+    expect(screen.getByLabelText("Invitation token")).toBeVisible();
+    expect(screen.getByLabelText("Invitation token")).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("leaves a caught link its own focus, New password, whatever the arrival asked for", async () => {
+    holdInviteToken(TOKEN);
+    renderEntry({ pathname: "/invite", state: { enterToken: true } });
+
+    await waitFor(() => expect(screen.getByLabelText("New password")).toHaveFocus());
+    expect(screen.queryByLabelText("Invitation token")).not.toBeInTheDocument();
+  });
+
+  it("follows the link from Create account to /invite on Accept invite, with focus in the token field", async () => {
+    methodsState.answer = OPEN;
+    renderEntry("/login");
+    fireEvent.click(await screen.findByRole("tab", { name: "Create account" }));
+
+    fireEvent.click(screen.getByRole("link", { name: "enter your invitation token" }));
+
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/invite"));
+    expect(tabNames()).toEqual(["Sign in", "Accept invite"]);
+    expect(screen.getByRole("tab", { name: "Accept invite" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(screen.getByLabelText("Invitation token")).toHaveFocus());
   });
 });
 

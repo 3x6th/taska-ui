@@ -194,6 +194,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const signupClosedRef = useRef<HTMLDivElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
   const newPasswordRef = useRef<HTMLInputElement>(null);
+  const typedTokenRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const previewRefusalRef = useRef<HTMLDivElement>(null);
   const signinTabRef = useRef<HTMLButtonElement>(null);
@@ -322,8 +323,10 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // `/login` after an activation is one, wherever the two routes render the
   // same component in the same place. A fresh object per request, so asking
   // for the same field twice still moves focus.
+  // «enter your invitation token» under Create account (TAS-467) asks for the
+  // token's field — only that arrival, and only while there is one to type in.
   const [focusRequest, setFocusRequest] = useState<{
-    target: "notice" | "refusal" | "email" | "newPassword";
+    target: "notice" | "refusal" | "email" | "newPassword" | "token";
   } | null>(() => {
     const target = refusalShown
       ? "refusal"
@@ -333,7 +336,9 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
           ? "email"
           : initialMode === "invite" && heldInviteToken()
             ? "newPassword"
-            : null;
+            : initialMode === "invite" && redirect?.enterToken
+              ? "token"
+              : null;
     return target ? { target } : null;
   });
   const [arrival, setArrival] = useState(location.key);
@@ -344,6 +349,10 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
       setActivated(true);
       setNewPassword("");
       setFocusRequest({ target: "email" });
+    }
+    if (redirect?.enterToken && initialMode === "invite") {
+      setMode("invite");
+      if (heldInviteToken() === null) setFocusRequest({ target: "token" });
     }
     const arrived = providerRefusalFromState(redirect?.providerRefusal);
     if (arrived) {
@@ -376,6 +385,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     else if (focusRequest?.target === "refusal") refusalRef.current?.focus();
     else if (focusRequest?.target === "email") emailRef.current?.focus();
     else if (focusRequest?.target === "newPassword") newPasswordRef.current?.focus();
+    else if (focusRequest?.target === "token") typedTokenRef.current?.focus();
   }, [focusRequest]);
 
   // A preview that refused the link takes the form away, and focus with it if
@@ -396,7 +406,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   // arrival long past. The notice itself is this screen's state from here on,
   // and goes the way §4.27 and §4.31 say it goes. The remembered page stays in
   // the entry: it is where the next sign-in goes, reload or not (§5.1).
-  const stateToDrop = Boolean(redirect?.activated || redirect?.providerRefusal);
+  const stateToDrop = Boolean(redirect?.activated || redirect?.providerRefusal || redirect?.enterToken);
   useEffect(() => {
     if (stateToDrop) {
       navigate(location.pathname, { replace: true, state: from ? ({ from } satisfies LoginRedirectState) : null });
@@ -693,6 +703,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                     className="mono-input"
                     id={typedTokenId}
                     onChange={(event) => setTypedToken(event.target.value)}
+                    ref={typedTokenRef}
                     spellCheck={false}
                     value={typedToken}
                   />

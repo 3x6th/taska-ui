@@ -12,10 +12,13 @@ import type { AuthMethods, OAuthProvider } from "../../domain/types";
 /**
  * `localStorage` key for what `GET /auth/methods` answers in mock mode, as the
  * server's JSON (`{"signupEnabled":true,"providers":["GOOGLE"]}`). Unset or
- * unreadable — every path open, which is what the mock is for. **The stand is
- * the opposite**: it answered `{signupEnabled: false, providers: []}` on
- * 2026-10-27 (request 0685d758-b210-4241-bbbc-6196c3792d16), and the specs that
- * pin today's screen set exactly that.
+ * unreadable — every path open, which is what the mock is for. The stand
+ * answered `{signupEnabled: false, providers: []}` on 2026-10-27 (request
+ * 0685d758-b210-4241-bbbc-6196c3792d16), and the specs that pin the card with
+ * sign-up off set exactly that. **Since 2026-11-02 the stand's sign-up is
+ * open**: on 2026-11-20 it answered `{"signupEnabled":true,"providers":[]}`
+ * (request 7dad4ba6-a978-44e8-a339-6671b997ddb8) — sign-up as here, and no
+ * provider.
  */
 export const MOCK_AUTH_METHODS_KEY = "taska.mockAuthMethods";
 
