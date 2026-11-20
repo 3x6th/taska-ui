@@ -521,7 +521,30 @@ The entry as it stood:
 
 Same rule as above: "Closed by" is settled, the rest is live.
 
-### Issue-type and workflow refusals the client branches on that the yml does not name
+### The project context drops a type whose workflow read failed, and the UI calls it «no workflow»
+
+- **Found by api-contract-guard on TAS-532** (develop `e35e143e`, backend TAS-383, PR #272).
+- **Endpoint:** `GET /api/v1/projects/{projectId}/context`.
+- **Read in code, not measured:** `ProjectServiceImpl.getProjectContext` turns every per-type
+  workflow read error into an omission — NOT_FOUND and UNAVAILABLE alike — and the yml says so
+  («Ошибка чтения workflow отдельного типа не отменяет ответ 200: этот тип отсутствует в
+  workflows»). Nothing in the answer tells a missing workflow from a failed read.
+- **What the UI does:** the panel says «This project has no workflow for {type} issues, so no
+  move is offered.», and a drop is refused with «…this project has no workflow for {type}
+  issues.» — true for a missing workflow, false for a failed read, and without a request id.
+  **Compensation: none.** A wording true in both cases is a BACKLOG item for art-director.
+- **Removal:** [TAS-533](https://jira.ozero.dev/browse/TAS-533) (filed 2026-11-17 from ask A1,
+  first a comment on TAS-383): either an omission only on NOT_FOUND and a failed context
+  otherwise (project-service only), or a `workflowsUnavailable` list of type codes on the context
+  answer (proto, project-service, gateway mapper and DTO) — `BoardServiceImpl.resolveWorkflows`
+  already tells the two apart.
+
+### Closed by TAS-532 (2026-11-17): Issue-type and workflow refusals the client branches on that the yml does not name
+
+- **Closed:** the contract snapshot at develop `e35e143e` names them all —
+  `ISSUE_TYPE_TARGET_INVALID`, `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT`, the four binding reasons of
+  the type create, and the `/users` 503 «Project membership service is unavailable». That is
+  TAS-465's part two; the branches stay as they were (api-contract-guard, TAS-532).
 
 - **Found by api-contract-guard on TAS-464** (yml at develop `af7ab57e`, Java at `d886b031`).
 - `ISSUE_TYPE_TARGET_INVALID` (400, `IssueTypeDeletionTransactions`) on a delete with a move: `isIssueTypeTargetInvalid` re-reads the registry and restarts the step.
@@ -745,6 +768,9 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `api-contract-guard`; the Java wins), and what each implementation does:
   - All or nothing: any part failing fails the response. The board therefore
     has one banner for it, where it had three (project, role, workflow).
+    **Except `workflows` since backend TAS-383** (develop `e35e143e`): a type
+    whose workflow read fails is left out and the context still answers 200 —
+    see «The project context drops a type whose workflow read failed» (TAS-532).
   - **A non-member of any global role is `403`, and a missing project is
     `404`. This is the designed rule, not an accident of the code**: the owner
     decided it on 2026-10-16 ([TAS-255](https://jira.ozero.dev/browse/TAS-255)),
@@ -2054,9 +2080,10 @@ Everything below is the entry as it stood, in the past tense.
 - **TAS-464 (2026-11-02): the 403 half is closed by contract.** Develop `d886b031` (backend
   TAS-444) states the membership rule in the route's description and a `403` with
   `details.reason` `PROJECT_MEMBERSHIP_REQUIRED` (`DirectoryMembershipAccess`); the mock's 403
-  carries the same reason since TAS-464. Still not in the yml: the 503 when project-service is
-  unreachable, and the hidden unconfirmed sign-up accounts below («Возвращает ACTIVE, INVITED и
-  временно LOCKED» does not say it). The Observed line is history for the 403.
+  carries the same reason since TAS-464. The 503 when project-service is unreachable is in the
+  yml since develop `e35e143e` (TAS-532). Still not in the yml: the hidden unconfirmed sign-up
+  accounts below («Возвращает ACTIVE, INVITED и
+  временно LOCKED» does not say it). The Observed line is history for the 403 and the 503.
 
 - **Endpoint:** `GET /api/v1/users`.
 - **Observed (Java, `9fcf0253`):** `UserDirectoryService.search` runs
@@ -6587,7 +6614,18 @@ nothing but `BACKLOG.md` for now.
   their answer does not describe the types that moved.
 - **What is still owed here:** nothing.
 
-### A workflow with no status or no visible transition makes the project context 404
+### Closed by TAS-532 (2026-11-17): A workflow with no status or no visible transition makes the project context 404
+
+- **Closed:** backend [TAS-383](https://jira.ozero.dev/browse/TAS-383), PR #272
+  (merged 2026-11-09, on the stand with develop `e35e143e` since 2026-11-12).
+  `WorkflowCreationValidator` now requires statuses, a `TODO` status and a visible
+  transition; empty workflow lists are read without NOT_FOUND; a type whose
+  workflow cannot be read is left out of `workflows` and the context still answers
+  200 (`openapi.yml` at `e35e143e`, `getProjectContext`). Read in the PR and the
+  contract, not measured. The UI already takes a type with no entry in `workflows`
+  without failing — `workflowFor` answers `undefined` and the type list comes from the
+  registry — but it cannot tell a missing workflow from a failed read: see «The project
+  context drops a type whose workflow read failed» above (api-contract-guard). The copy-only create stays as the default.
 
 - **Endpoints:** `POST /api/v1/projects/{projectId}/workflows`, and through it
   `GET /api/v1/projects/{projectId}/context` (#208 at `9a04e99`, merged unchanged as

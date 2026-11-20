@@ -1198,7 +1198,9 @@ time.
 - **A 12-member project strands the assignee row's trailing divider** at a row
   edge once `.assignee-row` wraps within itself: a hairline at x=417 of a 440px
   bar, or leading a row at x=12 at 390. The seed has four members, so this needs
-  a wider mock to see.
+  a wider mock to see. Same case since TAS-532: at 820 (iPad Air portrait) the
+  divider before the Done window ends row 1 at x=693 and the group opens row 2
+  (art-director, 2026-11-17) — fix bar-wide, not per divider.
 - **`.board-topbar` at ≤820 uses `padding: 10px 12px`**, and `10` is not on
   §2.4's scale. One value, pre-existing, unrelated to this change beyond having
   been measured next to it.
@@ -4648,6 +4650,61 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
 - **A definite failure of the new plan reads re-reads on every focus return** (guard N5; the L5 note of TAS-504).
 - **The «3 used · 1 allowed» projects line on Northwind and Globex** is the mock's platform-bypass fixture, not a UI
   state; revisit when A46 says whether a bypass always sets OVER_QUOTA.
+
+### Left by TAS-532 build (the Done window, backend TAS-525 at develop `e35e143e`, 2026-11-17)
+
+- **Backend: getBoard's 400 for an out-of-range `doneSince` names the wrong
+  parameter** — "pageSizePerColumn must be between 1 and 200" (gateway
+  `BoardServiceImpl`, read by frontend-builder). The mock repeats the gateway's
+  words (`BOARD_READ_REFUSAL_MESSAGE`); the UI never sends such a date. Asked as
+  A2 in a comment on TAS-525 (2026-11-17), not a story.
+- **Under «2 weeks» a writer's open panel re-reads up to three boards per
+  write** (the filtered and unfiltered windowed records and the picker's `all`),
+  against two before (release-reviewer). Bounded by the panel being open. A
+  server-side link search for the picker would drop the `all` read altogether.
+- **Viewer link rows with no `target`** show the raw id when no `all` record is
+  cached; they could fall back to the board's windowed records. Needs the server
+  to omit `target` first, so it is theoretical (release-reviewer).
+- **Every empty-column line is `--fg-3` on `--surface-2` (2.76:1 light)** — now
+  also the windowed «No issues updated in the last 2 weeks», the first empty
+  line that states a fact. Fix all at once with `.empty-column { color:
+  var(--fg-2) }` (6.38 / 7.03); «Not loaded» stays apart by its solid border and
+  words. Never colour the one line alone (art-director, §7 TAS-257 entry).
+- **`.segmented button.is-active` uses the elevation `--shadow`**, not §4.2's
+  tight segment shadow; in dark it reaches the filter bar's bottom border under
+  the Done window (38 → 33). Product-wide: Priority, Appearance, Done window;
+  §2.6/§4.2 first needs a dark value for the tight shadow (art-director).
+- **No test pins «no picker re-read just because `staleTime` passed»** —
+  `refetchOnMount: true` passes all 341 board/panel tests. A BoardScreen test
+  that moves `Date.now` 21 s and expects 0 full-board reads (release-reviewer).
+- **A failed background re-read also sets `isInvalidated`**, so while the board
+  read fails each panel mount re-reads the `all` record once (plus the retry).
+  Accepted; §5.4's wording could add «or its last read failed» (release-reviewer).
+- **«This project has no workflow for {type} issues»** (panel) and the drop
+  refusal are false when the context dropped the type because its workflow read
+  failed (backend TAS-383; API-DIVERGENCE «The project context drops a type…»).
+  A wording true in both cases, e.g. «This project sent no workflow for …», is
+  art-director's call; the real fix is backend [TAS-533](https://jira.ozero.dev/browse/TAS-533) (A1, api-contract-guard).
+- **The link picker could read `GET /issues/search?projectId=…`** instead of a
+  whole unwindowed board: the route exists, `query` is optional, results come
+  `createdAt` desc up to 100 with the type's look and `statusKey`. Drops the
+  extra `all` read under «2 weeks». A DESIGN change for a later story; «no query
+  typed» is read in the docs only (api-contract-guard N1).
+- **`Y` costs a second board read whenever a filter is on** — up to 200 cards a
+  column for one number. Backend shape if wanted: `unfilteredTotalCount` on the
+  board answer under the same `includeDone`/`doneSince`, counted in the same
+  statement as issue-service's `totals` CTE (api-contract-guard A3; not filed).
+- **Focus after a dropped «Show more» page can still reach `<body>`** (low): the
+  fallback runs when the page lands, not when the button leaves; between the
+  re-read's render and the page, and in a few-ms race where TanStack notifies
+  React after the page lands, focus sits on `<body>`. Fix: the focused-card
+  hand-off also remembers a focused `.list-more-button` and its column and moves
+  to the last card when the button is gone (release-reviewer L1, jsdom probe only).
+- **DESIGN §4.9 «Перечитывание» does not describe the dropped page** — proposal
+  for art-director: a «Show more» page cut under an earlier `doneSince` is not
+  added, the column stays as the re-read sent it, the button can be pressed
+  again, and focus that lost the button goes to the column's last card
+  (release-reviewer N1).
 
 ### Left by TAS-512 review (company plan and usage, build review of `994ec25`, 2026-11-05)
 
