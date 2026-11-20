@@ -1,5 +1,6 @@
 import { apiErrorFacts, type FieldViolation } from "../errors";
 import type { LoginInput } from "../TaskaApi";
+import { activityKindsParam, isKnownActivityKind, type ListTenantActivityParams } from "../tenantActivity";
 import {
   isKnownMembershipRole,
   isKnownProjectGrantRole,
@@ -23,16 +24,17 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * revoked one, a suspended membership or a paused company is refused here the
  * way the blueprint says the gateway will refuse it.
  *
- * **Shared by every tab** through `localStorage` `taska.mockServer.v5`: the
+ * **Shared by every tab** through `localStorage` `taska.mockServer.v6`: the
  * companies, memberships, sessions and tokens — since TAS-501 the FREE
  * ledger, the creations' operations and their durable receipts, since TAS-502
  * the invitations, the seat limits, the membership generation and the member
- * writes' durable receipts, since TAS-504 each company's subscription, and
- * since TAS-512 each company's entitlement version, its scheduled plan, the
- * quota kinds it is over and every project's lifetime issue counter — read
- * and written on every operation, so a second tab — or a duplicated one —
- * meets the same server. (v1 was TAS-500's, v2 TAS-501's, v3 TAS-502's, v4
- * TAS-504's; each bump re-seeds, signing every mock account out once.)
+ * writes' durable receipts, since TAS-504 each company's subscription, since
+ * TAS-512 each company's entitlement version, its scheduled plan, the quota
+ * kinds it is over and every project's lifetime issue counter, and since
+ * TAS-524 each company's activity log — read and written on every operation,
+ * so a second tab — or a duplicated one — meets the same server. (v1 was
+ * TAS-500's, v2 TAS-501's, v3 TAS-502's, v4 TAS-504's, v5 TAS-512's; each bump
+ * re-seeds, signing every mock account out once.)
  * Each company's projects and issues are this page's own, in memory, as
  * today's mock's are: they reset with a reload — the lifetime counters do not.
  *
@@ -41,7 +43,7 @@ import { MOCK_ACCOUNT_IDS, MOCK_PROJECT_IDS, MockTaskaStore, type MockTenantSeed
  * untouched and enforces nothing.
  */
 
-export const MOCK_SERVER_KEY = "taska.mockServer.v5";
+export const MOCK_SERVER_KEY = "taska.mockServer.v6";
 
 /**
  * `localStorage` key for the server's test hooks, as JSON — the seam
@@ -137,6 +139,14 @@ export const MOCK_SERVER_KEY = "taska.mockServer.v5";
  *   `PAYMENT_DISPUTE`;
  * - `clockOffsetMs` also applies a scheduled plan change once its
  *   `scheduledEffectiveAt` has passed.
+ *
+ * The company's activity (TAS-524, api-contract-guard B8 — a route proposed
+ * on TAS-523, not in the blueprint):
+ *
+ * - `refuseNext`, `delayMs` and `loseAnswer` take `listTenantActivity`;
+ * - `platformBlock` writes the record of the block it sets or lifts
+ *   (`TENANT_BLOCKED`, `TENANT_UNBLOCKED`), by Mark as an administrator of
+ *   Taska, without his name or email.
  *
  * Everything time- or hook-driven is evaluated on every read of the server's
  * state: there are no timers.
@@ -441,8 +451,34 @@ interface StoredCreation {
   operationId: string;
 }
 
+/** A record's target (TAS-524): who or what the action was about, named as it was at the write. */
+interface StoredActivityTarget {
+  type: string;
+  id: string;
+  displayName?: string;
+  email?: string;
+}
+
+/**
+ * One entry of a company's log (TAS-524, api-contract-guard B8): written in
+ * the same change as the action it records, and never changed after — names
+ * snapshotted at write from the account store. `seq` is the mock's own order
+ * (never on the wire): the keyset cursor breaks a tie of `createdAt` with it.
+ */
+interface StoredActivity {
+  id: string;
+  tenantId: string;
+  seq: number;
+  createdAt: string;
+  actor: { userId: string; displayName?: string; email?: string; platformAdmin: boolean };
+  kind: string;
+  target: StoredActivityTarget;
+  details?: Record<string, unknown>;
+  outcome: "SUCCEEDED";
+}
+
 interface ServerState {
-  v: 5;
+  v: 6;
   tenants: StoredTenant[];
   memberships: StoredMembership[];
   sessions: StoredSession[];
@@ -479,6 +515,8 @@ interface ServerState {
   taskLifetime: Record<string, { tenantId: string; count: number }>;
   /** The `taskLifetime` hook's values already applied, by project — one value is applied once. */
   lifetimeApplied: Record<string, number>;
+  /** TAS-524: every company's log, the newest `ACTIVITY_CAP` of each kept. */
+  activity: StoredActivity[];
 }
 
 /**
@@ -555,6 +593,13 @@ const BREACH_KINDS: readonly string[] = ["SEAT", "PROJECT", "STORAGE_BYTES", "TA
 
 /** How long a paid period the mock starts on a confirmed first payment lasts — its own choice (TAS-504). */
 const PAID_PERIOD_MS = 30 * DAY;
+
+/** How many records of a company's log the mock keeps — the newest (TAS-524, B8). */
+export const ACTIVITY_CAP = 500;
+/** A `actorUserId` the activity route accepts: a UUID, either case. */
+const ACTOR_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Newest first: `createdAt` descending, then the mock's sequence descending. */
+const newestFirst = (a: StoredActivity, b: StoredActivity) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.seq - a.seq;
 
 /** Sets or lifts one restriction, kept in `RESTRICTION_ORDER`; a change moves the company's version. */
 function setRestriction(tenant: StoredTenant, code: string, on: boolean): boolean {
@@ -867,6 +912,110 @@ export const MOCK_TASK_LIFETIME_SEED: ReadonlyArray<readonly [tenantId: string, 
   [MOCK_TENANT_IDS.longName, MOCK_TENANT_PROJECT_IDS.longNameProject, 64],
 ];
 
+/** TAS-524: a person who left Northwind and whose account is gone — the record names nobody (B8). */
+export const MOCK_FORMER_MEMBER_ID = "f3a9c2d1-6b7e-4d8f-9a0b-1c2d3e4f5a60";
+
+/** The long-named company's contractors (TAS-524): each invited, reminded and revoked — 120 records in all. */
+export const MOCK_ACTIVITY_CONTRACTORS = 40;
+
+type ProfileOf = (userId: string) => { displayName: string; email: string } | null;
+
+/**
+ * The seeded logs (TAS-524, api-contract-guard B8), each at or before the
+ * seed: what led to the seeded state, in the order it happened, so `seq` rises
+ * with time. Names are snapshotted from the account store as a write would.
+ *
+ * Northwind: Anna created it, invited Zoe as an Admin (since expired), suspended
+ * Omar, a former member without an account left, Anna invited Kai, and Mark —
+ * an administrator of Taska, nameless — resent Kai's invitation. Globex: Priya
+ * created it. Initech: Sofia paused it. Umbrella: Tom created it, made Priya an
+ * Admin, suspended Anna, did something this build has no word for
+ * (`TENANT_EXPORTED`), and Priya invited Lena. Hooli: Mark blocked it. The
+ * long-named company: Priya created it under a shorter name and renamed it,
+ * invited Sofia, who accepted, and then invited, reminded and revoked forty
+ * contractors — more than two pages at 50, ending in the seeded state (no
+ * pending invitation). Every other company: nothing. No record is `DENIED`.
+ */
+function seedActivity(seedAt: number, profileOf: ProfileOf): StoredActivity[] {
+  const ids = MOCK_TENANT_IDS;
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const records: StoredActivity[] = [];
+  const person = (userId: string) => {
+    const profile = profileOf(userId);
+    return profile ? { userId, displayName: profile.displayName, email: profile.email } : { userId };
+  };
+  const actor = (userId: string) => ({ ...person(userId), platformAdmin: false });
+  const taska = { userId: MOCK_ACCOUNT_IDS.mark, platformAdmin: true };
+  const member = (userId: string): StoredActivityTarget => {
+    const { userId: id, ...named } = person(userId);
+    return { type: "MEMBER", id, ...named };
+  };
+  const invitation = (id: string, email: string): StoredActivityTarget => ({ type: "INVITATION", id, email });
+  const company = (id: string, displayName: string): StoredActivityTarget => ({ type: "TENANT", id, displayName });
+  const add = (
+    tenantId: string,
+    at: string,
+    by: StoredActivity["actor"],
+    kind: string,
+    target: StoredActivityTarget,
+    details?: Record<string, unknown>,
+  ) => {
+    const seq = records.length + 1;
+    records.push({
+      id: `a1c7e000-0000-4000-8000-${seq.toString(16).padStart(12, "0")}`,
+      tenantId,
+      seq,
+      createdAt: at,
+      actor: by,
+      kind,
+      target,
+      ...(details ? { details } : {}),
+      outcome: "SUCCEEDED",
+    });
+  };
+  const before = (days: number) => iso(seedAt - days * DAY);
+
+  add(ids.northwind, "2026-05-01T09:00:00Z", actor(anna), "TENANT_CREATED", company(ids.northwind, "Northwind"));
+  add(ids.northwind, before(9), actor(anna), "INVITATION_CREATED", invitation(MOCK_INVITATION_IDS.zoe, "zoe@example.com"), { role: "TENANT_ADMIN" });
+  add(ids.northwind, before(6), actor(anna), "MEMBER_SUSPENDED", member(omar));
+  add(ids.northwind, before(4), actor(MOCK_FORMER_MEMBER_ID), "MEMBER_LEFT", member(MOCK_FORMER_MEMBER_ID));
+  add(ids.northwind, before(2), actor(anna), "INVITATION_CREATED", invitation(MOCK_INVITATION_IDS.kai, "kai@example.com"), { role: "MEMBER" });
+  add(ids.northwind, before(1), taska, "INVITATION_RESENT", invitation(MOCK_INVITATION_IDS.kai, "kai@example.com"));
+
+  add(ids.globex, "2026-05-02T09:00:00Z", actor(priya), "TENANT_CREATED", company(ids.globex, "Globex"));
+
+  add(ids.initech, before(3), actor(sofia), "TENANT_PAUSED", company(ids.initech, "Initech"));
+
+  add(ids.umbrella, "2026-05-04T09:00:00Z", actor(tom), "TENANT_CREATED", company(ids.umbrella, "Umbrella"));
+  add(ids.umbrella, before(20), actor(tom), "ROLE_CHANGED", member(priya), { fromRole: "MEMBER", toRole: "TENANT_ADMIN" });
+  add(ids.umbrella, before(8), actor(tom), "MEMBER_SUSPENDED", member(anna));
+  add(ids.umbrella, before(5), actor(tom), "TENANT_EXPORTED", company(ids.umbrella, "Umbrella"));
+  add(ids.umbrella, before(1), actor(priya), "INVITATION_CREATED", invitation(MOCK_INVITATION_IDS.lena, "lena@example.com"), { role: "MEMBER" });
+
+  add(ids.hooli, before(7), taska, "TENANT_BLOCKED", company(ids.hooli, "Hooli"));
+
+  const earlier = "Consolidated Widget Holdings";
+  const sofiaInvitation = "9c1f2e3d-4b5a-4c6d-8e7f-0a1b2c3d4f00";
+  add(ids.longName, "2026-05-07T09:00:00Z", actor(priya), "TENANT_CREATED", company(ids.longName, earlier));
+  add(ids.longName, "2026-05-08T09:00:00Z", actor(priya), "TENANT_RENAMED", company(ids.longName, MOCK_LONG_TENANT_NAME), {
+    fromName: earlier,
+    toName: MOCK_LONG_TENANT_NAME,
+  });
+  add(ids.longName, "2026-05-09T09:00:00Z", actor(priya), "INVITATION_CREATED", invitation(sofiaInvitation, "sofia@example.com"), { role: "MEMBER" });
+  add(ids.longName, "2026-05-10T09:00:00Z", actor(sofia), "INVITATION_ACCEPTED", invitation(sofiaInvitation, "sofia@example.com"));
+  // An hour apart, ending eleven hours before the seed.
+  const start = seedAt - (3 * MOCK_ACTIVITY_CONTRACTORS + 10) * 60 * MINUTE;
+  for (let n = 1; n <= MOCK_ACTIVITY_CONTRACTORS; n += 1) {
+    const email = `contractor-${String(n).padStart(2, "0")}@example.com`;
+    const id = `9c1f2e3d-4b5a-4c6d-8e7f-${n.toString(16).padStart(12, "0")}`;
+    const hour = (step: number) => iso(start + (3 * (n - 1) + step) * 60 * MINUTE);
+    add(ids.longName, hour(0), actor(priya), "INVITATION_CREATED", invitation(id, email), { role: "MEMBER" });
+    add(ids.longName, hour(1), actor(priya), "INVITATION_RESENT", invitation(id, email));
+    add(ids.longName, hour(2), actor(priya), "INVITATION_REVOKED", invitation(id, email));
+  }
+  return records;
+}
+
 /**
  * Each company's projects. Northwind is today's seed's TAS, WEB and MOB — with
  * Anna, its admin, on all three, Sofia on WEB only, Tom a viewer of TAS and
@@ -1095,6 +1244,7 @@ export class MockTenantServer {
         this.transferTenantOwnership(bearer, tenantId, newOwnerUserId, version, key),
       getSubscription: (bearer, tenantId) => this.getSubscription(bearer, tenantId),
       getEntitlement: (bearer, tenantId) => this.getEntitlement(bearer, tenantId),
+      listTenantActivity: (bearer, tenantId, params) => this.listTenantActivity(bearer, tenantId, params),
     };
   }
 
@@ -1452,6 +1602,8 @@ export class MockTenantServer {
       state.operations.push(operation);
       if (free) state.freeLedger[grant.userId] = tenant.id;
       state.creations[receiptKey] = { hash, tenantId: tenant.id, operationId: operation.id };
+      // TAS-524: the company's first record, at its creation.
+      this.recordActivity(state, tenant.id, "TENANT_CREATED", this.activityActor(grant.userId), { type: "TENANT", id: tenant.id, displayName: input.name }, undefined, createdAt);
       // A zero `stepMs` finishes provisioning in the same answer.
       this.evaluate(state);
       return this.creationAnswer(tenant, operation);
@@ -1582,10 +1734,12 @@ export class MockTenantServer {
       if (target.role === "TENANT_ADMIN" && this.otherActiveAdmins(state, tenantId, userId) === 0) {
         throw problem(409, "LAST_ADMIN", "The last active admin cannot be demoted");
       }
+      const fromRole = target.role;
       target.role = role;
       target.version += 1;
       tenant.generation += 1;
       if (role === "MEMBER") this.revokeInvitationsBy(state, tenant, userId);
+      this.recordActivity(state, tenantId, "ROLE_CHANGED", this.activityActor(session.userId), this.activityMember(userId), { fromRole, toRole: role });
       return receipt.keep(this.wireMembership(state, tenant, target));
     });
   }
@@ -1630,6 +1784,13 @@ export class MockTenantServer {
       }
       target.version += 1;
       tenant.generation += 1;
+      this.recordActivity(
+        state,
+        tenantId,
+        memberState === "SUSPENDED" ? "MEMBER_SUSPENDED" : "MEMBER_REACTIVATED",
+        this.activityActor(session.userId),
+        this.activityMember(userId),
+      );
       return receipt.keep(this.wireMembership(state, tenant, target));
     });
   }
@@ -1713,6 +1874,7 @@ export class MockTenantServer {
         updatedAt: at,
       };
       state.operations.push(operation);
+      this.recordActivity(state, tenantId, "MEMBER_LEFT", this.activityActor(session.userId), this.activityMember(session.userId), undefined, at);
       return receipt.keep(this.wireOperation(operation, false));
     });
     // Applied, and the answer never arrives (`loseAnswer: ["leaveTenant"]`, B-1).
@@ -1807,6 +1969,15 @@ export class MockTenantServer {
       };
       state.invitations.push(invitation);
       tenant.quotaVersion += 1;
+      this.recordActivity(
+        state,
+        tenantId,
+        "INVITATION_CREATED",
+        this.activityActor(session.userId),
+        { type: "INVITATION", id: invitation.id, email: invitation.email },
+        { role: invitation.role },
+        invitation.issuedAt,
+      );
       return receipt.keep(this.wireInvitation(invitation));
     });
   }
@@ -1822,6 +1993,11 @@ export class MockTenantServer {
       if (invitation.state === "EXPIRED") throw problem(422, "INVITATION_EXPIRED", "The invitation has expired");
       if (invitation.state !== "PENDING") throw problem(409, "INVALID_STATE", "The invitation is no longer pending");
       invitation.version += 1;
+      this.recordActivity(state, tenantId, "INVITATION_RESENT", this.activityActor(session.userId), {
+        type: "INVITATION",
+        id: invitation.id,
+        email: invitation.email,
+      });
       return receipt.keep(this.wireInvitation(invitation));
     });
   }
@@ -1847,6 +2023,11 @@ export class MockTenantServer {
       tenant.quotaVersion += 1;
       // A seat freed may bring the company back within its plan (TAS-512).
       this.reconcileBreaches(state, tenant);
+      this.recordActivity(state, tenantId, "INVITATION_REVOKED", this.activityActor(session.userId), {
+        type: "INVITATION",
+        id: invitation.id,
+        email: invitation.email,
+      });
       receipt.keep(null);
     });
   }
@@ -1904,6 +2085,118 @@ export class MockTenantServer {
     return answer;
   }
 
+  /* ----------------------------------------- the company's activity (TAS-524) */
+
+  /**
+   * `GET /tenants/{t}/activity` — proposed on TAS-523, not in the blueprint
+   * (api-contract-guard B8). The invitations list's order of checks
+   * (`ADMIN_READ`: a company session of exactly this company, a `refuseNext`
+   * hook, the company there, 409 while it is being set up, the caller ACTIVE,
+   * a company admin — 403 `SCOPE_DENIED` for a member), and no restriction
+   * refuses it. Then the parameters, each refusal a 400 `VALIDATION_FAILED`
+   * whose violation names it: `limit` 1–100, `actorUserId` a UUID, every
+   * `kind` one of the sixteen, `cursor` one this route wrote for the same
+   * reader, company and filters. Newest first — `createdAt`, then the mock's
+   * sequence — on a keyset cursor, so records written at the head meanwhile
+   * neither repeat nor shift a later page; a filter without a match is an
+   * empty page. The cursor never expires here (the proposal's 15 minutes is
+   * the server's).
+   */
+  private async listTenantActivity(bearer: string | null, tenantId: string, params: ListTenantActivityParams): Promise<unknown> {
+    await this.delay("listTenantActivity");
+    const answer = this.read((state) => {
+      const { session } = this.authorizeMembers(state, bearer, tenantId, "listTenantActivity", "ADMIN_READ");
+      const violations: FieldViolation[] = [];
+      const limit = params.limit ?? 50;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) violations.push({ field: "limit", code: "INVALID", message: "limit must be 1-100" });
+      const actorId = params.actorUserId;
+      if (actorId !== undefined && !ACTOR_ID_PATTERN.test(actorId)) {
+        violations.push({ field: "actorUserId", code: "INVALID", message: "actorUserId must be a UUID" });
+      }
+      const kinds = activityKindsParam(params.kinds);
+      if (kinds.some((kind) => !isKnownActivityKind(kind))) violations.push({ field: "kind", code: "INVALID", message: "kind is not an activity kind" });
+      if (violations.length > 0) throw invalid("Invalid request", violations);
+      const bound = `${session.userId}:activity:${tenantId}:${actorId?.toLowerCase() ?? ""}:${kinds.join(",")}`;
+      const after = params.cursor === undefined ? null : this.readActivityCursor(params.cursor, bound);
+      const listed = state.activity
+        .filter(
+          (item) =>
+            item.tenantId === tenantId &&
+            (actorId === undefined || item.actor.userId === actorId.toLowerCase()) &&
+            (kinds.length === 0 || kinds.includes(item.kind)) &&
+            (after === null || Date.parse(item.createdAt) < after.t || (Date.parse(item.createdAt) === after.t && item.seq < after.s)),
+        )
+        .sort(newestFirst);
+      const page = listed.slice(0, limit);
+      const last = page[page.length - 1];
+      const items = page.map((item) => this.wireActivity(item));
+      return listed.length > limit && last ? { items, nextCursor: this.writeActivityCursor(last, bound) } : { items };
+    });
+    if (this.takeLostAnswer("listTenantActivity")) throw new TypeError("Failed to fetch");
+    return answer;
+  }
+
+  /** `ActivityRecord` as the proposal has it: optional names absent, `details` only when the kind carries them. */
+  private wireActivity(item: StoredActivity): unknown {
+    const { seq: _seq, details, actor, target, ...rest } = item;
+    return { ...rest, actor: { ...actor }, target: { ...target }, ...(details ? { details: structuredClone(details) } : {}) };
+  }
+
+  private writeActivityCursor(item: StoredActivity, bound: string): string {
+    return btoa(JSON.stringify({ t: Date.parse(item.createdAt), s: item.seq, b: bound }));
+  }
+
+  /** The record a cursor continues after, or a 400 naming `cursor` — another reader's, company's or filter's included. */
+  private readActivityCursor(cursor: string, bound: string): { t: number; s: number } {
+    try {
+      const parsed = JSON.parse(atob(cursor)) as { t?: unknown; s?: unknown; b?: unknown };
+      if (parsed.b === bound && typeof parsed.t === "number" && Number.isFinite(parsed.t) && typeof parsed.s === "number" && Number.isInteger(parsed.s)) {
+        return { t: parsed.t, s: parsed.s };
+      }
+    } catch {
+      // falls through to the refusal
+    }
+    throw invalid("Invalid request", [{ field: "cursor", code: "INVALID", message: "cursor is not valid for this request" }]);
+  }
+
+  /** The person as the account store names them now — a write snapshots it (B8); an id nobody holds, bare. */
+  private person(userId: string): { userId: string; displayName?: string; email?: string } {
+    const profile = this.accountStore.accountProfile(userId);
+    return profile ? { userId, displayName: profile.displayName, email: profile.email } : { userId };
+  }
+
+  private activityActor(userId: string): StoredActivity["actor"] {
+    return { ...this.person(userId), platformAdmin: false };
+  }
+
+  private activityMember(userId: string): StoredActivityTarget {
+    const { userId: id, ...named } = this.person(userId);
+    return { type: "MEMBER", id, ...named };
+  }
+
+  /**
+   * A record of an action that took effect (B8) — called as the last step of
+   * a write's success path, so a refusal, a replay and a no-op write none; on
+   * the lifecycle clock unless `at` says when. The newest `ACTIVITY_CAP` of the
+   * company's are kept.
+   */
+  private recordActivity(
+    state: ServerState,
+    tenantId: string,
+    kind: string,
+    actor: StoredActivity["actor"],
+    target: StoredActivityTarget,
+    details?: Record<string, unknown>,
+    at: string = new Date(this.lifecycleNow()).toISOString(),
+  ): void {
+    const seq = state.activity.reduce((top, item) => Math.max(top, item.seq), 0) + 1;
+    state.activity.push({ id: uuid(), tenantId, seq, createdAt: at, actor, kind, target, ...(details ? { details } : {}), outcome: "SUCCEEDED" });
+    const own = state.activity.filter((item) => item.tenantId === tenantId);
+    if (own.length <= ACTIVITY_CAP) return;
+    const dropped = new Set(own.sort(newestFirst).slice(ACTIVITY_CAP));
+    state.activity = state.activity.filter((item) => !dropped.has(item));
+  }
+
   /* ------------------------------- the company's name, owner and pause (TAS-504) */
 
   /*
@@ -1935,8 +2228,13 @@ export class MockTenantServer {
       }
       this.checkVersion(version, tenant.version);
       if (name !== tenant.name) {
+        const fromName = tenant.name;
         tenant.name = name;
         tenant.version = nextVersion(tenant.version);
+        this.recordActivity(state, tenantId, "TENANT_RENAMED", this.activityActor(session.userId), { type: "TENANT", id: tenantId, displayName: name }, {
+          fromName,
+          toName: name,
+        });
       }
       return receipt.keep(this.wireTenant(tenant));
     });
@@ -1955,7 +2253,10 @@ export class MockTenantServer {
       const receipt = this.memberReceipt(state, session.userId, "pauseTenant", key, { confirmed: true, version });
       if (receipt.replay !== undefined) return receipt.replay;
       this.checkVersion(version, tenant.version);
-      setRestriction(tenant, "OWNER_PAUSE", true);
+      // A pause over a pause is a no-op, and writes no record (TAS-524).
+      if (setRestriction(tenant, "OWNER_PAUSE", true)) {
+        this.recordActivity(state, tenantId, "TENANT_PAUSED", this.activityActor(session.userId), { type: "TENANT", id: tenantId, displayName: tenant.name });
+      }
       return receipt.keep(this.wireTenant(tenant));
     });
     if (this.takeLostAnswer("pauseTenant")) throw new TypeError("Failed to fetch");
@@ -1975,7 +2276,9 @@ export class MockTenantServer {
       const receipt = this.memberReceipt(state, session.userId, "resumeTenant", key, { version });
       if (receipt.replay !== undefined) return receipt.replay;
       this.checkVersion(version, tenant.version);
-      setRestriction(tenant, "OWNER_PAUSE", false);
+      if (setRestriction(tenant, "OWNER_PAUSE", false)) {
+        this.recordActivity(state, tenantId, "TENANT_RESUMED", this.activityActor(session.userId), { type: "TENANT", id: tenantId, displayName: tenant.name });
+      }
       return receipt.keep(this.wireTenant(tenant));
     });
     if (this.takeLostAnswer("resumeTenant")) throw new TypeError("Failed to fetch");
@@ -2033,6 +2336,9 @@ export class MockTenantServer {
       actor.version += 1;
       // The former owner's consent is never carried over: the new owner sets up their own.
       tenant.subscription = { ...tenant.subscription, autopayState: "DISABLED", version: nextVersion(tenant.subscription.version) };
+      this.recordActivity(state, tenantId, "OWNERSHIP_TRANSFERRED", this.activityActor(session.userId), this.activityMember(newOwnerUserId), {
+        previousOwner: this.person(session.userId),
+      });
       return receipt.keep(this.wireTenant(tenant));
     });
     if (this.takeLostAnswer("transferTenantOwnership")) throw new TypeError("Failed to fetch");
@@ -2651,14 +2957,16 @@ export class MockTenantServer {
       const raw = this.storage.getItem(MOCK_SERVER_KEY);
       if (raw !== null) {
         const parsed = JSON.parse(raw) as ServerState;
-        if (parsed && parsed.v === 5 && Array.isArray(parsed.tenants)) return parsed;
+        if (parsed && parsed.v === 6 && Array.isArray(parsed.tenants)) return parsed;
       }
     } catch {
       if (this.memory) return this.memory;
     }
+    const seedAt = this.now();
     return {
-      v: 5,
-      ...seedTenants(this.now()),
+      v: 6,
+      ...seedTenants(seedAt),
+      activity: seedActivity(seedAt, (userId) => this.accountStore.accountProfile(userId)),
       lifetimeApplied: {},
       sessions: [],
       access: {},
@@ -2741,7 +3049,19 @@ export class MockTenantServer {
       const tenant = state.tenants.find((item) => item.id === operation.tenantId);
       if (removal) {
         const subject = state.memberships.find((item) => item.tenantId === operation.tenantId && item.userId === operation.subjectUserId);
-        if (next === "SUCCEEDED" && tenant && subject && subject.state !== "REMOVED") this.removeMembership(state, tenant, subject);
+        if (next === "SUCCEEDED" && tenant && subject && subject.state !== "REMOVED") {
+          this.removeMembership(state, tenant, subject);
+          // TAS-524: written when the removal takes effect, by the admin who asked for it.
+          this.recordActivity(
+            state,
+            tenant.id,
+            "MEMBER_REMOVED",
+            this.activityActor(operation.actorId),
+            this.activityMember(subject.userId),
+            undefined,
+            operation.updatedAt,
+          );
+        }
         continue;
       }
       if (next === "SUCCEEDED" && tenant?.lifecycle === "PROVISIONING") open(tenant);
@@ -2801,7 +3121,15 @@ export class MockTenantServer {
     const blocks = typeof hooks.platformBlock === "object" && hooks.platformBlock !== null ? hooks.platformBlock : {};
     for (const tenant of state.tenants) {
       const block = blocks[tenant.id];
-      if (typeof block === "boolean" && setRestriction(tenant, "PLATFORM_BLOCK", block)) changed = true;
+      if (typeof block === "boolean" && setRestriction(tenant, "PLATFORM_BLOCK", block)) {
+        changed = true;
+        // TAS-524: by an administrator of Taska, without a name (B8).
+        this.recordActivity(state, tenant.id, block ? "TENANT_BLOCKED" : "TENANT_UNBLOCKED", { userId: MOCK_ACCOUNT_IDS.mark, platformAdmin: true }, {
+          type: "TENANT",
+          id: tenant.id,
+          displayName: tenant.name,
+        });
+      }
       const through = tenant.subscription.paidThrough;
       if (tenant.lifecycle === "ACTIVE" && through !== undefined && Date.parse(through) <= now && setRestriction(tenant, "PAYMENT_EXPIRED", true)) {
         // TAS-512: the coverage ended, so the entitlement moves too.

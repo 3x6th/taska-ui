@@ -104,6 +104,9 @@ export const MOCK_COMPANY_ROUTES: Readonly<Record<keyof TaskaApi, MockRoute>> = 
   // TAS-512: every member's plan read, with the tab's company session, picked
   // by the session layer as for the REST leg.
   getEntitlement: "session",
+  // TAS-524: the company's log (proposed on TAS-523), with the tab's company
+  // session, picked by the session layer as for the REST leg.
+  listTenantActivity: "session",
   getMeta: "account",
   listProjects: "tenant-read",
   createProject: "tenant-write",
@@ -245,6 +248,7 @@ type SessionMethods = Pick<
   | "transferTenantOwnership"
   | "getSubscription"
   | "getEntitlement"
+  | "listTenantActivity"
 >;
 
 type AnyMethod = (...args: unknown[]) => unknown;
@@ -324,6 +328,7 @@ export function createCompaniesMockApi(options: CompaniesMockOptions = {}): Task
       web.transferTenantOwnership(tenantId, newOwnerUserId, version, key),
     getSubscription: (tenantId) => web.getSubscription(tenantId),
     getEntitlement: (tenantId) => web.getEntitlement(tenantId),
+    listTenantActivity: (tenantId, params) => web.listTenantActivity(tenantId, params),
   };
 
   const api: Record<string, unknown> = {};

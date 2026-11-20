@@ -37,6 +37,7 @@ import { SettingsAppearanceSection } from "./settings/SettingsAppearanceSection"
 import { SettingsProfileSection } from "./settings/SettingsProfileSection";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { SettingsConnectedAppsSection } from "./settings/SettingsConnectedAppsSection";
+import { CompanyActivitySection } from "./company/CompanyActivitySection";
 import { CompanyGeneralSection } from "./company/CompanyGeneralSection";
 import { CompanyMembersSection } from "./company/CompanyMembersSection";
 import { CompanyPlanSection } from "./company/CompanyPlanSection";
@@ -220,8 +221,8 @@ export function App() {
                 <Route path="/settings/appearance" element={<SettingsAppearanceSection />} />
               </Route>
               {/* The Company zone (TAS-522, §5.10), this build only: the company
-                  itself (TAS-504, §4.39), its members (TAS-502, §4.38) and its
-                  plan (TAS-512, §4.40). An area like /settings, for every role
+                  itself (TAS-504, §4.39), its members (TAS-502, §4.38), its
+                  plan (TAS-512, §4.40) and its log (TAS-524, §4.41). An area like /settings, for every role
                   of the company; an address inside /company that matches no
                   section falls through to the `*` route below. The index carries
                   the router state into General, so «Manage company» lands with
@@ -231,6 +232,9 @@ export function App() {
                 <Route path="/company/general" element={<CompanyGeneralSection />} />
                 <Route path="/company/members" element={<CompanyMembersSection />} />
                 <Route path="/company/plan" element={<CompanyPlanSection />} />
+                {/* TAS-524 (§4.41): the company's log. Not gated or redirected by
+                    the client — a member who opens it gets the server's 403. */}
+                <Route path="/company/activity" element={<CompanyActivitySection />} />
               </Route>
             </Route>
             <Route path="*" element={<NotFoundScreen />} />

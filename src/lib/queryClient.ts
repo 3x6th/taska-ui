@@ -24,7 +24,7 @@ export const STALE_TIME_MS = 20_000;
  * A query that states its own `refetchOnWindowFocus` keeps it — `GET /meta`
  * never re-reads, the Telegram link in Settings → Notifications always does.
  */
-export const refetchFailedOnFocus = (query: Query) => query.state.status === "error";
+export const refetchFailedOnFocus = (query: { state: { status: Query["state"]["status"] } }) => query.state.status === "error";
 
 /**
  * The one query client this app runs on, and the one the request-count test
