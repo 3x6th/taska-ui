@@ -235,4 +235,11 @@ describe("the owner's subscription (TAS-504, api-contract-guard §1, M2)", () =>
     }
     expect(toSubscription(null)).toMatchObject({ tenantId: null, paidThrough: null });
   });
+
+  it("TAS-515 F4: `version` is the blueprint's decimal or nothing — it is the If-Match of every subscription command", () => {
+    expect(toSubscription({ version: "12" }).version).toBe("12");
+    for (const version of ["", "01", "1.5", "-1", "v2", "12345678901234567890", 3, null]) {
+      expect(toSubscription({ version }).version, String(version)).toBeNull();
+    }
+  });
 });

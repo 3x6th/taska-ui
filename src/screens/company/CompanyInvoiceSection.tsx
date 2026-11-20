@@ -7,6 +7,8 @@ import { ErrorNote } from "../../components/ErrorNote";
 import { useAccountQueryClient, useCompanyAddress } from "../../lib/companyAddress";
 import { plansQueryOptions } from "../../lib/plans";
 import { formatPaidUntil } from "./companyGeneralText";
+import { companyEntitlementOptions } from "./companyPlan";
+import { nowOnText, planChangeInvoiceText } from "./companyPlanChangeText";
 import { planById, planNameParts } from "./companyPlanText";
 import { PaymentStateBlock } from "./BillingParts";
 import {
@@ -63,6 +65,11 @@ import type { CheckoutReturnState } from "../billingReturn";
  * record closes on PAID, EXPIRED or VOID, a FAILED or EXPIRED checkout, and
  * a checkout this company does not have — which is said, and switches,
  * redirects and offers nothing.
+ *
+ * TAS-515 (art-director B12, decision 8): an open PLAN_CHANGE invoice says
+ * which plan paying it moves the company to, and «Paid.» adds that it is on
+ * it only once the entitlement read after the settlement names that plan —
+ * the one read this page adds, for a PLAN_CHANGE invoice only.
  */
 export function CompanyInvoiceSection() {
   const address = useCompanyAddress();
@@ -93,6 +100,8 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
   const press = usePayInvoice({ companyId, userId: reader.meId, returnTarget: "BILLING", company: reader.company });
   const rereadAfterPaid = useRereadAfterPaid();
   const [outcome, setOutcome] = useState<Outcome>(null);
+  /** When this visit saw the payment settle: «is now on» needs an entitlement read after it. */
+  const [paidAt, setPaidAt] = useState<number | null>(null);
   const [hadExpired, setHadExpired] = useState(false);
   const payButton = useRef<HTMLButtonElement>(null);
   const returnButton = useRef<HTMLButtonElement>(null);
@@ -129,6 +138,7 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
     if (record === null || reader.meId === null) return;
     const close = (next: Outcome) => {
       setOutcome(next);
+      if (next === "paid") setPaidAt(Date.now());
       closeAttempt(record.userId, companyId, invoiceId, record.key);
     };
     // An ended invoice closes any record of it — one whose answer never came too (B1).
@@ -166,6 +176,17 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
   }, [returned]);
 
   // Landed from the payment page: «Confirming the payment» from the first frame, no Pay (B6).
+  // TAS-515: a plan change's invoice reads the plan the company is on — and the one it is on once paid.
+  const planChange = invoice?.purpose === "PLAN_CHANGE";
+  const entitlement = useQuery({ ...companyEntitlementOptions(companyId), enabled: reader.owner && planChange });
+  const invoicePlan = plans.data && invoice ? planById(plans.data, invoice.planVersionId) : null;
+  const currentPlan = plans.data && entitlement.data ? planById(plans.data, entitlement.data.planVersionId) : null;
+  const nowOn =
+    planChange && invoicePlan !== null && paidAt !== null && entitlement.data !== undefined && entitlement.dataUpdatedAt >= paidAt &&
+    entitlement.data.planVersionId === invoice?.planVersionId
+      ? nowOnText(reader.company, invoicePlan)
+      : null;
+
   if (!reader.known) {
     const landing = returned ? watchedPaymentState({ invoice: null, checkout: null, left: false, stage: "fresh", company: reader.company, reopened: false }) : null;
     return <InvoiceLoading state={landing} factId={factId} />;
@@ -182,8 +203,8 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
 
   let state: PaymentState | null = null;
   if (unresolved(record)) {
-    state = watchedPaymentState({ invoice, checkout: watch.checkout, left: record.leftAt !== undefined, stage: watch.stage, company: reader.company, reopened });
-  } else if (outcome === "paid" && invoice?.state === "PAID") state = paidState(invoice, reader.company, reopened);
+    state = watchedPaymentState({ invoice, checkout: watch.checkout, left: record.leftAt !== undefined, stage: watch.stage, company: reader.company, reopened, nowOn });
+  } else if (outcome === "paid" && invoice?.state === "PAID") state = paidState(invoice, reader.company, reopened, nowOn);
   else if (outcome === "failed" && invoice !== null && isPayable(invoice)) state = failedState();
   else if (outcome === "expired" && invoice !== null && isPayable(invoice)) state = expiredState();
   else if (outcome === "not-found") state = notFoundState(reader.company);
@@ -223,7 +244,9 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
   const refusal = press.refusal?.invoiceId === invoiceId ? press.refusal : null;
   const noLonger = invoice.state === "EXPIRED" || invoice.state === "VOID";
   const replacement = noLonger ? replacementOf(invoice, list.data ?? []) : null;
-  const plan = plans.data ? planById(plans.data, invoice.planVersionId) : null;
+  const plan = invoicePlan;
+  const moves =
+    planChange && (invoice.state === "OPEN" || invoice.state === "PARTIALLY_PAID") ? planChangeInvoiceText(reader.company, invoicePlan, currentPlan) : null;
 
   let action: ReactNode = null;
   if (offerPay) {
@@ -296,6 +319,7 @@ function CompanyInvoice({ companyId, invoiceId }: { companyId: string; invoiceId
   return (
     <div className="settings-plane">
       <div className="settings-column company-billing company-invoice">
+        {moves !== null ? <p className="company-invoice-plan-change">{moves}</p> : null}
         <PaymentStateBlock factId={factId} state={state} />
         {noLonger ? (
           <p className="company-general-state company-invoice-closed">

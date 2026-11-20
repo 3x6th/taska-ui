@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { QuotaSnapshot } from "../../api/tenantMembers";
 import type { Entitlement, PlanVersion } from "../../api/tenants";
-import { announcedTail, autopayWord, planById, planLeadText, renewalNote, usageLines } from "./companyPlanText";
+import { autopayWord, planById, planLeadText, renewalNote, usageLines } from "./companyPlanText";
 
 /*
  * Company › Plan's words (TAS-512, DESIGN.md §4.40; art-director B3, B4,
@@ -30,12 +30,9 @@ describe("the lead and the owner's rows", () => {
     expect(planLeadText(null, false)).toBe("The plan this company is on and what it uses. Its price and payments are shown only to its owner.");
   });
 
-  it("renewal, automatic payments (an unknown state as it came), the announced change", () => {
+  it("renewal, automatic payments (an unknown state as it came), a plan by its id", () => {
     expect(renewalNote("Consolidated")).toBe("When the paid period ends, Consolidated becomes read-only. It doesn’t move to a free plan on its own.");
     expect(["CONSENTED", "DISABLED", "SUSPENDED", "PAUSED_BY_BANK"].map(autopayWord)).toEqual(["On", "Off", "Suspended", "PAUSED_BY_BANK"]);
-    expect(announcedTail(plan(), "€20 a month")).toBe(": Team · version 2, €20 a month");
-    expect(announcedTail(plan({ version: null }), null)).toBe(": Team");
-    expect(announcedTail(null, null)).toBe(", the plan changes.");
     expect(planById([plan()], "team-2")?.name).toBe("Team");
     expect(planById([plan()], "elsewhere")).toBeNull();
     expect(planById([plan()], null)).toBeNull();

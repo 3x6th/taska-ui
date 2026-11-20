@@ -53,6 +53,9 @@ describe("the catalogue", () => {
       ["Free", "PUBLISHED", "0"],
       ["Team", "RETIRED", "1500"],
       ["Team", "PUBLISHED", "2000"],
+      // TAS-515 (B15): one cheaper than Team v1, one dearer than Team v2.
+      ["Starter", "PUBLISHED", "1000"],
+      ["Business", "PUBLISHED", "4000"],
     ]);
     await expect(api.listBillingPlans({ limit: 100 })).resolves.toMatchObject({ nextCursor: null });
     await expect(api.listBillingPlans({ limit: 0 })).rejects.toMatchObject({ status: 400, code: "VALIDATION_FAILED" });

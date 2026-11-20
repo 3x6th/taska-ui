@@ -24,6 +24,10 @@ const { fakeApi, state } = vi.hoisted(() => {
     restrictions: [] as string[],
     createHangs: false,
     EUR,
+    /** TAS-515: the owner's subscription, read beside the list; a FREE company's by default, so no group. */
+    subscription: null as null | Record<string, unknown>,
+    autopayAnswer: null as null | (() => Promise<unknown>),
+    autopaySent: [] as Array<{ version: string; key: string }>,
   };
   const workspace = { tenantId: "n", tenantName: "Northwind", tenantSessionId: "s-n" };
   const tenant = () => ({ id: "n", name: "Northwind", ownerId: "tom", lifecycle: "ACTIVE", restrictions: state.restrictions, createdAt: "2026-05-01T09:00:00Z", version: "1" });
@@ -48,6 +52,17 @@ const { fakeApi, state } = vi.hoisted(() => {
     listInvoices: async () => {
       state.calls.push("listInvoices");
       return { items: state.invoices, nextCursor: null };
+    },
+    getSubscription: async () => {
+      state.calls.push("getSubscription");
+      return state.subscription ?? { tenantId: "n", planVersionId: "free", version: "1", paidThrough: null, renewalCancelled: false, autopayState: "DISABLED", scheduledPlanVersionId: null, scheduledEffectiveAt: null };
+    },
+    setAutopayConsent: async (_tenantId: string, _consent: false, version: string, key: string) => {
+      state.calls.push("setAutopayConsent");
+      state.autopaySent.push({ version, key });
+      if (state.autopayAnswer) return state.autopayAnswer();
+      state.subscription = { ...(state.subscription ?? {}), autopayState: "DISABLED", version: "13" };
+      return { state: "DISABLED" };
     },
     getInvoice: async (_tenantId: string, invoiceId: string) => {
       state.calls.push("getInvoice");
@@ -123,6 +138,9 @@ beforeEach(() => {
   state.checkout = null;
   state.restrictions = [];
   state.createHangs = false;
+  state.subscription = null;
+  state.autopayAnswer = null;
+  state.autopaySent = [];
 });
 
 afterEach(() => {
@@ -175,6 +193,144 @@ describe("the rail and who sees Billing (B1, §7)", () => {
     renderAt("/company/billing/inv-renewal");
     await waitFor(() => expect(screen.getAllByText("Invoices and payments for Northwind are shown only to its owner.")).toHaveLength(2));
     expect(state.calls).toEqual([]);
+  });
+});
+
+describe("«Automatic payments» (TAS-515, art-director B8, decision 1)", () => {
+  const paid = (autopayState: string, paidThrough: string | null = "2026-12-26T03:36:00Z") => ({
+    tenantId: "n",
+    planVersionId: "team",
+    version: "12",
+    paidThrough,
+    renewalCancelled: false,
+    autopayState,
+    scheduledPlanVersionId: null,
+    scheduledEffectiveAt: null,
+  });
+  const group = () => screen.getByRole("region", { name: "Automatic payments" });
+
+  it("On, above «Invoices», with the lead naming both — and only «Turn off»: nothing turns them on", async () => {
+    state.subscription = paid("CONSENTED");
+    renderAt("/company/billing");
+    expect(await screen.findByRole("heading", { level: 2, name: "Automatic payments" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual(["Automatic payments", "Invoices2"]);
+    expect(screen.getByText("Automatic payments and invoices for Northwind.")).toBeInTheDocument();
+    expect(group()).toHaveTextContent("OnTaska takes Northwind’s payments automatically. You can still pay any invoice here yourself.");
+    expect(within(group()).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Turn off automatic payments"]);
+    expect(screen.queryByText(/Turn on/)).not.toBeInTheDocument();
+  });
+
+  it("Off says Taska can’t turn them on, with no button; Suspended offers «Turn off»; a state it does not know is drawn as it came", async () => {
+    state.subscription = paid("DISABLED");
+    const off = renderAt("/company/billing");
+    expect(await screen.findByText("You pay Northwind’s invoices here yourself. This version of Taska can’t turn automatic payments on.")).toBeInTheDocument();
+    expect(within(group()).queryByRole("button")).not.toBeInTheDocument();
+    off.unmount();
+    state.subscription = paid("SUSPENDED", null);
+    const suspended = renderAt("/company/billing");
+    expect(await screen.findByText("Taska isn’t taking automatic payments for Northwind right now. You can pay its invoices here yourself.")).toBeInTheDocument();
+    expect(within(group()).getByRole("button", { name: "Turn off automatic payments" })).toBeInTheDocument();
+    suspended.unmount();
+    state.subscription = paid("PAUSED_BY_BANK");
+    renderAt("/company/billing");
+    expect(await screen.findByText("PAUSED_BY_BANK")).toBeInTheDocument();
+    expect(within(group()).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("a FREE company with automatic payments off has no group, and the TAS-513 lead", async () => {
+    renderAt("/company/billing");
+    expect(await screen.findByRole("link", { name: "TSK-2026-01008" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Automatic payments" })).not.toBeInTheDocument();
+    expect(screen.getByText("Invoices for Northwind and how they were paid.")).toBeInTheDocument();
+  });
+
+  it("«Turn off» asks first — «Keep them on» before the answer —, sends consent false with Subscription.version, then says it and focuses the heading", async () => {
+    state.subscription = paid("CONSENTED");
+    renderAt("/company/billing");
+    fireEvent.click(await screen.findByRole("button", { name: "Turn off automatic payments" }));
+    expect(screen.getByText(/^Automatic payments stop for Northwind, and you pay its invoices here yourself\. If Northwind isn’t paid for by Dec 26,/)).toHaveTextContent(
+      /This version of Taska can’t turn them back on\.$/,
+    );
+    const keep = screen.getByRole("button", { name: "Keep them on" });
+    expect(keep).toHaveFocus();
+    const buttons = within(keep.parentElement as HTMLElement).getAllByRole("button").map((button) => button.textContent);
+    expect(buttons).toEqual(["Keep them on", "Turn off"]);
+    fireEvent.click(screen.getByRole("button", { name: "Turn off" }));
+    await waitFor(() => expect(state.autopaySent).toHaveLength(1));
+    expect(state.autopaySent[0].version).toBe("12");
+    await waitFor(() => expect(screen.getByRole("heading", { level: 2, name: "Automatic payments" })).toHaveFocus());
+    expect(group()).toHaveTextContent(/^Automatic paymentsOff/);
+    expect(screen.getByText("Automatic payments are off for Northwind.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Turn on/ })).not.toBeInTheDocument();
+  });
+
+  it("an answer that never came: the same key and If-Match on the next press; a 412 a new one, after reading again", async () => {
+    state.subscription = paid("CONSENTED");
+    state.autopayAnswer = () => Promise.reject(new TypeError("Failed to fetch"));
+    renderAt("/company/billing");
+    const open = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Turn off automatic payments" }));
+      fireEvent.click(screen.getByRole("button", { name: "Turn off" }));
+    };
+    await open();
+    const note = () => document.querySelector(".company-autopay .error-note");
+    await waitFor(() => expect(note()).toHaveTextContent("Taska couldn’t confirm automatic payments were turned off. Press Turn off again to check."));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Turn off automatic payments" })).toHaveFocus());
+    state.subscription = { ...paid("CONSENTED"), version: "14" };
+    await open();
+    await waitFor(() => expect(state.autopaySent).toHaveLength(2));
+    expect(state.autopaySent[1]).toEqual(state.autopaySent[0]);
+    state.autopayAnswer = () => Promise.reject(Object.assign(new Error("stale"), { status: 412, code: "VERSION_CONFLICT", requestId: "rid-412", details: null, reasons: [] }));
+    await open();
+    await waitFor(() =>
+      expect(note()).toHaveTextContent("Northwind’s plan details changed while you were deciding, so automatic payments weren’t turned off. Check them and try again."),
+    );
+    await waitFor(() => expect(state.calls.filter((call) => call === "getSubscription").length).toBeGreaterThan(1));
+    state.autopayAnswer = null;
+    await waitFor(() => expect(screen.getByRole("button", { name: "Turn off automatic payments" })).not.toHaveAttribute("aria-disabled"));
+    await open();
+    await waitFor(() => expect(state.autopaySent).toHaveLength(4));
+    expect(state.autopaySent[3].key).not.toBe(state.autopaySent[2].key);
+    expect(state.autopaySent[3].version).toBe("14");
+  });
+
+  it("a 412 whose re-read shows them off already is done: no note, the band closed, «already off», focus on the heading (blocker 5)", async () => {
+    state.subscription = paid("CONSENTED");
+    state.autopayAnswer = () => {
+      state.subscription = { ...paid("DISABLED"), version: "13" };
+      return Promise.reject(Object.assign(new Error("stale"), { status: 412, code: "VERSION_CONFLICT", requestId: "rid-412", details: null, reasons: [] }));
+    };
+    renderAt("/company/billing");
+    fireEvent.click(await screen.findByRole("button", { name: "Turn off automatic payments" }));
+    fireEvent.click(screen.getByRole("button", { name: "Turn off" }));
+    await waitFor(() => expect(screen.getByRole("heading", { level: 2, name: "Automatic payments" })).toHaveFocus());
+    expect(screen.getByText("Automatic payments are already off for Northwind.")).toBeInTheDocument();
+    expect(document.querySelector(".company-autopay .error-note")).toBeNull();
+    expect(document.querySelector(".company-autopay-band")).toBeNull();
+    expect(group()).toHaveTextContent(/^Automatic paymentsOff/);
+  });
+
+  it("any other refusal whose re-read takes «Turn off» away keeps its note, and focus goes to the heading", async () => {
+    state.subscription = paid("SUSPENDED");
+    state.autopayAnswer = () => {
+      state.subscription = { ...paid("PAUSED_BY_BANK"), version: "13" };
+      return Promise.reject(Object.assign(new Error("no"), { status: 409, code: "INVALID_STATE", requestId: "rid-409", details: null, reasons: [] }));
+    };
+    renderAt("/company/billing");
+    fireEvent.click(await screen.findByRole("button", { name: "Turn off automatic payments" }));
+    fireEvent.click(screen.getByRole("button", { name: "Turn off" }));
+    await waitFor(() => expect(screen.getByRole("heading", { level: 2, name: "Automatic payments" })).toHaveFocus());
+    expect(document.querySelector(".company-autopay .error-note")).toHaveTextContent("Automatic payments weren’t turned off.");
+    expect(within(group()).queryByRole("button", { name: "Turn off automatic payments" })).not.toBeInTheDocument();
+  });
+
+  it("a non-owner gets no group and no subscription read", async () => {
+    state.me = "anna";
+    state.subscription = paid("CONSENTED");
+    renderAt("/company/billing");
+    expect(await screen.findByText("Invoices and payments for Northwind are shown only to its owner.")).toBeInTheDocument();
+    expect(screen.queryByText("Automatic payments")).not.toBeInTheDocument();
+    expect(state.calls).not.toContain("getSubscription");
   });
 });
 
@@ -371,7 +527,8 @@ describe("«See Billing» (B2c)", () => {
       </MemoryRouter>,
     );
     expect(screen.getByRole("link", { name: "See Billing" })).toHaveAttribute("href", "/company/billing");
-    expect(screen.getByText(/This version of Taska can’t change plans yet\.$/)).toBeInTheDocument();
+    // TAS-515 (art-director B1): the owner can change the plan now, so the sentence ends with the removals.
+    expect(screen.getByText("Everything in it can still be read, and admins can still remove members and revoke invitations.")).toBeInTheDocument();
     owner.unmount();
     render(
       <MemoryRouter>

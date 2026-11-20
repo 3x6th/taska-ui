@@ -126,7 +126,7 @@ import type {
   QuotaSnapshot,
 } from "../tenantMembers";
 import { WebSessionClient, type B2bTransport, type LockManagerLike } from "../webSession";
-import type { Checkout, Invoice, InvoicePage, ReturnTarget } from "../billing";
+import type { AutopayConsentResult, ChangePlanInput, Checkout, Invoice, InvoicePage, PlanChange, ReturnTarget } from "../billing";
 import type {
   AccessToken,
   AccessTokenList,
@@ -1624,6 +1624,28 @@ export class RestTaskaApi implements TaskaApi {
     return this.companies("getCheckout").getCheckout(tenantId, checkoutId);
   }
 
+  /*
+   * TAS-515: the plan change, renewal and automatic payments, by the session
+   * layer with the tab's company session, for that company only. Today's
+   * build: no request.
+   */
+
+  async changeSubscriptionPlan(tenantId: string, input: ChangePlanInput, version: string, idempotencyKey: string): Promise<PlanChange> {
+    return this.companies("changeSubscriptionPlan").changeSubscriptionPlan(tenantId, input, version, idempotencyKey);
+  }
+
+  async cancelSubscriptionRenewal(tenantId: string, version: string, idempotencyKey: string): Promise<Subscription> {
+    return this.companies("cancelSubscriptionRenewal").cancelSubscriptionRenewal(tenantId, version, idempotencyKey);
+  }
+
+  async resumeSubscriptionRenewal(tenantId: string, version: string, idempotencyKey: string): Promise<Subscription> {
+    return this.companies("resumeSubscriptionRenewal").resumeSubscriptionRenewal(tenantId, version, idempotencyKey);
+  }
+
+  async setAutopayConsent(tenantId: string, consent: false, subscriptionVersion: string, idempotencyKey: string): Promise<AutopayConsentResult> {
+    return this.companies("setAutopayConsent").setAutopayConsent(tenantId, consent, subscriptionVersion, idempotencyKey);
+  }
+
   /** The session layer, or the refusal today's build gives a company operation — without a request. */
   private companies(operation: string): WebSessionClient {
     if (this.web === null) throw new TenancyUnavailableError(operation);
@@ -1790,6 +1812,37 @@ export class RestTaskaApi implements TaskaApi {
         ),
       getCheckout: (bearer, tenantId, checkoutId, signal) =>
         send(`${tenantPath(tenantId)}/billing/checkout/${this.segment(checkoutId)}`, {}, bearer, signal),
+      // TAS-515. `If-Match` is `Subscription.version` for all four, never the
+      // mandate's; the bodies field by field in the blueprint's order, so a
+      // retry with the same key sends the same bytes; resume has none.
+      changeSubscriptionPlan: (bearer, tenantId, input, version, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/billing/plan-changes`,
+          {
+            method: "POST",
+            body: { planVersionId: input.planVersionId, currency: input.currency, paymentMethod: input.paymentMethod, confirmed: true },
+            headers: { ...key(idempotencyKey), ...ifMatch(version) },
+          },
+          bearer,
+        ),
+      cancelSubscriptionRenewal: (bearer, tenantId, version, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/billing/renewal-cancellation`,
+          { method: "PUT", body: { confirmed: true }, headers: { ...key(idempotencyKey), ...ifMatch(version) } },
+          bearer,
+        ),
+      resumeSubscriptionRenewal: (bearer, tenantId, version, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/billing/renewal-cancellation`,
+          { method: "DELETE", headers: { ...key(idempotencyKey), ...ifMatch(version) } },
+          bearer,
+        ),
+      setAutopayConsent: (bearer, tenantId, consent, version, idempotencyKey) =>
+        send(
+          `${tenantPath(tenantId)}/billing/autopay`,
+          { method: "PUT", body: { consent, confirmed: true }, headers: { ...key(idempotencyKey), ...ifMatch(version) } },
+          bearer,
+        ),
     };
   }
 

@@ -1,4 +1,4 @@
-import { toMoney, type Money } from "./tenants";
+import { toMoney, toSubscription, type AutopayState, type Money, type Subscription } from "./tenants";
 
 /*
  * A company's invoices and their hosted checkout (TAS-513), on the B2B
@@ -183,6 +183,89 @@ export function toCheckout(wire: unknown, policy: RedirectPolicy = httpsOnly): C
     expiresAt: instant(row.expiresAt),
     redirect,
   };
+}
+
+/* ------------------------------ plan change, renewal and automatic payments (TAS-515) */
+
+/*
+ * The blueprint's four subscription commands (`changeSubscriptionPlan`,
+ * `cancelSubscriptionRenewal`, `resumeSubscriptionRenewal`,
+ * `setAutopayConsent`, `b2b-openapi.yaml` at develop `43d6c89d`), none of them
+ * on the stand (docs/ai/API-DIVERGENCE.md «TAS-515»). api-contract-guard's
+ * pre-build ruling §1: every field of an answer optional, every enum open; the
+ * answer's `subscription` is **never** cached and never the next `If-Match` —
+ * a same-key replay returns a stored snapshot, so a screen invalidates and
+ * reads the subscription again. Nothing here is a quote: the effect and the
+ * date are the server's, known only once it has answered.
+ */
+
+/** `PlanChange.effect`. */
+export const PLAN_CHANGE_EFFECTS = ["IMMEDIATE", "AFTER_PAYMENT", "NEXT_PERIOD"] as const;
+export type PlanChangeEffect = (typeof PLAN_CHANGE_EFFECTS)[number] | (string & {});
+
+/**
+ * `ChangePlanRequest` without `confirmed` (the transport adds it): `currency`
+ * is the target's own `price.currency` — a plan with no readable price is not
+ * offered — and `paymentMethod` is always `PSP`, Free included (guard Q12).
+ */
+export interface ChangePlanInput {
+  planVersionId: string;
+  currency: "EUR" | "USD";
+  paymentMethod: "PSP";
+}
+
+/** `PlanChange` as the blueprint has it, narrowed and every field optional. */
+export interface PlanChange {
+  /** For its `tenantId` only — never written into a cache, never an `If-Match`. */
+  subscription: Subscription | null;
+  effect: PlanChangeEffect | null;
+  /** Present only when the command issued an invoice (develop never sets it, A62). */
+  invoiceId: string | null;
+  effectiveAt: string | null;
+  operationId: string | null;
+}
+
+/**
+ * The `AutopayMandate` answer means only «2xx» (guard §1): its `version`,
+ * `ownerId`, consent snapshot and payment method are never kept — the mandate's
+ * version is not the subscription's, and nothing may take it for one.
+ */
+export interface AutopayConsentResult {
+  state: AutopayState | null;
+}
+
+/**
+ * A 2xx whose body is not an object — no answer about the command at all
+ * (guard §1): the same intent stays open, nothing is drawn, the screen reads
+ * the subscription again. Its message is empty and it carries no status,
+ * code or request id, so `apiErrorFacts` finds none and no client words are
+ * shown as the server's.
+ */
+export class UnreadableAnswerError extends Error {
+  constructor() {
+    super("");
+    this.name = "UnreadableAnswerError";
+  }
+}
+
+/** One wire `PlanChange`, or `null` for a body that is not an object. */
+export function toPlanChange(wire: unknown): PlanChange | null {
+  if (typeof wire !== "object" || wire === null || Array.isArray(wire)) return null;
+  const row = wire as Record<string, unknown>;
+  const subscription = typeof row.subscription === "object" && row.subscription !== null ? toSubscription(row.subscription) : null;
+  return {
+    subscription,
+    effect: text(row.effect),
+    invoiceId: text(row.invoiceId),
+    effectiveAt: instant(row.effectiveAt),
+    operationId: text(row.operationId),
+  };
+}
+
+/** One wire `AutopayMandate`, kept as its state only; `null` for a body that is not an object. */
+export function toAutopayConsentResult(wire: unknown): AutopayConsentResult | null {
+  if (typeof wire !== "object" || wire === null || Array.isArray(wire)) return null;
+  return { state: text((wire as Record<string, unknown>).state) };
 }
 
 /** The largest page `listInvoices` serves (`Limit.maximum`). */

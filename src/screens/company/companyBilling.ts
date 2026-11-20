@@ -23,6 +23,7 @@ import { closesAttempt, isPayable, payRefusalWords, type PayRefusalWords, type W
 import { COMPANY_SUBSCRIPTION_KEY, companyTenantKey, companyTenantOptions } from "./companyGeneral";
 import { retryUnanswered } from "./companyMembersQuery";
 import { COMPANY_ENTITLEMENT_KEY } from "./companyPlan";
+import { COMPANY_QUOTAS_KEY } from "./companyMembersQuery";
 
 /*
  * Company › Billing (TAS-513) — its reads, the Pay press and the watch of an
@@ -464,8 +465,9 @@ export function usePaymentWatch(options: {
 
 /**
  * What a settled payment makes the tab read again, once (the guard's §4): the
- * company, its subscription and its entitlement — rights come from them,
- * never from the payment — and the reader's list, whose row says whether it
+ * company, its subscription, its entitlement and — since TAS-515 (F3) — its
+ * quota snapshot, whose limits a plan change moves: rights come from them,
+ * never from the payment; and the reader's list, whose row says whether it
  * opened.
  */
 export function useRereadAfterPaid() {
@@ -476,6 +478,7 @@ export function useRereadAfterPaid() {
       void queryClient.invalidateQueries({ queryKey: companyTenantKey(companyId) });
       void queryClient.invalidateQueries({ queryKey: COMPANY_SUBSCRIPTION_KEY });
       void queryClient.invalidateQueries({ queryKey: COMPANY_ENTITLEMENT_KEY });
+      void queryClient.invalidateQueries({ queryKey: COMPANY_QUOTAS_KEY });
       void queryClient.invalidateQueries({ queryKey: COMPANY_INVOICES_KEY });
       void accountClient?.invalidateQueries({ queryKey: TENANTS_QUERY_KEY });
     },

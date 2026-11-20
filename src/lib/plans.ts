@@ -140,8 +140,8 @@ export function limitText(limit: QuotaLimit): string {
 
 const LIMIT_ORDER: readonly string[] = ["PROJECT", "SEAT", "STORAGE_BYTES", "TASK_LIFETIME"];
 
-/** The plan's second line: its limits through « · », PROJECT, SEAT, STORAGE_BYTES, TASK_LIFETIME, then the rest as they came. */
-export function planLimitsText(plan: PlanVersion): string {
+/** The plan's limits in words, PROJECT, SEAT, STORAGE_BYTES, TASK_LIFETIME, then the rest as they came. */
+export function planLimitsList(plan: PlanVersion): string[] {
   const rank = (kind: string) => {
     const index = LIMIT_ORDER.indexOf(kind);
     return index === -1 ? LIMIT_ORDER.length : index;
@@ -149,9 +149,11 @@ export function planLimitsText(plan: PlanVersion): string {
   return plan.limits
     .map((limit, index) => ({ limit, index }))
     .sort((a, b) => rank(a.limit.kind) - rank(b.limit.kind) || a.index - b.index)
-    .map(({ limit }) => limitText(limit))
-    .join(" · ");
+    .map(({ limit }) => limitText(limit));
 }
+
+/** The plan's second line: its limits through « · » (`planLimitsList`'s order). */
+export const planLimitsText = (plan: PlanVersion): string => planLimitsList(plan).join(" · ");
 
 /** The third line under a plan with a price (§4.36). No deadline: only a created company carries one (§4.37). */
 export const PAID_PLAN_NOTE = "Nothing is charged now. The company opens once its first payment is confirmed.";

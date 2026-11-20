@@ -60,7 +60,7 @@ describe("the page's words", () => {
       OVER_QUOTA: "Nothing in it can be changed until it’s back within them.",
     });
     expect(stillWorksText(["OVER_QUOTA"], true)).toBe(
-      "Everything in it can still be read, and admins can still remove members and revoke invitations. This version of Taska can’t change plans yet.",
+      "Everything in it can still be read, and admins can still remove members and revoke invitations.",
     );
     expect(stillWorksText(["PAYMENT_EXPIRED", "PAYMENT_DISPUTE"], false)).toBe(
       "Everything in it can still be read, admins can still remove members and revoke invitations, and you can still leave it.",
