@@ -2852,8 +2852,9 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   Sign in. Отказ с причиной `SIGNUP_DISABLED` перечитывает способы.
 - **Табы — не больше двух**, ни в каком состоянии и ни на какой ширине: три сегмента на 320–360
   переносятся (269.5 против 228). `/login`: `Sign in | Accept invite`, пока `signupEnabled !== true`
-  (прежний экран); `Sign in | Create account`, когда `true` — приглашение тогда приходит только
-  ссылкой, поле токена остаётся на `/invite` после перезагрузки. `/invite`: всегда
+  (прежний экран); `Sign in | Create account`, когда `true` — приглашение тогда приходит ссылкой
+  из письма, а поле токена живёт на `/invite`, куда с `/login` ведёт ссылка в подсказке Create
+  account (TAS-467; третьего таба нет). `/invite`: всегда
   `Sign in | Accept invite`, что бы ни ответил `/auth/methods`, чтобы ссылка из письма в чистом
   браузере не перескакивала; для preview `kind = SIGNUP` второй таб подписан «Create account» тем
   же коммитом, что заполняет Email и Name (ширина та же, `flex:1`). Роли — §4.27 «Табы». У tablist нет своего имени: он
@@ -2888,7 +2889,17 @@ Move up → Move down → Edit → Delete (недоступные остаютс
   кнопка не бледнеет — поведение Activate §4.27, не §5.9), Email
   («Email», `type=email`, `autoComplete=email`, плейсхолдер «you@company.com», без подсказки),
   primary «Continue» (в полёте «Sending») — не «Create account»: нажатие аккаунта не создаёт.
-  Подсказка: «Invited by your team? Use the link in your invitation email instead.» Отказы —
+  Подсказка: «Invited by your team? Use the link in your invitation email, or enter your
+  invitation token.» (TAS-467), где «enter your invitation token» — ссылка роутера на `/invite`
+  (push: Back возвращает на `/login`; на Pages — `#/invite`), рецепт тихой ссылки
+  `.admin-note-link` (как «create an access token» в Connected apps, §5.9), `white-space:nowrap`:
+  свободная, она рвалась внутри на 1440 и кольцо §7 рисовалось двумя кусками; целиком она — вторая
+  строка подсказки на 1440/390/360/320, высота подсказки та же (две строки, 33.3). Приход по ней
+  (state маршрута `enterToken`, читается один раз и стирается из записи истории) открывает Accept
+  invite с фокусом в «Invitation token»; пойманная ссылка важнее — фокус в New password, как
+  §4.27. Прямой заход на `/invite`, ссылка из письма, перезагрузка и Back/Forward фокус не двигают.
+  Цель — строка текста 133.8×15, без `::before` до 44 на тач-ширинах: он лёг бы на первую строку
+  подсказки; прецедент «create an access token» тоже без него. Отказы —
   `ErrorNote` под кнопкой, `live="alert"`, id; введённое остаётся. 400 — фраза сервера и
   `aria-invalid` на названном поле (`DISPLAY_NAME_INVALID` — Name). 403 `SIGNUP_DISABLED` —
   «Taska isn’t open for new accounts right now. Ask a Taska admin to invite you.»; перечитанные
