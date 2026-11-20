@@ -58,10 +58,31 @@ export function SectionArea({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const railRef = useRef<HTMLElement>(null);
   const lastSectionId = useRef<string | null>(null);
-  // Whether the last press inside the area was a pointer's or a key's: it
+  // Whether the last press anywhere in the page was a pointer's or a key's: it
   // decides only whether the heading's ring is drawn, never whether the
-  // heading takes focus (the effect below).
+  // heading takes focus (the effect below). Anywhere in the page, not only
+  // inside the area, because a section change can start outside it — the top
+  // bar's profile menu leads to «Settings» and «Administration» from any
+  // section — and a press there that the area never saw would leave the last
+  // one it did see, or none, to decide.
   const lastInputWasPointer = useRef(false);
+
+  useEffect(() => {
+    // Capture phase, so a press is counted before whatever it activates runs,
+    // and even where a handler stops it from bubbling.
+    const pointer = () => {
+      lastInputWasPointer.current = true;
+    };
+    const key = () => {
+      lastInputWasPointer.current = false;
+    };
+    document.addEventListener("pointerdown", pointer, true);
+    document.addEventListener("keydown", key, true);
+    return () => {
+      document.removeEventListener("pointerdown", pointer, true);
+      document.removeEventListener("keydown", key, true);
+    };
+  }, []);
 
   useEffect(() => {
     // Below 900 the rail is a strip that scrolls sideways, and the section
@@ -105,15 +126,7 @@ export function SectionArea({
   }, [current]);
 
   return (
-    <div
-      className={className ? `area ${className}` : "area"}
-      onKeyDownCapture={() => {
-        lastInputWasPointer.current = false;
-      }}
-      onPointerDownCapture={() => {
-        lastInputWasPointer.current = true;
-      }}
-    >
+    <div className={className ? `area ${className}` : "area"}>
       <nav aria-label={name} className="area-rail" ref={railRef}>
         <RailLinks sections={sections} />
         {groups.map((group) => (

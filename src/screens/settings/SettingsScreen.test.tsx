@@ -171,6 +171,34 @@ describe("the Settings area", () => {
     }
   });
 
+  // A section change can start outside the area: the top bar's profile menu
+  // leads to /settings, which is My profile, from any other section. Arrived at
+  // by URL, with no press inside the area yet, the press that changes the
+  // section is in the top bar — and it still has to count as a pointer's, or
+  // the heading is rung after a click or a tap.
+  it("asks for no ring after a pointer outside the area, as from the profile menu's «Settings»", async () => {
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    const headingFocus = () => focus.mock.calls.filter((_, index) => (focus.mock.contexts[index] as Element).localName === "h1");
+    try {
+      renderAt("/settings/appearance");
+      await screen.findByRole("heading", { level: 1, name: /Settings.*Appearance/ });
+      const trigger = screen.getByRole("button", { name: /^Open profile/ });
+      await waitFor(() => expect(trigger).toBeEnabled());
+
+      fireEvent.pointerDown(trigger);
+      fireEvent.click(trigger);
+      const menu = await screen.findByRole("dialog", { name: "Current user profile" });
+      const settings = within(menu).getByRole("link", { name: "Settings" });
+      fireEvent.pointerDown(settings);
+      fireEvent.click(settings);
+
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*My profile/ })).toHaveFocus());
+      expect(headingFocus()).toEqual([[{ focusVisible: false }]]);
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
   // A link in a section's body changes the section as the rail does. Were focus
   // left where the link was — on <body>, once the link is gone — the next Tab
   // would start again from the rail instead of going on to «Create token».
