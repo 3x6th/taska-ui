@@ -4728,7 +4728,7 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
   `GET /projects/{id}` and the context's `project` — carry no `version` (only create, `PATCH` and
   archive answers do), so a restore cannot take its `If-Match` from them there; what native's reads
   send is to be read in `TenantProjectApi` first (release-reviewer B1).
-- **`SettingsCompanySection.test.tsx` flakes at :585** («transfer … the 200 keeps the modal in
+- ~~**`SettingsCompanySection.test.tsx` flakes at :585**~~ — fixed in TAS-537 (the `routeState` assertion now waits: `reenterCompany` bumps `reentered` before the navigation's effect writes the state). («transfer … the 200 keeps the modal in
   flight…», `routeState` null): pre-existing — release-reviewer reproduced it on a `git archive` of
   `d90f12e`, 5 of 8 isolated runs under load; 1 of 5 here. Likely an unawaited `routeState`
   assertion right after a `waitFor` on `reentered`. Companies code — the companies session's line.
@@ -4736,7 +4736,7 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
   ~30 (suite 17.9 min against 9.6) and passed alone with `--last-failed`.
 - **Token probe for the classic restore answer** — `POST /projects/{random uuid}/restore` with
   `If-Match: "0"` and a UUID `Idempotency-Key`: classic 501, native 404. Read in Java only.
-- **`ApiError.reasons` comment is false** (`RestTaskaApi.ts` ~1027-1030, «empty for every answer the
+- ~~**`ApiError.reasons` comment is false**~~ — fixed in TAS-537. (`RestTaskaApi.ts` ~1027-1030, «empty for every answer the
   stand serves»): since TAS-316 classic fills `reasons` from `details.reason`
   (`GatewayErrorHandler`). Every reader is behind `VITE_TASKA_TENANTS` — the companies session's
   line (api-contract-guard, non-blocking 1).
@@ -4749,9 +4749,9 @@ into the fix round.
 - **develop moved past the pin** (`cb9a028c`: TAS-313 catalogue and TAS-314 subscriptions merged). Its
   `ListBillingPlans` lists only the latest published version of each code, so a company on an older version reads
   «This plan isn't in Taska's plan list.» and its owner sees no price — ask A43 is now required for the flag-on PR. Its
-  `PlanVersion.kind` FREE | PAID answers A16: `toPlanVersion` reads `kind`, the eligibility `isFreePlan` in
-  `CreateCompanyScreen.tsx:128-131` (TAS-501) switches to it, the mock catalogue sends `kind` and stops listing RETIRED
-  rows — in the pass that takes develop past `758f8fc6` (guard N1).
+  `PlanVersion.kind` FREE | PAID answers A16: ~~`toPlanVersion` reads `kind`, the eligibility `isFreePlan` in
+  `CreateCompanyScreen.tsx:128-131` (TAS-501) switches to it, the mock catalogue sends `kind`~~ — done in TAS-537; the
+  mock catalogue still lists RETIRED rows (guard N1).
 - **The quota and restriction sentences** on New issue, New project and attachments are not gated on a company: inert
   on the stand (`openapi.yml` has no `QUOTA_EXCEEDED`, `READ_ONLY` or `CAPABILITY_DISABLED`), but a legacy task limit
   (TAS-460) would speak of «its plan's limit» (guard N4, art-director 8).
@@ -4811,3 +4811,37 @@ into the fix round.
   drops `from` the same way. Fix: pass `from` into `SignupPanel` and carry it in the Link's state.
 - **Name and Email typed on Create account are lost when the link is taken** — the screen remounts on /invite
   and Back remounts /login (release-reviewer residual). Same root as «Back lands on Sign in» above.
+### Left by TAS-537 (companies build against develop `a0499412`, blueprint re-pinned, 2026-11-20)
+
+The pre-build pass and the asks reconciliation (`docs/ai/reviews/TAS-537/`, git-ignored; the asks in
+`docs/ai/B2B-ASKS.md`). Each line waits for the switch-on pass unless it says otherwise.
+
+- **`Tenant.membership` is not read.** listTenants and a member's getTenant carry it (A1, A26 answered), but rename,
+  pause, resume, cancel and transfer answer without it, and `applyTenant` (`SettingsCompanySection.tsx`) and
+  `learnTenant` (`webSession.ts`) replace the cached company wholesale — reading it first needs a merge rule that keeps
+  the row's membership. Then General and Plan can gate on `membership.isOwner` instead of `/users/me`, which removes
+  «A failed `/users/me` on Plan» above; drawing the role in the picker is art-director's call (guard C, N2).
+- **Trusted-mode `message` is often the code itself** (`UNAVAILABLE`, `POLICY_NOT_CONFIGURED`): it is printed as the
+  server's words under «couldn't confirm», and a 503 `POLICY_NOT_CONFIGURED` — a definite refusal — reads as a lost
+  answer worth retrying (guard N1).
+- **Every 200 `Tenant` on General also re-reads `listTenants`**, though the answer is already upserted (guard N2).
+- **A content read under a pause or block with the read flag off** answers 403 `READ_ONLY` with the reason on develop
+  (`tenant-service/RESTRICTIONS.md`, A2c «answered differently»), while the «content closed» mark keys on
+  `CAPABILITY_DISABLED`. Unreachable while `READ_WHILE_RESTRICTED` keeps its default `true`; decide in the switch-on PR.
+- **The mock, where develop differs and nothing reaches it yet:** an `AWAITING_PAYMENT` company's commands answer 409
+  `INVALID_STATE` where `requireWorking` answers 409 `PAYMENT_PENDING` with `PENDING_FIRST_PAYMENT`; rename's 400 still
+  carries `violations`; credential refusals answer `TENANT_MISMATCH` / `MEMBERSHIP_INACTIVE` where trusted-mode develop
+  answers 403 `SCOPE_DENIED` (A127); pause's 422 `CONFIRMATION_REQUIRED`, 401 `TOKEN_REVOKED` and 503
+  `POLICY_NOT_CONFIGURED` are not modelled. `SettingsCompanySection.test.tsx` still drives resume-under-block with the
+  blueprint's `READ_ONLY` shape (develop's shape is covered in `companyGeneralText.test.ts`).
+- **Ask numbering:** two different asks carry «A17» (TAS-310 comment 14150, creation rate limit; TAS-312 comment 14154,
+  the one the record means); A28 and A105 exist only in branch docs (TAS-524, TAS-527), never in Jira; A117–A119 were
+  never used. `docs/ai/B2B-ASKS.md` lists them; new asks continue from A133.
+- **When the B2B PRs reach main** (release-reviewer, merge review): the TAS-513 stack carries stale «To Do» ledger rows
+  for TAS-527/528/529/530 that #138–#140 carry newer versions of elsewhere in the table — git may keep both; DESIGN.md
+  §4.41 is used by both TAS-513 (Billing) and TAS-524 (Activity), and §4.42 by TAS-527 — renumber on the meeting.
+- ~~**DESIGN.md §4.39's table names only `READ_ONLY` for the block and dispute sentences**~~ — aligned in TAS-537 under
+  the rule above the table (`READ_ONLY` or `CAPABILITY_DISABLED` with non-empty reasons → the reason's phrase); art-director
+  to confirm at its next pass over §4.39. A132 would remove the branch.
+- **If the catalogue's REST (TAS-536) ships without `PlanVersion.kind`, no plan is free** — no default, every plan with
+  the paid note: the switch-on probe checks `kind` on the wire (api-contract-guard build review).

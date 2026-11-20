@@ -10,10 +10,11 @@ import { MOCK_COMPANY_ROUTES, createCompaniesMockApi } from "./mockCompanies";
 
 /*
  * The companies mock's company page (TAS-504, api-contract-guard §6): the
- * subscriptions of the fixtures, the order of checks of the four commands,
- * each command's restriction rule, the platform's flags, paid periods ending
- * by the lifecycle clock, the durable receipts and their replay, and the
- * session rule B2 (a pause closes the projects, never the company).
+ * subscriptions of the fixtures, the order of checks of the four commands —
+ * rename, pause and resume in develop's at `a0499412` —, each command's
+ * restriction rule, the platform's flags, paid periods ending by the lifecycle
+ * clock, the durable receipts and their replay, and the session rule B2 (a
+ * pause closes the projects, never the company).
  */
 
 const { anna, sofia, tom, priya } = MOCK_ACCOUNT_IDS;
@@ -119,7 +120,19 @@ describe("the order of checks (§6)", () => {
     expect(facts(await caught(transport.resumeTenant(company, NW, "3", key())))).toMatchObject({ status: 403, code: "TENANT_MISMATCH" });
   });
 
-  it("(5) a deleted company 404, (6) one not ACTIVE 409, (7) a suspended caller 403 MEMBERSHIP_INACTIVE, (8) not the owner 403 OWNER_REQUIRED", async () => {
+  it("(5) the request before the access checks: a non-owner's missing If-Match, bad key or bad name is refused as such", async () => {
+    const local = new MemoryStorage();
+    // Priya is an ACTIVE admin of Umbrella — and not its owner.
+    const priya_ = await raw(local, "priya@example.com", UM);
+    const send = priya_.transport;
+    expect(facts(await caught(send.renameTenant(priya_.company, UM, "U", "", key())))).toMatchObject({ status: 428, code: "VERSION_CONFLICT" });
+    expect(facts(await caught(send.renameTenant(priya_.company, UM, "U", "3", "not-a-key")))).toMatchObject({ status: 400, code: "VALIDATION_FAILED" });
+    expect(facts(await caught(send.renameTenant(priya_.company, UM, " U", "3", key())))).toMatchObject({ status: 400, code: "VALIDATION_FAILED" });
+    expect(facts(await caught(send.pauseTenant(priya_.company, UM, "", key())))).toMatchObject({ status: 428, code: "VERSION_CONFLICT" });
+    expect(facts(await caught(send.resumeTenant(priya_.company, UM, "3", "not-a-key")))).toMatchObject({ status: 400, code: "VALIDATION_FAILED" });
+  });
+
+  it("(6) a deleted company 404, (7) a suspended caller 403 MEMBERSHIP_INACTIVE, (8) not the owner 403 OWNER_REQUIRED, (9) one not ACTIVE 409", async () => {
     const local = new MemoryStorage();
     const tom_ = await raw(local, "tom@example.com", MOCK_TENANT_IDS.stark);
     expect(facts(await caught(tom_.transport.renameTenant(tom_.company, MOCK_TENANT_IDS.stark, "Stark", "1", key())))).toMatchObject({
@@ -151,7 +164,22 @@ describe("the order of checks (§6)", () => {
     });
   });
 
-  it("(9) the restriction before (10) the flag before (11) coverage before (12) the receipt before (13) the body before (14) the version", async () => {
+  it("(8) before (9): a non-owner ACTIVE member of a company that is not ACTIVE is 403 OWNER_REQUIRED, not 409 INVALID_STATE", async () => {
+    const local = new MemoryStorage();
+    const priya_ = await raw(local, "priya@example.com", UM);
+    // Priya is an ACTIVE admin of Umbrella — and not its owner; Umbrella is put out of ACTIVE.
+    const state = JSON.parse(local.getItem(MOCK_SERVER_KEY) as string) as { tenants: { id: string; lifecycle: string }[] };
+    state.tenants.find((item) => item.id === UM)!.lifecycle = "AWAITING_PAYMENT";
+    local.setItem(MOCK_SERVER_KEY, JSON.stringify(state));
+    for (const sent of [
+      priya_.transport.renameTenant(priya_.company, UM, "U", "3", key()),
+      priya_.transport.pauseTenant(priya_.company, UM, "3", key()),
+    ]) {
+      expect(facts(await caught(sent))).toEqual({ status: 403, code: "OWNER_REQUIRED", reasons: [] });
+    }
+  });
+
+  it("a transfer: the restriction before the flag before coverage before the receipt before the body before the version", async () => {
     const { api, hooks } = await inCompany("priya@example.com", HO);
     // Blocked, flags off, a stale version and a recipient who is not a member: the block answers.
     hooks({ ownershipTransferEnabled: false, ownerPauseEnabled: false });
@@ -180,7 +208,7 @@ describe("the order of checks (§6)", () => {
     });
   });
 
-  it("(14) If-Match: missing 428, malformed 400, stale 412 — and nothing changes", async () => {
+  it("(5) and (12) If-Match: missing 428, malformed 400, stale 412 — and nothing changes", async () => {
     const { api } = await inCompany("tom@example.com", UM);
     expect(facts(await caught(api.renameTenant(UM, "Umbrella Corp", "", key())))).toMatchObject({ status: 428, code: "VERSION_CONFLICT" });
     expect(facts(await caught(api.renameTenant(UM, "Umbrella Corp", "v3", key())))).toMatchObject({ status: 400, code: "VALIDATION_FAILED" });
@@ -210,11 +238,20 @@ describe("rename (TAS-333)", () => {
     await expect(api.renameTenant(NW, "x".repeat(120), "3", key())).resolves.toMatchObject({ name: "x".repeat(120) });
   });
 
-  it("is refused under every restriction (NORMAL): the pause names itself, the block its own", async () => {
+  it("is refused under every restriction (NORMAL, the blueprint's — develop has no gate): the pause names itself, the block its own", async () => {
     const sofia_ = await inCompany("sofia@example.com", IN);
     expect(facts(await caught(sofia_.api.renameTenant(IN, "Initrode", "3", key())))).toEqual({ status: 403, code: "READ_ONLY", reasons: ["OWNER_PAUSE"] });
     const priya_ = await inCompany("priya@example.com", HO);
     expect(facts(await caught(priya_.api.renameTenant(HO, "Hooli XYZ", "3", key())))).toEqual({ status: 403, code: "READ_ONLY", reasons: ["PLATFORM_BLOCK"] });
+  });
+
+  it("a replay answers before the rule: the same key and request after a pause get the saved 200, a new key READ_ONLY", async () => {
+    const { api } = await inCompany("anna@example.com", NW);
+    const sent = key();
+    await expect(api.renameTenant(NW, "Northwind Traders", "3", sent)).resolves.toMatchObject({ name: "Northwind Traders", version: "4" });
+    await expect(api.pauseTenant(NW, "4", key())).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"], version: "5" });
+    await expect(api.renameTenant(NW, "Northwind Traders", "3", sent)).resolves.toMatchObject({ name: "Northwind Traders", version: "4" });
+    expect(facts(await caught(api.renameTenant(NW, "Northwind Traders", "5", key())))).toEqual({ status: 403, code: "READ_ONLY", reasons: ["OWNER_PAUSE"] });
   });
 });
 
@@ -236,15 +273,15 @@ describe("pause and resume (TAS-480)", () => {
     expect(facts(await caught(api.pauseTenant(IN, "4", key())))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: [] });
   });
 
-  it("the block refuses all four (OWNER_CONTROL, TRANSFER); lifting it with the platform's hook lets them through", async () => {
+  it("the block refuses all four — rename and a transfer READ_ONLY, pause and resume CAPABILITY_DISABLED (develop's); lifting it lets them through", async () => {
     const { api, hooks } = await inCompany("priya@example.com", HO);
-    const sent = [
-      () => api.renameTenant(HO, "Hooli XYZ", "3", key()),
-      () => api.pauseTenant(HO, "3", key()),
-      () => api.resumeTenant(HO, "3", key()),
-      () => api.transferTenantOwnership(HO, sofia, "3", key()),
-    ];
-    for (const send of sent) expect(facts(await caught(send()))).toEqual({ status: 403, code: "READ_ONLY", reasons: ["PLATFORM_BLOCK"] });
+    for (const send of [() => api.renameTenant(HO, "Hooli XYZ", "3", key()), () => api.transferTenantOwnership(HO, sofia, "3", key())]) {
+      expect(facts(await caught(send()))).toEqual({ status: 403, code: "READ_ONLY", reasons: ["PLATFORM_BLOCK"] });
+    }
+    // The gate before the version: a stale one does not answer first.
+    for (const send of [() => api.pauseTenant(HO, "1", key()), () => api.resumeTenant(HO, "1", key())]) {
+      expect(facts(await caught(send()))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: ["PLATFORM_BLOCK"] });
+    }
     hooks({ platformBlock: { [HO]: false } });
     await expect(api.getTenant(HO)).resolves.toMatchObject({ restrictions: [], version: "4" });
     await expect(api.pauseTenant(HO, "4", key())).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"] });
@@ -255,7 +292,7 @@ describe("pause and resume (TAS-480)", () => {
     hooks({ platformBlock: { [IN]: true } });
     const initech = await api.getTenant(IN);
     expect(initech).toMatchObject({ restrictions: ["PLATFORM_BLOCK", "OWNER_PAUSE"], version: "4" });
-    expect(facts(await caught(api.resumeTenant(IN, "4", key())))).toEqual({ status: 403, code: "READ_ONLY", reasons: ["PLATFORM_BLOCK", "OWNER_PAUSE"] });
+    expect(facts(await caught(api.resumeTenant(IN, "4", key())))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: ["PLATFORM_BLOCK"] });
     hooks({ platformBlock: { [IN]: false } });
     await expect(api.resumeTenant(IN, "5", key())).resolves.toMatchObject({ restrictions: [], version: "6" });
   });
@@ -271,15 +308,29 @@ describe("pause and resume (TAS-480)", () => {
     expect(facts(await caught(api.transferTenantOwnership(IN, anna, "5", key())))).toEqual({ status: 403, code: "READ_ONLY", reasons: ["PAYMENT_EXPIRED"] });
   });
 
-  it("the owner-pause flag is checked before the receipt: a replay after it is switched off is refused; a resume replay never is", async () => {
+  it("a replay answers before the business gates: after the flag is off, or under a block, the same key gets its saved 200", async () => {
     const { api, hooks } = await inCompany("tom@example.com", UM);
     const paused = key();
     await expect(api.pauseTenant(UM, "3", paused)).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"], version: "4" });
     const resumed = key();
     await expect(api.resumeTenant(UM, "4", resumed)).resolves.toMatchObject({ restrictions: [], version: "5" });
     hooks({ ownerPauseEnabled: false });
-    expect(facts(await caught(api.pauseTenant(UM, "3", paused)))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: [] });
+    await expect(api.pauseTenant(UM, "3", paused)).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"], version: "4" });
+    expect(facts(await caught(api.pauseTenant(UM, "5", key())))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: [] });
+    hooks({ ownerPauseEnabled: false, platformBlock: { [UM]: true } });
+    await expect(api.pauseTenant(UM, "3", paused)).resolves.toMatchObject({ restrictions: ["OWNER_PAUSE"], version: "4" });
     await expect(api.resumeTenant(UM, "4", resumed)).resolves.toMatchObject({ restrictions: [], version: "5" });
+    expect(facts(await caught(api.resumeTenant(UM, "6", key())))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: ["PLATFORM_BLOCK"] });
+  });
+
+  it("a dispute refuses pause and resume with its one reason, the block first; the flag only after both", async () => {
+    const { api, hooks } = await inCompany("tom@example.com", UM, (set) => set({ paymentDispute: { [UM]: true }, ownerPauseEnabled: false }));
+    expect(facts(await caught(api.pauseTenant(UM, "1", key())))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: ["PAYMENT_DISPUTE"] });
+    expect(facts(await caught(api.resumeTenant(UM, "1", key())))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: ["PAYMENT_DISPUTE"] });
+    hooks({ paymentDispute: { [UM]: true }, platformBlock: { [UM]: true }, ownerPauseEnabled: false });
+    expect(facts(await caught(api.pauseTenant(UM, "1", key())))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: ["PLATFORM_BLOCK"] });
+    hooks({ paymentDispute: { [UM]: false }, platformBlock: { [UM]: false }, ownerPauseEnabled: false });
+    expect(facts(await caught(api.pauseTenant(UM, "1", key())))).toEqual({ status: 403, code: "CAPABILITY_DISABLED", reasons: [] });
   });
 
   it("a lost pause is applied; the same key and version again replay its 200 (G7)", async () => {

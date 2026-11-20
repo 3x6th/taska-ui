@@ -77,10 +77,11 @@ const { fakeApi, state } = vi.hoisted(() => {
     listBillingPlans: () =>
       read("plans", () => ({
         items: [
-          { id: "free", code: "free", name: "Free", version: "1", price: { amountMinor: "0", currency: "EUR", exponent: 2 }, period: "NONE", limits: [], state: "PUBLISHED" },
-          { id: "team-1", code: "team", name: "Team", version: "1", price: { amountMinor: "1500", currency: "EUR", exponent: 2 }, period: "CALENDAR_MONTH", limits: [], state: "RETIRED" },
+          { id: "free", kind: "FREE", code: "free", name: "Free", version: "1", price: { amountMinor: "0", currency: "EUR", exponent: 2 }, period: "NONE", limits: [], state: "PUBLISHED" },
+          { id: "team-1", kind: "PAID", code: "team", name: "Team", version: "1", price: { amountMinor: "1500", currency: "EUR", exponent: 2 }, period: "CALENDAR_MONTH", limits: [], state: "RETIRED" },
           {
             id: "team-2",
+            kind: "PAID",
             code: "team",
             name: "Team",
             version: "2",

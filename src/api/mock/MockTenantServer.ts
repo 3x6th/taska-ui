@@ -193,7 +193,8 @@ export const MOCK_TENANT_IDS = {
 
 /**
  * The mock's catalogue (TAS-501): fixed ids, the mock's own codes — the UI
- * never compares a code. Free and Team are `PUBLISHED`; Team's first version is
+ * never compares a code — and each plan's `kind` (FREE for Free, PAID for both
+ * Teams). Free and Team are `PUBLISHED`; Team's first version is
  * `RETIRED`, listed and never offered, so the screen's filter has something to
  * leave out.
  */
@@ -204,6 +205,7 @@ export const MOCK_PLAN_IDS = {
 } as const;
 
 interface MockPlan {
+  kind: "FREE" | "PAID";
   id: string;
   code: string;
   version: string;
@@ -218,6 +220,7 @@ interface MockPlan {
 
 const MOCK_PLANS: readonly MockPlan[] = [
   {
+    kind: "FREE",
     id: MOCK_PLAN_IDS.free,
     code: "mock-free",
     version: "1",
@@ -235,6 +238,7 @@ const MOCK_PLANS: readonly MockPlan[] = [
     publishedAt: "2026-05-01T00:00:00Z",
   },
   {
+    kind: "PAID",
     id: MOCK_PLAN_IDS.teamRetired,
     code: "mock-team",
     version: "1",
@@ -253,6 +257,7 @@ const MOCK_PLANS: readonly MockPlan[] = [
     publishedAt: "2026-01-01T00:00:00Z",
   },
   {
+    kind: "PAID",
     id: MOCK_PLAN_IDS.team,
     code: "mock-team",
     version: "2",
@@ -572,8 +577,8 @@ const unpaid = (planVersionId: string): StoredSubscription => ({
   autopayState: "DISABLED",
 });
 
-/** Whether a plan of this mock's catalogue is FREE — the server's knowledge, never the client's (B3). */
-const isFreePlan = (planVersionId: string) => MOCK_PLANS.find((plan) => plan.id === planVersionId)?.price.amountMinor === "0";
+/** Whether a plan of this mock's catalogue is FREE — its `kind`, never its price; the server's knowledge, never the client's (B3). */
+const isFreePlan = (planVersionId: string) => MOCK_PLANS.find((plan) => plan.id === planVersionId)?.kind === "FREE";
 
 /**
  * The order a refusal names a company's restrictions in, and the order they
@@ -599,18 +604,25 @@ const orderedRestrictions = (codes: readonly string[]): string[] => {
 const closesContent = (codes: readonly string[]) => codes.includes("OWNER_PAUSE") || codes.includes("PLATFORM_BLOCK");
 
 /**
- * Which restrictions each command's rule lets through (access-matrix.json
- * `tenant.*`; api-contract-guard §4): rename (NORMAL) none; pause and resume
- * (OWNER_CONTROL) the owner's own pause and the two financial ones; a transfer
- * (TRANSFER) the owner's own pause only (D244). Anything else is 403
- * `READ_ONLY` with every current restriction as `reasons`.
+ * The blueprint's restriction rule for rename and a transfer (access-matrix.json
+ * `tenant.*`; api-contract-guard §4): rename (NORMAL) lets none through, a
+ * transfer (TRANSFER) the owner's own pause only (D244). Anything else is 403
+ * `READ_ONLY` with every current restriction as `reasons`. Develop's rename has
+ * no restriction gate at `a0499412` (`TenantRenameService`); this mock keeps
+ * the blueprint's. Pause and resume follow develop (`OWNER_CONTROL_REFUSED`).
  */
-type TenantPolicy = "NORMAL" | "OWNER_CONTROL" | "TRANSFER";
+type TenantPolicy = "NORMAL" | "TRANSFER";
 const POLICY_ALLOWS: Readonly<Record<TenantPolicy, ReadonlySet<string>>> = {
   NORMAL: new Set(),
-  OWNER_CONTROL: new Set(["OWNER_PAUSE", "PAYMENT_EXPIRED", "OVER_QUOTA"]),
   TRANSFER: new Set(["OWNER_PAUSE"]),
 };
+
+/**
+ * Pause and resume under these are 403 `CAPABILITY_DISABLED` with the first of
+ * them present as the one reason; every other restriction lets them through
+ * (develop `TenantRestrictionService.java:168-181`).
+ */
+const OWNER_CONTROL_REFUSED: readonly string[] = ["PLATFORM_BLOCK", "PAYMENT_DISPUTE"];
 
 /** Which restriction rule a member route answers to (access-matrix.json `membership.*`, `invitation.*`). */
 type MemberPolicy = "DIRECTORY" | "SEATS" | "ADMIN_READ" | "NORMAL" | "RECOVERY" | "LEAVE";
@@ -1274,10 +1286,11 @@ export class MockTenantServer {
   }
 
   /**
-   * `GET /tenants`: the companies the reader is an `ACTIVE` member of — which
-   * is the mock's reading of a list the blueprint leaves unstated (ask A1) — in
-   * `(createdAt, id)` order, `limit` 1–100 (default 50), an opaque cursor bound
-   * to the reader, `nextCursor` absent at the end.
+   * `GET /tenants`, as the gateway contract at develop `a0499412` has it: the
+   * companies the reader is an `ACTIVE` member of, in any lifecycle but
+   * `DELETED`, in `(createdAt, id)` order, `limit` 1–100 (default 50), an
+   * opaque cursor bound to the reader, `nextCursor` absent at the end. The
+   * items carry no `membership` (this build does not read it).
    */
   private async listTenants(bearer: string, params: ListTenantsParams): Promise<unknown> {
     await this.delay("listTenants");
@@ -1287,7 +1300,7 @@ export class MockTenantServer {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw problem(400, "VALIDATION_FAILED", "limit must be 1–100");
       const offset = params.cursor === undefined ? 0 : this.readCursor(params.cursor, grant.userId);
       const listed = state.tenants
-        .filter((tenant) => this.membershipState(state, tenant.id, grant.userId) === "ACTIVE")
+        .filter((tenant) => tenant.lifecycle !== "DELETED" && this.membershipState(state, tenant.id, grant.userId) === "ACTIVE")
         .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const items = listed.slice(offset, offset + limit).map((tenant) => this.wireTenant(tenant));
       const next = offset + limit;
@@ -1406,7 +1419,7 @@ export class MockTenantServer {
       }
       const plan = MOCK_PLANS.find((item) => item.id === input.planVersionId && item.state === "PUBLISHED");
       if (!plan) throw problem(400, "VALIDATION_FAILED", "Invalid request");
-      const free = plan.price.amountMinor === "0";
+      const free = plan.kind === "FREE";
       if (free && state.freeLedger[grant.userId] !== undefined) {
         throw problem(409, "FREE_ELIGIBILITY_USED", "The free company allowance has been used");
       }
@@ -1907,32 +1920,55 @@ export class MockTenantServer {
   /* ------------------------------- the company's name, owner and pause (TAS-504) */
 
   /*
-   * api-contract-guard §6, the order of checks: (1) a bearer, (2) a company
-   * session — WEB_GLOBAL is 400 `TENANT_REQUIRED`, (3) a `refuseNext` hook,
-   * (4) the path's id a UUID and the session's own company (403
-   * `TENANT_MISMATCH`), (5) the company there (404), (6) ACTIVE (409
-   * `INVALID_STATE`), (7) the caller ACTIVE (403 `MEMBERSHIP_INACTIVE`), (8)
-   * the caller its owner (403 `OWNER_REQUIRED`), (9) the command's restriction
-   * rule (403 `READ_ONLY` with every current restriction, in
-   * `RESTRICTION_ORDER`), (10) the platform's flags (403 `CAPABILITY_DISABLED`,
-   * no reasons; never for a resume), (11) a transfer's paid coverage (409
-   * `INVALID_STATE` — the code the blueprint has not named, ask A32), (12) the
-   * key's durable receipt — after the access checks, so a replay is checked
-   * again (contracts.md:89) and a transfer's replay by its former owner is 403
-   * `OWNER_REQUIRED` (ask A33) —, (13) the body, (14) `If-Match`, (15) apply.
-   * No session is revoked by any of them.
+   * Rename, pause and resume check in develop's order at `a0499412` (gateway
+   * `TenantController` / `TenantRestrictionController`, then
+   * `TenantRenameService` / `TenantRestrictionService`):
+   *
+   * - (1) a bearer, (2) a company session — WEB_GLOBAL is 400
+   *   `TENANT_REQUIRED`, (3) a `refuseNext` hook, (4) the path's id a UUID and
+   *   the session's own company (403 `TENANT_MISMATCH`) — the credential step;
+   * - (5) the request: rename's `Idempotency-Key` (400), `If-Match` (missing
+   *   428 `VERSION_CONFLICT`, malformed 400) and name (400
+   *   `VALIDATION_FAILED`); pause's and resume's `If-Match`, then the key;
+   * - (6) the company there (404), (7) the caller's membership (none 404,
+   *   not ACTIVE 403 `MEMBERSHIP_INACTIVE`), (8) the caller its owner (403
+   *   `OWNER_REQUIRED`), (9) ACTIVE (409 `INVALID_STATE`) —
+   *   `TenantRenameService.authorize`;
+   * - (10) the key's durable receipt, before every business gate: the same
+   *   request answers what it answered, another is 409 `IDEMPOTENCY_CONFLICT`;
+   * - (11) rename: the blueprint's NORMAL rule (403 `READ_ONLY`); pause and
+   *   resume: `PLATFORM_BLOCK`, then `PAYMENT_DISPUTE`, 403
+   *   `CAPABILITY_DISABLED` with that one reason, and for a pause the
+   *   owner-pause flag (403 `CAPABILITY_DISABLED`, no reasons);
+   * - (12) a stale `If-Match` 412, (13) apply — no change is a 200 at the
+   *   same version.
+   *
+   * Not modelled: pause's `confirmed` (422 `CONFIRMATION_REQUIRED`; the client
+   * always sends `true`), 401 `TOKEN_REVOKED`, 503 `POLICY_NOT_CONFIGURED`. A
+   * company awaiting payment is 409 `INVALID_STATE` here; develop says 409
+   * `PAYMENT_PENDING`.
+   *
+   * A transfer (not on the gateway) shares (1)–(4) and (6)–(9), then: the
+   * TRANSFER rule, its flag, paid coverage (409 `INVALID_STATE`, ask A32), the
+   * receipt — so a transfer's replay by its former owner is 403
+   * `OWNER_REQUIRED` (ask A33) —, the body, `If-Match`, apply. No session is
+   * revoked by any of them.
    */
 
   /** `PATCH /tenants/{t}` `{name}` — the shared name rule; the same name is a 200 at the same version. */
   private async renameTenant(bearer: string | null, tenantId: string, name: string, version: string, key: string): Promise<unknown> {
     await this.delay("renameTenant");
     const answer = this.write((state) => {
-      const { session, tenant } = this.authorizeOwner(state, bearer, tenantId, "renameTenant", "NORMAL");
-      const receipt = this.memberReceipt(state, session.userId, "renameTenant", key, { name, version });
-      if (receipt.replay !== undefined) return receipt.replay;
+      const session = this.commandSession(state, bearer, tenantId, "renameTenant");
+      this.checkKey(key);
+      this.checkVersionHeader(version);
       if (typeof name !== "string" || tenantNameProblem(name) !== null) {
         throw invalid("Invalid request", [{ field: "name", code: "INVALID", message: "name must be 1-120 characters, trimmed, without control characters" }]);
       }
+      const { tenant } = this.authorizeOwner(state, session, tenantId);
+      const receipt = this.memberReceipt(state, session.userId, "renameTenant", key, { name, version });
+      if (receipt.replay !== undefined) return receipt.replay;
+      this.restrictionRule(tenant, "NORMAL");
       this.checkVersion(version, tenant.version);
       if (name !== tenant.name) {
         tenant.name = name;
@@ -1944,16 +1980,17 @@ export class MockTenantServer {
     return answer;
   }
 
-  /** `PUT /tenants/{t}/pause` — adds `OWNER_PAUSE`; a company already paused is a 200 at the same version (ask A34). */
+  /** `PUT /tenants/{t}/pause` — adds `OWNER_PAUSE`; a company already paused is a 200 at the same version. */
   private async pauseTenant(bearer: string | null, tenantId: string, version: string, key: string): Promise<unknown> {
     await this.delay("pauseTenant");
     const answer = this.write((state) => {
-      const { session, tenant } = this.authorizeOwner(state, bearer, tenantId, "pauseTenant", "OWNER_CONTROL");
-      if (this.hooks().ownerPauseEnabled === false) {
-        throw problem(403, "CAPABILITY_DISABLED", "Pausing a company is not available");
-      }
+      const session = this.commandSession(state, bearer, tenantId, "pauseTenant");
+      this.checkVersionHeader(version);
+      this.checkKey(key);
+      const { tenant } = this.authorizeOwner(state, session, tenantId);
       const receipt = this.memberReceipt(state, session.userId, "pauseTenant", key, { confirmed: true, version });
       if (receipt.replay !== undefined) return receipt.replay;
+      this.ownerControlGate(tenant, true);
       this.checkVersion(version, tenant.version);
       setRestriction(tenant, "OWNER_PAUSE", true);
       return receipt.keep(this.wireTenant(tenant));
@@ -1965,15 +2002,19 @@ export class MockTenantServer {
   /**
    * `DELETE /tenants/{t}/pause` — lifts `OWNER_PAUSE` and nothing else: a
    * block, a dispute and an ended period stay (D131), and the paid period is
-   * not moved. Refused under a block, as the access matrix's OWNER_CONTROL
-   * says (ask A34c). Not paused is a 200 at the same version.
+   * not moved. Refused under a block or a dispute. Not paused is a 200 at the
+   * same version.
    */
   private async resumeTenant(bearer: string | null, tenantId: string, version: string, key: string): Promise<unknown> {
     await this.delay("resumeTenant");
     const answer = this.write((state) => {
-      const { session, tenant } = this.authorizeOwner(state, bearer, tenantId, "resumeTenant", "OWNER_CONTROL");
+      const session = this.commandSession(state, bearer, tenantId, "resumeTenant");
+      this.checkVersionHeader(version);
+      this.checkKey(key);
+      const { tenant } = this.authorizeOwner(state, session, tenantId);
       const receipt = this.memberReceipt(state, session.userId, "resumeTenant", key, { version });
       if (receipt.replay !== undefined) return receipt.replay;
+      this.ownerControlGate(tenant, false);
       this.checkVersion(version, tenant.version);
       setRestriction(tenant, "OWNER_PAUSE", false);
       return receipt.keep(this.wireTenant(tenant));
@@ -2002,7 +2043,9 @@ export class MockTenantServer {
   ): Promise<unknown> {
     await this.delay("transferTenantOwnership");
     const answer = this.write((state) => {
-      const { session, tenant, actor } = this.authorizeOwner(state, bearer, tenantId, "transferTenantOwnership", "TRANSFER");
+      const session = this.commandSession(state, bearer, tenantId, "transferTenantOwnership");
+      const { tenant, actor } = this.authorizeOwner(state, session, tenantId);
+      this.restrictionRule(tenant, "TRANSFER");
       if (this.hooks().ownershipTransferEnabled === false) {
         throw problem(403, "CAPABILITY_DISABLED", "Transferring a company is not available");
       }
@@ -2051,14 +2094,8 @@ export class MockTenantServer {
     return answer;
   }
 
-  /** Checks (1)–(9) for the four commands — see the block comment above. */
-  private authorizeOwner(
-    state: ServerState,
-    bearer: string | null,
-    tenantId: string,
-    operation: string,
-    policy: TenantPolicy,
-  ): { session: StoredSession; tenant: StoredTenant; actor: StoredMembership } {
+  /** Checks (1)–(4) for the four commands — see the block comment above. */
+  private commandSession(state: ServerState, bearer: string | null, tenantId: string, operation: string): StoredSession {
     if (!bearer) throw problem(401, "AUTHENTICATION_REQUIRED", "Authentication required");
     const session = this.sessionOf(state, bearer);
     if (session.kind === "WEB_GLOBAL") throw problem(400, "TENANT_REQUIRED", "A company session is required");
@@ -2066,19 +2103,36 @@ export class MockTenantServer {
     if (refusal) throw refusal;
     if (!UUID_PATTERN.test(tenantId)) throw problem(400, "VALIDATION_FAILED", "tenantId must be a UUID");
     if (session.tenantId !== tenantId) throw problem(403, "TENANT_MISMATCH", "The session is for another tenant");
+    return session;
+  }
+
+  /** Checks (6)–(9) for the four commands, in develop's `TenantRenameService.authorize` order. */
+  private authorizeOwner(state: ServerState, session: StoredSession, tenantId: string): { tenant: StoredTenant; actor: StoredMembership } {
     const tenant = state.tenants.find((item) => item.id === tenantId);
     if (!tenant || tenant.lifecycle === "DELETED") throw problem(404, "TENANT_NOT_FOUND", "Tenant not found");
-    if (tenant.lifecycle !== "ACTIVE") throw problem(409, "INVALID_STATE", "The tenant is not active");
     const actor = state.memberships.find((item) => item.tenantId === tenantId && item.userId === session.userId);
-    if (!actor || this.membershipState(state, tenantId, session.userId) !== "ACTIVE") {
-      throw problem(403, "MEMBERSHIP_INACTIVE", "Membership is not active");
-    }
+    if (!actor) throw problem(404, "TENANT_NOT_FOUND", "Tenant not found");
+    if (this.membershipState(state, tenantId, session.userId) !== "ACTIVE") throw problem(403, "MEMBERSHIP_INACTIVE", "Membership is not active");
     if (tenant.ownerId !== session.userId) throw problem(403, "OWNER_REQUIRED", "Only the owner can change the tenant");
+    if (tenant.lifecycle !== "ACTIVE") throw problem(409, "INVALID_STATE", "The tenant is not active");
+    return { tenant, actor };
+  }
+
+  /** Check (11) for rename and a transfer: the blueprint's rule, 403 `READ_ONLY` with every current restriction, in `RESTRICTION_ORDER`. */
+  private restrictionRule(tenant: StoredTenant, policy: TenantPolicy): void {
     const restrictions = orderedRestrictions(tenant.restrictions);
     if (restrictions.some((code) => !POLICY_ALLOWS[policy].has(code))) {
       throw problem(403, "READ_ONLY", "The tenant is read-only", restrictions);
     }
-    return { session, tenant, actor };
+  }
+
+  /** Check (11) for pause and resume, as develop's `TenantRestrictionService.gates`: the refusing restriction first, then a pause's flag. */
+  private ownerControlGate(tenant: StoredTenant, pause: boolean): void {
+    const reason = OWNER_CONTROL_REFUSED.find((code) => tenant.restrictions.includes(code));
+    if (reason !== undefined) throw problem(403, "CAPABILITY_DISABLED", "The action is not available for this tenant", [reason]);
+    if (pause && this.hooks().ownerPauseEnabled === false) {
+      throw problem(403, "CAPABILITY_DISABLED", "Pausing a company is not available");
+    }
   }
 
   /**
@@ -2159,7 +2213,7 @@ export class MockTenantServer {
     key: string,
     request: unknown,
   ): { replay: unknown; keep: <T>(answer: T) => T } {
-    if (!CANONICAL_KEY.test(key)) throw problem(400, "VALIDATION_FAILED", "Idempotency-Key must be a canonical UUID");
+    this.checkKey(key);
     const receiptKey = `${actorId}:${operation}:${key}`;
     const hash = JSON.stringify(request);
     const stored = state.memberReceipts[receiptKey];
@@ -2189,10 +2243,20 @@ export class MockTenantServer {
     return invitation;
   }
 
-  /** (8) `If-Match`: missing 428 `VERSION_CONFLICT`, malformed 400 `VALIDATION_FAILED`, stale 412 (contracts §6). */
-  private checkVersion(version: string, current: number | string): void {
+  /** An `Idempotency-Key` that is not a canonical UUID is 400. */
+  private checkKey(key: string): void {
+    if (!CANONICAL_KEY.test(key)) throw problem(400, "VALIDATION_FAILED", "Idempotency-Key must be a canonical UUID");
+  }
+
+  /** `If-Match` as sent: missing 428 `VERSION_CONFLICT`, malformed 400 `VALIDATION_FAILED` (contracts §6). */
+  private checkVersionHeader(version: string): void {
     if (version === "") throw problem(428, "VERSION_CONFLICT", "If-Match is required");
     if (!/^(0|[1-9][0-9]{0,18})$/.test(version)) throw problem(400, "VALIDATION_FAILED", "If-Match must be a quoted version");
+  }
+
+  /** (8) `If-Match`: `checkVersionHeader`, then stale 412 (contracts §6). */
+  private checkVersion(version: string, current: number | string): void {
+    this.checkVersionHeader(version);
     if (version !== String(current)) throw problem(412, "VERSION_CONFLICT", "The resource has changed");
   }
 

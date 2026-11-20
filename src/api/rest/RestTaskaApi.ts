@@ -1025,8 +1025,9 @@ export class ApiError extends Error {
     public readonly details: ErrorDetails | null = null,
     /**
      * `Problem.reasons` (B2B blueprint, TAS-500): the restrictions behind a
-     * `READ_ONLY` or `CAPABILITY_DISABLED`, as they came. Empty for every
-     * answer that is not a `Problem` — every answer the stand serves.
+     * `READ_ONLY` or `CAPABILITY_DISABLED`, as they came. Empty for an
+     * answer that is not a `Problem`; the gateway's classic path fills it with
+     * at most one value, `details.reason` (backend TAS-316).
      */
     public readonly reasons: readonly string[] = [],
     /** `Problem.violations`, the fields a `VALIDATION_FAILED` refused. Empty otherwise. */
@@ -1607,10 +1608,10 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
-   * The blueprint's five session routes (`docs/contract/b2b/b2b-openapi.yaml`
-   * at develop `758f8fc6`), sent bare: the session layer chooses each one's
-   * credential and decides what a refusal means, and the answers are narrowed
-   * there, once for both implementations.
+   * The blueprint's routes (`docs/contract/b2b/b2b-openapi.yaml` at develop
+   * `a0499412`; which of them the gateway has: src/api/tenants.ts), sent bare:
+   * the session layer chooses each one's credential and decides what a refusal
+   * means, and the answers are narrowed there, once for both implementations.
    */
   private b2bTransport(): B2bTransport {
     const send = async (path: string, options: RequestOptions, bearer: string | null, signal?: AbortSignal) =>

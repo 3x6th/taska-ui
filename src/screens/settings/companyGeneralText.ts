@@ -188,7 +188,13 @@ export function renameRefusalWords(error: unknown, company: string | null): Refu
 
 export type ZoneAction = "pause" | "resume";
 
-/** §4.39's pause and resume table. */
+/**
+ * §4.39's pause and resume table. Develop refuses both under a block or a
+ * dispute with 403 `CAPABILITY_DISABLED` and that one reason
+ * (`TenantRestrictionService` at `a0499412`), the blueprint with `READ_ONLY`:
+ * a refusal with reasons is said the same either way. Only a pause's
+ * `CAPABILITY_DISABLED` with no reasons is the switched-off feature.
+ */
 export function zoneRefusalWords(action: ZoneAction, error: unknown, company: string | null): RefusalWords {
   const code = refusalCode(error);
   const reasons = refusalReasons(error);
@@ -210,22 +216,23 @@ export function zoneRefusalWords(action: ZoneAction, error: unknown, company: st
     };
   }
   if (isRateLimited(error)) return tooMany(error);
-  switch (code) {
-    case "READ_ONLY":
-      if (reasons.includes("PLATFORM_BLOCK")) {
-        return {
-          text: pause
-            ? `Taska has blocked ${companyInside(company)}, so it was not paused.`
-            : `Taska has blocked ${companyInside(company)}, so it can’t be resumed until Taska lifts the block.`,
-          words: null,
-        };
-      }
+  if (code === "READ_ONLY" || (code === "CAPABILITY_DISABLED" && reasons.length > 0)) {
+    if (reasons.includes("PLATFORM_BLOCK")) {
       return {
-        text:
-          reasonedRefusal(error, company, pause ? "it was not paused." : "it can’t be resumed.") ??
-          (pause ? `${companyStart(company)} can’t be paused right now.` : `${companyStart(company)} can’t be resumed right now.`),
+        text: pause
+          ? `Taska has blocked ${companyInside(company)}, so it was not paused.`
+          : `Taska has blocked ${companyInside(company)}, so it can’t be resumed until Taska lifts the block.`,
         words: null,
       };
+    }
+    return {
+      text:
+        reasonedRefusal(error, company, pause ? "it was not paused." : "it can’t be resumed.") ??
+        (pause ? `${companyStart(company)} can’t be paused right now.` : `${companyStart(company)} can’t be resumed right now.`),
+      words: null,
+    };
+  }
+  switch (code) {
     case "CAPABILITY_DISABLED":
       if (pause) return { text: "Pausing companies isn’t available right now.", words: null };
       break;

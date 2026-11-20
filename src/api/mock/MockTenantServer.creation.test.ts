@@ -49,10 +49,10 @@ describe("the catalogue", () => {
     const { api } = open();
     // Signed out: the plans are PUBLIC_SAFE_METADATA.
     const plans = await readAllPlans((params) => api.listBillingPlans({ ...params, limit: 1 }));
-    expect(plans.map((plan) => [plan.name, plan.state, plan.price?.amountMinor])).toEqual([
-      ["Free", "PUBLISHED", "0"],
-      ["Team", "RETIRED", "1500"],
-      ["Team", "PUBLISHED", "2000"],
+    expect(plans.map((plan) => [plan.name, plan.kind, plan.state, plan.price?.amountMinor])).toEqual([
+      ["Free", "FREE", "PUBLISHED", "0"],
+      ["Team", "PAID", "RETIRED", "1500"],
+      ["Team", "PAID", "PUBLISHED", "2000"],
     ]);
     await expect(api.listBillingPlans({ limit: 100 })).resolves.toMatchObject({ nextCursor: null });
     await expect(api.listBillingPlans({ limit: 0 })).rejects.toMatchObject({ status: 400, code: "VALIDATION_FAILED" });

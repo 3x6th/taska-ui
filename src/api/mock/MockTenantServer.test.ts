@@ -86,6 +86,16 @@ describe("companies and who sees what (§7 fixtures)", () => {
     await expect(api.listTenants({ cursor: "not-a-cursor" })).rejects.toMatchObject({ status: 400, code: "VALIDATION_FAILED" });
   });
 
+  it("never lists a DELETED company, whatever the membership says (the gateway's listTenants)", async () => {
+    const { local, open } = browser();
+    const { api } = open();
+    await signedIn(api, "anna@example.com");
+    const state = JSON.parse(local.getItem(MOCK_SERVER_KEY) as string) as { tenants: { id: string; lifecycle: string }[] };
+    state.tenants.find((item) => item.id === MOCK_TENANT_IDS.globex)!.lifecycle = "DELETED";
+    local.setItem(MOCK_SERVER_KEY, JSON.stringify(state));
+    expect((await readAllTenants((params) => api.listTenants(params))).map((tenant) => tenant.name)).toEqual(["Northwind", "Initech"]);
+  });
+
   it("the layout account has a paused, a blocked, a closed and a 120-character company", async () => {
     const { open } = browser();
     const { api } = open();

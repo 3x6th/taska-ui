@@ -3289,13 +3289,15 @@ Projects и Settings входа нет. Вход из компании клад�
     TASK_LIFETIME: «1 project · 5 seats · 100 MB storage · 50 issues per project»; `unlimited` — «unlimited
     projects / seats / storage / issues» (TAS-512: `SEAT` считает и приостановленных участников, и ждущие приглашения, §4.38, а «members» обещало бы меньше; одно слово на одно понятие с Members и Plan, §4.40); байты — десятичные (100 000 000 — «100 MB», 5 000 000 000 —
     «5 GB»), не больше одного знака после точки; `kind` вне словаря — `{limit} {KIND}` как есть (§6).
-  - У плана с ненулевой ценой — третья строка 11.5 `--fg-2`: «Nothing is charged now. The company opens once
+  - У плана не `FREE` — третья строка 11.5 `--fg-2`: «Nothing is charged now. The company opens once
     its first payment is confirmed.» Срок оплаты здесь не называется: его снимок даёт только созданная
     компания (`creationDeadline`, §4.37), а настройка сервера — не константа клиента.
   - `aria-labelledby` — имя и цена; `aria-describedby` — лимиты и третья строка.
   - Набор — `GET /billing/plans` все страницы, только `state = PUBLISHED`, по цене, затем по имени.
-    `capabilities` не рисуются и не сравниваются. По умолчанию выбран бесплатный план (нулевая цена), если не
-    известно, что он израсходован; платный по умолчанию не выбирается никогда. Ничего не выбрано — Create
+    `capabilities` не рисуются и не сравниваются. Бесплатный план — тот, у которого `PlanVersion.kind = FREE`
+    (с TAS-537, ask A16; до неё — нулевая цена); план без `kind` бесплатным не считается, цена здесь только
+    рисуется. По умолчанию выбран бесплатный план, если не известно, что он израсходован; платный по умолчанию не
+    выбирается никогда. Ничего не выбрано — Create
     «стойко недоступна до выбора» (§4.1); нажатие ставит фокус на группу.
   - **Бесплатный израсходован.** Права заранее контракт не даёт (ask A10 в TAS-472): бесплатный план
     предлагается всегда, и клиент не выводит право из списка компаний, владельца или кода плана. Узнаётся
@@ -3581,9 +3583,9 @@ Member → Admin, Reactivate и Resend не спрашивают. Пока от�
 
 | Код | Пауза | Снятие |
 | --- | --- | --- |
-| `READ_ONLY` с `PLATFORM_BLOCK` | «Taska has blocked {Company}, so it was not paused.» | «Taska has blocked {Company}, so it can’t be resumed until Taska lifts the block.» |
-| `READ_ONLY` с другой причиной | оборот §4.35 + «, so it was not paused.»; без знакомой — «{Company} can’t be paused right now.» | оборот + «, so it can’t be resumed.»; без знакомой — «{Company} can’t be resumed right now.» |
-| `CAPABILITY_DISABLED` | «Pausing companies isn’t available right now.» (D93, D94) | — |
+| `READ_ONLY` или `CAPABILITY_DISABLED` с `PLATFORM_BLOCK` (второе — ответ develop, TAS-537) | «Taska has blocked {Company}, so it was not paused.» | «Taska has blocked {Company}, so it can’t be resumed until Taska lifts the block.» |
+| `READ_ONLY` или `CAPABILITY_DISABLED` с другой причиной | оборот §4.35 + «, so it was not paused.»; без знакомой — «{Company} can’t be paused right now.» | оборот + «, so it can’t be resumed.»; без знакомой — «{Company} can’t be resumed right now.» |
+| `CAPABILITY_DISABLED` без `reasons` | «Pausing companies isn’t available right now.» (D93, D94) | — |
 | `OWNER_REQUIRED` | «Only the owner of {Company} can pause it.» | «Only the owner of {Company} can resume it.» |
 | 412 | «{Company} changed while you were deciding, so it was not paused. Check it and try again.» | «{Company} changed elsewhere, so it was not resumed. Check it and try again.» |
 | 429 | «Too many attempts. Try again in {wait}.» (§4.31) | то же |

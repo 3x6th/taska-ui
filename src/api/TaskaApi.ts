@@ -1443,7 +1443,8 @@ export interface TaskaApi {
    * never fire, `lastCompanyHint()` is `null`, and `listTenants`, `enterCompany`
    * and `leaveCompany` are refused without a request — while `signIn` signs in
    * exactly as `login` does. In the companies build they run on the B2B
-   * blueprint's routes (docs/contract/b2b/), none of which the stand serves.
+   * blueprint's routes (docs/contract/b2b/); which of them the gateway has, and
+   * what the stand answers, is at the top of src/api/tenants.ts.
    */
 
   /** What this build offers around companies. Synchronous: a screen reads it while rendering. */
@@ -1512,9 +1513,11 @@ export interface TaskaApi {
   lastCompanyHint(): string | null;
 
   /*
-   * Creating a company (TAS-501), on the B2B blueprint's routes — none of them
-   * on the stand. Today's build refuses all five without a request
-   * (`TenancyUnavailableError`).
+   * Creating a company (TAS-501), on the B2B blueprint's routes — of them only
+   * `getTenant` is in the gateway contract (src/api/tenants.ts); of the other
+   * four `createTenant` is 405 `METHOD_NOT_ALLOWED` (the path is mapped for GET)
+   * and the rest the static-resource 404. Today's build refuses all five without a
+   * request (`TenancyUnavailableError`).
    */
 
   /**
@@ -1614,7 +1617,9 @@ export interface TaskaApi {
 
   /*
    * The company itself — its name, its owner and its pause (TAS-504), on the
-   * B2B blueprint's routes, none of them on the stand (docs/ai/API-DIVERGENCE.md
+   * B2B blueprint's routes. Rename, pause and resume are in the gateway
+   * contract at develop `a0499412` (src/api/tenants.ts); the transfer and the
+   * subscription are the static-resource 404 (docs/ai/API-DIVERGENCE.md
    * «TAS-504»). Each goes with the tab's company session and only for the
    * company the tab holds; a call for another is refused without a request
    * (`WorkspaceClosedError`). The four commands carry `If-Match: "{version}"`
@@ -1627,20 +1632,35 @@ export interface TaskaApi {
 
   /**
    * `PATCH /tenants/{tenantId}` `{name}` — the name sent trimmed, 1–120 code
-   * points, no control character (`tenantNameProblem`). Refusals: 400
-   * `VALIDATION_FAILED` (violation `name`), 403 `OWNER_REQUIRED` / `READ_ONLY`
-   * (`reasons`) / `CAPABILITY_DISABLED`, 409 `INVALID_STATE`, 412 / 428
-   * `VERSION_CONFLICT`, 409 `IDEMPOTENCY_CONFLICT`, 429.
+   * points, no control character (`tenantNameProblem`). Develop's refusals at
+   * `a0499412`: 400 `VALIDATION_FAILED` (`details.field` `name`, `reasons`
+   * `INVALID_NAME`; no `violations`), 403 `OWNER_REQUIRED`, 404
+   * `TENANT_NOT_FOUND`, 409 `INVALID_STATE` / `PAYMENT_PENDING` /
+   * `IDEMPOTENCY_CONFLICT`, 412 / 428 `VERSION_CONFLICT`, 429. No restriction
+   * refuses it there: a paused or blocked company is renamed. The blueprint,
+   * and the mock, say 403 `READ_ONLY` with every restriction; the mock's 400
+   * also names the field as a violation. The same key and request replay the
+   * saved 200.
    */
   renameTenant(tenantId: string, name: string, version: string, idempotencyKey: string): Promise<Tenant>;
   /**
-   * `PUT /tenants/{tenantId}/pause` `{confirmed: true}`. Refusals: 403
-   * `OWNER_REQUIRED`, `READ_ONLY` (`PLATFORM_BLOCK`, `PAYMENT_DISPUTE`,
-   * `PENDING_FIRST_PAYMENT`), `CAPABILITY_DISABLED` (owner pauses switched
-   * off, D93/D94); 412 / 428; 429.
+   * `PUT /tenants/{tenantId}/pause` `{confirmed: true}`. Develop's refusals at
+   * `a0499412`: 403 `OWNER_REQUIRED`; 403 `CAPABILITY_DISABLED` with `reasons`
+   * `PLATFORM_BLOCK` or `PAYMENT_DISPUTE` (that one, the block first; the
+   * blueprint says `READ_ONLY`), or with none (owner pauses switched off,
+   * D93/D94); 404 `TENANT_NOT_FOUND`; 409 `INVALID_STATE` / `PAYMENT_PENDING` /
+   * `IDEMPOTENCY_CONFLICT`; 412 / 428 `VERSION_CONFLICT`; 422
+   * `CONFIRMATION_REQUIRED`; 429; 503 `POLICY_NOT_CONFIGURED`. The same key and
+   * request replay the saved 200 before any restriction or flag. Already
+   * paused: 200 at the same version.
    */
   pauseTenant(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant>;
-  /** `DELETE /tenants/{tenantId}/pause`, no body, no question — the owner's pause only; a block stays. */
+  /**
+   * `DELETE /tenants/{tenantId}/pause`, no body, no question — the owner's
+   * pause only; a block stays. Refused as a pause is, without the flag and the
+   * 422: under a block or a dispute 403 `CAPABILITY_DISABLED` with that reason.
+   * Not paused: 200 at the same version.
+   */
   resumeTenant(tenantId: string, version: string, idempotencyKey: string): Promise<Tenant>;
   /**
    * `POST /tenants/{tenantId}/ownership-transfer` `{newOwnerUserId, confirmed:
