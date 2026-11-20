@@ -164,6 +164,21 @@ describe("the order of checks (§6)", () => {
     });
   });
 
+  it("(8) before (9): a non-owner ACTIVE member of a company that is not ACTIVE is 403 OWNER_REQUIRED, not 409 INVALID_STATE", async () => {
+    const local = new MemoryStorage();
+    const priya_ = await raw(local, "priya@example.com", UM);
+    // Priya is an ACTIVE admin of Umbrella — and not its owner; Umbrella is put out of ACTIVE.
+    const state = JSON.parse(local.getItem(MOCK_SERVER_KEY) as string) as { tenants: { id: string; lifecycle: string }[] };
+    state.tenants.find((item) => item.id === UM)!.lifecycle = "AWAITING_PAYMENT";
+    local.setItem(MOCK_SERVER_KEY, JSON.stringify(state));
+    for (const sent of [
+      priya_.transport.renameTenant(priya_.company, UM, "U", "3", key()),
+      priya_.transport.pauseTenant(priya_.company, UM, "3", key()),
+    ]) {
+      expect(facts(await caught(sent))).toEqual({ status: 403, code: "OWNER_REQUIRED", reasons: [] });
+    }
+  });
+
   it("a transfer: the restriction before the flag before coverage before the receipt before the body before the version", async () => {
     const { api, hooks } = await inCompany("priya@example.com", HO);
     // Blocked, flags off, a stale version and a recipient who is not a member: the block answers.
