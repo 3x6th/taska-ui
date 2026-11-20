@@ -1751,8 +1751,8 @@ export interface TaskaApi {
    * - **Afterwards the project leaves `GET /projects`** (and `/project-stats`)
    *   for every caller, and nothing lists it. `POST /projects/{id}/restore`
    *   (backend TAS-341, develop `a0499412`) restores one only in the native
-   *   tenant profile; on the stand's classic profile it is not implemented, so
-   *   this client offers no restore (API-DIVERGENCE «Project restore and the
+   *   tenant profile; on the stand's classic profile it is not implemented
+   *   (read in the Java, not measured), so this client offers no restore (API-DIVERGENCE «Project restore and the
    *   archive preconditions exist only in the native tenant profile»). It stays
    *   **readable** — `GET /projects/{id}`, the context, issues, the board,
    *   by-key, comments, watchers, work log, attachments — and **every write

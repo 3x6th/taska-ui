@@ -543,8 +543,9 @@ Same rule as above: "Closed by" is settled, the rest is live.
     501 (UNIMPLEMENTED). Without `If-Match` the gateway answers first: 400 `FAILED_PRECONDITION`
     with `details.code` `VERSION_CONFLICT` — not the yml's 428, because classic maps the gRPC code
     (`GatewayErrorHandler`) and the problem statuses apply only when trusted.
-  - Archive on classic: both headers absent call the old path; either present calls
-    `lifecycle`, and classic `ProjectArchiveService.archive` never reads `expected_version` or
+  - Archive on classic: with or without the headers the gateway calls the same `archiveProject`
+    rpc (`GrpcProjectArchiveClient.archive` is `lifecycle(…, true, null, null)`), the two
+    request fields set or not; classic `ProjectArchiveService.archive` never reads `expected_version` or
     `idempotency_key` — a stale `If-Match` archives anyway. A malformed one answers 400.
 - **What the UI does:** no restore anywhere, and archive sends neither header — sending `If-Match`
   to a server that does not compare it would be a precondition in name only. The Edit project
