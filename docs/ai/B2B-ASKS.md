@@ -28,10 +28,12 @@ asks below the last number.
 
 | id | where | ask | status |
 |---|---|---|---|
-| A127 | TAS-536 | Credential refusals keep their code: `MEMBERSHIP_INACTIVE`, `TENANT_MISMATCH`, `MFA_REQUIRED` arrive as 403 `SCOPE_DENIED` with the code only in `message` (`GatewayCredentialResolver`, `GrpcMembershipAuthority`); put it in `code` / `details.code` | OPEN |
+| A127 | TAS-536 | Credential refusals keep their code: `MEMBERSHIP_INACTIVE`, `TENANT_MISMATCH`, `MFA_REQUIRED` arrive as 403 `SCOPE_DENIED` with the code only in `message` (`GatewayCredentialResolver`, `GrpcMembershipAuthority`); put it in `code` / `details.code`. Addendum (same day): `TOKEN_REVOKED` (arrives as 401 `AUTHENTICATION_REQUIRED`), `ADMIN_GRANT_REQUIRED`, and the gateway's bare `PERMISSION_DENIED`s in `GatewayContextFactory` / `TenantRegistryClient` | OPEN |
 | A128 | TAS-333 | renameTenant has no restriction gate (`TenantRenameService`): a paused or blocked company is renamed with 200, while the access matrix (`tenant.update`, policy NORMAL) says 403 `READ_ONLY` — gate it, or change the blueprint | OPEN |
 | A129 | TAS-536 | `TenantDto` drops the proto's `creationOperationId`, `creationKind` and `planVersionId`; publish them (removes A11's client-side record of the operation id) | OPEN |
 | A130 | TAS-536 | Deploy tenant-service and turn the trusted RPC context on together with TAS-536's session routes and the isolation stories, and say in the release note that it refuses today's HMAC tokens and unbound PATs | OPEN |
+| A131 | TAS-478 | A content read of a company awaiting its first payment answers 403 `READ_ONLY` [`PENDING_FIRST_PAYMENT`] (or 403 `INVALID_STATE` while provisioning) from the shared `CapabilityEvaluator`, where contracts «Unpaid creation errors» and `requireWorking` say 409 `PAYMENT_PENDING` — the second answer of A14. Out of the MVP (no paid creation) | OPEN |
+| A132 | TAS-480 | pauseTenant / resumeTenant under a block or dispute answer 403 `CAPABILITY_DISABLED` [reason], while the same company's `getTenantCapabilities` and the access matrix (OWNER_CONTROL) say `READ_ONLY` [reason] — one code for both | OPEN |
 | — | [TAS-541](https://jira.ozero.dev/browse/TAS-541) | Filed as a story: trusted mode rewrites `code` and the HTTP status of errors on every legacy route, against `openapi.yml` | To Do, blocks TAS-537 |
 
 ## Summary

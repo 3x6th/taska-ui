@@ -21,7 +21,8 @@ commit.
   route here arrives in the gateway contract, the gateway's version is the truth;
   a disagreement is this copy being out of date, not the gateway being wrong.
 - **Not served, mostly.** On the stand every route here except the seven above
-  is a 404 "No static resource", and those seven need the B2B session
+  is a 404 "No static resource" (createTenant a 405: its path is mapped for the
+  list's GET), and those seven need the B2B session
   credentials (`WEB_GLOBAL` for the list, a `WEB_TENANT` bound to the company
   for the rest) that no REST route issues yet (TAS-536). Today's sign-in token
   reaches the gateway and gets 503 `UNAVAILABLE`: the trusted RPC context is off

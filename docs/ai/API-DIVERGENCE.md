@@ -2186,7 +2186,9 @@ Everything below is the entry as it stood, in the past tense.
   still `e35e143e` — its refresh belongs to the catch-up pass): `GET /api/v1/tenants` (listTenants, TAS-338),
   `GET` / `PATCH /api/v1/tenants/{tenantId}` (getTenant, renameTenant, TAS-338, TAS-333), `PUT` / `DELETE …/pause`
   (pauseTenant, resumeTenant, TAS-480), `PUT /api/v1/admin/tenants/{tenantId}/platform-block` (setPlatformBlock,
-  TAS-480), `GET …/capabilities` (getTenantCapabilities, TAS-497). Every other route of the blueprint is still absent.
+  TAS-480), `GET …/capabilities` (getTenantCapabilities, TAS-497). Every other route of the blueprint is still absent:
+  the static-resource 404, except createTenant — `POST /api/v1/tenants` answers 405 `METHOD_NOT_ALLOWED`, the path being
+  mapped for GET (no token, 2026-11-20, rid `161cad67-9e98-499e-97b0-14732bc37e33`).
   Read in the Java: gateway `TenantController`, `TenantRestrictionController`, `TenantCapabilitiesController`,
   `TenantRegistryClient`, `GatewayContextFactory`, `GatewayErrorHandler`, `RestErrorMapper`; auth-service
   `GatewayCredentialResolver`; tenant-service `TenantRenameService`, `TenantRestrictionService`. The full reading is
@@ -2203,8 +2205,10 @@ Everything below is the entry as it stood, in the past tense.
   legacy branch.
 - **Who may call them (read in the Java):** only with trusted mode on, and only with a B2B Ed25519 session JWT (`kind`
   `WEB_GLOBAL` or `WEB_TENANT`) or a tenant-bound PAT. The list needs `WEB_GLOBAL` with `tenants:select` and no tenant
-  binding; the other six need a `WEB_TENANT` bound to the path's company (`read` for getTenant and capabilities,
-  `write` for the commands); setPlatformBlock needs `WEB_GLOBAL` + `GLOBAL_ADMIN` + `ADMIN_EMAIL_MFA`. No REST route
+  binding; getTenant, renameTenant, pauseTenant, resumeTenant and getTenantCapabilities need a `WEB_TENANT` bound to
+  the path's company (`read` for the two reads, `write` for the commands), and all but capabilities also accept a
+  `GLOBAL_ADMIN`'s `WEB_GLOBAL` that the resolver binds to the target after `ADMIN_EMAIL_MFA`
+  (`GatewayCredentialResolver.java:212-241`); setPlatformBlock needs `WEB_GLOBAL` + `GLOBAL_ADMIN` + `ADMIN_EMAIL_MFA`. No REST route
   issues those tokens yet (TAS-536). Trusted mode refuses today's HMAC sign-in tokens and unbound PATs on **every**
   route, so the backend cutover and the frontend switch-on are one step, not two.
 - **What the companies build sends:** conforms on path, parameters, headers (a lowercase UUID `Idempotency-Key`, a
@@ -2232,7 +2236,14 @@ Everything below is the entry as it stood, in the past tense.
     response before any business gate; `PLATFORM_BLOCK` or `PAYMENT_DISPUTE` → 403 `CAPABILITY_DISABLED` with that one
     reason (block first); pause with the flag off → 403 `CAPABILITY_DISABLED` without reasons; a missing flag definition
     → 503 `POLICY_NOT_CONFIGURED`; not confirmed → 422 `CONFIRMATION_REQUIRED`; already paused / not paused → 200 at the
-    same version; a stale `If-Match` → 412 even for a no-op. The client and the mock follow this since TAS-537.
+    same version; a stale `If-Match` → 412 even for a no-op. The client and the mock follow this since TAS-537, except
+    that the mock models neither the 422 nor the 503. With the owner-pause flag off, a new-key pause of a company already
+    paused is 403, not 200 — the gates run before the no-op (`TenantRestrictionService.java:130,182-199`).
+  - **The idempotency receipt of rename, pause and resume is scoped by the credential**, session id included
+    (`TenantRenameService.java:67-77`, `TenantRestrictionService.java:95-105`, contracts §1); the mock keys it by actor.
+    So a pause whose answer was lost, retried with the same key after the tab's company session was re-selected (a
+    refused renewal), is a new request on develop and answers 412 although the company is paused; the mock replays the
+    200. The re-read shows the company paused; recorded, not compensated.
   - Mutation answers (rename, pause, resume) carry no `membership`; `TenantDto` drops the proto's `creationOperationId`,
     `creationKind` and `planVersionId` (`TenantRegistryClient.toRestTenant`). Carrying them would remove TAS-501's
     sessionStorage record of the operation id (A11). Ask A129 on TAS-536.
@@ -2288,7 +2299,10 @@ Everything below is the entry as it stood, in the past tense.
     with that session. Removal: ask A14. **And, since TAS-504,** a read refused with `OWNER_PAUSE` or
     `PLATFORM_BLOCK` (and not `PENDING_FIRST_PAYMENT`) keeps the session and marks the tab "content closed" — see
     «TAS-504». REST counts every GET as a read, the mock its company content routes. For the other reasons the rule
-    stays broad because contracts §5 does not say which reasons a read can carry. Removal: ask A2c on TAS-316.
+    stays broad because contracts §5 does not say which reasons a read can carry. A2c is answered differently (develop
+    `a0499412`): reads under a restriction are allowed by default (`READ_WHILE_RESTRICTED`), and with that flag off a
+    content read under a pause or block is 403 `READ_ONLY` with the reason, not `CAPABILITY_DISABLED` — such a read is
+    then rejected alone, without the «content closed» mark; BACKLOG «Left by TAS-537».
     The mock reaches it through the hook `contentReadUnderRestriction: false` in `taska.mockTenantHooks`.
   - Sign-out revokes the tab's tenant session and drops the global record locally; the global family and sibling
     tabs' families stay live until expiry. Removal: ask A4 on TAS-315.
@@ -2321,7 +2335,8 @@ Everything below is the entry as it stood, in the past tense.
   - Any restriction makes every company write 403 `READ_ONLY` with all restrictions as `reasons` — stricter than
     contracts §5, where a financial READ_ONLY still allows some admin actions; the reader's own notifications,
     notification settings and Telegram are not stopped (TAS-325). Content reads under a restriction are allowed:
-    `MOCK_PROJECT_CONTENT_READ_UNDER_RESTRICTION = true`, the "separate global flag" of contracts §5. Ask A2c. With
+    `MOCK_PROJECT_CONTENT_READ_UNDER_RESTRICTION = true`, the "separate global flag" of contracts §5 (A2c answered:
+    develop's `READ_WHILE_RESTRICTED`, default true; flag off answers 403 `READ_ONLY` with the reason). With
     the flag off (`contentReadUnderRestriction: false`), since TAS-504 only `OWNER_PAUSE` and `PLATFORM_BLOCK` close
     content (access-matrix CONTENT_READ's conditionalDeny), with every current restriction as `reasons`; a financial
     restriction alone stays readable.
@@ -2493,9 +2508,11 @@ Everything below is the entry as it stood, in the past tense.
   and the quotas are never refused by a restriction; the SEAT quota row carries `version`; suspend, remove and
   leave revoke the person's sessions and pending invitations, a demotion only their pending invitations (contracts §99
   names suspend and remove as the generation-revoking changes).
-- **At develop `a0499412` (TAS-537's read, gRPC only — REST in TAS-536):** A17 is answered (a non-ACTIVE target answers
-  409 `INVALID_STATE`, the mock's rule), A18 is answered (a stale membership generation is 401 `TOKEN_REVOKED` at the
-  edge, so the tab renews and re-enters rather than closing), A20 is answered (leave takes no `If-Match`); A19 waits on
+- **At develop `a0499412` (TAS-537's read, gRPC only — REST in TAS-536):** A17 is answered (a role change or suspension of
+  a non-ACTIVE target, a reactivation of a non-SUSPENDED one and a removal of a REMOVED one answer 409 `INVALID_STATE`,
+  the mock's rule), A18 is answered (a stale membership generation is refused 401 at the edge — `TOKEN_REVOKED`, which
+  in trusted mode arrives as `AUTHENTICATION_REQUIRED` with the code in `message`, A127 — so the tab renews and
+  re-enters rather than closing), A20 is answered (leave takes no `If-Match`); A19 waits on
   TAS-321, and A27 is open and now collides with A18 — the same edge check refuses a lost leave's replay. Each ask's row
   is in `docs/ai/B2B-ASKS.md`.
 - **Turning the flag on** additionally needs TAS-321, TAS-322, TAS-323, TAS-335 and TAS-339 on the gateway and **asks
@@ -2623,15 +2640,17 @@ Everything below is the entry as it stood, in the past tense.
     subscription cache and re-enters the company (the client's own cache rule, as TAS-502's own-row change).
   - A non-owner sees the owner's name only from the cached members list, else a «See Members» link. Removal: ask A39.
 - **Found on develop, recorded, not compensated:** at `cb9a028c` (2026-11-05) — a separate `restriction_version` off
-  the wire, create's name rule of 128 code points, and `Tenant.restrictions` carrying only `PENDING_FIRST_PAYMENT`. **All
-  three are gone at `a0499412`** (TAS-537's read): one version (A31), `TenantName` 1–120 on create and rename
+  the wire, create's name rule of 128 code points, and `Tenant.restrictions` carrying only `PENDING_FIRST_PAYMENT`. **None
+  holds at `a0499412`** (TAS-537's read): one version is the precondition (A31) — `restriction_version` is still kept
+  and bumped together with `version`, but is no longer a separate one — `TenantName` 1–120 on create and rename
   (`TenantRegistryService.validateName`), and the TAS-480 restrictions on the wire. The signed-context `action` being the
   operationId is now the blueprint's own rule (contracts §5: the transport assertion names the RPC, the business action
   comes from `CapabilityAction`). New at `a0499412` — rename without a restriction gate, pause and resume under a block —
   is in «TAS-537».
-- **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v4`): order of checks as
-  TAS-502 (session, tenant, lifecycle, caller ACTIVE, owner, policy NORMAL / OWNER_CONTROL / TRANSFER with reasons in a
-  stable order, flags, coverage, receipt, body, version); a transfer on FREE or without coverage and to a non-ACTIVE
+- **Mock answers where the blueprint is silent** (`MockTenantServer.ts`, `taska.mockServer.v4`): order of checks — since TAS-537 develop's for rename, pause and resume, as the block comment above
+  `renameTenant` in the mock spells it (session and tenant, then key / If-Match / body, then membership, owner and
+  lifecycle, then the receipt, then restrictions and the pause flag, then the version); transfer keeps TAS-502's order
+  after the shared owner check; a transfer on FREE or without coverage and to a non-ACTIVE
   recipient → 409 `INVALID_STATE`; pause-paused and resume-unpaused → 200 no-op; resume under a platform block refused
   per the access matrix; a transfer replay after success → 403 `OWNER_REQUIRED` (contracts.md:89); the
   `platformBlock`, `ownerPauseEnabled`, `ownershipTransferEnabled` hooks; paid periods expire by the lifecycle clock

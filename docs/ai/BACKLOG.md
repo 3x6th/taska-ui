@@ -4840,3 +4840,8 @@ The pre-build pass and the asks reconciliation (`docs/ai/reviews/TAS-537/`, git-
 - **When the B2B PRs reach main** (release-reviewer, merge review): the TAS-513 stack carries stale «To Do» ledger rows
   for TAS-527/528/529/530 that #138–#140 carry newer versions of elsewhere in the table — git may keep both; DESIGN.md
   §4.41 is used by both TAS-513 (Billing) and TAS-524 (Activity), and §4.42 by TAS-527 — renumber on the meeting.
+- **DESIGN.md §4.39's table names only `READ_ONLY` for the block and dispute sentences**, while pause and resume now get
+  them for `CAPABILITY_DISABLED` with that reason too (develop's shape, TAS-537); the rule above the table already covers
+  it — align the table on art-director's word (api-contract-guard build review). A132 would remove the branch.
+- **If the catalogue's REST (TAS-536) ships without `PlanVersion.kind`, no plan is free** — no default, every plan with
+  the paid note: the switch-on probe checks `kind` on the wire (api-contract-guard build review).
