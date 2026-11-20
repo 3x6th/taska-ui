@@ -214,6 +214,53 @@ test.describe("from Create account to the invitation token form", () => {
     await expect(page.getByRole("tab")).toHaveText(["Sign in", "Create account"]);
   });
 
+  test("the link's target is 28 tall at 1440, 390 and 320, and a click below its text opens /invite", async ({ page }) => {
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 800 });
+      await openCreateAccount(page);
+      const link = page.getByRole("link", { name: TO_TOKEN });
+      await expect(link).toBeVisible();
+      const zone = await link.evaluate(async (node) => {
+        await document.fonts.ready;
+        const box = node.getBoundingClientRect();
+        const before = getComputedStyle(node, "::before");
+        const top = box.top + parseFloat(before.top);
+        const bottom = box.bottom + parseFloat(before.bottom) * -1;
+        const x = box.left + box.width / 2;
+        const hit = (y: number) => {
+          const at = document.elementFromPoint(x, y);
+          return at === node || node.contains(at);
+        };
+        const firstLine = [...document.querySelectorAll(".auth-hint")]
+          .find((n) => n.textContent?.startsWith("Invited by your team?"))!
+          .getBoundingClientRect();
+        return { w: box.width, h: bottom - top, hitLow: hit(box.bottom + 9), hitBelow: hit(bottom + 3), top, firstLineBottom: firstLine.top + firstLine.height / 2 };
+      });
+      expect(zone.h).toBeGreaterThanOrEqual(28);
+      expect(zone.hitLow).toBe(true);
+      expect(zone.hitBelow).toBe(false);
+    }
+
+    await openCreateAccount(page);
+    const box = (await page.getByRole("link", { name: TO_TOKEN }).boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height + 9);
+    await expect(page).toHaveURL(/\/invite$/);
+  });
+
+  test("on arrival the card does not enter again; a reload plays its entrance", async ({ page }) => {
+    await openCreateAccount(page);
+    await page.getByRole("link", { name: TO_TOKEN }).click();
+    await expect(page.getByLabel("Invitation token")).toBeFocused();
+    const wrap = page.locator(".auth-card-wrap");
+    await expect(wrap).toHaveClass(/is-continued/);
+    expect(await wrap.evaluate((node) => node.getAnimations().length)).toBe(0);
+    expect(await page.evaluate(() => document.getAnimations().filter((a) => (a as CSSAnimation).animationName === "tk-pop").length)).toBe(0);
+
+    await page.reload();
+    await expect(wrap).not.toHaveClass(/is-continued/);
+    expect(await wrap.evaluate((node) => node.getAnimations().length)).toBeGreaterThan(0);
+  });
+
   test("on the hash-routed build as the stand answers, by keyboard alone: Tab to the link, Enter, type the token, and its preview fills the form", async ({
     page,
   }) => {

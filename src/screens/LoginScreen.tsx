@@ -342,6 +342,8 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     return target ? { target } : null;
   });
   const [arrival, setArrival] = useState(location.key);
+  // The link from Create account continues the same card: no second entrance (§3). Read once.
+  const [entrance] = useState<"login" | "none">(() => (initialMode === "invite" && redirect?.enterToken ? "none" : "login"));
   if (arrival !== location.key) {
     setArrival(location.key);
     if (redirect?.activated) {
@@ -562,7 +564,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     tab === "signin" ? "Sign in" : tab === "signup" || signupLink ? "Create account" : "Accept invite";
 
   return (
-    <AuthShell theme={theme} toggleTheme={toggleTheme}>
+    <AuthShell entrance={entrance} theme={theme} toggleTheme={toggleTheme}>
       {refusalShown ? (
         // A refusal the reader arrives with (§4.31): a state on arrival, so
         // focus brings it to them and it is not a live region.

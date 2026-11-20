@@ -1386,6 +1386,20 @@ describe("LoginScreen, from Create account to the token form", () => {
     expect(screen.getByLabelText("Invitation token")).toHaveFocus();
   });
 
+  it("does not enter the card a second time on an arrival with enterToken", async () => {
+    renderEntry({ pathname: "/invite", state: { enterToken: true } });
+    await waitFor(() => expect(screen.getByLabelText("Invitation token")).toHaveFocus());
+    await waitFor(() => expect(screen.getByTestId("where-state")).toHaveTextContent("null"));
+    const wrap = document.querySelector(".auth-card-wrap")!;
+    expect(wrap).toHaveClass("is-continued");
+  });
+
+  it("keeps the card's entrance on /invite and /login without enterToken", async () => {
+    renderEntry("/invite");
+    await waitFor(() => expect(methodsState.calls).toBe(1));
+    expect(document.querySelector(".auth-card-wrap")).not.toHaveClass("is-continued");
+  });
+
   it("moves no focus on /invite without it", async () => {
     renderEntry("/invite");
     await waitFor(() => expect(methodsState.calls).toBe(1));

@@ -639,11 +639,25 @@ input::-webkit-calendar-picker-indicator {
 }
 
 /* «enter your invitation token» under Create account (TAS-467): the shared
-   quiet link (`.admin-note-link`), kept whole. Free to wrap, the hint broke
-   inside it at 1440 — «enter» ending one line, the rest starting the next,
-   the ring in two pieces; whole, it is the second line at every width. */
+   quiet link (`.admin-note-link`), kept whole. Free to wrap, it broke inside
+   itself at 1440 — «enter» ending one line, the rest starting the next, the
+   ring in two pieces; whole, the hint is two lines at every width. The target
+   is 28 tall (§1's floor), though the text is 15: a zone that grows downward
+   only, 2px above the line and 11px below, 133.8×28 at every width. ±14.5
+   would cover the hint's first line above it; 44 would reach the «or» divider
+   19.7px below. 44 on touch widths is an open §7 shortfall. */
 .auth-hint-link {
+  position: relative;
   white-space: nowrap;
+}
+
+.auth-hint-link::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -2px;
+  bottom: -11px;
 }
 
 /* What a field expects, under it and tied to it with `aria-describedby` — on
