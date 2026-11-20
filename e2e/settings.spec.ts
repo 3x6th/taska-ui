@@ -64,8 +64,13 @@ test("applies each Appearance choice as it is pressed, and keeps it across a rel
   await expect(option(page, "Theme", "Dark")).toHaveAttribute("aria-pressed", "true");
 });
 
-test("does not programmatically move touch navigation to the newly opened heading", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "mobile", "the iOS-style touch regression at 390");
+// A tap on the rail's strip hands focus to the new heading as a key does — a
+// screen reader is told nothing otherwise — but asks for no ring: placed by
+// script, focus matches `:focus-visible` in WebKit even after a tap. This
+// project is Chromium, so it proves the focus and the ring's absence there;
+// WebKit's is browser evidence, outside the suite.
+test("hands focus to the new heading after a tap on the rail, without the ring", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "a tap on the rail's strip at 390");
   await signIn(page);
   await page.getByRole("button", { name: /Open profile/ }).tap();
   await page.getByRole("link", { name: "Settings" }).tap();
@@ -75,8 +80,8 @@ test("does not programmatically move touch navigation to the newly opened headin
   await connectedApps.tap();
 
   const heading = page.getByRole("heading", { level: 1, name: /Settings.*Connected apps/ });
-  await expect(heading).toBeVisible();
-  await expect(heading).not.toBeFocused();
+  await expect(heading).toBeFocused();
+  expect(await heading.evaluate((element) => element.matches(":focus-visible"))).toBe(false);
 });
 
 test("sets every choice on <html> before the app's own script runs", async ({ page }) => {

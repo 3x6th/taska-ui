@@ -18,10 +18,9 @@ const planPath = (companyId: string) => companyPath(companyId, "/settings/plan")
 
 /**
  * Opens Settings › Plan from the rail's «Company» group — third, after General
- * and Members — with the keyboard, as a keyboard reader does: Enter on a rail
- * link hands focus to the new heading (§5.9), and a group's link has to take
- * part in that as the area's own do. A pointer or a tap moves no focus, so a
- * click here would prove nothing about the group's links.
+ * and Members — with the keyboard, as a keyboard reader does: a rail link hands
+ * focus to the new heading whatever the input, and a group's link has to take
+ * part in that as the area's own do (§5.9).
  */
 async function openPlan(page: Page, companyId: string) {
   await page.goto(companyPath(companyId, "/settings/profile"));

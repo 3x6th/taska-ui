@@ -1,5 +1,5 @@
 import { ArrowLeft, type LucideIcon } from "lucide-react";
-import { useEffect, useId, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { Link, NavLink } from "react-router-dom";
 
 /** One section of an area: what the rail links to and the heading names. */
@@ -58,18 +58,10 @@ export function SectionArea({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const railRef = useRef<HTMLElement>(null);
   const lastSectionId = useRef<string | null>(null);
-  const focusHeadingAfterRailNavigation = useRef(false);
-
-  const noteRailLinkKeyDown = (event: KeyboardEvent<HTMLAnchorElement>, sectionId: string) => {
-    if (event.key === "Enter") focusHeadingAfterRailNavigation.current = sectionId !== current.id;
-  };
-
-  const noteRailLinkClick = (event: MouseEvent<HTMLAnchorElement>, sectionId: string) => {
-    // Pointer and touch activation do not programmatically transfer focus. A
-    // click with no click count comes from keyboard or assistive technology,
-    // where the replacement section still needs an announced starting point.
-    focusHeadingAfterRailNavigation.current = sectionId !== current.id && event.detail === 0;
-  };
+  // Whether the last press inside the area was a pointer's or a key's: it
+  // decides only whether the heading's ring is drawn, never whether the
+  // heading takes focus (the effect below).
+  const lastInputWasPointer = useRef(false);
 
   useEffect(() => {
     // Below 900 the rail is a strip that scrolls sideways, and the section
@@ -79,21 +71,28 @@ export function SectionArea({
     // an axis where the link is already in view nothing moves, and the strip
     // sits at the top of an area that does not scroll the page, so only the
     // strip does. No `behavior`, so it jumps rather than glides, with or
-    // without reduced motion; and it moves no focus — the effect below decides
-    // whether the heading takes it.
+    // without reduced motion; and no focus moves here — the effect below moves
+    // it.
     railRef.current
       ?.querySelector<HTMLElement>('[aria-current="page"]')
       ?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }, [current.id]);
 
   useEffect(() => {
-    // Moving between sections replaces the whole body. After keyboard or
-    // assistive-technology activation, the new heading is its announced
-    // starting point (§7). Pointer and touch activation deliberately do not
-    // transfer focus programmatically: the native browser retains its own
-    // focus behaviour (iOS Safari may leave it on body), while moving it to
-    // the heading draws a ring around content the reader only tapped. This is
-    // deliberately *not* on every route change inside the area: choosing a
+    // Moving between sections replaces the whole body, so focus goes to the
+    // new section's heading on every section change but arrival, whatever the
+    // input — from the rail or from a link in a section's body. Otherwise a
+    // screen reader is told nothing at all, and Tab after an in-body link
+    // («create an access token») would start again from the rail (§7).
+    //
+    // The ring is for the keyboard. After a pointer or a tap focus is placed
+    // with `focusVisible: false`: a focus moved by script matches
+    // `:focus-visible` in WebKit even after a press, and would ring a heading
+    // the reader only tapped. Browsers without the option — Safari < 18.4,
+    // Chrome < 145 — decide for themselves: Chrome draws no ring after a
+    // press, old Safari does, as it did before.
+    //
+    // Deliberately *not* on every route change inside the area: choosing a
     // table in the Data catalog also changes the URL, and yanking focus out of
     // the list on every arrow press would make the catalog unusable from the
     // keyboard.
@@ -101,20 +100,22 @@ export function SectionArea({
     lastSectionId.current = current.id;
     // Not on arrival: focus that moves before the user has done anything is a
     // jump they did not ask for.
-    if (previous === null || previous === current.id) {
-      focusHeadingAfterRailNavigation.current = false;
-      return;
-    }
-    const shouldFocusHeading = focusHeadingAfterRailNavigation.current;
-    focusHeadingAfterRailNavigation.current = false;
-    if (!shouldFocusHeading) return;
-    headingRef.current?.focus();
+    if (previous === null || previous === current.id) return;
+    headingRef.current?.focus({ focusVisible: !lastInputWasPointer.current });
   }, [current]);
 
   return (
-    <div className={className ? `area ${className}` : "area"}>
+    <div
+      className={className ? `area ${className}` : "area"}
+      onKeyDownCapture={() => {
+        lastInputWasPointer.current = false;
+      }}
+      onPointerDownCapture={() => {
+        lastInputWasPointer.current = true;
+      }}
+    >
       <nav aria-label={name} className="area-rail" ref={railRef}>
-        <RailLinks onClick={noteRailLinkClick} onKeyDown={noteRailLinkKeyDown} sections={sections} />
+        <RailLinks sections={sections} />
         {groups.map((group) => (
           <div
             aria-labelledby={`${groupId}-${group.id}`}
@@ -125,7 +126,7 @@ export function SectionArea({
             <p className="area-rail-group-label" id={`${groupId}-${group.id}`}>
               {group.label}
             </p>
-            <RailLinks onClick={noteRailLinkClick} onKeyDown={noteRailLinkKeyDown} sections={group.sections} />
+            <RailLinks sections={group.sections} />
           </div>
         ))}
         {/* The way out of the area belongs to the area, not to whichever
@@ -147,8 +148,8 @@ export function SectionArea({
               announced as the bare section name. The crumb is text, not a link,
               because the area's own address only redirects into a section.
 
-              tabIndex -1 so the effect above can put focus here; it is not in
-              the tab order and never takes focus from a pointer. */}
+              tabIndex -1 so the effect above can put focus here, with or
+              without the ring as it decides; it is not in the tab order. */}
           <h1 className="area-section-title" id={headingId} ref={headingRef} tabIndex={-1}>
             <span className="area-crumb">
               {name}
@@ -164,16 +165,7 @@ export function SectionArea({
   );
 }
 
-function RailLinks({
-  sections,
-  onClick,
-  onKeyDown,
-}: {
-  sections: readonly AreaSection[];
-  /** Every link of the rail, a group's included, notes how it was activated. */
-  onClick: (event: MouseEvent<HTMLAnchorElement>, sectionId: string) => void;
-  onKeyDown: (event: KeyboardEvent<HTMLAnchorElement>, sectionId: string) => void;
-}) {
+function RailLinks({ sections }: { sections: readonly AreaSection[] }) {
   return (
     <ul>
       {sections.map((item) => {
@@ -184,12 +176,7 @@ function RailLinks({
                 from the match itself, so the rail cannot claim a section
                 the router is not showing. Prefix matching is what keeps
                 Data marked while a table is open. */}
-            <NavLink
-              className="area-rail-link"
-              onClick={(event) => onClick(event, item.id)}
-              onKeyDown={(event) => onKeyDown(event, item.id)}
-              to={item.path}
-            >
+            <NavLink className="area-rail-link" to={item.path}>
               <Icon aria-hidden="true" size={15} />
               {item.label}
             </NavLink>
