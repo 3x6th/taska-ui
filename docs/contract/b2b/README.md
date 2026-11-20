@@ -23,8 +23,9 @@ commit.
 - **Not served, mostly.** On the stand every route here except the seven above
   is a 404 "No static resource", and those seven need the B2B session
   credentials (`WEB_GLOBAL` for the list, a `WEB_TENANT` bound to the company
-  for the rest) that no REST route issues yet (TAS-536); a token from today's
-  sign-in does not reach them. Work built against them runs on the mock behind a build flag, and
+  for the rest) that no REST route issues yet (TAS-536). Today's sign-in token
+  reaches the gateway and gets 503 `UNAVAILABLE`: the trusted RPC context is off
+  on the stand (2026-11-20; `docs/ai/API-DIVERGENCE.md` «TAS-537»). Work built against them runs on the mock behind a build flag, and
   each gap is an entry in `docs/ai/API-DIVERGENCE.md` naming the backend story
   that removes it.
 - **Not frozen.** The backend edits these files as implementation PRs land
