@@ -521,7 +521,61 @@ The entry as it stood:
 
 Same rule as above: "Closed by" is settled, the rest is live.
 
-### The project context drops a type whose workflow read failed, and the UI calls it «no workflow»
+### Project restore and the archive preconditions exist only in the native tenant profile
+
+- **Found on TAS-540** (develop `a0499412`, backend [TAS-341](https://jira.ozero.dev/browse/TAS-341),
+  PR #335); rulings by api-contract-guard.
+- **Endpoints:** `POST /api/v1/projects/{projectId}/restore` (new) and
+  `DELETE /api/v1/projects/{projectId}` (new optional `If-Match` and `Idempotency-Key`).
+- **The yml:** restore is «в native tenant profile» and states 428 for a missing `If-Match`, 412
+  for a stale one, 409 `IDEMPOTENCY_CONFLICT`; on archive both headers are «Required in native
+  tenant profile». It does not say what the classic profile answers.
+- **The stand runs the classic profile.** Measured without a token on 2026-11-20: `X-Request-Id:
+  not-a-uuid` on `GET /projects/{uuid}/context` and `GET /project-stats` answers 401
+  «Authorization header is missing» echoing `not-a-uuid`; the trusted (native) path of
+  `GatewayContextFactory` validates the request id before the token and would answer 400
+  «Invalid X-Request-Id». That proves the gateway's flag; project-service's `tenant-storage`
+  profile is inferred from the stack deploying as one commit. Restore is deployed: a bad UUID
+  400, a good one 401, `/restorex` the static-resource 404.
+- **Read in the Java at `a0499412`, not measured:**
+  - Restore on classic: `LegacyProjectConfiguration` (`!tenant-storage`) serves
+    `GrpcProjectServiceAdapter`, which has no `restoreProject`, so a well-formed request answers
+    501 (UNIMPLEMENTED). Without `If-Match` the gateway answers first: 400 `FAILED_PRECONDITION`
+    with `details.code` `VERSION_CONFLICT` — not the yml's 428, because classic maps the gRPC code
+    (`GatewayErrorHandler`) and the problem statuses apply only when trusted.
+  - Archive on classic: with or without the headers the gateway calls the same `archiveProject`
+    rpc (`GrpcProjectArchiveClient.archive` is `lifecycle(…, true, null, null)`), the two
+    request fields set or not; classic `ProjectArchiveService.archive` never reads `expected_version` or
+    `idempotency_key` — a stale `If-Match` archives anyway. A malformed one answers 400.
+- **What the UI does:** no restore anywhere, and archive sends neither header — sending `If-Match`
+  to a server that does not compare it would be a precondition in name only. The Edit project
+  dialog's «Taska cannot restore it.» is true on the classic profile and changes when a restore is
+  offered. `ProjectResponseDto.version` is passed through untyped, and on classic it arrives only
+  on the answers built from the `Project` entity — `POST /projects`, `PATCH` and `DELETE` — not on
+  `GET /projects`, `GET /projects/{id}` or the context's `project`, which are built from
+  `ProjectCheckMembershipDto` (no `version`; the gateway sets the field only when the proto has it;
+  release-reviewer, read in the Java). It is typed with its first reader, together with the mock
+  seeding `"0"` and bumping it on `PATCH` and archive like `@Version` (api-contract-guard).
+  **Compensation: none.**
+- **Probe that changes nothing,** for a session with a token: `POST /projects/{random uuid}/restore`
+  with `If-Match: "0"` and a UUID `Idempotency-Key` — classic 501, native 404.
+- **Removal:** the stand switching to the native profile (the companies launch,
+  [TAS-537](https://jira.ozero.dev/browse/TAS-537)), which also makes both archive headers
+  required for the shared `RestTaskaApi.archiveProject`. Backend ask: a comment on TAS-341
+  (2026-11-20) — the yml should state the classic answers, and classic archive should compare
+  `expected_version` or refuse the headers.
+
+### Closed by TAS-540 (2026-11-20): The project context drops a type whose workflow read failed, and the UI calls it «no workflow»
+
+- **Closed:** backend [TAS-533](https://jira.ozero.dev/browse/TAS-533) (PR #333, merge
+  `d6eb264`, in develop `a0499412` on the stand) took the first option:
+  `ProjectServiceImpl.loadProjectWorkflows` leaves a type out only on NOT_FOUND and fails the
+  context with the original status on any other workflow read error. Read in the Java, not
+  measured — a failed read cannot be produced on the stand on purpose. The «no workflow» wording
+  is now true and stays; the comments that said otherwise were corrected in TAS-540. **Live
+  sub-fact:** the yml's `getProjectContext` description at `a0499412` still carries the TAS-383
+  sentence («Ошибка чтения workflow отдельного типа не отменяет ответ 200…»); the Java wins, and
+  the stale text is a comment on TAS-533 (2026-11-20).
 
 - **Found by api-contract-guard on TAS-532** (develop `e35e143e`, backend TAS-383, PR #272).
 - **Endpoint:** `GET /api/v1/projects/{projectId}/context`.
@@ -768,9 +822,10 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `api-contract-guard`; the Java wins), and what each implementation does:
   - All or nothing: any part failing fails the response. The board therefore
     has one banner for it, where it had three (project, role, workflow).
-    **Except `workflows` since backend TAS-383** (develop `e35e143e`): a type
-    whose workflow read fails is left out and the context still answers 200 —
-    see «The project context drops a type whose workflow read failed» (TAS-532).
+    Workflows included again since backend TAS-533 (develop `d6eb264`, on the
+    stand with `a0499412`): a type is left out only when its workflow is
+    NOT_FOUND; TAS-383's omission of a failed read is gone (entry «The project
+    context drops a type whose workflow read failed», closed by TAS-540).
   - **A non-member of any global role is `403`, and a missing project is
     `404`. This is the designed rule, not an accident of the code**: the owner
     decided it on 2026-10-16 ([TAS-255](https://jira.ozero.dev/browse/TAS-255)),
@@ -2664,7 +2719,9 @@ Everything below is the entry as it stood, in the past tense.
 - **Read in the Java at develop `d20ba0bc`:**
   - `GET /projects` and `GET /project-stats` leave archived projects out for every caller
     (`archived_at IS NULL`); unscoped issue search derives its projects from the same list.
-    No route lists archived projects and none restores one.
+    No route lists archived projects. None restored one at `d20ba0bc`; since `a0499412`
+    `POST /projects/{id}/restore` does, in the native tenant profile only (TAS-540, entry
+    «Project restore and the archive preconditions exist only in the native tenant profile»).
   - Reads stay open: the project, `/context` (labels included), issues, board, by-key,
     comments, watchers, work log (`ArchivedProjectIssuesIntegrationTest`).
   - `DELETE` has no body and answers 200 `ProjectResponseDto` with `archivedAt` and
@@ -6728,8 +6785,9 @@ nothing but `BACKLOG.md` for now.
   200 (`openapi.yml` at `e35e143e`, `getProjectContext`). Read in the PR and the
   contract, not measured. The UI already takes a type with no entry in `workflows`
   without failing — `workflowFor` answers `undefined` and the type list comes from the
-  registry — but it cannot tell a missing workflow from a failed read: see «The project
-  context drops a type whose workflow read failed» above (api-contract-guard). The copy-only create stays as the default.
+  registry. Since backend TAS-533 (`d6eb264`, in `a0499412`) only a NOT_FOUND workflow is
+  left out and a failed read fails the context, so a missing entry means «no workflow»
+  («The project context drops a type whose workflow read failed», closed by TAS-540). The copy-only create stays as the default.
 
 - **Endpoints:** `POST /api/v1/projects/{projectId}/workflows`, and through it
   `GET /api/v1/projects/{projectId}/context` (#208 at `9a04e99`, merged unchanged as

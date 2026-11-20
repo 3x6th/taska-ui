@@ -4379,6 +4379,14 @@ Round 1 on `e08eb4a`: release-reviewer REQUEST CHANGES (docs only), api-contract
 - **The steps fail on the stand until the backend accepts real clients** — not a frontend defect, the intended flow per «No compensations»: Claude's automatic registration and ChatGPT's CIMD are refused ([TAS-466](https://jira.ozero.dev/browse/TAS-466) and its comment); Cursor's DCR with its two documented redirects answers 201 (probe, client «Cursor») but no real Cursor run yet; `cursor://` would be refused. Today claude.ai is connected through a manually registered public client. Re-run all three from the guide once TAS-466 lands.
 - **«via MCP» on the stand** (was under *Left by TAS-412*): `VITE_TASKA_MCP_URL` is set (2026-11-02) and claude.ai's MCP `whoami` answers with `token_kind: OAUTH`; the claude.ai grant is `read`, so no MCP write has been made yet — the mark still needs one write through a write-scoped client.
 
+### Left by TAS-414 touch focus (focus without the ring after a pointer, 2026-11-20)
+
+- **Other programmatic `h1` focus sites are not on the §7 «Программный фокус после указателя» rule yet** (art-director, not measured): the `.notfound-title` fallback, `.auth-title`, and the in-place outcomes of §4.37 and §4.38 still call `focus()` without `focusVisible`, so WebKit probably rings them after a tap or a mouse press the way `SectionArea` did before TAS-414. Measure in WebKit, then pass `focusVisible: false` after a pointer where it rings.
+- **A history move with no input into the page follows the page's last input** (art-director r2, not blocking): the toolbar Back/Forward, or Safari's Cmd+[ if it sends no `keydown` (not verified in real Safari), leave `SectionArea`'s pointer/key tracker as it was, so after an earlier tap the heading takes focus without the ring even for a keyboard reader. Focus still moves and the next Tab rings the next control; there is no signal to do better.
+- **No suite run can see the WebKit ring** (release-reviewer, low): every Playwright project is Chromium, which never rang after a press, so `e2e/settings.spec.ts` «hands focus to the new heading after a tap on the rail, without the ring» cannot fail on the defect it describes; the WebKit fix is guarded only by the jsdom spy on `focus({ focusVisible })` (mutation-checked). A refactor that keeps the argument but breaks what WebKit draws (e.g. CSS on `.area-section-title:focus`) would pass CI. A WebKit Playwright project is its own decision; until then `docs/ai/evidence/TAS-414-touch-focus/repro.mjs` is the WebKit proof.
+- **No automated pointer press on a rail group link** (release-reviewer, low): `openPlan` (`e2e/companies-plan.spec.ts`) uses focus + Enter, so the «Company» group's links are pressed with a pointer only in the reviewers' probes. One unit case with pointerDown + click on a group link in the B2B render would close it.
+- **The keyboard half through the profile menu has no test** (art-director r3, optional): after a pointer press in the area, menu → «Settings» by keyboard must ask for the ring (`[[{ focusVisible: true }]]`); it failed before `1fa4c6b` and is measured only in art-director's probe (`docs/ai/reviews/TAS-414/art-director-touch-focus-r3.md`, S3/A2).
+
 ### Left by TAS-464 (the frontend for backend TAS-440, TAS-443 and TAS-444, develop `af7ab57e`, 2026-11-02)
 
 - **Two reasons are still only in the Java** (yml at `af7ab57e`): `ISSUE_TYPE_TARGET_INVALID` (400, `IssueTypeDeletionTransactions`) and `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT` (400, `WorkflowBindingTransactions`). The client branches on both — `isIssueTypeTargetInvalid` re-reads the registry and restarts the step, `WORKFLOW_ISSUE_TYPE_NOT_IN_PROJECT_REASON` in Workflows — so it depends on reasons the contract does not state (API-DIVERGENCE «contract silent»); in the backend ask [TAS-465](https://jira.ozero.dev/browse/TAS-465), with the `/users` 503 and the create's binding reasons.
@@ -4680,11 +4688,13 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
 - **A failed background re-read also sets `isInvalidated`**, so while the board
   read fails each panel mount re-reads the `all` record once (plus the retry).
   Accepted; §5.4's wording could add «or its last read failed» (release-reviewer).
-- **«This project has no workflow for {type} issues»** (panel) and the drop
+- ~~**«This project has no workflow for {type} issues»** (panel) and the drop
   refusal are false when the context dropped the type because its workflow read
   failed (backend TAS-383; API-DIVERGENCE «The project context drops a type…»).
   A wording true in both cases, e.g. «This project sent no workflow for …», is
-  art-director's call; the real fix is backend [TAS-533](https://jira.ozero.dev/browse/TAS-533) (A1, api-contract-guard).
+  art-director's call; the real fix is backend [TAS-533](https://jira.ozero.dev/browse/TAS-533) (A1, api-contract-guard).~~
+  **Closed by TAS-540** (2026-11-20): TAS-533 merged (`d6eb264`) — a failed read fails the
+  context, so the wording is true and stays.
 - **The link picker could read `GET /issues/search?projectId=…`** instead of a
   whole unwindowed board: the route exists, `query` is optional, results come
   `createdAt` desc up to 100 with the type's look and `statusKey`. Drops the
@@ -4705,6 +4715,31 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
   added, the column stays as the re-read sent it, the button can be pressed
   again, and focus that lost the button goes to the column's last card
   (release-reviewer N1).
+
+### Left by TAS-540 (catch-up to backend develop `a0499412`, 2026-11-20)
+
+- **Restore an archived project** — `POST /projects/{id}/restore` (TAS-341) works only in the native
+  tenant profile; the stand is classic and would answer 501. When the stand runs native (TAS-537):
+  a Restore action for ADMIN on the archived board's line, the Edit dialog's «Taska cannot restore
+  it.» reworded, `Project.version` typed with the mock seeding `"0"` and bumping it on `PATCH` and
+  archive, and archive sending `If-Match` + `Idempotency-Key` (required there, 428 without) and
+  keeping `version` from its answer (API-DIVERGENCE «Project restore and the archive preconditions
+  exist only in the native tenant profile»; api-contract-guard). On classic the board's reads —
+  `GET /projects/{id}` and the context's `project` — carry no `version` (only create, `PATCH` and
+  archive answers do), so a restore cannot take its `If-Match` from them there; what native's reads
+  send is to be read in `TenantProjectApi` first (release-reviewer B1).
+- **`SettingsCompanySection.test.tsx` flakes at :585** («transfer … the 200 keeps the modal in
+  flight…», `routeState` null): pre-existing — release-reviewer reproduced it on a `git archive` of
+  `d90f12e`, 5 of 8 isolated runs under load; 1 of 5 here. Likely an unawaited `routeState`
+  assertion right after a `waitFor` on `reentered`. Companies code — the companies session's line.
+  In the same gate `e2e/topbar-popovers.spec.ts:94` [laptop] timed out once at 30 s at load average
+  ~30 (suite 17.9 min against 9.6) and passed alone with `--last-failed`.
+- **Token probe for the classic restore answer** — `POST /projects/{random uuid}/restore` with
+  `If-Match: "0"` and a UUID `Idempotency-Key`: classic 501, native 404. Read in Java only.
+- **`ApiError.reasons` comment is false** (`RestTaskaApi.ts` ~1027-1030, «empty for every answer the
+  stand serves»): since TAS-316 classic fills `reasons` from `details.reason`
+  (`GatewayErrorHandler`). Every reader is behind `VITE_TASKA_TENANTS` — the companies session's
+  line (api-contract-guard, non-blocking 1).
 
 ### Left by TAS-512 review (company plan and usage, build review of `994ec25`, 2026-11-05)
 
@@ -4829,3 +4864,44 @@ Rulings in `docs/ai/reviews/TAS-513-*.md` (git-ignored); the divergence entries 
 - **The Back check is per document** (`loadedByHistory()`, `companyBilling.ts`): in a page loaded by Back, the first
   click into an invoice marks it left; the list's word after Back is `confirming` on a fresh load and `unpaid` on a
   bfcache restore. Wording only (release-reviewer L1).
+### Left by TAS-467 (the way from Create account to the invitation token form, 2026-11-20)
+
+- **Back from /invite lands on /login's Sign in tab, not Create account**, focus on `<body>`, the 500 ms
+  entrance replays: tabs are not in the address (existing for every tab). Later: write the tab into /login's
+  history entry before the push and treat a history return as a continuation of the card (art-director N1).
+- **At ≤390 the §7 ring of «enter your invitation token» crosses the first line's descenders** and touches
+  «or» and the full stop — a 2px ring at offset 2 on an inline 11.5/1.45 link. Accepted; no §7 ring exception;
+  decide together with «create an access token» if ever fixed (art-director N2).
+- **The token field's hint says «Open the link in your invitation email — it fills this in.»** — the wrong
+  instruction for someone who came from Create account because the link would not open; the field already
+  takes a whole pasted link (§4.27). A §4.27 copy change, e.g. «Paste the link from your invitation email, or
+  just its token.» (art-director N3).
+- **Comments still say the stand has sign-up off**: `src/screens/LoginScreen.tsx` (doc comment «the stand
+  today»), `src/screens/LoginScreen.test.tsx` header («the stand's answer»), `src/api/TaskaApi.ts` (dated
+  2026-10-27, true as history). The stand answered `{"signupEnabled":true,"providers":[]}` on 2026-11-20
+  (`7dad4ba6-a978-44e8-a339-6671b997ddb8`); TAS-467 fixed only the e2e and mock-fixture comments it touched
+  (frontend-builder).
+- **`SettingsCompanySection.test.tsx` «the 200 keeps the modal in flight…» flaked once under load** in the
+  TAS-467 gate (2026-11-20, an art-director run beside it): `routeState` was `null` at line 585. 36/36 three
+  times alone, 3192/3192 in the full unit re-run. Watch for a repeat.
+- **Three TAS-467 paths no test pins** (release-reviewer N2): the held-link guard in LoginScreen's in-place
+  `enterToken` arrival branch (runs only in the unit harness — both route trees mount the screen fresh on
+  /invite; removing it fails nothing), the link on the companies (B2B) e2e server (checked by hand), and
+  `.auth-hint-link`'s `nowrap`. One unit case (held link + arrival without remount → New password) and one
+  companies case close the first two.
+- **The hint link drops `from`** (release-reviewer N3): sent to /login by an expired session → «enter your
+  invitation token» → Sign in on /invite lands on `/projects`, not the remembered page. Unlikely; activation
+  drops `from` the same way. Fix: pass `from` into `SignupPanel` and carry it in the Link's state.
+- **Name and Email typed on Create account are lost when the link is taken** — the screen remounts on /invite
+  and Back remounts /login (release-reviewer residual). Same root as «Back lands on Sign in» above.
+
+### Left by TAS-537's merge of main into this branch (TAS-414's focus ring meets the company zone, 2026-11-20)
+
+- **«Manage company» focuses the zone's heading with a plain `focus()`** (the browser's own ring heuristic), while a
+  section change inside the area uses TAS-414's `focus({ focusVisible: !lastInputWasPointer })`. Using TAS-414's form for
+  the arrival too would ring after a click: its tracker lives in the area and attaches after mount, so a press made
+  before the area existed (Projects → «Manage company», the phone profile menu, the paused screen's link) is never seen
+  and reads as a key (measured in jsdom by frontend-builder). A module-scope tracker fixes both and was prototyped; it
+  changes how TAS-414's tracker works, so it is art-director's call. Pin the chosen form with a test asserting no ring
+  after a pointer press on «Manage company» from Projects; WebKit's ring needs a browser check (every Playwright
+  project is Chromium).
