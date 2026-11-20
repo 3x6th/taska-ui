@@ -582,7 +582,10 @@ describe("transfer (§4.39, B4, art-director B6)", () => {
     expect(screen.getByRole("dialog", { name: "Transfer ownership" })).toBeInTheDocument();
     expect(answer(dialog)).toHaveAttribute("aria-disabled", "true");
     expect(within(dialog).getByRole("combobox", { name: "New owner" })).toHaveAttribute("aria-disabled", "true");
-    expect(routeState).toMatchObject({ companyHandOver: { fromSession: "ts-1", recipient: { userId: "priya", name: "Priya Nair" } } });
+    // `reentered` counts the call; the entry's state lands in `routeState` from an effect after it.
+    await waitFor(() =>
+      expect(routeState).toMatchObject({ companyHandOver: { fromSession: "ts-1", recipient: { userId: "priya", name: "Priya Nair" } } }),
+    );
     await act(async () => reread.resolve(tenant({ ownerId: "priya", version: "4" })));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /Pause company|Transfer ownership|Rename company/ })).not.toBeInTheDocument();

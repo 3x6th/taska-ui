@@ -4728,7 +4728,7 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
   `GET /projects/{id}` and the context's `project` — carry no `version` (only create, `PATCH` and
   archive answers do), so a restore cannot take its `If-Match` from them there; what native's reads
   send is to be read in `TenantProjectApi` first (release-reviewer B1).
-- **`SettingsCompanySection.test.tsx` flakes at :585** («transfer … the 200 keeps the modal in
+- ~~**`SettingsCompanySection.test.tsx` flakes at :585**~~ — fixed in TAS-537 (the `routeState` assertion now waits: `reenterCompany` bumps `reentered` before the navigation's effect writes the state). («transfer … the 200 keeps the modal in
   flight…», `routeState` null): pre-existing — release-reviewer reproduced it on a `git archive` of
   `d90f12e`, 5 of 8 isolated runs under load; 1 of 5 here. Likely an unawaited `routeState`
   assertion right after a `waitFor` on `reentered`. Companies code — the companies session's line.
@@ -4736,7 +4736,7 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
   ~30 (suite 17.9 min against 9.6) and passed alone with `--last-failed`.
 - **Token probe for the classic restore answer** — `POST /projects/{random uuid}/restore` with
   `If-Match: "0"` and a UUID `Idempotency-Key`: classic 501, native 404. Read in Java only.
-- **`ApiError.reasons` comment is false** (`RestTaskaApi.ts` ~1027-1030, «empty for every answer the
+- ~~**`ApiError.reasons` comment is false**~~ — fixed in TAS-537. (`RestTaskaApi.ts` ~1027-1030, «empty for every answer the
   stand serves»): since TAS-316 classic fills `reasons` from `details.reason`
   (`GatewayErrorHandler`). Every reader is behind `VITE_TASKA_TENANTS` — the companies session's
   line (api-contract-guard, non-blocking 1).
