@@ -4382,6 +4382,7 @@ Round 1 on `e08eb4a`: release-reviewer REQUEST CHANGES (docs only), api-contract
 ### Left by TAS-414 touch focus (focus without the ring after a pointer, 2026-11-20)
 
 - **Other programmatic `h1` focus sites are not on the §7 «Программный фокус после указателя» rule yet** (art-director, not measured): the `.notfound-title` fallback, `.auth-title`, and the in-place outcomes of §4.37 and §4.38 still call `focus()` without `focusVisible`, so WebKit probably rings them after a tap or a mouse press the way `SectionArea` did before TAS-414. Measure in WebKit, then pass `focusVisible: false` after a pointer where it rings.
+- **A history move with no input into the page follows the page's last input** (art-director r2, not blocking): the toolbar Back/Forward, or Safari's Cmd+[ if it sends no `keydown` (not verified in real Safari), leave `SectionArea`'s pointer/key tracker as it was, so after an earlier tap the heading takes focus without the ring even for a keyboard reader. Focus still moves and the next Tab rings the next control; there is no signal to do better.
 
 ### Left by TAS-464 (the frontend for backend TAS-440, TAS-443 and TAS-444, develop `af7ab57e`, 2026-11-02)
 
