@@ -4859,4 +4859,7 @@ Non-blocking notes (`docs/ai/reviews/TAS-522/`, git-ignored).
   and reads as a key (measured in jsdom by frontend-builder). A module-scope tracker fixes both and was prototyped; it
   changes how TAS-414's tracker works, so it is art-director's call. Pin the chosen form with a test asserting no ring
   after a pointer press on «Manage company» from Projects; WebKit's ring needs a browser check (every Playwright
-  project is Chromium).
+  project is Chromium). The same plain `focus()` also serves in-zone arrivals the tracker *does* see —
+  on the stacked billing branches, Billing → invoice and invoice → replacement invoice stay in one section, so a tap
+  there rings the heading in WebKit (release-reviewer, TAS-537 round 2); a «seen a press since mount» ref, or the
+  module-scope tracker, covers those too.
