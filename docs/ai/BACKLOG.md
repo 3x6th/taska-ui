@@ -4766,3 +4766,13 @@ into the fix round.
 - **`SettingsCompanySection.test.tsx` «the 200 keeps the modal in flight…» flaked once under load** in the
   TAS-467 gate (2026-11-20, an art-director run beside it): `routeState` was `null` at line 585. 36/36 three
   times alone, 3192/3192 in the full unit re-run. Watch for a repeat.
+- **Three TAS-467 paths no test pins** (release-reviewer N2): the held-link guard in LoginScreen's in-place
+  `enterToken` arrival branch (runs only in the unit harness — both route trees mount the screen fresh on
+  /invite; removing it fails nothing), the link on the companies (B2B) e2e server (checked by hand), and
+  `.auth-hint-link`'s `nowrap`. One unit case (held link + arrival without remount → New password) and one
+  companies case close the first two.
+- **The hint link drops `from`** (release-reviewer N3): sent to /login by an expired session → «enter your
+  invitation token» → Sign in on /invite lands on `/projects`, not the remembered page. Unlikely; activation
+  drops `from` the same way. Fix: pass `from` into `SignupPanel` and carry it in the Link's state.
+- **Name and Email typed on Create account are lost when the link is taken** — the screen remounts on /invite
+  and Back remounts /login (release-reviewer residual). Same root as «Back lands on Sign in» above.
