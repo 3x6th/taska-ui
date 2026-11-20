@@ -1,4 +1,4 @@
-import { compareBoardIssues } from "../api/boardOrder";
+import { boardIssueOrder, isDoneCategory } from "../api/boardOrder";
 import type { Board, BoardColumn, BoardColumnPage, BoardIssue } from "../domain/types";
 
 /**
@@ -6,6 +6,12 @@ import type { Board, BoardColumn, BoardColumnPage, BoardIssue } from "../domain/
  * itself (TAS-392, DESIGN.md §4.9, §5.3, §5.4): what a capped column counts,
  * and what an optimistic move or delete does to a board whose columns are cut
  * at a page.
+ *
+ * Every function that rewrites a board answers the type it was given
+ * (`B extends Board`) and spreads it: the board query's entries carry what
+ * they were read with beside the server's answer (`BoardRead` in
+ * src/lib/boardQuery.ts — the Done window and its `doneSince`, TAS-532), and
+ * «Show more» continues with that `doneSince`, so no rewrite may drop it.
  */
 
 /** Every card the read drew — the columns' and «Outside their workflow»'s. */
@@ -42,16 +48,25 @@ const stillMore = (total: number | null, drawn: number, before: boolean | null) 
 /**
  * `board` with the card `issueId` moved to the column `statusKey` (§5.3,
  * §4.9): out of wherever it stood — its column's count, or the unplaced one,
- * one down — and into the target — its count one up — at the place
- * `compareBoardIssues` gives it, the server's order, with `updatedAt` stamped.
- * Into a column that has more issues than it drew, a card that would sort
- * after the last one drawn is **not** drawn: its place among the issues not
- * read is unknown, and the count carries it. `hasMore` follows the counts.
+ * one down — and into the target — its count one up — with `updatedAt`
+ * stamped, at the place the server will give it in **that column's order**
+ * (`boardIssueOrder` of the column's `category`, backend TAS-525):
  *
- * Answered unchanged when this board does not hold the card or has no such
- * column — a board read under a type filter has only that type's columns.
+ * - into a column of category `DONE`, **first** and always drawn, a column
+ *   with more issues than it drew included: the column runs `updatedAt`
+ *   newest first and the move is its newest change. Put first outright rather
+ *   than by the comparator, so a card another clock stamped later than this
+ *   one cannot push the moved card past the end of what is drawn;
+ * - into any other column, at the place `createdAt`, `id` gives it — and into
+ *   a column that has more issues than it drew, a card that would sort after
+ *   the last one drawn is **not** drawn: its place among the issues not read
+ *   is unknown, and the count carries it.
+ *
+ * `hasMore` follows the counts. Answered unchanged when this board does not
+ * hold the card or has no such column — a board read under a type filter has
+ * only that type's columns.
  */
-export function moveCardOnBoard(board: Board, issueId: string, statusKey: string, updatedAt: string): Board {
+export function moveCardOnBoard<B extends Board>(board: B, issueId: string, statusKey: string, updatedAt: string): B {
   const card = boardCards(board).find((issue) => issue.id === issueId);
   if (!card || !board.columns.some((column) => column.statusKey === statusKey)) return board;
   const moved: BoardIssue = { ...card, statusKey, updatedAt };
@@ -64,11 +79,13 @@ export function moveCardOnBoard(board: Board, issueId: string, statusKey: string
       const held = column.issues.some((issue) => issue.id === issueId);
       const others = held ? column.issues.filter((issue) => issue.id !== issueId) : column.issues;
       if (column.statusKey === statusKey) {
-        if (held) return { ...column, issues: [...others, moved].sort(compareBoardIssues) };
+        const done = isDoneCategory(column.category);
+        const order = boardIssueOrder(column.category);
+        if (held) return { ...column, issues: done ? [moved, ...others] : [...others, moved].sort(order) };
         const totalCount = counted(column.totalCount, 1);
         const last = others.at(-1);
-        const pastTheEnd = column.hasMore === true && last !== undefined && compareBoardIssues(moved, last) > 0;
-        const issues = pastTheEnd ? others : [...others, moved].sort(compareBoardIssues);
+        const pastTheEnd = !done && column.hasMore === true && last !== undefined && order(moved, last) > 0;
+        const issues = done ? [moved, ...others] : pastTheEnd ? others : [...others, moved].sort(order);
         return { ...column, issues, totalCount, hasMore: stillMore(totalCount, issues.length, column.hasMore) };
       }
       if (!held) return column;
@@ -84,7 +101,7 @@ export function moveCardOnBoard(board: Board, issueId: string, statusKey: string
 }
 
 /** `board` without the card `issueId`, wherever it stood, one less in that count. Unchanged when it holds no such card. */
-export function withoutCardOnBoard(board: Board, issueId: string): Board {
+export function withoutCardOnBoard<B extends Board>(board: B, issueId: string): B {
   if (!boardCards(board).some((issue) => issue.id === issueId)) return board;
   const fromUnplaced = board.unplacedIssues.some((issue) => issue.id === issueId);
   const unplacedIssues = fromUnplaced ? board.unplacedIssues.filter((issue) => issue.id !== issueId) : board.unplacedIssues;
@@ -106,14 +123,21 @@ export function withoutCardOnBoard(board: Board, issueId: string): Board {
 }
 
 /**
- * The cursor of a column's «Show more» (§4.9, backend TAS-430): the last card
- * the column draws, whose `createdAt` and `id` the next page starts after.
- * `null` for a column that draws none — its first page is the board read's,
- * and nothing continues an empty one.
+ * The cursor of a column's «Show more» (§4.9, backend TAS-430, TAS-525): the
+ * last card the column draws, in the kind the column's order takes — for a
+ * column the board answer files under category `DONE`, its `updatedAt` and
+ * `id` (`afterUpdatedAt`), for any other its `createdAt` and `id`
+ * (`afterCreatedAt`). The gateway refuses the other kind with a 400
+ * (`BOARD_CURSOR_CATEGORY_MESSAGE`), which is what «Show more» in a done
+ * column met until TAS-532. `null` for a column that draws none — its first
+ * page is the board read's, and nothing continues an empty one.
  */
-export function columnCursor(column: Pick<BoardColumn, "issues">): ColumnCursor | null {
+export function columnCursor(column: Pick<BoardColumn, "issues" | "category">): ColumnCursor | null {
   const last = column.issues.at(-1);
-  return last ? { afterCreatedAt: last.createdAt, afterId: last.id } : null;
+  if (!last) return null;
+  return isDoneCategory(column.category)
+    ? { afterUpdatedAt: last.updatedAt, afterId: last.id }
+    : { afterCreatedAt: last.createdAt, afterId: last.id };
 }
 
 /**
@@ -122,9 +146,10 @@ export function columnCursor(column: Pick<BoardColumn, "issues">): ColumnCursor 
  * card the board already draws anywhere, in this column or another one an
  * optimistic move put it in, is not drawn twice. The column's count and
  * `hasMore` become the page's: it was read after the board and counts the same
- * column under the same filters. Unchanged when the board has no such column.
+ * column under the same filters and the same `doneSince`. Unchanged when the
+ * board has no such column.
  */
-export function withColumnPage(board: Board, page: BoardColumnPage): Board {
+export function withColumnPage<B extends Board>(board: B, page: BoardColumnPage): B {
   if (!board.columns.some((column) => column.statusKey === page.statusKey)) return board;
   const drawn = new Set(boardCards(board).map((issue) => issue.id));
   return {
@@ -144,13 +169,15 @@ export function withColumnPage(board: Board, page: BoardColumnPage): Board {
   };
 }
 
-/** The cursor a column page starts after: the `createdAt` and `id` of the last card before it. */
-export interface ColumnCursor {
-  afterCreatedAt: string;
-  afterId: string;
-}
+/**
+ * The cursor a column page starts after: the last card before it, by the
+ * column's order — `updatedAt` and `id` in a done column, `createdAt` and `id`
+ * in any other (`columnCursor`). Exactly one instant, as the gateway's
+ * controller requires (`BOARD_CURSOR_PAIR_MESSAGE`).
+ */
+export type ColumnCursor = { afterCreatedAt: string; afterId: string } | { afterUpdatedAt: string; afterId: string };
 
-/** One read of a column's page after `cursor`, `pageSize` deep, under the board read's own filters. */
+/** One read of a column's page after `cursor`, `pageSize` deep, under the board read's own filters and `doneSince`. */
 export type ColumnPageReader = (statusKey: string, cursor: ColumnCursor, pageSize: number) => Promise<BoardColumnPage>;
 
 /**
@@ -166,8 +193,10 @@ export type ColumnPageReader = (statusKey: string, cursor: ColumnCursor, pageSiz
  * every optimistic move and delete in it, and a page «Show more» drew while
  * the board read was out. A column is read again when `previous` drew more of
  * it than `fresh`'s first page holds and `fresh` still says `hasMore`: the
- * column's pages after `fresh`'s last card, as deep as `previous` drew beyond
- * that page, at most `pageLimit` a read, while the server says more follow.
+ * column's pages after `fresh`'s last card — the cursor of the column's own
+ * category, §4.9 — as deep as `previous` drew beyond that page, at most
+ * `pageLimit` a read, while the server says more follow. `readPage` sends the
+ * `doneSince` `fresh` was read with (TAS-532), never a second one.
  * The pages land after the first page in one result — no card twice, none
  * `fresh` already draws — and the column takes the last page's count and
  * `hasMore`. Columns are read in parallel, each column's pages in turn.
@@ -176,12 +205,12 @@ export type ColumnPageReader = (statusKey: string, cursor: ColumnCursor, pageSiz
  * says nothing (§4.9): the rest of the board stands. A column that was not
  * expanded, or that the server now sends whole, costs no read.
  */
-export async function withColumnTails(
-  fresh: Board,
+export async function withColumnTails<B extends Board>(
+  fresh: B,
   previous: Board | undefined,
   readPage: ColumnPageReader,
   pageLimit: number,
-): Promise<Board> {
+): Promise<B> {
   if (!previous) return fresh;
   const drawn = new Set(boardCards(fresh).map((issue) => issue.id));
   const columns = await Promise.all(
@@ -202,7 +231,7 @@ export async function withColumnTails(
             tail.push(issue);
           }
           wanted -= last.issues.length;
-          cursor = columnCursor(last);
+          cursor = columnCursor({ category: column.category, issues: last.issues });
           if (last.hasMore !== true) break;
         }
       } catch {
@@ -222,7 +251,7 @@ export async function withColumnTails(
  * answer brought back (TAS-422): what the next move of it sends as `If-Match`
  * before the re-read lands. Unchanged when it holds no such card.
  */
-export function withCardVersion(board: Board, issueId: string, version: number, updatedAt: string): Board {
+export function withCardVersion<B extends Board>(board: B, issueId: string, version: number, updatedAt: string): B {
   if (!boardCards(board).some((issue) => issue.id === issueId)) return board;
   const stamp = (issue: BoardIssue) => (issue.id === issueId ? { ...issue, version, updatedAt } : issue);
   return {
