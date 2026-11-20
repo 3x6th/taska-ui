@@ -4961,10 +4961,7 @@ Rulings in `docs/ai/reviews/TAS-516-*.md` (git-ignored); divergence in `API-DIVE
 - **`MOCK_SERVER_KEY` is copied into `e2e/companiesFixtures.ts`** — a future v10 bump that misses the copy would make
   helpers read `{}` and «0 checkouts» assertions pass for the wrong reason; pin the two with one assertion
   (release-reviewer).
-- **The mock returns a timely full payment confirmed after expiry** — €12 matched on time and €8 arrived before `dueAt`,
-  confirmed after expiry, ends EXPIRED and «to be refunded» instead of PAID (a fix-round regression, mock only; A97).
-  Also under `holdExpiry`, matched money plus a late full payment settles with no return. To be fixed in TAS-516's mock
-  work; keep the €8-alone test and add the 12 + 8 case.
+
 ### Left by TAS-467 (the way from Create account to the invitation token form, 2026-11-20)
 
 - **Back from /invite lands on /login's Sign in tab, not Create account**, focus on `<body>`, the 500 ms
