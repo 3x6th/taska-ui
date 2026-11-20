@@ -550,9 +550,13 @@ Same rule as above: "Closed by" is settled, the rest is live.
 - **What the UI does:** no restore anywhere, and archive sends neither header — sending `If-Match`
   to a server that does not compare it would be a precondition in name only. The Edit project
   dialog's «Taska cannot restore it.» is true on the classic profile and changes when a restore is
-  offered. `ProjectResponseDto.version` arrives on every project answer and is passed through
-  untyped: it is typed with its first reader, together with the mock seeding `"0"` and bumping it
-  on `PATCH` and archive like `@Version` (api-contract-guard). **Compensation: none.**
+  offered. `ProjectResponseDto.version` is passed through untyped, and on classic it arrives only
+  on the answers built from the `Project` entity — `POST /projects`, `PATCH` and `DELETE` — not on
+  `GET /projects`, `GET /projects/{id}` or the context's `project`, which are built from
+  `ProjectCheckMembershipDto` (no `version`; the gateway sets the field only when the proto has it;
+  release-reviewer, read in the Java). It is typed with its first reader, together with the mock
+  seeding `"0"` and bumping it on `PATCH` and archive like `@Version` (api-contract-guard).
+  **Compensation: none.**
 - **Probe that changes nothing,** for a session with a token: `POST /projects/{random uuid}/restore`
   with `If-Match: "0"` and a UUID `Idempotency-Key` — classic 501, native 404.
 - **Removal:** the stand switching to the native profile (the companies launch,

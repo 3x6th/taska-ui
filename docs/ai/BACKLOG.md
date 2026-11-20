@@ -4716,7 +4716,16 @@ A43–A52 went to Jira as comments on TAS-319, TAS-359, TAS-460, TAS-480 and TAS
   it.» reworded, `Project.version` typed with the mock seeding `"0"` and bumping it on `PATCH` and
   archive, and archive sending `If-Match` + `Idempotency-Key` (required there, 428 without) and
   keeping `version` from its answer (API-DIVERGENCE «Project restore and the archive preconditions
-  exist only in the native tenant profile»; api-contract-guard).
+  exist only in the native tenant profile»; api-contract-guard). On classic the board's reads —
+  `GET /projects/{id}` and the context's `project` — carry no `version` (only create, `PATCH` and
+  archive answers do), so a restore cannot take its `If-Match` from them there; what native's reads
+  send is to be read in `TenantProjectApi` first (release-reviewer B1).
+- **`SettingsCompanySection.test.tsx` flakes at :585** («transfer … the 200 keeps the modal in
+  flight…», `routeState` null): pre-existing — release-reviewer reproduced it on a `git archive` of
+  `d90f12e`, 5 of 8 isolated runs under load; 1 of 5 here. Likely an unawaited `routeState`
+  assertion right after a `waitFor` on `reentered`. Companies code — the companies session's line.
+  In the same gate `e2e/topbar-popovers.spec.ts:94` [laptop] timed out once at 30 s at load average
+  ~30 (suite 17.9 min against 9.6) and passed alone with `--last-failed`.
 - **Token probe for the classic restore answer** — `POST /projects/{random uuid}/restore` with
   `If-Match: "0"` and a UUID `Idempotency-Key`: classic 501, native 404. Read in Java only.
 - **`ApiError.reasons` comment is false** (`RestTaskaApi.ts` ~1027-1030, «empty for every answer the
